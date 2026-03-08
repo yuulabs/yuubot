@@ -8,15 +8,25 @@ description: >
 
 # Memory Skill
 
+## 上下文隔离
+
+记忆按 ctx 隔离。ctx_id 由系统自动注入（环境变量 YUU_BOT_CTX），**不需要手动传 --ctx**。
+
+每条记忆有 scope：
+- `private`（默认）：仅在保存时的 ctx 内可见
+- `public`：所有 ctx 都可见，仅 Master 可创建
+
+recall/show 返回的是：当前 ctx 的 private 记忆 + 所有 public 记忆。
+
 ## 可用命令
 
 ### 保存记忆
-`ybot mem save "<content>" --tags <tag1>,<tag2>,... --ctx <ctx_id>`
+`ybot mem save "<content>" --tags <tag1>,<tag2>,... [--scope private|public]`
 
-content 不宜过长（默认 < 500 字）。tags 和 ctx 可选。
+content 不宜过长（默认 < 500 字）。tags 可选。scope 默认 private，public 需 Master 权限。
 
 ### 检索记忆
-`ybot mem recall "<words>" --tags "<tags>" --ctx <ctx_id> --limit 10`
+`ybot mem recall "<words>" --tags "<tags>" --limit 10`
 
 words 和 tags 空格分隔，匹配任意一个。至少提供一个。
 使用 FTS5 全文索引匹配，支持分词。请提供具体的关键词或标签。
@@ -27,9 +37,9 @@ words 和 tags 空格分隔，匹配任意一个。至少提供一个。
 ids 是逗号分隔的记忆 ID。仅 Master 可执行。
 
 ### 查看标签
-`ybot mem show --tags --ctx <ctx_id>`
+`ybot mem show --tags`
 
-显示所有标签及其记忆数量。
+显示当前 ctx 可见的所有标签及其记忆数量。
 
 ### 配置
 `ybot mem config --forget-days <days>`
@@ -51,7 +61,6 @@ ids 是逗号分隔的记忆 ID。仅 Master 可执行。
 ### 保存技巧
 - 简洁陈述句概括，不要原文照搬
 - 标签用通用分类词：preference, person, event, topic
-- 带上 --ctx 关联当前会话
 
 ### 关于关键词命中
 系统会在消息中标记命中记忆的关键词。
@@ -60,3 +69,4 @@ ids 是逗号分隔的记忆 ID。仅 Master 可执行。
 
 ### 权限
 - delete 仅限 Master 使用
+- save --scope public 仅限 Master 使用

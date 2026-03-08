@@ -69,6 +69,7 @@ async def save(
     ctx_id: int | None,
     max_length: int = 500,
     source_user_id: int | None = None,
+    scope: str = "private",
 ) -> int:
     """Save a memory. Returns memory id."""
     if len(content) > max_length:
@@ -76,6 +77,7 @@ async def save(
 
     mem = await Memory.create(
         content=content, ctx_id=ctx_id, source_user_id=source_user_id,
+        scope=scope,
     )
 
     for tag in tags:
@@ -122,7 +124,10 @@ async def recall(
             q &= Q(id__in=tag_mem_ids)
 
     if ctx_id is not None:
-        q &= Q(ctx_id=ctx_id)
+        q &= (Q(ctx_id=ctx_id, scope="private") | Q(scope="public"))
+    else:
+        # No ctx — only public memories visible
+        q &= Q(scope="public")
 
     if not words and not tags:
         return []
@@ -150,11 +155,11 @@ async def recall(
     return results
 
 
-async def probe(tokens: list[str]) -> list[str]:
+async def probe(tokens: list[str], ctx_id: int | None = None) -> list[str]:
     """Probe which tokens have matching memories via FTS5.
 
-    Returns the subset of *tokens* that hit at least one memory row.
-    Accepts either pre-split tokens or raw text (will be jieba-tokenized).
+    Returns the subset of *tokens* that hit at least one memory row
+    visible to the given ctx_id (private in that ctx + all public).
     """
     if not tokens:
         return []
@@ -162,25 +167,38 @@ async def probe(tokens: list[str]) -> list[str]:
     hits: list[str] = []
     for token in tokens:
         fts_expr = await _build_fts_query([token])
-        rows = await conn.execute_query_dict(
-            "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT 1",
-            [fts_expr],
-        )
+        if ctx_id is not None:
+            rows = await conn.execute_query_dict(
+                "SELECT f.rowid FROM memories_fts f "
+                "JOIN memories m ON f.rowid = m.id "
+                "WHERE f.memories_fts MATCH ? "
+                "AND ((m.ctx_id = ? AND m.scope = 'private') OR m.scope = 'public') "
+                "LIMIT 1",
+                [fts_expr, ctx_id],
+            )
+        else:
+            rows = await conn.execute_query_dict(
+                "SELECT f.rowid FROM memories_fts f "
+                "JOIN memories m ON f.rowid = m.id "
+                "WHERE f.memories_fts MATCH ? AND m.scope = 'public' "
+                "LIMIT 1",
+                [fts_expr],
+            )
         if rows:
             hits.append(token)
     return hits
 
 
-async def probe_text(text: str) -> list[str]:
+async def probe_text(text: str, ctx_id: int | None = None) -> list[str]:
     """Probe raw text for memory hits using jieba segmentation.
 
     Tokenizes the text with jieba, then probes each token individually.
-    Returns tokens that have matching memories.
+    Returns tokens that have matching memories visible to ctx_id.
     """
     tokens = await _jieba_tokenize(text)
     if not tokens:
         return []
-    return await probe(tokens)
+    return await probe(tokens, ctx_id=ctx_id)
 
 
 async def delete(ids: list[int]) -> int:
@@ -194,10 +212,13 @@ async def delete(ids: list[int]) -> int:
 
 
 async def show_tags(ctx_id: int | None) -> list[tuple[str, int]]:
-    """Return (tag, count) pairs."""
-    qs = MemoryTag.all()
+    """Return (tag, count) pairs for memories visible to ctx_id."""
     if ctx_id is not None:
-        qs = qs.filter(memory__ctx_id=ctx_id)
+        qs = MemoryTag.filter(
+            Q(memory__ctx_id=ctx_id, memory__scope="private") | Q(memory__scope="public")
+        )
+    else:
+        qs = MemoryTag.filter(memory__scope="public")
 
     rows = await qs.annotate(cnt=Count("id")).group_by("tag").values("tag", "cnt")
     return [(r["tag"], r["cnt"]) for r in sorted(rows, key=lambda x: -x["cnt"])]

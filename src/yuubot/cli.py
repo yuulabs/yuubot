@@ -353,26 +353,25 @@ def mem() -> None:
 @mem.command("save")
 @click.argument("content")
 @click.option("--tags", default="")
-@click.option("--ctx", "ctx_id", type=int, default=None)
+@click.option("--scope", type=click.Choice(["private", "public"]), default="private")
 @click.pass_context
-def mem_save(ctx: click.Context, content: str, tags: str, ctx_id: int | None) -> None:
+def mem_save(ctx: click.Context, content: str, tags: str, scope: str) -> None:
     """Save a memory."""
     from yuubot.skills.mem.cli import save_memory
 
-    asyncio.run(save_memory(content, tags, ctx_id, ctx.obj["config_path"]))
+    asyncio.run(save_memory(content, tags, scope, ctx.obj["config_path"]))
 
 
 @mem.command("recall")
 @click.argument("words")
 @click.option("--tags", default="")
-@click.option("--ctx", "ctx_id", type=int, default=None)
 @click.option("--limit", default=10)
 @click.pass_context
-def mem_recall(ctx: click.Context, words: str, tags: str, ctx_id: int | None, limit: int) -> None:
+def mem_recall(ctx: click.Context, words: str, tags: str, limit: int) -> None:
     """Recall memories by keywords/tags."""
     from yuubot.skills.mem.cli import recall_memory
 
-    asyncio.run(recall_memory(words, tags, ctx_id, limit, ctx.obj["config_path"]))
+    asyncio.run(recall_memory(words, tags, limit, ctx.obj["config_path"]))
 
 
 @mem.command("delete")
@@ -387,13 +386,12 @@ def mem_delete(ctx: click.Context, ids: str) -> None:
 
 @mem.command("show")
 @click.option("--tags", is_flag=True, help="Show all tags")
-@click.option("--ctx", "ctx_id", type=int, default=None)
 @click.pass_context
-def mem_show(ctx: click.Context, tags: bool, ctx_id: int | None) -> None:
+def mem_show(ctx: click.Context, tags: bool) -> None:
     """Show memory tags."""
     from yuubot.skills.mem.cli import show_tags
 
-    asyncio.run(show_tags(ctx_id, ctx.obj["config_path"]))
+    asyncio.run(show_tags(ctx.obj["config_path"]))
 
 
 @mem.command("config")

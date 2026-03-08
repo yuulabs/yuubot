@@ -513,17 +513,18 @@ class AgentRunner:
 
         Uses jieba segmentation for accurate Chinese tokenization.
         Best-effort: returns empty string on any failure.
+        Filters by ctx_id scope (private + public).
         """
         try:
             from yuubot.skills.mem.store import probe_text
 
-            hits = await probe_text(text)
+            int_ctx = int(ctx_id) if ctx_id else None
+            hits = await probe_text(text, ctx_id=int_ctx)
             if not hits:
                 return ""
-            ctx_hint = f" --ctx {ctx_id}" if ctx_id else ""
             return (
                 f"\n记忆关键词命中: {', '.join(hits)}\n"
-                f"（可用 ybot mem recall \"<关键词>\"{ctx_hint} 查看详情）\n"
+                f"（可用 ybot mem recall \"<关键词>\" 查看详情）\n"
             )
         except Exception:
             log.debug("Memory hints probe failed", exc_info=True)

@@ -9,19 +9,33 @@ from yuubot.skills.mem import store as mem_store
 from yuubot.skills.mem.forget import cleanup_stale, get_forget_days, set_forget_days
 
 
-async def save_memory(content: str, tags_str: str, ctx_id: int | None, config_path: str | None) -> None:
+def _get_ctx_id() -> int | None:
+    """Read ctx_id from environment. Always use this instead of CLI args."""
+    raw = env.get(env.BOT_CTX)
+    return int(raw) if raw else None
+
+
+async def save_memory(content: str, tags_str: str, scope: str, config_path: str | None) -> None:
     cfg = load_config(config_path)
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     try:
+        ctx_id = _get_ctx_id()
+        # Only Master can save public memories
+        if scope == "public":
+            role = env.get(env.USER_ROLE)
+            if role and role != "MASTER":
+                click.echo("错误: 仅 Master 可以保存 public 记忆")
+                return
         tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
         raw_uid = env.get(env.USER_ID)
         source_user_id = int(raw_uid) if raw_uid else None
         mem_id = await mem_store.save(
             content, tags, ctx_id, cfg.memory.max_length,
             source_user_id=source_user_id,
+            scope=scope,
         )
         tag_display = ", ".join(tags) if tags else "无"
-        click.echo(f"已保存记忆 [mem_id: {mem_id}]，标签: {tag_display}")
+        click.echo(f"已保存记忆 [mem_id: {mem_id}]，标签: {tag_display}，scope: {scope}")
     except ValueError as e:
         click.echo(f"错误: {e}")
     finally:
@@ -29,11 +43,12 @@ async def save_memory(content: str, tags_str: str, ctx_id: int | None, config_pa
 
 
 async def recall_memory(
-    words_str: str, tags_str: str, ctx_id: int | None, limit: int, config_path: str | None
+    words_str: str, tags_str: str, limit: int, config_path: str | None
 ) -> None:
     cfg = load_config(config_path)
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     try:
+        ctx_id = _get_ctx_id()
         words = words_str.split() if words_str else []
         tags = tags_str.split() if tags_str else []
         if not words and not tags:
@@ -69,15 +84,16 @@ async def delete_memory(ids_str: str, config_path: str | None) -> None:
         await close_db()
 
 
-async def show_tags(ctx_id: int | None, config_path: str | None) -> None:
+async def show_tags(config_path: str | None) -> None:
     cfg = load_config(config_path)
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     try:
+        ctx_id = _get_ctx_id()
         tags = await mem_store.show_tags(ctx_id)
         if not tags:
             click.echo("暂无标签")
             return
-        header = f"标签列表 (ctx {ctx_id}):" if ctx_id else "标签列表 (全局):"
+        header = f"标签列表 (ctx {ctx_id}):" if ctx_id else "标签列表 (public only):"
         click.echo(header)
         for tag, count in tags:
             click.echo(f"  {tag}: {count} 条")

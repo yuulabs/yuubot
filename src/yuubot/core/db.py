@@ -85,7 +85,15 @@ _MIGRATIONS = [
         "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_messages_message_id'",
         "CREATE INDEX idx_messages_message_id ON messages(message_id)",
     ),
+    # v0.4: add scope to memories for context isolation
+    (
+        "SELECT 1 FROM pragma_table_info('memories') WHERE name='scope'",
+        "ALTER TABLE memories ADD COLUMN scope VARCHAR(16) DEFAULT 'private'",
+    ),
 ]
+
+# Post-migration: set scope=public for memories with NULL ctx_id
+_SCOPE_MIGRATE_SQL = "UPDATE memories SET scope = 'public' WHERE ctx_id IS NULL AND scope = 'private';"
 
 # Runtime flag: True when simple tokenizer is loaded.
 _simple_loaded = False
@@ -220,6 +228,9 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
         await conn.execute_script(_REBUILD_MEMORY_FTS)
 
     await conn.execute_script(SEED_SQL)
+
+    # Migrate existing NULL-ctx memories to public scope
+    await conn.execute_query(_SCOPE_MIGRATE_SQL)
 
 
 async def close_db() -> None:

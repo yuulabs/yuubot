@@ -113,53 +113,61 @@ ybot web download "<urls>" <folder>
 
 ## mem — 记忆系统
 
+### 上下文隔离
+
+记忆按 ctx 隔离，防止跨群/跨私聊信息泄露。
+
+- `ctx_id` 由系统自动从环境变量 `YUU_BOT_CTX` 注入，CLI 不再接受 `--ctx` 参数
+- 每条记忆有 `scope` 字段：
+  - `private`（默认）：仅在保存时的 ctx 内可见
+  - `public`：所有 ctx 都可见，仅 Master 可创建
+- recall/show 的可见范围 = `(ctx_id=当前 AND scope=private) OR scope=public`
+- 无 ctx 时只能看到 public 记忆
+
 ### save
 
 ```bash
-ybot mem save "<content>" --tags <tag1>,<tag2>,... [--ctx <ctx_id>]
+ybot mem save "<content>" --tags <tag1>,<tag2>,... [--scope private|public]
 ```
 
 - `content`：记忆内容（不宜过长，建议 < 500 字）
 - `--tags`：逗号分隔的标签，用于分类
-- `--ctx`：关联的 ctx_id（可选）
+- `--scope`：`private`（默认）或 `public`（需 Master 权限）
 
 **实现**：
-1. 生成唯一 mem_id
-2. 记录创建时间和最后访问时间
-3. 写入 SQLite `memories` 表
+1. 从 `YUU_BOT_CTX` 读取 ctx_id
+2. 生成唯一 mem_id，记录创建时间和最后访问时间
+3. 写入 SQLite `memories` 表（含 scope 字段）
 
 **输出**：
 ```
-已保存记忆 [mem_id: 42]，标签: preference, food
+已保存记忆 [mem_id: 42]，标签: preference, food，scope: private
 ```
 
 ### recall
 
 ```bash
-ybot mem recall "<words>" [--tags "<tags>"] [--ctx <ctx_id>] [--limit 10]
+ybot mem recall "<words>" [--tags "<tags>"] [--limit 10]
 ```
 
 - `words`：空格分隔的关键词，匹配任意一个
 - `--tags`：空格分隔的标签，匹配任意一个
-- `--ctx`：限定 ctx 范围（可选）
 - `--limit`：返回条数上限（默认 10）
 
 words 和 tags 至少提供一个。
 
 **实现**：
-1. 从 SQLite 查询匹配的记忆
-2. 更新匹配记忆的 `last_accessed` 时间（延长生命周期）
-3. 返回记忆列表
+1. 从 `YUU_BOT_CTX` 读取 ctx_id
+2. 查询 `(ctx_id=当前 AND scope=private) OR scope=public` 的匹配记忆
+3. 更新匹配记忆的 `last_accessed` 时间（延长生命周期）
+4. 返回记忆列表
 
 **输出格式**：
 ```
 [mem 42] (tags: preference, food) 2024-01-15
   用户张三喜欢吃川菜，不吃辣
 
-[mem 58] (tags: preference, music) 2024-01-16
-  用户李四喜欢听古典音乐
-
-共找到 2 条记忆
+共找到 1 条记忆
 ```
 
 ### delete
@@ -178,18 +186,16 @@ ybot mem delete <ids>
 ### show
 
 ```bash
-ybot mem show --tags [--ctx <ctx_id>]
+ybot mem show --tags
 ```
 
-显示所有标签及其记忆数量。
+显示当前 ctx 可见的所有标签及其记忆数量。
 
 **输出**：
 ```
 标签列表 (ctx 5):
   preference: 12 条
   food: 5 条
-  music: 3 条
-  schedule: 8 条
 ```
 
 ### 自动遗忘

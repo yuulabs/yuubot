@@ -167,6 +167,7 @@ class Memory(Model):
     id = fields.IntField(pk=True)
     content = fields.TextField()
     ctx = fields.ForeignKeyField("models.Context", related_name="memories", null=True)
+    scope = fields.CharField(max_length=16, default="private")  # "private" | "public"
     created_at = fields.DatetimeField(auto_now_add=True)
     last_accessed = fields.DatetimeField(auto_now_add=True)
     source_user_id = fields.BigIntField(null=True)
