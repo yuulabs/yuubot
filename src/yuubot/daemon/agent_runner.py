@@ -609,6 +609,24 @@ class AgentRunner:
             media_files=event.get("media_files", []),
         )
 
+        # Append extra <msg> blocks from debounced continuation events
+        for extra in event.get("_extra_events", []):
+            extra_segments = parse_segments(extra.get("message", []))
+            extra_user_id = extra.get("user_id", "?")
+            extra_nickname = extra.get("sender", {}).get("nickname", "")
+            extra_alias = await get_user_alias(extra_user_id, ctx_id)
+            extra_display = extra.get("sender", {}).get("card", "")
+            extra_ts = datetime.fromtimestamp(extra.get("time", 0), tz=timezone.utc)
+            extra_json = segments_to_json(extra_segments)
+            extra_xml = await format_message_to_xml(
+                msg_id=extra.get("message_id", 0),
+                user_id=extra_user_id, nickname=extra_nickname,
+                display_name=extra_display, alias=extra_alias,
+                timestamp=extra_ts, raw_message=extra_json,
+                media_files=extra.get("media_files", []),
+            )
+            msg_xml += "\n" + extra_xml
+
         if is_continuation:
             text = f"""{msg_xml}
 {memory_hints}"""
@@ -627,6 +645,9 @@ class AgentRunner:
 
         from yuubot.core.models import ImageSegment
         image_segments = [s for s in segments if isinstance(s, ImageSegment)]
+        for extra in event.get("_extra_events", []):
+            extra_segs = parse_segments(extra.get("message", []))
+            image_segments.extend(s for s in extra_segs if isinstance(s, ImageSegment))
         if not image_segments:
             return text
 

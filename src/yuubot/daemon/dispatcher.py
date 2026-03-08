@@ -66,17 +66,45 @@ class _CtxWorker:
 
     async def _loop(self) -> None:
         while True:
-            match, event = await self.queue.get()
-            try:
-                handle = asyncio.create_task(self.dispatcher._handle(match, event))
+            first = await self.queue.get()
+            # Drain queued items to debounce consecutive continuations
+            batch = [first]
+            while not self.queue.empty():
+                batch.append(self.queue.get_nowait())
+
+            groups = _group_batch(batch)
+            for group in groups:
+                match, event = group[0]
+                if len(group) > 1:
+                    event["_extra_events"] = [e for _, e in group[1:]]
                 try:
-                    await asyncio.wait_for(asyncio.shield(handle), timeout=self.timeout)
-                except asyncio.TimeoutError:
-                    log.warning("ctx=%s task exceeded %ss, moving on", self.key, self.timeout)
-            except Exception:
-                log.exception("Error handling command in ctx=%s", self.key)
-            finally:
+                    handle = asyncio.create_task(self.dispatcher._handle(match, event))
+                    try:
+                        await asyncio.wait_for(asyncio.shield(handle), timeout=self.timeout)
+                    except asyncio.TimeoutError:
+                        log.warning("ctx=%s task exceeded %ss, moving on", self.key, self.timeout)
+                except Exception:
+                    log.exception("Error handling command in ctx=%s", self.key)
+
+            for _ in batch:
                 self.queue.task_done()
+
+
+def _group_batch(batch: list) -> list[list]:
+    """Group consecutive continuation items (match is None).
+    Non-continuations stay as single-item groups."""
+    groups: list[list] = []
+    current = [batch[0]]
+    for item in batch[1:]:
+        match, _ = item
+        prev_match, _ = current[0]
+        if match is None and prev_match is None:
+            current.append(item)
+        else:
+            groups.append(current)
+            current = [item]
+    groups.append(current)
+    return groups
 
 
 class Dispatcher:
