@@ -88,10 +88,6 @@ class SessionConfig(msgspec.Struct):
     max_tokens: int = 60000     # context window token limit
 
 
-class AgentPermission(msgspec.Struct):
-    min_role: str = "folk"
-
-
 class Config(msgspec.Struct):
     bot: BotConfig = msgspec.field(default_factory=BotConfig)
     recorder: RecorderConfig = msgspec.field(default_factory=RecorderConfig)
@@ -106,25 +102,47 @@ class Config(msgspec.Struct):
     response: ResponseConfig = msgspec.field(default_factory=ResponseConfig)
     schedule: ScheduleConfig = msgspec.field(default_factory=ScheduleConfig)
     session: SessionConfig = msgspec.field(default_factory=SessionConfig)
-    agent_permissions: dict[str, AgentPermission] = msgspec.field(default_factory=dict)
 
     def agent_min_role(self, agent_name: str) -> "Role":
         """Return the minimum Role required to invoke the given agent.
 
-        Defaults to FOLK if not explicitly configured.
+        Reads ``min_role`` from the agent definition in yuuagents config.
+        Defaults to FOLK if not specified.
         """
         from yuubot.core.models import Role
 
-        perm = self.agent_permissions.get(agent_name)
-        if perm is None:
-            return Role.FOLK
+        agents = self.yuuagents.get("agents", {})
+        agent_cfg = agents.get(agent_name, {})
+        raw = agent_cfg.get("min_role", "folk") if isinstance(agent_cfg, dict) else "folk"
         _role_map = {
             "master": Role.MASTER,
             "mod": Role.MOD,
             "folk": Role.FOLK,
             "deny": Role.DENY,
         }
-        return _role_map.get(perm.min_role.lower(), Role.FOLK)
+        return _role_map.get(raw.lower(), Role.FOLK)
+
+    def validate_agent_permissions(self) -> None:
+        """Ensure parent min_role >= every subagent's min_role.
+
+        A folk user can call a folk parent.  If that parent delegates to a
+        master-only subagent, the folk user reaches master capabilities —
+        privilege escalation.  The parent must be at least as strict as
+        its most restricted child.
+        """
+        agents = self.yuuagents.get("agents", {})
+        for name, cfg in agents.items():
+            if not isinstance(cfg, dict):
+                continue
+            parent_role = self.agent_min_role(name)
+            for sub_name in cfg.get("subagents", []):
+                sub_role = self.agent_min_role(sub_name)
+                if parent_role < sub_role:
+                    raise ValueError(
+                        f"Privilege escalation: agent {name!r} (min_role={parent_role.name}) "
+                        f"can delegate to {sub_name!r} (min_role={sub_role.name}). "
+                        f"Parent min_role must be >= subagent min_role."
+                    )
 
     @property
     def persona(self) -> str:
@@ -225,4 +243,6 @@ def load_config(path: str | None = None) -> Config:
         raw["yuuagents"] = _deep_merge(raw_yuuagents, yuuagents_raw)
     raw = _walk_resolve(raw)
     raw = _walk_expand_paths(raw)
-    return msgspec.convert(raw, Config)
+    cfg = msgspec.convert(raw, Config)
+    cfg.validate_agent_permissions()
+    return cfg

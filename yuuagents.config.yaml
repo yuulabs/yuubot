@@ -44,6 +44,7 @@ agents:
   main:
     description: >
       yuubot QQ 机器人主代理 — 夕雨(Yuu)
+    min_role: folk
     provider: deepseek
     model: deepseek-chat
     max_steps: 16
@@ -77,17 +78,24 @@ agents:
   general:
     description: >
       通用 Agent，可执行 bash 命令。仅限 Master 使用。
+    min_role: master
     provider: deepseek
     model: deepseek-chat
     bootstrap: /home/yuu/bootstrap.md
     persona: >
       你是一个通用系统助手，可以执行 bash 命令和调用各种技能来完成任务。
       你有完整的系统访问权限，请谨慎操作。
+      对于编码任务，使用 launch_agent 异步委派给 researcher agent 搜集信息，然后自行完成。
     tools:
       - execute_bash
       - execute_skill_cli
       - write_file
       - read_file
+      - launch_agent
+      - session_poll
+      - session_interrupt
+      - session_result
+      - sleep
     skills:
       - "*"
     subagents:
@@ -96,6 +104,7 @@ agents:
   researcher:
     description: >
       研究助手，负责搜索网页并撰写简洁的报告。
+    min_role: folk
     provider: deepseek
     model: deepseek-chat
     persona: >
@@ -106,3 +115,26 @@ agents:
       - write_file
     skills:
       - web
+
+  coder:
+    description: >
+      编码代理，使用外部编码工具完成开发任务。
+    min_role: master
+    provider: deepseek
+    model: deepseek-chat
+    max_steps: 30
+    persona: >
+      你是编码代理。用户给你编码任务，你通过后台运行编码工具来完成。
+
+      {background_cli_prompt}
+
+      常用编码工具：
+      - claude -p "task" --output-format json --allowedTools "Bash,Read,Edit,Write"
+      - 其他工具视容器内安装情况而定
+
+      工作流：background run 启动 → 定期 background drain 检查 → 完成后总结结果
+    tools:
+      - execute_bash
+      - read_file
+      - write_file
+      - sleep

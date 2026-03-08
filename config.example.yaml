@@ -63,9 +63,3 @@ response:
 session:
   ttl: 300            # seconds before session expires (default 5 min)
   max_tokens: 60000   # context window token limit
-
-# Per-agent access control.
-# Agents not listed here default to "folk" (anyone can use).
-agent_permissions:
-  general:
-    min_role: master

@@ -7,7 +7,7 @@ import pytest
 from yuubot.commands.builtin import build_command_tree
 from yuubot.commands.entry import EntryManager
 from yuubot.commands.roles import RoleManager
-from yuubot.config import Config, BotConfig, DaemonConfig, DatabaseConfig, ResponseConfig, SessionConfig, AgentPermission
+from yuubot.config import Config, BotConfig, DaemonConfig, DatabaseConfig, ResponseConfig, SessionConfig
 from yuubot.core.db import init_db, close_db
 from yuubot.daemon.agent_runner import AgentRunner
 from yuubot.daemon.dispatcher import Dispatcher
@@ -68,6 +68,7 @@ def yuubot_config(tmp_path) -> Config:
                 },
                 "general": {
                     "description": "General agent (master only)",
+                    "min_role": "master",
                     "provider": "test",
                     "model": "test-model",
                     "max_steps": 4,
@@ -81,7 +82,6 @@ def yuubot_config(tmp_path) -> Config:
             "skills": {"paths": [str(tmp_path / "skills")]},
             "docker": {"image": "yuuagents-runtime:latest"},
         },
-        agent_permissions={"general": AgentPermission(min_role="master")},
     )
 
 
