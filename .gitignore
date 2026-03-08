@@ -226,3 +226,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 config.yaml
+
+# Vendor (downloaded binaries, e.g. libsimple)
+vendor/
