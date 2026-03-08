@@ -191,6 +191,11 @@ class Dispatcher:
                 return
             else:
                 # Continue session: @bot, private chat, or /yllm all count
+                # Only the session creator can continue — prevent privilege leak
+                if session.user_id and event["user_id"] != session.user_id:
+                    log.info("Session continuation denied: ctx=%s session_owner=%s sender=%s",
+                             ctx_id, session.user_id, event["user_id"])
+                    return
                 remaining = plain
                 if is_llm_match:
                     remaining = cmd_match.remaining

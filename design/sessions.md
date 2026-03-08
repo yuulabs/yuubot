@@ -112,4 +112,4 @@ yuubot 的 SessionManager 在有活跃 AgentSession 时自动延长会话 TTL，
 
 ## Coder Agent
 
-配置在 yuuagents.config.yaml，使用 `{background_cli_prompt}` 变量注入 background CLI 使用说明。通过 `execute_bash` + `background` 运行外部编码工具（如 claude）。
+配置在 yuuagents.config.yaml。定位为**编码监督者**而非编码者——将编码任务委派给 claude code，自身负责验收（功能完整性、代码质量、无技术债）和反馈。使用 `{background_cli_prompt}` 变量注入 background CLI 使用说明，通过 `background run` 启动 claude code，审查产出后决定是否追加修正。

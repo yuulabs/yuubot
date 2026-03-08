@@ -805,7 +805,7 @@ class AgentRunner:
                     await run_agent(agent, task=task_str, ctx=context, resume=True)
                 else:
                     await run_agent(agent, task=task_str, ctx=context)
-            except Exception:
+            except BaseException:
                 log.exception("Agent execution failed for ctx %s", ctx_id)
 
         return list(agent.history), agent.total_tokens, task_id
@@ -886,5 +886,5 @@ class AgentRunner:
         with env.task_env(task_id=task_id, ctx_id=ctx_id or "", agent_name=agent_name):
             try:
                 await run_agent(agent, task=full_task, ctx=context)
-            except Exception:
+            except BaseException:
                 log.exception("Scheduled agent failed: %s", task)
