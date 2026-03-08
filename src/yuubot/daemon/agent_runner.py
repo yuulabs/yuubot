@@ -7,12 +7,28 @@ from yuubot.config import Config
 from yuubot.core import env
 from yuubot.core.onebot import parse_segments
 from yuubot.daemon.guard import make_whitelist_guard
-from yuubot.skills.im.formatter import format_segments
+from yuubot.skills.im.formatter import format_message_to_xml, format_segments, get_user_alias
 
 log = logging.getLogger(__name__)
 
 # Tools that require a Docker container to function.
 _DOCKER_TOOLS = {"execute_bash", "read_file", "write_file", "delete_file"}
+
+_MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+             ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}
+
+
+def _file_to_data_uri(path: str) -> str:
+    """Read a local file and return a base64 data URI."""
+    import base64
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.is_file():
+        return f"file://{path}"  # fallback
+    mime = _MIME_MAP.get(p.suffix.lower(), "application/octet-stream")
+    data = base64.b64encode(p.read_bytes()).decode()
+    return f"data:{mime};base64,{data}"
 
 
 class _SessionManagerBridge:
@@ -574,13 +590,31 @@ class AgentRunner:
 
         memory_hints = await self._build_memory_hints(msg_text, ctx_id)
 
+        from datetime import datetime, timezone
+        from yuubot.core.models import segments_to_json
+
+        alias = await get_user_alias(user_id, ctx_id)
+        display_name = event.get("sender", {}).get("card", "")
+        ts = datetime.fromtimestamp(event.get("time", 0), tz=timezone.utc)
+        raw_json = segments_to_json(segments)
+
+        msg_xml = await format_message_to_xml(
+            msg_id=event.get("message_id", 0),
+            user_id=user_id,
+            nickname=nickname,
+            display_name=display_name,
+            alias=alias,
+            timestamp=ts,
+            raw_message=raw_json,
+            media_files=event.get("media_files", []),
+        )
+
         if is_continuation:
-            text = f"""{nickname}: {msg_text}
+            text = f"""{msg_xml}
 {memory_hints}"""
         else:
             text = f"""你收到了来自{location}的消息。
-发送者: {nickname} (qq={user_id})
-消息内容: {msg_text}
+{msg_xml}
 {memory_hints}
 请根据消息内容进行回复。回复时使用 im send 命令发送到 ctx {ctx_id}。
 如果本次对话中获得了值得记住的新信息，请用 mem save 保存。
@@ -601,7 +635,7 @@ class AgentRunner:
         for seg in image_segments:
             url = ""
             if seg.local_path:
-                url = f"file://{seg.local_path}"
+                url = _file_to_data_uri(seg.local_path)
             elif seg.url:
                 url = seg.url
             if url:
@@ -649,6 +683,8 @@ class AgentRunner:
 
         # Tool manager
         tool_names = self._resolve_tool_names(agent_name)
+        if self._has_vision(agent_name) and "view_image" not in tool_names:
+            tool_names.append("view_image")
         tool_manager = yt.ToolManager()
         for tool in tools.get(tool_names):
             tool_manager.register(tool)
