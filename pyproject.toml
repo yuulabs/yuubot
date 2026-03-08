@@ -1,0 +1,57 @@
+[project]
+name = "yuubot"
+version = "0.1.0"
+description = "yuuagents enhanced QQ bot with IM/Web/Memory skills"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "click",
+    "pyyaml",
+    "tortoise-orm",
+    "websockets",
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "apscheduler>=4.0.0a",
+    "python-dotenv",
+    "playwright",
+    "trafilatura",
+    "attrs",
+    "msgspec",
+    "yuuagents",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[project.scripts]
+ybot = "yuubot.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv.sources]
+yuuagents = { path = "../yuuagents", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/yuubot"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "live: tests that require real external services/credentials",
+]
+
+[dependency-groups]
+dev = [
+    "respx>=0.22.0",
+]

@@ -1,0 +1,71 @@
+# ============================================================
+# yuubot 配置文件示例
+# ============================================================
+
+bot:
+  qq: 123456789
+  master: 987654321
+  entries:
+    - "/y"
+    - "/yuu"
+
+recorder:
+  napcat_ws:
+    host: "0.0.0.0"
+    port: 8765
+  relay_ws:
+    host: "127.0.0.1"
+    port: 8766
+  api:
+    host: "127.0.0.1"
+    port: 8767
+  napcat_http: "http://127.0.0.1:3000"
+  napcat_webui_port: 6099
+
+daemon:
+  recorder_ws: "ws://127.0.0.1:8766"
+  recorder_api: "http://127.0.0.1:8767"
+  api:
+    host: "127.0.0.1"
+    port: 8780
+
+database:
+  path: "~/.yuubot/yuubot.db"
+
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  base_url: "https://api.openai.com/v1"
+  api_key: "${OPENAI_API_KEY}"
+
+api_keys:
+  tavily: "${TAVILY_API_KEY}"
+
+cron_jobs: []
+
+schedule:
+  max_long_cycle: 5
+
+memory:
+  forget_days: 90
+  max_length: 500
+
+web:
+  browser_profile: "~/.yuubot/browser_profile"
+  headless: true
+  download_dir: "~/.yuubot/downloads"
+
+response:
+  group_default: "at"
+  dm_whitelist: []
+
+# Session: multi-turn conversation settings.
+session:
+  ttl: 300            # seconds before session expires (default 5 min)
+  max_tokens: 60000   # context window token limit
+
+# Per-agent access control.
+# Agents not listed here default to "folk" (anyone can use).
+agent_permissions:
+  general:
+    min_role: master
