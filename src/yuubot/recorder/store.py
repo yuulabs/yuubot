@@ -19,8 +19,12 @@ class Store:
         self.ctx_mgr = ctx_mgr
         self.downloader = downloader
 
-    async def save(self, event: MessageEvent) -> int:
-        """Parse and persist a message event. Returns ctx_id."""
+    async def save(self, event: MessageEvent) -> tuple[int, list[str]]:
+        """Parse and persist a message event.
+
+        Returns (ctx_id, media_local_paths) — one local path per image
+        segment, in order, so the caller can enrich the raw event.
+        """
         ctx_id = await self.ctx_mgr.get_or_create(event.ctx_type, event.target_id)
         segments = parse_segments(event.message)
 
@@ -48,4 +52,4 @@ class Store:
             timestamp=ts,
             media_files=media_files,
         )
-        return ctx_id
+        return ctx_id, media_files

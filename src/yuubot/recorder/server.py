@@ -21,6 +21,15 @@ from yuubot.recorder.store import Store
 log = logging.getLogger(__name__)
 
 
+def _inject_local_paths(raw_segments: list[dict], media_paths: list[str]) -> None:
+    """Inject downloaded local_path into raw OneBot image segments in-place."""
+    idx = 0
+    for seg in raw_segments:
+        if seg.get("type") == "image" and idx < len(media_paths):
+            seg.setdefault("data", {})["local_path"] = media_paths[idx]
+            idx += 1
+
+
 class NapCatWSServer:
     """Reverse WS server — NapCat connects here to push events."""
 
@@ -53,9 +62,11 @@ class NapCatWSServer:
     async def _on_event(self, raw: dict) -> None:
         event = parse_event(raw)
         if isinstance(event, MessageEvent):
-            ctx_id = await self.store.save(event)
-            # Enrich raw data with ctx_id before relaying
+            ctx_id, media_paths = await self.store.save(event)
+            # Enrich raw data with ctx_id and local media paths before relaying
             raw["ctx_id"] = ctx_id
+            if media_paths:
+                _inject_local_paths(raw.get("message", []), media_paths)
             await self.relay.broadcast(raw)
         elif event is not None:
             # Non-message events: relay as-is

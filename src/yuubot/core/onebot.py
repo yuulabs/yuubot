@@ -38,7 +38,11 @@ def parse_segments(raw_segments: list[dict]) -> Message:
         if t == "text":
             result.append(TextSegment(text=data.get("text", "")))
         elif t == "image":
-            result.append(ImageSegment(url=data.get("url", ""), file=data.get("file", "")))
+            result.append(ImageSegment(
+                url=data.get("url", ""),
+                file=data.get("file", ""),
+                local_path=data.get("local_path", ""),
+            ))
         elif t == "at":
             result.append(AtSegment(qq=str(data.get("qq", ""))))
         elif t == "reply":
