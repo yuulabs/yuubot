@@ -487,34 +487,30 @@ def docker() -> None:
 
 
 @docker.command("shell")
+@click.option("--container", "-c", default="yagents-default",
+              help="Container name to exec into.")
 @click.pass_context
-def docker_shell(ctx: click.Context) -> None:
-    """Open an interactive shell in the yuuagents-runtime container."""
-    from yuubot.config import load_config
+def docker_shell(ctx: click.Context, container: str) -> None:
+    """Open an interactive shell in the running yuuagents container."""
+    import subprocess
 
-    cfg = load_config(ctx.obj["config_path"])
-    image = cfg.yuuagents.get("docker", {}).get("image", "yuuagents-runtime:latest")
+    # Check if container exists
+    result = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Status}}", container],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise click.ClickException(
+            f"Container '{container}' not found. "
+            "Start the daemon first with 'ybot up'."
+        )
+    status = result.stdout.strip()
+    if status != "running":
+        click.echo(f"Container is {status}, starting it...")
+        subprocess.run(["docker", "start", container], check=True)
 
-    # Collect env vars to pass through
-    env_passthrough = cfg.yuuagents.get("docker", {}).get("env_passthrough", [])
-    env_args = []
-    for var in env_passthrough:
-        val = os.environ.get(var, "")
-        if val:
-            env_args.extend(["-e", f"{var}={val}"])
-
-    # Also pass common API keys if present
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "TAVILY_API_KEY"):
-        if key not in env_passthrough and os.environ.get(key):
-            env_args.extend(["-e", f"{key}={os.environ[key]}"])
-
-    cmd = [
-        "docker", "run", "--rm", "-it",
-        *env_args,
-        "-v", f"{os.path.expanduser('~')}:/mnt/host:ro",
-        image, "/bin/bash",
-    ]
-    click.echo(f"Launching shell in {image}...")
+    cmd = ["docker", "exec", "-it", container, "/bin/bash"]
+    click.echo(f"Attaching to {container}...")
     os.execvp("docker", cmd)
 
 
