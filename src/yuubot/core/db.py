@@ -64,6 +64,53 @@ CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
 END;
 """
 
+_IMAGES_FTS_SIMPLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
+    description,
+    content='images',
+    content_rowid='id',
+    tokenize='simple'
+);
+
+CREATE TRIGGER IF NOT EXISTS images_ai AFTER INSERT ON images BEGIN
+    INSERT INTO images_fts(rowid, description) VALUES (new.id, new.description);
+END;
+
+CREATE TRIGGER IF NOT EXISTS images_ad AFTER DELETE ON images BEGIN
+    INSERT INTO images_fts(images_fts, rowid, description)
+    VALUES ('delete', old.id, old.description);
+END;
+
+CREATE TRIGGER IF NOT EXISTS images_au AFTER UPDATE OF description ON images BEGIN
+    INSERT INTO images_fts(images_fts, rowid, description)
+    VALUES ('delete', old.id, old.description);
+    INSERT INTO images_fts(rowid, description) VALUES (new.id, new.description);
+END;
+"""
+
+_IMAGES_FTS_DEFAULT = """
+CREATE VIRTUAL TABLE IF NOT EXISTS images_fts USING fts5(
+    description,
+    content='images',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS images_ai AFTER INSERT ON images BEGIN
+    INSERT INTO images_fts(rowid, description) VALUES (new.id, new.description);
+END;
+
+CREATE TRIGGER IF NOT EXISTS images_ad AFTER DELETE ON images BEGIN
+    INSERT INTO images_fts(images_fts, rowid, description)
+    VALUES ('delete', old.id, old.description);
+END;
+
+CREATE TRIGGER IF NOT EXISTS images_au AFTER UPDATE OF description ON images BEGIN
+    INSERT INTO images_fts(images_fts, rowid, description)
+    VALUES ('delete', old.id, old.description);
+    INSERT INTO images_fts(rowid, description) VALUES (new.id, new.description);
+END;
+"""
+
 SEED_SQL = "INSERT OR IGNORE INTO memory_config (key, value) VALUES ('forget_days', '90');"
 
 # Rebuild FTS index from source table after tokenizer change.
@@ -219,8 +266,11 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
     # Migrate memories_fts tokenizer: drop old table if tokenizer changed
     await _migrate_memory_fts(conn, has)
 
+    images_fts_sql = _IMAGES_FTS_SIMPLE if has else _IMAGES_FTS_DEFAULT
+
     await conn.execute_script(FTS_SQL)
     await conn.execute_script(memory_fts_sql)
+    await conn.execute_script(images_fts_sql)
 
     # Rebuild FTS index if table was just (re)created with new tokenizer
     if _fts_rebuilt:

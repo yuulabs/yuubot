@@ -97,6 +97,27 @@ class MemoryTag(Model):
         indexes = (("tag",),)
 ```
 
+### ImageEntry — 图片/表情包库
+
+```python
+class ImageEntry(Model):
+    id = fields.IntField(pk=True)
+    local_path = fields.CharField(max_length=512, unique=True)
+    description = fields.TextField(default="")
+    tags = fields.JSONField(default=list)       # ["猫", "搞笑"]
+    source_msg_id = fields.BigIntField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "images"
+```
+
+**说明**：
+- 全局共享，不区分 ctx
+- `description` 通过 FTS5 虚拟表 `images_fts` 索引，支持中文搜索
+- `tags` 存储为 JSON 数组，应用层过滤
+- FTS5 触发器同步 INSERT/DELETE/UPDATE
+
 ### RoleRecord — 权限系统
 
 ```python

@@ -8,7 +8,7 @@ import click
 from yuubot.config import load_config
 
 # Built-in skills with their source directories
-_BUILTIN_SKILLS = ["im", "web", "mem", "hhsh", "schedule"]
+_BUILTIN_SKILLS = ["im", "web", "mem", "img", "hhsh", "schedule"]
 
 
 def install_skill(skill_name: str | None, config_path: str | None) -> None:

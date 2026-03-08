@@ -404,6 +404,59 @@ def mem_config(ctx: click.Context, forget_days: int | None) -> None:
     asyncio.run(configure_memory(forget_days, ctx.obj["config_path"]))
 
 
+# ── Phase 6b: Image Skill ──────────────────────────────────────
+
+
+@cli.group()
+def img() -> None:
+    """Image skill: save, search, delete, list."""
+
+
+@img.command("save")
+@click.argument("path")
+@click.option("--desc", default="", help="Image description")
+@click.option("--tags", default="", help="Comma-separated tags")
+@click.pass_context
+def img_save(ctx: click.Context, path: str, desc: str, tags: str) -> None:
+    """Save an image to the library."""
+    from yuubot.skills.img.cli import save_image
+
+    asyncio.run(save_image(path, desc, tags, ctx.obj["config_path"]))
+
+
+@img.command("search")
+@click.argument("query", default="")
+@click.option("--tags", default="", help="Comma-separated tags to filter")
+@click.option("--limit", default=10, help="Max results")
+@click.pass_context
+def img_search(ctx: click.Context, query: str, tags: str, limit: int) -> None:
+    """Search images by description/tags."""
+    from yuubot.skills.img.cli import search_image
+
+    asyncio.run(search_image(query, tags, limit, ctx.obj["config_path"]))
+
+
+@img.command("delete")
+@click.argument("image_id", type=int)
+@click.pass_context
+def img_delete(ctx: click.Context, image_id: int) -> None:
+    """Delete an image by ID."""
+    from yuubot.skills.img.cli import delete_image
+
+    asyncio.run(delete_image(image_id, ctx.obj["config_path"]))
+
+
+@img.command("list")
+@click.option("--tags", "show_tags", is_flag=True, help="Show all tags")
+@click.option("--limit", default=20, help="Max images to show")
+@click.pass_context
+def img_list(ctx: click.Context, show_tags: bool, limit: int) -> None:
+    """List images or tags."""
+    from yuubot.skills.img.cli import list_images
+
+    asyncio.run(list_images(show_tags, limit, ctx.obj["config_path"]))
+
+
 # ── Phase 7: hhsh Skill ─────────────────────────────────────────
 
 

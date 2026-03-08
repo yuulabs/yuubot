@@ -205,6 +205,57 @@ ybot mem show --tags
 - 清理时机：Recorder 启动时 + 每日定时清理
 - 可配置：`ybot mem config --forget-days <days>`
 
+## img — 图片/表情包库
+
+全局共享，不区分 ctx。用 FTS5 索引 description 以支持中文搜索。
+
+### save
+
+```bash
+ybot img save <path> --desc "描述" [--tags "猫,搞笑"]
+```
+
+- `path`：图片本地路径
+- `--desc`：图片描述，用于搜索
+- `--tags`：逗号分隔的标签
+
+**实现**：保存到 SQLite `images` 表，FTS5 索引 description。
+
+### search
+
+```bash
+ybot img search "<query>" [--tags "猫"] [--limit 5]
+```
+
+按描述关键词（FTS5）和/或标签搜索。返回路径 + 描述。
+
+### delete
+
+```bash
+ybot img delete <id>
+```
+
+### list
+
+```bash
+ybot img list [--tags] [--limit 20]
+```
+
+- `--tags`：显示所有标签及数量
+- 不加 `--tags`：显示最近图片
+
+### view_image（native tool，非 CLI）
+
+Vision 模型可用的内置工具，用于查看本地图片文件内容。当 Agent 在 `im browse` 中看到 `<image url="file:///path"/>` 时，调用 `view_image(path="file:///path")` 即可将图片作为多模态内容返回给 LLM。
+
+- 仅在 agent 使用 vision 模型时自动注册
+- 返回多模态 content blocks（`list[dict]`），经由 yuullm/yuuagents 透传到 LLM
+- 支持 `file://` 前缀和裸路径
+
+### 发送方式
+
+Agent 用 `img search` 找到路径后，用 `im send '[{"type":"image","file":"file:///path"}]'` 发送。
+
 ## Skill 安装
 
 ```bash

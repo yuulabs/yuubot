@@ -226,6 +226,18 @@ class MemoryConfigKV(Model):
         table = "memory_config"
 
 
+class ImageEntry(Model):
+    id = fields.IntField(pk=True)
+    local_path = fields.CharField(max_length=512, unique=True)
+    description = fields.TextField(default="")
+    tags = fields.JSONField(default=list)
+    source_msg_id = fields.BigIntField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "images"
+
+
 class ScheduledTask(Model):
     id = fields.IntField(pk=True)
     cron = fields.CharField(max_length=128)
