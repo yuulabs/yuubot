@@ -68,8 +68,9 @@ Key reason for separation: Recorder stays up while Daemon restarts during develo
 | `recorder/api.py` | HTTP API proxying NapCat (used by skills to send messages) |
 | `daemon/app.py` | FastAPI app + lifecycle (connects recorder, inits agent, starts scheduler) |
 | `daemon/dispatcher.py` | Message dispatch: command parse → permission check → agent trigger |
-| `daemon/agent_runner.py` | yuuagents SDK wrapper for creating/running agents |
+| `daemon/agent_runner.py` | yuuagents SDK wrapper for creating/running agents + SessionRegistry bridge |
 | `daemon/guard.py` | Rate limiting & safety guards |
+| `daemon/session.py` | Multi-turn conversation state with TTL extension for active agent sessions |
 | `daemon/scheduler.py` | APScheduler for cron-based proactive mode |
 | `commands/tree.py` | Tree-based command matching |
 | `commands/roles.py` | Role permission system |
@@ -103,6 +104,7 @@ Detailed design docs live in `design/`. Read these before making architectural c
 - `skills.md` — Skill specifications (im, web, mem)
 - `database.md` — SQLite schema, FTS5, concurrent access
 - `config.md` — Configuration format & loading logic
+- `sessions.md` — Async agent sessions, background CLI, coder agent
 
 ## API References
 

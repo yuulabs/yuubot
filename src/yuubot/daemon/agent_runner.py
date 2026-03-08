@@ -15,6 +15,133 @@ log = logging.getLogger(__name__)
 _DOCKER_TOOLS = {"execute_bash", "read_file", "write_file", "delete_file"}
 
 
+class _SessionManagerBridge:
+    """Bridges yuuagents SessionRegistry to the SessionManager protocol expected by tools."""
+
+    def __init__(self, runner: "AgentRunner") -> None:
+        self._runner = runner
+
+    async def launch(self, *, caller_agent: str, agent: str, task: str, context: str) -> str:
+        from yuuagents.session import SessionRegistry
+
+        registry = self._runner._session_registry
+        if registry is None:
+            raise RuntimeError("SessionRegistry not initialized")
+
+        # Create agent + context for the session
+        runner = self._runner
+        await runner._ensure_init()
+
+        import yuutools as yt
+        from yuuagents import Agent, tools as agent_tools
+        from yuuagents.agent import AgentConfig, SimplePromptBuilder
+        from yuuagents.context import AgentContext
+        from yuuagents.prompts import get_vars as get_prompt_vars
+
+        agents_cfg = runner.config.yuuagents.get("agents", {})
+        if agent not in agents_cfg:
+            raise ValueError(f"Unknown agent {agent!r}")
+
+        # Validate caller permission
+        caller_name = runner._agent_name_map.get(caller_agent, caller_agent)
+        caller_cfg = agents_cfg.get(caller_name, {})
+        allowed = caller_cfg.get("subagents", [])
+        if "*" not in allowed and agent not in allowed:
+            raise ValueError(f"Agent {caller_name!r} cannot launch {agent!r}")
+
+        task_id = runner._new_task_id()
+        tool_names = runner._resolve_tool_names(agent)
+        tool_manager = yt.ToolManager()
+        for t in agent_tools.get(tool_names):
+            tool_manager.register(t)
+
+        target_cfg = agents_cfg[agent]
+        persona = target_cfg.get("persona", "")
+
+        # Apply prompt variable substitution
+        prompt_vars = get_prompt_vars()
+        for key, value in prompt_vars.items():
+            persona = persona.replace(f"{{{key}}}", value)
+
+        prompt_builder = SimplePromptBuilder()
+        prompt_builder.add_section(persona)
+
+        needs_docker = runner._agent_needs_docker(agent)
+        if needs_docker and runner._docker is not None:
+            from yuuagents.daemon.docker import DOCKER_SYSTEM_PROMPT
+            if DOCKER_SYSTEM_PROMPT:
+                prompt_builder.add_section(DOCKER_SYSTEM_PROMPT)
+
+        full_task = task if not context.strip() else f"context:\n{context}\n\ntask:\n{task}"
+
+        config = AgentConfig(
+            task_id=task_id,
+            agent_id=f"session-{agent}-{task_id[:8]}",
+            persona=persona,
+            tools=tool_manager,
+            llm=runner._make_llm(agent),
+            prompt_builder=prompt_builder,
+            max_steps=runner._get_max_steps(agent),
+        )
+        sub_agent = Agent(config=config)
+
+        if needs_docker:
+            workdir, container_id = await runner._resolve_docker(task_id)
+        else:
+            from pathlib import Path
+            workdir, container_id = str(Path.home()), ""
+
+        ctx = AgentContext(
+            task_id=task_id,
+            agent_id=config.agent_id,
+            workdir=workdir,
+            docker_container=container_id,
+            docker=runner._docker if needs_docker else None,
+            manager=runner,
+            session_manager=self,
+            cli_guard=runner._cli_guard,
+        )
+
+        session = registry.create(
+            sub_agent, ctx, full_task,
+            on_complete=runner._on_session_complete,
+        )
+        await session.start()
+        return session.session_id
+
+    def poll(self, session_id: str) -> dict:
+        registry = self._runner._session_registry
+        if registry is None:
+            return {"status": "error", "progress": [], "elapsed": 0}
+        session = registry.get(session_id)
+        if session is None:
+            return {"status": "not_found", "progress": [], "elapsed": 0}
+        return {
+            "status": session.status,
+            "progress": session.progress(),
+            "elapsed": session.elapsed,
+        }
+
+    async def interrupt(self, session_id: str) -> str:
+        registry = self._runner._session_registry
+        if registry is None:
+            return "SessionRegistry not initialized"
+        session = registry.get(session_id)
+        if session is None:
+            return f"Session {session_id} not found"
+        await session.interrupt()
+        return f"Session {session_id} interrupted"
+
+    def result(self, session_id: str) -> str | None:
+        registry = self._runner._session_registry
+        if registry is None:
+            return None
+        session = registry.get(session_id)
+        if session is None:
+            return None
+        return session.result()
+
+
 class AgentRunner:
     """Uses yuuagents SDK to create and run Agent instances."""
 
@@ -25,16 +152,36 @@ class AgentRunner:
         self._group_names: dict[int, str] = {}
         self._agent_name_map: dict[str, str] = {}  # runtime_id → config_name
         self._cli_guard = make_whitelist_guard({"im", "web", "mem", "schedule"})
+        self._session_registry = None  # SessionRegistry | None
+        self._session_bridge = _SessionManagerBridge(self)
+        self._on_session_complete_callback = None  # callable | None
 
     @staticmethod
     def _new_task_id() -> str:
         return uuid.uuid4().hex
+
+    def set_on_session_complete(self, callback) -> None:
+        """Set callback for when an agent session completes."""
+        self._on_session_complete_callback = callback
+
+    async def _on_session_complete(self, session_id: str, result: str | None, error: str | None) -> None:
+        """Called when an AgentSession finishes."""
+        log.info("Agent session %s completed (error=%s)", session_id, error)
+        if self._on_session_complete_callback is not None:
+            await self._on_session_complete_callback(session_id, result, error)
+
+    def has_active_sessions(self) -> bool:
+        """Return True if there are active agent sessions."""
+        if self._session_registry is None:
+            return False
+        return bool(self._session_registry.list_active())
 
     async def _ensure_init(self) -> None:
         if self._initialized:
             return
         try:
             from yuuagents.init import setup
+            from yuuagents.session import SessionRegistry
             import json
             import msgspec
             from yuuagents.config import Config as YuuagentsConfig
@@ -45,6 +192,7 @@ class AgentRunner:
             cfg = msgspec.convert(merged_data, YuuagentsConfig)
             await setup(cfg)
             self._initialized = True
+            self._session_registry = SessionRegistry()
 
             # Initialize Docker only if at least one agent uses docker tools
             if self._any_agent_needs_docker():
@@ -65,7 +213,10 @@ class AgentRunner:
             log.exception("Failed to initialize yuuagents")
 
     async def stop(self) -> None:
-        """Shut down Docker and release resources."""
+        """Shut down Docker, sessions, and release resources."""
+        if self._session_registry is not None:
+            await self._session_registry.stop_all()
+            self._session_registry = None
         if self._docker is not None:
             await self._docker.stop()
             self._docker = None
@@ -525,6 +676,7 @@ class AgentRunner:
             docker_container=container_id,
             docker=self._docker if needs_docker else None,
             manager=self,
+            session_manager=self._session_bridge,
             cli_guard=self._cli_guard,
         )
 

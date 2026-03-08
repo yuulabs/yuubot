@@ -480,6 +480,46 @@ def schedule_delete(ctx: click.Context, task_id: int) -> None:
     asyncio.run(delete_task(task_id, ctx.obj["config_path"]))
 
 
+# ── Docker ───────────────────────────────────────────────────────
+
+
+@cli.group(cls=BotAwareGroup, hidden_in_bot={"shell"})
+def docker() -> None:
+    """Docker container management."""
+
+
+@docker.command("shell")
+@click.pass_context
+def docker_shell(ctx: click.Context) -> None:
+    """Open an interactive shell in the yuuagents-runtime container."""
+    from yuubot.config import load_config
+
+    cfg = load_config(ctx.obj["config_path"])
+    image = cfg.yuuagents.get("docker", {}).get("image", "yuuagents-runtime:latest")
+
+    # Collect env vars to pass through
+    env_passthrough = cfg.yuuagents.get("docker", {}).get("env_passthrough", [])
+    env_args = []
+    for var in env_passthrough:
+        val = os.environ.get(var, "")
+        if val:
+            env_args.extend(["-e", f"{var}={val}"])
+
+    # Also pass common API keys if present
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "TAVILY_API_KEY"):
+        if key not in env_passthrough and os.environ.get(key):
+            env_args.extend(["-e", f"{key}={os.environ[key]}"])
+
+    cmd = [
+        "docker", "run", "--rm", "-it",
+        *env_args,
+        "-v", f"{os.path.expanduser('~')}:/mnt/host:ro",
+        image, "/bin/bash",
+    ]
+    click.echo(f"Launching shell in {image}...")
+    os.execvp("docker", cmd)
+
+
 # ── Phase 8: Skills Install ──────────────────────────────────────
 
 
