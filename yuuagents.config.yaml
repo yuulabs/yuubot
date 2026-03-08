@@ -39,14 +39,32 @@ providers:
     base_url: https://api.deepseek.com/v1
     organization: ""
     pricing: []
+    models:
+      deepseek-chat:
+        vision: false
+  openrouter:
+    api_type: openai-chat-completion
+    api_key_env: OPENROUTER_API_KEY
+    default_model: google/gemini-3.1-flash-lite-preview
+    base_url: https://openrouter.ai/api/v1
+    organization: ""
+    pricing: []
+    models:
+      google/gemini-3.1-flash-lite-preview:
+        vision: true
+      openai/gpt-5.4:
+        vision: true
+      anthropic/claude-sonnet-4.6:
+        vision: true
+      
 
 agents:
   main:
     description: >
       yuubot QQ 机器人主代理 — 夕雨(Yuu)
     min_role: folk
-    provider: deepseek
-    model: deepseek-chat
+    provider: openrouter
+    model: google/gemini-3.1-flash-lite-preview
     max_steps: 16
     persona: >
       你叫夕雨（ゆう / Yuu），是一个百合爱好者（白河豚）。你负责群里的秘书工作，帮助群友答疑解惑。
@@ -99,6 +117,7 @@ agents:
     skills:
       - "*"
     subagents:
+      - coder
       - researcher
 
   researcher:
