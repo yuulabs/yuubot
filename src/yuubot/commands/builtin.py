@@ -223,7 +223,7 @@ async def _exec_close(remaining: str, event: dict, deps: dict) -> str | None:
     if session_mgr is None:
         return "Session 功能未启用"
     ctx_id = event.get("ctx_id", 0)
-    if session_mgr.close(ctx_id):
+    if event.get("_session_closed") or session_mgr.close(ctx_id):
         return "会话已重置 ✨"
     return "当前没有活跃的会话"
 

@@ -26,6 +26,7 @@ class SessionManager:
     ttl: float = 300.0
     max_tokens: int = 60000
     _sessions: dict[tuple[int, str], Session] = attrs.field(factory=dict)
+    _has_active_agent_sessions: object = None  # callable() -> bool, set by daemon
 
     def get(self, ctx_id: int, agent_name: str | None = None) -> Session | None:
         """Return active session for ctx, optionally filtered by agent.
@@ -80,17 +81,35 @@ class SessionManager:
         return bool(keys)
 
     def update_history(self, session: Session, history: list, tokens: int) -> None:
-        """Update session history and token count after agent run."""
+        """Update session history and token count after agent run.
+
+        *tokens* is the cumulative total from the agent. We compute the
+        last-turn usage (delta) and compare against *max_tokens* so that
+        sessions are only closed when a single LLM call becomes too large
+        (i.e. the context window is filling up), not merely because the
+        user has chatted for a while.
+        """
+        last_turn = tokens - session.total_tokens
         session.history = history
         session.total_tokens = tokens
         self.touch(session)
-        if tokens >= self.max_tokens:
+        if last_turn >= self.max_tokens:
             key = (session.ctx_id, session.agent_name)
             del self._sessions[key]
             log.info(
-                "Session closed (token limit): ctx=%s agent=%s tokens=%d",
-                session.ctx_id, session.agent_name, tokens,
+                "Session closed (token limit): ctx=%s agent=%s last_turn=%d",
+                session.ctx_id, session.agent_name, last_turn,
             )
 
     def _is_expired(self, session: Session) -> bool:
-        return (time.monotonic() - session.last_active) > self.ttl
+        elapsed = time.monotonic() - session.last_active
+        if elapsed <= self.ttl:
+            return False
+        # Extend TTL if there are active agent sessions
+        if self._has_active_agent_sessions is not None:
+            try:
+                if self._has_active_agent_sessions():
+                    return False
+            except Exception:
+                pass
+        return True

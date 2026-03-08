@@ -153,9 +153,10 @@ class Dispatcher:
             is_llm_match = cmd_match is not None and cmd_match.command.executor is _exec_llm
 
             if cmd_match is not None and not is_llm_match:
-                # Non-llm command (e.g. /new, /bot, /help) — close session
+                # Non-llm command (e.g. /close, /bot, /help) — close session
                 self.session_mgr.close(ctx_id)
                 log.info("Session closed by command: ctx=%s cmd=%s", ctx_id, cmd_match.command.prefix)
+                event["_session_closed"] = True
                 match = cmd_match
             elif msg_type == "group" and not self._is_at_bot(event) and not is_llm_match:
                 # Group chat, no @bot, not a /yllm command — ignore for session
