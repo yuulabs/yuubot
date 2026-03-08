@@ -17,6 +17,7 @@ class Session:
     last_active: float = attrs.field(factory=time.monotonic)
     total_tokens: int = 0
     user_id: int = 0  # who started the session
+    task_id: str = ""  # reused across continuations for trace continuity
 
 
 @attrs.define

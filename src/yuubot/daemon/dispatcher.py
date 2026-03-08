@@ -240,12 +240,13 @@ class Dispatcher:
                 remaining=session_remaining or "",
                 entry="",
             )
-            history, tokens = await self.agent_runner.run(
+            history, tokens, task_id = await self.agent_runner.run(
                 synth_match, event,
                 agent_name=agent_name,
                 user_role=role.name,
                 session=session,
             )
+            session.task_id = task_id
             self.session_mgr.update_history(session, history, tokens)
             return
 
@@ -279,13 +280,13 @@ class Dispatcher:
                 ctx_id, llm_agent_name, user_id=event.get("user_id", 0),
             )
 
-            history, tokens = await self.agent_runner.run(
+            history, tokens, task_id = await self.agent_runner.run(
                 match, event,
                 agent_name=llm_agent_name,
                 user_role=role.name,
                 session=new_session,
             )
-
+            new_session.task_id = task_id
             self.session_mgr.update_history(new_session, history, tokens)
 
         elif executor is not None:

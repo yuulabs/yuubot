@@ -151,7 +151,7 @@ class AgentRunner:
         self._docker = None  # DockerManager | None
         self._group_names: dict[int, str] = {}
         self._agent_name_map: dict[str, str] = {}  # runtime_id → config_name
-        self._cli_guard = make_whitelist_guard({"im", "web", "mem", "schedule"})
+        self._cli_guard = make_whitelist_guard({"im", "web", "mem", "img", "schedule"})
         self._session_registry = None  # SessionRegistry | None
         self._session_bridge = _SessionManagerBridge(self)
         self._on_session_complete_callback = None  # callable | None
@@ -267,6 +267,22 @@ class AgentRunner:
             default_model=default_model,
             price_calculator=yuullm.PriceCalculator(),
         )
+
+    def _has_vision(self, agent_name: str) -> bool:
+        """Check if the agent's model supports vision.
+
+        Looks up providers[provider].models[model].vision from config.
+        """
+        agents = self.config.yuuagents.get("agents", {})
+        agent_cfg = agents.get(agent_name, {})
+        provider_name = agent_cfg.get("provider", "")
+        model = agent_cfg.get("model", "")
+
+        providers = self.config.yuuagents.get("providers", {})
+        provider_cfg = providers.get(provider_name, {})
+        models_cfg = provider_cfg.get("models", {})
+        model_cfg = models_cfg.get(model, {})
+        return bool(model_cfg.get("vision", False))
 
     def _get_persona(self, agent_name: str) -> str:
         """Get persona string for the given agent name."""
@@ -532,9 +548,13 @@ class AgentRunner:
 
     async def _build_task(
         self, match: MatchResult, event: dict, group_name: str = "",
-        *, is_continuation: bool = False,
-    ) -> str:
-        """Build agent task description from command match and event."""
+        *, is_continuation: bool = False, agent_name: str = "main",
+    ) -> str | list:
+        """Build agent task description from command match and event.
+
+        Returns str for text-only, or list[Item] when vision is enabled
+        and the message contains images.
+        """
         ctx_id = event.get("ctx_id", "?")
         segments = parse_segments(event.get("message", []))
         formatted = await format_segments(segments)
@@ -555,17 +575,39 @@ class AgentRunner:
         memory_hints = await self._build_memory_hints(msg_text, ctx_id)
 
         if is_continuation:
-            # Session continuation — just the new message, no boilerplate
-            return f"""{nickname}: {msg_text}
+            text = f"""{nickname}: {msg_text}
 {memory_hints}"""
-
-        return f"""你收到了来自{location}的消息。
+        else:
+            text = f"""你收到了来自{location}的消息。
 发送者: {nickname} (qq={user_id})
 消息内容: {msg_text}
 {memory_hints}
 请根据消息内容进行回复。回复时使用 im send 命令发送到 ctx {ctx_id}。
 如果本次对话中获得了值得记住的新信息，请用 mem save 保存。
 """
+
+        # Vision: if the model supports vision and message has images,
+        # build multimodal content items
+        if not self._has_vision(agent_name):
+            return text
+
+        from yuubot.core.models import ImageSegment
+        image_segments = [s for s in segments if isinstance(s, ImageSegment)]
+        if not image_segments:
+            return text
+
+        from yuullm import ImageItem, TextItem
+        items: list = [TextItem(type="text", text=text)]
+        for seg in image_segments:
+            url = ""
+            if seg.local_path:
+                url = f"file://{seg.local_path}"
+            elif seg.url:
+                url = seg.url
+            if url:
+                items.append(ImageItem(type="image_url", image_url={"url": url}))
+
+        return items if len(items) > 1 else text
 
     def _get_bootstrap(self, agent_name: str) -> str:
         """Get bootstrap file path for the given agent, or empty string."""
@@ -578,10 +620,10 @@ class AgentRunner:
         agent_name: str = "main",
         user_role: str = "",
         session: object | None = None,
-    ) -> tuple[list, int]:
+    ) -> tuple[list, int, str]:
         """Passive mode: handle a command-triggered agent task.
 
-        Returns (history, total_tokens) for session management.
+        Returns (history, total_tokens, task_id) for session management.
         """
         await self._ensure_init()
 
@@ -593,12 +635,12 @@ class AgentRunner:
             from yuuagents.context import AgentContext
         except ImportError:
             log.error("yuuagents not available, cannot run agent")
-            return [], 0
+            return [], 0, ""
 
         ctx_id = event.get("ctx_id", 0)
         user_id = event.get("user_id", 0)
-        task_id = self._new_task_id()
         is_continuation = session is not None and bool(getattr(session, "history", None))
+        task_id = session.task_id if is_continuation and getattr(session, "task_id", "") else self._new_task_id()
 
         # Resolve group name for context
         group_name = ""
@@ -656,15 +698,30 @@ class AgentRunner:
         task = await self._build_task(
             match, event, group_name=group_name,
             is_continuation=is_continuation,
+            agent_name=agent_name,
         )
 
+        # Determine text form for run_agent's task param (always str)
+        task_str = task if isinstance(task, str) else task[0]["text"] if task else ""
+        is_multimodal = isinstance(task, list)
+
         if is_continuation:
-            # Inject existing history and append new user message
             from yuuagents.agent import AgentStatus
             agent.state.history = list(session.history)
-            agent.state.history.append(("user", [task]))
+            user_items = task if is_multimodal else [task_str]
+            agent.state.history.append(("user", user_items))
             agent.state.status = AgentStatus.RUNNING
-            agent.state.task = task
+            agent.state.task = task_str
+        elif is_multimodal:
+            # Non-continuation multimodal: manually build history
+            import yuullm
+            from yuuagents.agent import AgentStatus
+            agent.state.history = [
+                yuullm.system(agent.full_system_prompt),
+                ("user", task),
+            ]
+            agent.state.status = AgentStatus.RUNNING
+            agent.state.task = task_str
         if needs_docker:
             workdir, container_id = await self._resolve_docker(task_id)
         else:
@@ -687,14 +744,14 @@ class AgentRunner:
             agent_name=agent_name,
         ):
             try:
-                if is_continuation:
-                    await run_agent(agent, task=task, ctx=context, resume=True)
+                if is_continuation or is_multimodal:
+                    await run_agent(agent, task=task_str, ctx=context, resume=True)
                 else:
-                    await run_agent(agent, task=task, ctx=context)
+                    await run_agent(agent, task=task_str, ctx=context)
             except Exception:
                 log.exception("Agent execution failed for ctx %s", ctx_id)
 
-        return list(agent.history), agent.total_tokens
+        return list(agent.history), agent.total_tokens, task_id
 
     async def run_scheduled(self, task: str, ctx_id: int | None, *, agent_name: str = "main") -> None:
         """Active mode: run a scheduled agent task."""

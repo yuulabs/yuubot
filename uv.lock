@@ -1587,7 +1587,7 @@ dev = [{ name = "respx", specifier = ">=0.22.0" }]
 
 [[package]]
 name = "yuullm"
-version = "0.3.1"
+version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
@@ -1596,9 +1596,9 @@ dependencies = [
     { name = "openai" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f3/da/f4d0886fe18f926e1203a99a1cc396c5f3923df5a718fced2d4ab8b19adc/yuullm-0.3.1.tar.gz", hash = "sha256:952e9606fae9875cb5174b4a2dd28982cf6678d91cb76dcf02d1ee3fe9c1a57f", size = 13008, upload-time = "2026-02-08T14:18:49.18Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e2/f3/13df41adcb2bba1a2fe39cca310a8c43cf81ad57111d139d4fa3bf21351c/yuullm-0.4.2.tar.gz", hash = "sha256:b56d2849becb939d3777c278e5302925197db716cd35c24af977a93a00bc430f", size = 13799, upload-time = "2026-03-08T09:11:18.192Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ce/bb/039df6a9c75f3dc4a59e19aa496f1d49de0520ba2551153bd5fe67fd2095/yuullm-0.3.1-py3-none-any.whl", hash = "sha256:bdb55bc57bc68c2c9af4596081b8f7a28e3830be1d38db1a55535a4f5d16e2b8", size = 17895, upload-time = "2026-02-08T14:18:48.109Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/19/17979cea1ba549832c88874962444a5d9eb0ecc3b30717409456de05f03a/yuullm-0.4.2-py3-none-any.whl", hash = "sha256:1504a8fcffe2d6cd2461e62b554cfa409ca411617a883fb09e8a7faa2ed8f551", size = 18759, upload-time = "2026-03-08T09:11:17.196Z" },
 ]
 
 [[package]]
