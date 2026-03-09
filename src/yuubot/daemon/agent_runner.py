@@ -610,27 +610,28 @@ class AgentRunner:
         """Replace /yllm command prefix with @bot_name in the first text segment.
 
         Handles: /yllm, /y, /yuu with optional #agent_name suffix.
+        Skips leading non-text segments (e.g. ReplySegment) to find the command.
         Returns a new list with modified segments.
         """
         from yuubot.core.models import TextSegment
         import re
 
-        if not segments or not isinstance(segments[0], TextSegment):
-            return segments
-
-        text = segments[0].text.strip()
-        # Match command prefix with optional #agent_name
-        # Use word boundary to avoid partial matches
         pattern = r"^(/yllm|/yuu|/y)(?:#\w+)?\s*"
-        match = re.match(pattern, text)
 
-        if not match:
-            return segments
+        for i, seg in enumerate(segments):
+            if not isinstance(seg, TextSegment):
+                continue
+            text = seg.text.strip()
+            match = re.match(pattern, text)
+            if match:
+                new_text = f"@{bot_name} " + text[match.end():]
+                new_segments = list(segments)
+                new_segments[i] = TextSegment(text=new_text)
+                return new_segments
+            # Stop at the first text segment regardless
+            break
 
-        # Replace command with @bot_name
-        new_text = f"@{bot_name} " + text[match.end():]
-        new_segments = [TextSegment(text=new_text)] + list(segments[1:])
-        return new_segments
+        return segments
 
 
     async def _build_memory_hints(self, text: str, ctx_id: int | str = "") -> str:
@@ -671,6 +672,12 @@ class AgentRunner:
         """
         ctx_id = event.get("ctx_id", "?")
         segments = parse_segments(event.get("message", []))
+
+        # Strip @bot AtSegments — redundant noise for the LLM
+        from yuubot.core.models import AtSegment as _AtSeg
+        bot_qq = str(self.config.bot.qq)
+        segments = [s for s in segments if not (isinstance(s, _AtSeg) and s.qq == bot_qq)]
+
         formatted = await format_segments(segments)
         user_id = event.get("user_id", "?")
         nickname = event.get("sender", {}).get("nickname", "")
