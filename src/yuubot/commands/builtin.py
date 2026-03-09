@@ -141,7 +141,7 @@ async def _exec_on(remaining: str, event: dict, deps: dict) -> str | None:
         ctx_id = event.get("ctx_id", 0)
         session_mgr = deps.get("session_mgr")
         if session_mgr:
-            session_mgr.enable_auto(ctx_id)
+            await session_mgr.enable_auto(ctx_id)
         return "已开启 auto 模式（每条消息自动响应，TTL 30min）"
 
     from yuubot.core.models import GroupSetting
@@ -163,7 +163,7 @@ async def _exec_off(remaining: str, event: dict, deps: dict) -> str | None:
         ctx_id = event.get("ctx_id", 0)
         session_mgr = deps.get("session_mgr")
         if session_mgr and session_mgr.is_auto(ctx_id):
-            session_mgr.disable_auto(ctx_id)
+            await session_mgr.disable_auto(ctx_id)
             return "已关闭 auto 模式"
         return "当前未开启 auto 模式"
 
