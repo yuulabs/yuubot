@@ -39,7 +39,9 @@ def render_recent(history: list[Any], n: int = 4) -> str:
                 if isinstance(item, str) and item.strip():
                     texts.append(item)
                 elif isinstance(item, dict) and item.get("type") == "tool_call":
-                    tool_names.append(item.get("name", "?"))
+                    name = item.get("name", "?")
+                    args = item.get("arguments", "")
+                    tool_names.append(f"{name}({str(args)[:200]})")
             if texts:
                 parts.append(f"[助手]: {''.join(texts)[:400]}")
             if tool_names:
@@ -66,6 +68,8 @@ def render_recent(history: list[Any], n: int = 4) -> str:
 async def summarize(history: list[Any], llm: Any) -> str:
     """Call the LLM to produce a compact handoff note from session history."""
     import yuullm
+    import yuutrace as ytrace
+    from uuid import uuid4
 
     original_task = extract_original_task(history)
     recent_narrative = render_recent(history, n=4)
@@ -81,14 +85,58 @@ async def summarize(history: list[Any], llm: Any) -> str:
         yuullm.user(user_content),
     ]
 
-    try:
+    model = getattr(llm, "default_model", "unknown")
+
+    async def _call() -> str:
         from yuullm import Response
-        stream, _ = await llm.stream(messages)
+        stream, store = await llm.stream(messages)
         text_parts: list[str] = []
         async for item in stream:
             if isinstance(item, Response) and isinstance(item.item, str):
                 text_parts.append(item.item)
+
+        usage = store.get("usage")
+        if usage is not None:
+            ytrace.record_llm_usage(
+                ytrace.LlmUsageDelta(
+                    provider=usage.provider,
+                    model=usage.model,
+                    request_id=usage.request_id,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
+                    total_tokens=usage.total_tokens,
+                )
+            )
+        cost = store.get("cost")
+        if cost is not None:
+            ytrace.record_cost(
+                category="llm",
+                currency="USD",
+                amount=cost.total_cost,
+                source=cost.source,
+                llm_provider=usage.provider if usage else "",
+                llm_model=usage.model if usage else "",
+                llm_request_id=usage.request_id if usage else None,
+            )
+
         return "".join(text_parts).strip()
+
+    try:
+        with ytrace.conversation(id=uuid4(), agent="summarizer", model=model) as chat:
+            chat.system(_SYSTEM_PROMPT)
+            chat.user(user_content)
+            with chat.llm_gen() as gen:
+                result = await _call()
+                gen.log([{"type": "text", "text": result}])
+                return result
+    except ytrace.TracingNotInitializedError:
+        try:
+            return await _call()
+        except Exception:
+            log.exception("Summary LLM call failed, using fallback excerpt")
+            return f"（原任务摘要：{original_task[:200]}）"
     except Exception:
         log.exception("Summary LLM call failed, using fallback excerpt")
         return f"（原任务摘要：{original_task[:200]}）"
