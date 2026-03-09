@@ -43,8 +43,7 @@ async def run_daemon(config_path: str | None = None) -> None:
         ttl=float(cfg.session.ttl),
         max_tokens=cfg.session.max_tokens,
     )
-    # Extend session TTL when agent sessions (e.g. coder) are active
-    session_mgr._has_active_agent_sessions = agent_runner.has_active_sessions
+    await session_mgr.load_auto()
     root = build_command_tree(cfg.bot.entries)
 
     deps = {

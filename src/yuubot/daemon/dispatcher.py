@@ -20,6 +20,18 @@ log = logging.getLogger(__name__)
 _AGENT_TAG_RE = re.compile(r"^#(\w+)\s*")
 
 
+_CURATOR_MIN_TURNS = 3      # LLM exchanges (user+assistant pairs)
+_CURATOR_MIN_SECONDS = 60   # wall-clock duration
+
+
+def _session_worth_curating(session) -> bool:
+    """True if the session is substantial enough for the curator to bother."""
+    duration = session.last_active - session.created_at
+    # Count assistant turns as a proxy for exchanges
+    turns = sum(1 for role, _ in session.history if role == "assistant")
+    return turns >= _CURATOR_MIN_TURNS and duration >= _CURATOR_MIN_SECONDS
+
+
 def _parse_agent_tag(text: str) -> tuple[str, str]:
     """Parse optional ``#agent_name`` prefix from text.
 
@@ -43,13 +55,11 @@ def _ctx_key(event: dict) -> str:
 
 
 class _CtxWorker:
-    """Per-ctx sequential worker. If a task exceeds *timeout* seconds,
-    the next queued task starts without waiting for it to finish."""
+    """Per-ctx sequential worker. One context, one agent at a time."""
 
-    def __init__(self, key: str, dispatcher: Dispatcher, timeout: float) -> None:
+    def __init__(self, key: str, dispatcher: Dispatcher) -> None:
         self.key = key
         self.dispatcher = dispatcher
-        self.timeout = timeout
         self.queue: asyncio.Queue = asyncio.Queue()
         self._task: asyncio.Task | None = None
 
@@ -78,11 +88,7 @@ class _CtxWorker:
                 if len(group) > 1:
                     event["_extra_events"] = [e for _, e in group[1:]]
                 try:
-                    handle = asyncio.create_task(self.dispatcher._handle(match, event))
-                    try:
-                        await asyncio.wait_for(asyncio.shield(handle), timeout=self.timeout)
-                    except asyncio.TimeoutError:
-                        log.warning("ctx=%s task exceeded %ss, moving on", self.key, self.timeout)
+                    await self.dispatcher._handle(match, event)
                 except Exception:
                     log.exception("Error handling command in ctx=%s", self.key)
 
@@ -110,7 +116,6 @@ def _group_batch(batch: list) -> list[list]:
 class Dispatcher:
     """Receives events, matches commands, dispatches to executors or agent."""
 
-    CTX_TIMEOUT: float = 120.0  # seconds before unblocking next task in same ctx
 
     def __init__(
         self,
@@ -145,6 +150,13 @@ class Dispatcher:
 
         if event.get("post_type") != "message":
             return
+
+        # Lazily collect expired sessions and trigger curator for substantial ones
+        for expired in self.session_mgr.collect_expired():
+            if _session_worth_curating(expired):
+                asyncio.create_task(self._run_curator(
+                    expired.history, expired.ctx_id, expired.user_id,
+                ))
 
         user_id = event.get("user_id", 0)
         group_id = event.get("group_id", 0)
@@ -185,9 +197,12 @@ class Dispatcher:
                 # Non-llm command (e.g. /close, /bot, /help)
                 # In normal mode: close session. In auto mode: keep session alive.
                 if not is_auto:
-                    self.session_mgr.close(ctx_id)
+                    closed = self.session_mgr.close(ctx_id)
                     log.info("Session closed by command: ctx=%s cmd=%s", ctx_id, cmd_match.command.prefix)
                     event["_session_closed"] = True
+                    for s in closed:
+                        if _session_worth_curating(s):
+                            asyncio.create_task(self._run_curator(s.history, s.ctx_id, s.user_id))
                 match = cmd_match
             elif is_llm_match and is_auto:
                 # Auto mode: /yllm is a switch only if it names a different agent.
@@ -276,7 +291,7 @@ class Dispatcher:
         """Put a (match, event) pair into the per-ctx worker queue."""
         key = _ctx_key(event)
         if key not in self._workers:
-            w = _CtxWorker(key, self, self.CTX_TIMEOUT)
+            w = _CtxWorker(key, self)
             self._workers[key] = w
             w.start()
         self._workers[key].queue.put_nowait((match, event))
@@ -375,12 +390,14 @@ class Dispatcher:
         the summary as a handoff note, and notify the user.
         """
         rolled = self.session_mgr.update_history(session, history, tokens)
+
         if not rolled:
             return
 
         ctx_id = session.ctx_id
         agent_name = session.agent_name
         user_id = session.user_id
+        worth_curating = _session_worth_curating(session)
 
         await self._send_reply(event, "（上下文已满，正在压缩摘要，稍后继续...）")
 
@@ -397,9 +414,8 @@ class Dispatcher:
         if note:
             await self._send_reply(event, "（已压缩上下文，新会话已就绪，可继续对话）")
 
-        # Trigger mem_curator slightly after summarizer to stagger API calls
-        # (shared history prefix enables cache hit if models are the same provider)
-        asyncio.create_task(self._run_curator(history, ctx_id, user_id))
+        if worth_curating:
+            asyncio.create_task(self._run_curator(history, ctx_id, user_id))
 
     async def _run_curator(self, history: list, ctx_id: int, user_id: int) -> None:
         """Run mem_curator as a background task after session rollover."""
