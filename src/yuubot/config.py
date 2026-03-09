@@ -26,9 +26,15 @@ class BotConfig(msgspec.Struct):
 
 
 class RecorderConfig(msgspec.Struct):
-    napcat_ws: HostPort = msgspec.field(default_factory=lambda: HostPort(host="0.0.0.0", port=8765))
-    relay_ws: HostPort = msgspec.field(default_factory=lambda: HostPort(host="127.0.0.1", port=8766))
-    api: HostPort = msgspec.field(default_factory=lambda: HostPort(host="127.0.0.1", port=8767))
+    napcat_ws: HostPort = msgspec.field(
+        default_factory=lambda: HostPort(host="0.0.0.0", port=8765)
+    )
+    relay_ws: HostPort = msgspec.field(
+        default_factory=lambda: HostPort(host="127.0.0.1", port=8766)
+    )
+    api: HostPort = msgspec.field(
+        default_factory=lambda: HostPort(host="127.0.0.1", port=8767)
+    )
     napcat_http: str = "http://127.0.0.1:3000"
     napcat_webui_port: int = 6099
     media_dir: str = "~/.yuubot/media"
@@ -84,8 +90,12 @@ class ResponseConfig(msgspec.Struct):
 
 
 class SessionConfig(msgspec.Struct):
-    ttl: int = 300              # seconds before session expires
-    max_tokens: int = 60000     # context window token limit
+    ttl: int = 300  # seconds before session expires
+    max_tokens: int = 60000  # context window token limit
+    summarizer_provider: str = (
+        ""  # provider name from yuuagents.providers (default: main agent's)
+    )
+    summarizer_model: str = ""  # model to use for summary (default: main agent's model)
 
 
 class Config(msgspec.Struct):
@@ -113,7 +123,9 @@ class Config(msgspec.Struct):
 
         agents = self.yuuagents.get("agents", {})
         agent_cfg = agents.get(agent_name, {})
-        raw = agent_cfg.get("min_role", "folk") if isinstance(agent_cfg, dict) else "folk"
+        raw = (
+            agent_cfg.get("min_role", "folk") if isinstance(agent_cfg, dict) else "folk"
+        )
         _role_map = {
             "master": Role.MASTER,
             "mod": Role.MOD,
@@ -144,6 +156,22 @@ class Config(msgspec.Struct):
                         f"Parent min_role must be >= subagent min_role."
                     )
 
+    def validate_subagent_tools(self) -> None:
+        """Ensure agents with subagents have delegate tool configured."""
+        agents = self.yuuagents.get("agents", {})
+        for name, cfg in agents.items():
+            if not isinstance(cfg, dict):
+                continue
+            subagents = cfg.get("subagents", [])
+            if not subagents:
+                continue
+            tools = cfg.get("tools", [])
+            if "delegate" not in tools:
+                raise ValueError(
+                    f"Agent {name!r} has subagents {subagents!r} but 'delegate' tool is not configured. "
+                    f"Add 'delegate' to tools list."
+                )
+
     @property
     def persona(self) -> str:
         agents = self.yuuagents.get("agents", {})
@@ -162,10 +190,12 @@ class Config(msgspec.Struct):
 
 def _resolve_env(value: str) -> str:
     """Replace ${VAR} with os.environ[VAR]."""
+
     def _sub(m: re.Match) -> str:
         name = m.group(1)
         val = os.environ.get(name, "")
         return val
+
     return _ENV_RE.sub(_sub, value)
 
 
@@ -188,9 +218,14 @@ def _walk_expand_paths(obj, path_keys: set[str] | None = None):
     """Expand ~ in known path fields."""
     _path_keys = path_keys or {"path", "browser_profile", "download_dir", "media_dir"}
     if isinstance(obj, dict):
-        return {k: (_expand_path(v) if k in _path_keys and isinstance(v, str)
-                     else _walk_expand_paths(v, _path_keys))
-                for k, v in obj.items()}
+        return {
+            k: (
+                _expand_path(v)
+                if k in _path_keys and isinstance(v, str)
+                else _walk_expand_paths(v, _path_keys)
+            )
+            for k, v in obj.items()
+        }
     if isinstance(obj, list):
         return [_walk_expand_paths(v, _path_keys) for v in obj]
     return obj
@@ -222,7 +257,9 @@ def _find_config(explicit: str | None = None) -> Path:
     for c in candidates:
         if c.exists():
             return c
-    raise FileNotFoundError(f"Config not found. Searched: {[str(c) for c in candidates]}")
+    raise FileNotFoundError(
+        f"Config not found. Searched: {[str(c) for c in candidates]}"
+    )
 
 
 def load_config(path: str | None = None) -> Config:
@@ -245,4 +282,5 @@ def load_config(path: str | None = None) -> Config:
     raw = _walk_expand_paths(raw)
     cfg = msgspec.convert(raw, Config)
     cfg.validate_agent_permissions()
+    cfg.validate_subagent_tools()
     return cfg

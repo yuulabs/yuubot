@@ -62,4 +62,6 @@ response:
 # Session: multi-turn conversation settings.
 session:
   ttl: 300            # seconds before session expires (default 5 min)
-  max_tokens: 60000   # context window token limit
+  max_tokens: 60000   # single-turn token threshold for context rollover
+  summarizer_provider: ""       # provider name from yuuagents.providers (default: main agent's)
+  summarizer_model: "deepseek-chat"  # cheap model for summary (default: main agent's model)
