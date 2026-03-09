@@ -137,7 +137,7 @@ class Role(IntEnum):
 
 
 class Context(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     type = fields.CharField(max_length=16)
     target_id = fields.BigIntField()
     created_at = fields.DatetimeField(auto_now_add=True)
@@ -148,8 +148,8 @@ class Context(Model):
 
 
 class MessageRecord(Model):
-    id = fields.IntField(pk=True)
-    message_id = fields.BigIntField(null=True, index=True)
+    id = fields.IntField(primary_key=True)
+    message_id = fields.BigIntField(null=True, db_index=True)
     ctx = fields.ForeignKeyField("models.Context", related_name="messages")
     user_id = fields.BigIntField()
     nickname = fields.CharField(max_length=64, null=True)
@@ -164,7 +164,7 @@ class MessageRecord(Model):
 
 
 class Memory(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     content = fields.TextField()
     ctx = fields.ForeignKeyField("models.Context", related_name="memories", null=True)
     scope = fields.CharField(max_length=16, default="private")  # "private" | "public"
@@ -177,7 +177,7 @@ class Memory(Model):
 
 
 class MemoryTag(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     memory = fields.ForeignKeyField("models.Memory", related_name="tags", on_delete=fields.CASCADE)
     tag = fields.CharField(max_length=64)
 
@@ -187,7 +187,7 @@ class MemoryTag(Model):
 
 
 class RoleRecord(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     user_id = fields.BigIntField()
     role = fields.IntField()
     scope = fields.CharField(max_length=32)
@@ -198,7 +198,7 @@ class RoleRecord(Model):
 
 
 class GroupSetting(Model):
-    group_id = fields.BigIntField(pk=True)
+    group_id = fields.BigIntField(primary_key=True)
     bot_enabled = fields.BooleanField(default=True)
     response_mode = fields.CharField(max_length=16, default="at")
     updated_at = fields.DatetimeField(auto_now=True)
@@ -208,7 +208,7 @@ class GroupSetting(Model):
 
 
 class EntryMapping(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     entry = fields.CharField(max_length=64)
     route = fields.CharField(max_length=128)
     scope = fields.CharField(max_length=32)
@@ -219,7 +219,7 @@ class EntryMapping(Model):
 
 
 class MemoryConfigKV(Model):
-    key = fields.CharField(max_length=64, pk=True)
+    key = fields.CharField(max_length=64, primary_key=True)
     value = fields.TextField()
 
     class Meta:
@@ -227,7 +227,7 @@ class MemoryConfigKV(Model):
 
 
 class ImageEntry(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     local_path = fields.CharField(max_length=512, unique=True)
     description = fields.TextField(default="")
     tags = fields.JSONField(default=list)
@@ -239,7 +239,7 @@ class ImageEntry(Model):
 
 
 class ScheduledTask(Model):
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     cron = fields.CharField(max_length=128)
     task = fields.TextField()
     agent = fields.CharField(max_length=64)
@@ -253,9 +253,18 @@ class ScheduledTask(Model):
         table = "scheduled_tasks"
 
 
+class AutoModeSetting(Model):
+    """Persisted auto-mode state: which ctx has auto mode on, and which agent is selected."""
+    ctx_id = fields.IntField(primary_key=True)
+    current_agent = fields.CharField(max_length=64, default="")
+
+    class Meta:
+        table = "auto_mode"
+
+
 class UserAlias(Model):
     """User alias/nickname mapping for LLM-readable messages."""
-    id = fields.IntField(pk=True)
+    id = fields.IntField(primary_key=True)
     user_id = fields.BigIntField()
     alias = fields.CharField(max_length=64)
     scope = fields.CharField(max_length=32, default="global")  # 'global' or 'ctx_{ctx_id}'

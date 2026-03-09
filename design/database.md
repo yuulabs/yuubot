@@ -144,6 +144,22 @@ class GroupSetting(Model):
         table = "group_settings"
 ```
 
+### AutoModeSetting — Auto 模式持久化
+
+```python
+class AutoModeSetting(Model):
+    ctx_id = fields.IntField(pk=True)
+    current_agent = fields.CharField(max_length=64, default="")
+
+    class Meta:
+        table = "auto_mode"
+```
+
+**说明**：
+- 记录哪些 ctx 开启了 auto 模式，以及当前选中的 agent
+- Daemon 启动时从此表恢复 `_auto_ctxs` 和 `_current_agent`
+- `/ybot on --auto` 写入，`/ybot off` 删除
+
 ### EntryMapping — 入口映射
 
 ```python
