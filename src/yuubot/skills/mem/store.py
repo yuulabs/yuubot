@@ -93,6 +93,7 @@ async def recall(
     tags: list[str],
     ctx_id: int | None,
     limit: int,
+    show_all: bool = False,
 ) -> list[dict]:
     """Recall memories matching words and/or tags.
 
@@ -123,11 +124,11 @@ async def recall(
         else:
             q &= Q(id__in=tag_mem_ids)
 
-    if ctx_id is not None:
-        q &= (Q(ctx_id=ctx_id, scope="private") | Q(scope="public"))
-    else:
-        # No ctx — only public memories visible
-        q &= Q(scope="public")
+    if not show_all:
+        if ctx_id is not None:
+            q &= (Q(ctx_id=ctx_id, scope="private") | Q(scope="public"))
+        else:
+            q &= Q(scope="public")
 
     if not words and not tags:
         return []
@@ -211,9 +212,11 @@ async def delete(ids: list[int]) -> int:
     return count
 
 
-async def show_tags(ctx_id: int | None) -> list[tuple[str, int]]:
+async def show_tags(ctx_id: int | None, show_all: bool = False) -> list[tuple[str, int]]:
     """Return (tag, count) pairs for memories visible to ctx_id."""
-    if ctx_id is not None:
+    if show_all:
+        qs = MemoryTag.all()
+    elif ctx_id is not None:
         qs = MemoryTag.filter(
             Q(memory__ctx_id=ctx_id, memory__scope="private") | Q(memory__scope="public")
         )

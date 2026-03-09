@@ -8,8 +8,7 @@ from playwright.sync_api import sync_playwright
 from urllib.parse import unquote, urlsplit
 
 from yuubot.config import load_config
-from yuubot.skills.web.blocklist import check_url, _is_bot_mode
-from yuubot.core.audit import audit_text
+from yuubot.skills.web.blocklist import check_url
 
 
 def _get_profile(config_path: str | None) -> tuple[str, bool]:
@@ -99,15 +98,6 @@ async def read_url(url: str, summary: bool, config_path: str | None) -> None:
     # Playwright is sync, run in thread
     import asyncio
     text = await asyncio.to_thread(_fetch_and_extract, profile, headless, url)
-
-    if _is_bot_mode():
-        result = audit_text(text)
-        if not result.passed:
-            click.echo(
-                f"[安全警告] 该页面内容包含{result.category}，已被拦截。"
-                " LLM 不应尝试获取或转发此类信息。"
-            )
-            return
 
     if summary and len(text) > 2000:
         text = text[:2000] + "\n\n... (截断)"

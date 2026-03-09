@@ -49,12 +49,13 @@ async def recall_memory(
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     try:
         ctx_id = _get_ctx_id()
+        show_all = not env.get(env.IN_BOT)
         words = words_str.split() if words_str else []
         tags = tags_str.split() if tags_str else []
         if not words and not tags:
             click.echo("错误: words 和 tags 至少提供一个")
             return
-        results = await mem_store.recall(words, tags, ctx_id, limit)
+        results = await mem_store.recall(words, tags, ctx_id, limit, show_all=show_all)
         if not results:
             click.echo("未找到记忆")
             return
@@ -89,11 +90,12 @@ async def show_tags(config_path: str | None) -> None:
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     try:
         ctx_id = _get_ctx_id()
-        tags = await mem_store.show_tags(ctx_id)
+        show_all = not env.get(env.IN_BOT)
+        tags = await mem_store.show_tags(ctx_id, show_all=show_all)
         if not tags:
             click.echo("暂无标签")
             return
-        header = f"标签列表 (ctx {ctx_id}):" if ctx_id else "标签列表 (public only):"
+        header = "标签列表 (全部):" if show_all else (f"标签列表 (ctx {ctx_id}):" if ctx_id else "标签列表 (public only):")
         click.echo(header)
         for tag, count in tags:
             click.echo(f"  {tag}: {count} 条")
