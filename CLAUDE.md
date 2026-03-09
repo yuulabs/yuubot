@@ -27,6 +27,29 @@ pytest tests/ -m live            # Run live integration tests (require real serv
 pytest tests/ -k "test_name"     # Run specific test by name
 ```
 
+## Debugging by Conversation ID
+
+When something goes wrong and you have a `conversation_id` (UUID), use `scripts/conv.py` to inspect the full conversation from `~/.yagents/traces.db`:
+
+```bash
+# List recent conversations (agent, model, turn count, tool call count)
+.venv/bin/python scripts/conv.py
+
+# Show full conversation with tool outputs
+.venv/bin/python scripts/conv.py <conversation_id>
+
+# Compact view: show only assistant text + tool calls, hide outputs
+.venv/bin/python scripts/conv.py <conversation_id> -n
+
+# Explicit DB path
+.venv/bin/python scripts/conv.py --db ~/.yagents/traces.db <conversation_id>
+```
+
+The script reads `spans` and `events` tables from the yuuagents tracing DB, strips irrelevant metadata (system prompt, tool schemas, resource info), and prints:
+- `[USER]` — the incoming QQ message with ctx/group context
+- `[ASSISTANT]` — LLM text output and tool calls (`→ tool_name(args)`)
+- `[TOOL: name]` — tool result (truncated at 600 chars)
+
 ## Architecture
 
 Three-process design, each with independent lifecycle:
@@ -126,5 +149,9 @@ docker build --no-cache \
 ```
 
 运行时代理由 `DockerManager` 自动从宿主机环境继承，无需手动配置。
+
+### Tests must NOT call `yuutrace.init()`
+
+`tests/conftest.py` sets up a no-op `TracerProvider` (no exporter) instead of calling `yuutrace.init()`. This is intentional — `yuutrace.init()` connects to the OTLP endpoint (`localhost:4318`), and if a `ytrace server` is running, test traces leak into the production `~/.yagents/traces.db`. The no-op provider satisfies `yuutrace.require_initialized()` without exporting anything. The same rule applies to sibling packages (yuuagents, etc.).
 
 agent 以宿主机 UID/GID 运行（非 root），需要的工具应预装在镜像中。
