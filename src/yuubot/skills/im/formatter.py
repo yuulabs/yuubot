@@ -1,6 +1,7 @@
 """Format messages to LLM-readable XML."""
 
 import html
+import os
 from datetime import datetime, timezone
 
 from yuubot.core.models import (
@@ -12,6 +13,14 @@ from yuubot.core.models import (
     segments_to_plain,
     UserAlias,
 )
+
+
+def _docker_host_path(path: str) -> str:
+    """Prefix a host path with the Docker mount point when running inside Docker."""
+    mount = os.environ.get("YUU_DOCKER_HOST_MOUNT", "")
+    if mount and not path.startswith(mount):
+        return f"{mount}{path}"
+    return path
 
 
 async def get_user_alias(user_id: int, ctx_id: int | None = None) -> str | None:
@@ -44,9 +53,9 @@ async def format_segments(segments: Message, media_files: list[str] | None = Non
             parts.append(html.escape(seg.text))
         elif isinstance(seg, ImageSegment):
             if seg.local_path:
-                url = f"file://{seg.local_path}"
+                url = f"file://{_docker_host_path(seg.local_path)}"
             elif media_idx < len(media_files):
-                url = f"file://{media_files[media_idx]}"
+                url = f"file://{_docker_host_path(media_files[media_idx])}"
                 media_idx += 1
             elif seg.url:
                 url = seg.url

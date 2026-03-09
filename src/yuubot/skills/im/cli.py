@@ -29,17 +29,61 @@ def _enforce_bot_ctx(ctx_id: int | None) -> int | None:
     return forced
 
 
+def _translate_docker_path(path: str) -> str:
+    """Translate a Docker container path to the corresponding host path.
+
+    - Strip ``file://`` URI prefix if present
+    - ``/mnt/host/...`` → strip prefix (agent referencing host file via mount)
+    - ``<container_home>/...`` → replace with host dir from env
+    """
+    # Strip file:// URI scheme
+    if path.startswith("file://"):
+        path = path[len("file://"):]
+
+    if path.startswith("/mnt/host/"):
+        return path[len("/mnt/host"):]  # keep leading /
+
+    home_host_dir = os.environ.get("YUU_DOCKER_HOME_HOST_DIR", "")
+    container_home = os.environ.get("YUU_DOCKER_HOME_DIR", "")
+    if home_host_dir and container_home and path.startswith(container_home + "/"):
+        return home_host_dir + path[len(container_home):]
+
+    return path
+
+
+def _translate_image_ref(val: str) -> str:
+    """Translate an image file/url value: docker path → host path, ensure file:// for local."""
+    translated = _translate_docker_path(val)
+    # Local absolute paths need file:// prefix for NapCat
+    if translated.startswith("/") and not translated.startswith("//"):
+        return f"file://{translated}"
+    return translated
+
+
 def _normalize_segment(seg: dict) -> dict:
     """Normalize a flat segment to OneBot V11 format.
 
     Accepts both ``{"type":"text","text":"hi"}`` (flat) and
     ``{"type":"text","data":{"text":"hi"}}`` (OneBot V11).
     Always returns the OneBot V11 form.
+    Translates Docker container paths to host paths for image segments.
     """
     if "data" in seg:
+        seg = dict(seg)
+        seg["data"] = dict(seg["data"])
+        if seg["type"] == "image":
+            for key in ("file", "url"):
+                val = seg["data"].get(key, "")
+                if val:
+                    seg["data"][key] = _translate_image_ref(val)
         return seg
     seg_type = seg.get("type", "text")
     data = {k: v for k, v in seg.items() if k != "type"}
+    if seg_type == "image":
+        for key in ("file", "url"):
+            val = data.get(key, "")
+            if val:
+                data[key] = _translate_image_ref(val)
     return {"type": seg_type, "data": data}
 
 
@@ -88,6 +132,22 @@ async def send_msg(
 
     # Normalize to OneBot V11 format: {"type": ..., "data": {...}}
     segments = [_normalize_segment(s) for s in segments]
+
+    # Validate image segments: local file paths must exist
+    for seg in segments:
+        if seg.get("type") != "image":
+            continue
+        data = seg.get("data", {})
+        for key in ("file", "url"):
+            val = data.get(key, "")
+            if not val:
+                continue
+            # Check local file:// paths
+            if val.startswith("file://"):
+                fpath = val[len("file://"):]
+                if not os.path.isfile(fpath):
+                    click.echo(f"错误: 图片文件不存在: {fpath}")
+                    raise SystemExit(1)
 
     body = {"message_type": msg_type, "message": segments}
     if msg_type == "group":

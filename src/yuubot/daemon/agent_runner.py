@@ -12,7 +12,7 @@ from yuubot.skills.im.formatter import format_message_to_xml, format_segments, g
 log = logging.getLogger(__name__)
 
 # Tools that require a Docker container to function.
-_DOCKER_TOOLS = {"execute_bash", "read_file", "write_file", "delete_file"}
+_DOCKER_TOOLS = {"execute_bash", "read_file", "write_file", "edit_file", "delete_file"}
 
 _MIME_MAP = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
              ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}
@@ -515,7 +515,18 @@ class AgentRunner:
             cli_guard=self._cli_guard,
         )
 
-        with env.task_env(task_id=task_id):
+        docker_mount = ""
+        docker_home = ""
+        docker_home_dir = ""
+        if needs_docker and self._docker is not None and container_id:
+            docker_mount = "/mnt/host"
+            docker_home = self._docker.host_home_dir(container_id)
+            docker_home_dir = self._docker.container_home
+
+        with env.task_env(task_id=task_id,
+                          docker_host_mount=docker_mount,
+                          docker_home_host_dir=docker_home,
+                          docker_home_dir=docker_home_dir):
             await run_agent(sub_agent, task=first_user_message, ctx=context)
         return self._last_assistant_text(sub_agent)
 
@@ -734,7 +745,7 @@ class AgentRunner:
                 f"你有一个工作手册文件: {bootstrap_path}\n"
                 f"每次启动新会话时请先用 read_file 阅读它，了解已有的工作约定。\n"
                 f"完成任务后，如果有新的工作约定值得记录（如常用路径、操作习惯、项目结构），"
-                f"请用 write_file 更新这个文件。保持文件简洁，不超过 50 行。\n"
+                f"请用 edit_file 更新这个文件。保持文件简洁，不超过 50 行。\n"
                 f"</bootstrap>"
             )
 
@@ -795,10 +806,21 @@ class AgentRunner:
             cli_guard=self._cli_guard,
         )
 
+        docker_mount = ""
+        docker_home = ""
+        docker_home_dir = ""
+        if needs_docker and self._docker is not None and container_id:
+            docker_mount = "/mnt/host"
+            docker_home = self._docker.host_home_dir(container_id)
+            docker_home_dir = self._docker.container_home
+
         with env.task_env(
             task_id=task_id, ctx_id=ctx_id,
             user_id=user_id, user_role=user_role,
             agent_name=agent_name,
+            docker_host_mount=docker_mount,
+            docker_home_host_dir=docker_home,
+            docker_home_dir=docker_home_dir,
         ):
             try:
                 if is_continuation or is_multimodal:
@@ -883,7 +905,18 @@ class AgentRunner:
             cli_guard=self._cli_guard,
         )
 
-        with env.task_env(task_id=task_id, ctx_id=ctx_id or "", agent_name=agent_name):
+        docker_mount = ""
+        docker_home = ""
+        docker_home_dir = ""
+        if needs_docker and self._docker is not None and container_id:
+            docker_mount = "/mnt/host"
+            docker_home = self._docker.host_home_dir(container_id)
+            docker_home_dir = self._docker.container_home
+
+        with env.task_env(task_id=task_id, ctx_id=ctx_id or "", agent_name=agent_name,
+                          docker_host_mount=docker_mount,
+                          docker_home_host_dir=docker_home,
+                          docker_home_dir=docker_home_dir):
             try:
                 await run_agent(agent, task=full_task, ctx=context)
             except BaseException:

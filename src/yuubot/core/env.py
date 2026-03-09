@@ -13,8 +13,12 @@ BOT_CTX = "YUU_BOT_CTX"
 USER_ID = "YUU_USER_ID"
 USER_ROLE = "YUU_USER_ROLE"
 AGENT_NAME = "YUU_AGENT_NAME"
+DOCKER_HOST_MOUNT = "YUU_DOCKER_HOST_MOUNT"
+DOCKER_HOME_HOST_DIR = "YUU_DOCKER_HOME_HOST_DIR"
+DOCKER_HOME_DIR = "YUU_DOCKER_HOME_DIR"
 
-_ALL_KEYS = (TASK_ID, IN_BOT, BOT_CTX, USER_ID, USER_ROLE, AGENT_NAME)
+_ALL_KEYS = (TASK_ID, IN_BOT, BOT_CTX, USER_ID, USER_ROLE, AGENT_NAME,
+             DOCKER_HOST_MOUNT, DOCKER_HOME_HOST_DIR, DOCKER_HOME_DIR)
 
 
 def get(key: str, default: str = "") -> str:
@@ -29,6 +33,9 @@ def task_env(
     user_id: int | str = "",
     user_role: str = "",
     agent_name: str = "",
+    docker_host_mount: str = "",
+    docker_home_host_dir: str = "",
+    docker_home_dir: str = "",
 ):
     """Set all YUU_* env vars for the duration of an agent run."""
     prev = {k: os.environ.get(k) for k in _ALL_KEYS}
@@ -43,6 +50,12 @@ def task_env(
         os.environ[USER_ROLE] = user_role
     if agent_name:
         os.environ[AGENT_NAME] = agent_name
+    if docker_host_mount:
+        os.environ[DOCKER_HOST_MOUNT] = docker_host_mount
+    if docker_home_host_dir:
+        os.environ[DOCKER_HOME_HOST_DIR] = docker_home_host_dir
+    if docker_home_dir:
+        os.environ[DOCKER_HOME_DIR] = docker_home_dir
 
     try:
         yield
