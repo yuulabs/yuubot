@@ -29,13 +29,13 @@ def build_command_tree(entries: list[str]) -> RootCommand:
         prefix="on",
         executor=_exec_on,
         min_role=Role.MOD,
-        help_text="开启 bot (--free 开启 free 模式)",
+        help_text="开启 bot (--free 开启 free 模式) | 私聊: --auto 开启自动响应模式",
     )
     off_cmd = Command(
         prefix="off",
         executor=_exec_off,
         min_role=Role.MOD,
-        help_text="关闭 bot",
+        help_text="关闭 bot | 私聊: 关闭 auto 模式",
     )
     set_cmd = Command(
         prefix="set",
@@ -134,7 +134,16 @@ async def _exec_grand(remaining: str, event: dict, deps: dict) -> str | None:
 
 
 async def _exec_on(remaining: str, event: dict, deps: dict) -> str | None:
-    """Enable bot in group."""
+    """Enable bot in group, or enable auto mode in private chat (MOD+)."""
+    if "--auto" in remaining:
+        if event.get("message_type") != "private":
+            return "auto 模式仅限私聊使用"
+        ctx_id = event.get("ctx_id", 0)
+        session_mgr = deps.get("session_mgr")
+        if session_mgr:
+            session_mgr.enable_auto(ctx_id)
+        return "已开启 auto 模式（每条消息自动响应，TTL 30min）"
+
     from yuubot.core.models import GroupSetting
 
     gid = event.get("group_id", 0)
@@ -149,7 +158,15 @@ async def _exec_on(remaining: str, event: dict, deps: dict) -> str | None:
 
 
 async def _exec_off(remaining: str, event: dict, deps: dict) -> str | None:
-    """Disable bot in group."""
+    """Disable bot in group, or disable auto mode in private chat (MOD+)."""
+    if event.get("message_type") == "private":
+        ctx_id = event.get("ctx_id", 0)
+        session_mgr = deps.get("session_mgr")
+        if session_mgr and session_mgr.is_auto(ctx_id):
+            session_mgr.disable_auto(ctx_id)
+            return "已关闭 auto 模式"
+        return "当前未开启 auto 模式"
+
     from yuubot.core.models import GroupSetting
 
     gid = event.get("group_id", 0)

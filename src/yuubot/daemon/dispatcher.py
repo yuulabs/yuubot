@@ -174,6 +174,7 @@ class Dispatcher:
 
         # Check for active session BEFORE command matching
         ctx_id = event.get("ctx_id", 0)
+        is_auto = self.session_mgr.is_auto(ctx_id)
         session = self.session_mgr.get(ctx_id)
         if session is not None:
             # Try command match first to detect non-llm commands
@@ -181,10 +182,16 @@ class Dispatcher:
             is_llm_match = cmd_match is not None and cmd_match.command.executor is _exec_llm
 
             if cmd_match is not None and not is_llm_match:
-                # Non-llm command (e.g. /close, /bot, /help) — close session
-                self.session_mgr.close(ctx_id)
-                log.info("Session closed by command: ctx=%s cmd=%s", ctx_id, cmd_match.command.prefix)
-                event["_session_closed"] = True
+                # Non-llm command (e.g. /close, /bot, /help)
+                # In normal mode: close session. In auto mode: keep session alive.
+                if not is_auto:
+                    self.session_mgr.close(ctx_id)
+                    log.info("Session closed by command: ctx=%s cmd=%s", ctx_id, cmd_match.command.prefix)
+                    event["_session_closed"] = True
+                match = cmd_match
+            elif is_llm_match and is_auto:
+                # Auto mode: /yllm = switch agent signal, not a session continuation.
+                # Fall through to normal /yllm handling below.
                 match = cmd_match
             elif msg_type == "group" and not self._is_at_bot(event) and not is_llm_match:
                 # Group chat, no @bot, not a /yllm command — ignore for session
@@ -202,6 +209,31 @@ class Dispatcher:
                 event["_session_agent"] = session.agent_name
                 event["_session_remaining"] = remaining
                 self._enqueue(None, event)
+                return
+        elif is_auto:
+            # Auto mode, no active session: auto-resume or command
+            cmd_match = self.root.match_message(plain)
+            is_llm_match = cmd_match is not None and cmd_match.command.executor is _exec_llm
+            cur_agent = self.session_mgr.current_agent(ctx_id)
+
+            if is_llm_match:
+                # Explicit /yllm → switch/start agent
+                match = cmd_match
+            elif cur_agent is not None and cmd_match is None:
+                # Auto-resume: session expired but we know the current agent
+                log.info("Auto mode resume: ctx=%s agent=%s", ctx_id, cur_agent)
+                new_session = self.session_mgr.create(
+                    ctx_id, cur_agent, user_id=event.get("user_id", 0),
+                )
+                event["_session"] = new_session
+                event["_session_agent"] = cur_agent
+                event["_session_remaining"] = plain
+                self._enqueue(None, event)
+                return
+            elif cmd_match is not None:
+                match = cmd_match
+            else:
+                log.info("Auto mode: no agent selected yet, ignoring: %s", plain)
                 return
         else:
             # No active session — normal command matching

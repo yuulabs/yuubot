@@ -13,13 +13,29 @@ yuubot 有两种 session，解决不同问题：
 
 Chat Session 让用户和 bot 进行多轮对话，而不需要每次都输入 `/yllm` 命令。
 
-### 生命周期
+### 普通模式生命周期
 
 1. **创建**：用户发送 `/yllm` 命令时创建，绑定到 `(ctx_id, agent_name)`。每个 ctx 同时只能有一个 chat session。
 2. **延续**：在 TTL 内，后续消息自动归入同一 session，agent 能看到完整对话历史。
 3. **过期**：最后一次活跃后 300 秒（5 分钟）无新消息则自动过期。如果有活跃的 Agent Session，TTL 会被延长。
 4. **主动关闭**：发送非 LLM 命令（如 `/bot`、`/help`）会立即关闭当前 session。
 5. **Token 上限**：累计 token 达到 60000 时自动关闭。
+
+### Auto 模式（私聊专用）
+
+MOD+ 用户可对私聊 ctx 开启 auto 模式（`/ybot on --auto`），行为与普通模式有以下不同：
+
+| 维度 | 普通模式 | Auto 模式 |
+|------|----------|-----------|
+| TTL | 300s | 1800s（30min） |
+| Session 过期后 | 需重新发 `/yllm` | 自动以当前 agent 重建 session |
+| `/yllm#agent` | 切换并关闭旧 session | 切换 agent，旧 session 保留（供历史前缀缓存） |
+| 非 LLM 命令 | 关闭 session | 执行命令，session 不受影响 |
+| 同时存活 session 数 | 最多 1 个 | 每个 agent 一个，互不干扰 |
+
+Auto 模式的 `/yllm` 语义变为 "选定/切换 agent"，而非 "开始会话"。第一条消息之前必须至少发送一次 `/yllm` 来选定 agent；此后 session 过期时会自动重建，无需再次发送。
+
+关闭 auto 模式：`/ybot off`（同时关闭所有 session）。
 
 ### 消息归入规则
 
@@ -28,17 +44,19 @@ Chat Session 让用户和 bot 进行多轮对话，而不需要每次都输入 `
 | 场景 | 是否归入 session |
 |------|-----------------|
 | 私聊，有活跃 session | 是 |
+| 私聊 auto 模式，session 过期但有 current_agent | 是（自动重建） |
 | 群聊，@bot，有活跃 session | 是 |
 | 群聊，不 @bot，有活跃 session | 否（忽略） |
 | 群聊，`/yllm` 命令 | 创建新 session |
-| 任何非 LLM 命令 | 关闭 session，执行命令 |
+| 普通模式，非 LLM 命令 | 关闭 session，执行命令 |
+| Auto 模式，非 LLM 命令 | 执行命令，session 不关闭 |
 
 关键点：**群聊中必须 @bot 才能延续 session**，普通群消息不会被归入。这避免了群里其他人的闲聊污染对话上下文。
 
 ### 实现
 
-- `SessionManager`（`daemon/session.py`）：管理所有 chat session 的创建、查询、过期、关闭。
-- `Dispatcher`（`daemon/dispatcher.py`）：在命令匹配前检查是否有活跃 session，决定消息走 session 延续还是新命令。
+- `SessionManager`（`daemon/session.py`）：管理所有 chat session 的创建、查询、过期、关闭；维护 `_auto_ctxs` 和 `_current_agent`。
+- `Dispatcher`（`daemon/dispatcher.py`）：在命令匹配前检查是否有活跃 session，决定消息走 session 延续还是新命令；auto 模式下实现 agent 切换和自动重建逻辑。
 
 ---
 
