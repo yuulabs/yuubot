@@ -1,5 +1,6 @@
 """Flow: /yllm triggers agent, session continue, /yclose."""
 
+import asyncio
 import json
 
 import pytest
@@ -15,20 +16,30 @@ from tests.mocks import (
 )
 
 
+async def _wait_worker(dispatcher, key: str, timeout: float = 5.0) -> None:
+    """Wait until the per-ctx worker finishes processing its queue."""
+    worker = dispatcher._workers.get(key)
+    if worker:
+        await asyncio.wait_for(worker.queue.join(), timeout=timeout)
+
+
 async def test_llm_basic_text_response(dispatcher, session_mgr):
-    """Master sends /yllm hello → agent responds with mocked text."""
+    """Master sends /yllm hello → agent runs to completion with history."""
     with mock_recorder_api() as sent, mock_llm():
         event = make_group_event("/yllm hello", user_id=MASTER_QQ)
-        await send(dispatcher, event, wait=1.0)
+        await dispatcher.dispatch(event)
+        await _wait_worker(dispatcher, "group:1000")
 
-    # Agent should have been invoked. Since the mock returns plain text
-    # without tool calls, the agent loop finishes immediately.
-    # The text response from the LLM is "Hello from mock LLM"
-    # but it doesn't call im send — it just completes.
-    # A session should still be created.
     session = session_mgr.get(1)  # ctx_id=1
     assert session is not None
     assert session.agent_name == "main"
+    # The agent must have actually run — session.history should contain
+    # at least the system prompt + user message + assistant response.
+    # If agent_runner.run() crashes (e.g. AttributeError), history stays empty.
+    assert len(session.history) >= 3, (
+        f"Agent did not run to completion: history has {len(session.history)} entries, "
+        f"expected >= 3 (system + user + assistant)"
+    )
 
 
 async def test_llm_with_tool_call(dispatcher, session_mgr):
@@ -44,33 +55,30 @@ async def test_llm_with_tool_call(dispatcher, session_mgr):
 
     with mock_recorder_api() as sent, mock_llm(responses):
         event = make_group_event("/yllm 你好", user_id=MASTER_QQ)
-        await send(dispatcher, event, wait=2.0)
+        await dispatcher.dispatch(event)
+        await _wait_worker(dispatcher, "group:1000")
 
-    # The tool call to execute_skill_cli would try to run ybot im send
-    # in a subprocess. Since we're in test, the subprocess may fail,
-    # but the agent loop should still complete.
     session = session_mgr.get(1)
     assert session is not None
+    # Must have history: system + user + tool_call + tool_result + assistant
+    assert len(session.history) >= 3, (
+        f"Agent did not run to completion: history has {len(session.history)} entries"
+    )
 
 
 async def test_close_session(dispatcher, session_mgr):
     """Master sends /yllm, then /yclose → session is cleared."""
     with mock_recorder_api() as sent, mock_llm():
-        # Start a session
         event = make_group_event("/yllm hello", user_id=MASTER_QQ)
-        await send(dispatcher, event, wait=1.0)
+        await dispatcher.dispatch(event)
+        await _wait_worker(dispatcher, "group:1000")
 
     assert session_mgr.get(1) is not None
 
-    # Wait for the CtxWorker to finish processing the /yllm event
-    worker = dispatcher._workers.get("group:1000")
-    if worker:
-        await worker.queue.join()
-
     with mock_recorder_api() as sent:
-        # Close the session
         event = make_group_event("/yclose", user_id=MASTER_QQ)
-        await send(dispatcher, event, wait=1.0)
+        await dispatcher.dispatch(event)
+        await _wait_worker(dispatcher, "group:1000")
 
     assert session_mgr.get(1) is None
     assert len(sent) >= 1
@@ -82,7 +90,8 @@ async def test_general_agent_requires_master(dispatcher):
     """Folk cannot use /yllm #general — needs master role."""
     with mock_recorder_api() as sent, mock_llm():
         event = make_group_event("/yllm #general do something", user_id=FOLK_QQ)
-        await send(dispatcher, event, wait=0.5)
+        await dispatcher.dispatch(event)
+        await _wait_worker(dispatcher, "group:1000")
 
     # Should get permission denied reply
     assert any("权限" in s["message"][0]["data"]["text"] for s in sent)

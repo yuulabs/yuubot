@@ -4,6 +4,12 @@ import asyncio
 
 import pytest
 
+# Set up a no-op TracerProvider so yuutrace.require_initialized() passes
+# but traces do NOT go to the production ~/.yagents/traces.db.
+from opentelemetry import trace as _otel_trace
+from opentelemetry.sdk.trace import TracerProvider as _TracerProvider
+_otel_trace.set_tracer_provider(_TracerProvider())
+
 from yuubot.commands.builtin import build_command_tree
 from yuubot.commands.entry import EntryManager
 from yuubot.commands.roles import RoleManager
@@ -90,8 +96,30 @@ def session_mgr() -> SessionManager:
     return SessionManager(ttl=300, max_tokens=60000)
 
 
+async def _lightweight_init(runner: AgentRunner) -> None:
+    """Initialize yuuagents without starting daemon or touching ~/.yagents."""
+    if runner._initialized:
+        return
+    import json
+    import msgspec
+    from yuuagents.config import Config as YuuagentsConfig
+    from yuuagents.persistence import TaskPersistence
+    from yuubot import config as yuubot_config
+
+    base_data = json.loads(msgspec.json.encode(YuuagentsConfig()))
+    merged_data = yuubot_config._deep_merge(base_data, runner.config.yuuagents)
+    cfg = msgspec.convert(merged_data, YuuagentsConfig)
+
+    # Only init DB (in-memory), skip dirs/config-write/docker/daemon
+    persistence = TaskPersistence(db_url=cfg.db_url)
+    await persistence.start()
+    await persistence.stop()
+
+    runner._initialized = True
+
+
 @pytest.fixture
-def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
+async def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
     """Build a real Dispatcher with real command tree, roles, agent runner."""
     root = build_command_tree(yuubot_config.bot.entries)
     role_mgr = RoleManager(master_qq=yuubot_config.bot.master)
@@ -107,7 +135,10 @@ def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
         "dm_whitelist": yuubot_config.response.dm_whitelist,
     }
 
-    return Dispatcher(
+    # Lightweight init: only DB, no daemon/docker/filesystem side effects
+    await _lightweight_init(agent_runner)
+
+    disp = Dispatcher(
         config=yuubot_config,
         root=root,
         role_mgr=role_mgr,
@@ -115,6 +146,9 @@ def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
         agent_runner=agent_runner,
         session_mgr=session_mgr,
     )
+    yield disp
+    await disp.stop()
+    await agent_runner.stop()
 
 
 # ── Event builders ───────────────────────────────────────────────
