@@ -190,13 +190,7 @@ class AgentRunner:
     
     def _build_task(self, match, message, ctx_id) -> str:
         """构建 Agent 任务描述"""
-        return f"""
-你收到了来自 ctx {ctx_id} 的消息：
-{message}
-
-请根据消息内容进行回复。使用 ybot im send 发送回复。
-"""
-```
+        return ...
 
 **关键设计**：Agent 通过 `execute_bash` 调用 `ybot` CLI skills。这样 skills 是独立的 CLI 工具，agent 不需要特殊的 tool 注册，只需要知道 CLI 用法（通过 SKILL.md 文档注入 prompt）。
 
