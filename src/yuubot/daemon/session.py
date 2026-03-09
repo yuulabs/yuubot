@@ -18,6 +18,7 @@ class Session:
     total_tokens: int = 0
     user_id: int = 0  # who started the session
     task_id: str = ""  # reused across continuations for trace continuity
+    handoff_note: str = ""  # set when a rolled-over session carries context summary
 
 
 @attrs.define
@@ -43,13 +44,31 @@ class SessionManager:
 
     # ── Auto mode ──────────────────────────────────────────────────────────────
 
-    def enable_auto(self, ctx_id: int) -> None:
+    async def load_auto(self) -> None:
+        """Restore auto mode state from DB on startup."""
+        from yuubot.core.models import AutoModeSetting
+        records = await AutoModeSetting.all()
+        for r in records:
+            self._auto_ctxs.add(r.ctx_id)
+            if r.current_agent:
+                self._current_agent[r.ctx_id] = r.current_agent
+        if records:
+            log.info("Loaded auto mode for %d ctx(s)", len(records))
+
+    async def enable_auto(self, ctx_id: int) -> None:
+        from yuubot.core.models import AutoModeSetting
         self._auto_ctxs.add(ctx_id)
+        await AutoModeSetting.update_or_create(
+            defaults={"current_agent": self._current_agent.get(ctx_id, "")},
+            ctx_id=ctx_id,
+        )
         log.info("Auto mode enabled: ctx=%s", ctx_id)
 
-    def disable_auto(self, ctx_id: int) -> None:
+    async def disable_auto(self, ctx_id: int) -> None:
+        from yuubot.core.models import AutoModeSetting
         self._auto_ctxs.discard(ctx_id)
         self._current_agent.pop(ctx_id, None)
+        await AutoModeSetting.filter(ctx_id=ctx_id).delete()
         log.info("Auto mode disabled: ctx=%s", ctx_id)
 
     def is_auto(self, ctx_id: int) -> bool:
@@ -104,26 +123,55 @@ class SessionManager:
                 del self._sessions[key]
 
         self._current_agent[ctx_id] = agent_name
+        if ctx_id in self._auto_ctxs:
+            self._sync_current_agent(ctx_id, agent_name)
         session = Session(ctx_id=ctx_id, agent_name=agent_name, user_id=user_id)
         self._sessions[(ctx_id, agent_name)] = session
         log.info("Session created: ctx=%s agent=%s", ctx_id, agent_name)
         return session
 
+    def _sync_current_agent(self, ctx_id: int, agent_name: str) -> None:
+        """Fire-and-forget DB update for current_agent in auto mode."""
+        import asyncio
+        from yuubot.core.models import AutoModeSetting
+
+        async def _update():
+            try:
+                await AutoModeSetting.filter(ctx_id=ctx_id).update(current_agent=agent_name)
+            except Exception:
+                log.warning("Failed to sync current_agent for ctx=%s", ctx_id)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_update())
+        except RuntimeError:
+            pass
+
     def touch(self, session: Session) -> None:
         """Refresh session TTL."""
         session.last_active = time.monotonic()
 
-    def close(self, ctx_id: int) -> bool:
-        """Close all sessions for a ctx. Returns True if any were closed."""
+    def close(self, ctx_id: int) -> list[Session]:
+        """Close all sessions for a ctx. Returns closed sessions."""
         keys = [k for k in self._sessions if k[0] == ctx_id]
-        for key in keys:
-            del self._sessions[key]
+        closed = [self._sessions.pop(key) for key in keys]
         self._current_agent.pop(ctx_id, None)
         if keys:
             log.info("Session closed: ctx=%s", ctx_id)
-        return bool(keys)
+        return closed
 
-    def update_history(self, session: Session, history: list, tokens: int) -> None:
+    def collect_expired(self) -> list[Session]:
+        """Evict all expired sessions and return them."""
+        expired = []
+        for key in list(self._sessions):
+            session = self._sessions[key]
+            if self._is_expired(session):
+                del self._sessions[key]
+                log.info("Session expired: ctx=%s agent=%s", *key)
+                expired.append(session)
+        return expired
+
+    def update_history(self, session: Session, history: list, tokens: int) -> bool:
         """Update session history and token count after agent run.
 
         *tokens* is the cumulative total from the agent. We compute the
@@ -131,6 +179,8 @@ class SessionManager:
         sessions are only closed when a single LLM call becomes too large
         (i.e. the context window is filling up), not merely because the
         user has chatted for a while.
+
+        Returns True if the session was closed due to reaching the token limit.
         """
         last_turn = tokens - session.total_tokens
         session.history = history
@@ -143,6 +193,8 @@ class SessionManager:
                 "Session closed (token limit): ctx=%s agent=%s last_turn=%d",
                 session.ctx_id, session.agent_name, last_turn,
             )
+            return True
+        return False
 
     def _is_expired(self, session: Session) -> bool:
         elapsed = time.monotonic() - session.last_active
