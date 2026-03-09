@@ -45,7 +45,7 @@ async def _log_bot_msg(body: dict, resp: dict, ctx_mgr: ContextManager, bot_qq: 
         log.exception("Failed to log bot message")
 
 
-def create_api(napcat_http: str, ctx_mgr: ContextManager, shutdown_event, bot_qq: int = 0) -> FastAPI:
+def create_api(napcat_http: str, ctx_mgr: ContextManager, shutdown_event, bot_qq: int = 0, master_qq: int = 0) -> FastAPI:
     app = FastAPI(title="yuubot-recorder-api")
     client = httpx.AsyncClient(base_url=napcat_http, timeout=30)
 
@@ -60,22 +60,35 @@ def create_api(napcat_http: str, ctx_mgr: ContextManager, shutdown_event, bot_qq
         # Content audit — block sensitive info leaks
         segments = body.get("message", [])
         result = audit_message(segments)
+        is_master_private = (
+            master_qq != 0
+            and body.get("message_type") == "private"
+            and body.get("user_id") == master_qq
+        )
         if not result.passed:
-            log.warning("安全审查拦截: %s | body=%s", result.category, body)
-            return JSONResponse(
-                {"error": f"安全审查拦截: 消息包含{result.category}，请勿泄露敏感信息"},
-                status_code=403,
-            )
+            log.warning("安全审查拦截: %s | match=%r | body=%s", result.category, result.match, body)
+            if is_master_private:
+                error_msg = (
+                    f"安全审查拦截: 消息包含{result.category}，"
+                    f"触发片段: {result.match!r}，请修改后重试"
+                )
+            else:
+                error_msg = f"安全审查拦截: 消息包含{result.category}，请勿泄露敏感信息"
+            return JSONResponse({"error": error_msg}, status_code=403)
 
         # Soft audit — structured privacy data (bot mode only)
         if request.headers.get("X-Bot-Mode") == "1":
             soft_result = soft_audit_message(segments)
             if not soft_result.passed:
-                log.warning("软审查拦截: %s | body=%s", soft_result.category, body)
-                return JSONResponse(
-                    {"error": f"安全审查拦截: {soft_result.category}"},
-                    status_code=403,
-                )
+                log.warning("软审查拦截: %s | match=%r | body=%s", soft_result.category, soft_result.match, body)
+                if is_master_private:
+                    error_msg = (
+                        f"安全审查拦截: {soft_result.category}，"
+                        f"触发字段: {soft_result.match!r}，请修改后重试"
+                    )
+                else:
+                    error_msg = f"安全审查拦截: {soft_result.category}"
+                return JSONResponse({"error": error_msg}, status_code=403)
 
         # Rate limit group messages
         if body.get("message_type") == "group":
@@ -114,6 +127,11 @@ def create_api(napcat_http: str, ctx_mgr: ContextManager, shutdown_event, bot_qq
     @app.get("/get_friend_list")
     async def get_friend_list() -> JSONResponse:
         r = await client.get("/get_friend_list")
+        return JSONResponse(r.json())
+
+    @app.get("/get_login_info")
+    async def get_login_info() -> JSONResponse:
+        r = await client.get("/get_login_info")
         return JSONResponse(r.json())
 
     @app.get("/get_group_member_list")

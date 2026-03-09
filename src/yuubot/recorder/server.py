@@ -88,7 +88,7 @@ async def run_recorder(config_path: str | None = None) -> None:
     napcat_ws = NapCatWSServer(store=store, relay=relay)
 
     shutdown_event = asyncio.Event()
-    api_app = create_api(cfg.recorder.napcat_http, ctx_mgr, shutdown_event, bot_qq=cfg.bot.qq)
+    api_app = create_api(cfg.recorder.napcat_http, ctx_mgr, shutdown_event, bot_qq=cfg.bot.qq, master_qq=cfg.bot.master)
 
     # Start all services
     await napcat_ws.start(cfg.recorder.napcat_ws.host, cfg.recorder.napcat_ws.port)

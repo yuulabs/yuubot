@@ -66,6 +66,7 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
 class AuditResult(NamedTuple):
     passed: bool
     category: str  # empty when passed
+    match: str     # the matched text fragment, empty when passed
 
 
 def _extract_text(segments: list[dict]) -> str:
@@ -81,18 +82,20 @@ def _extract_text(segments: list[dict]) -> str:
 def audit_message(segments: list[dict]) -> AuditResult:
     """Check outbound message segments for sensitive content.
 
-    Returns ``AuditResult(passed=True, category="")`` when safe,
-    or ``AuditResult(passed=False, category="...")`` on violation.
+    Returns ``AuditResult(passed=True, ...)`` when safe,
+    or ``AuditResult(passed=False, category=..., match=...)`` on violation.
+    ``match`` contains the specific text fragment that triggered the rule.
     """
     text = _extract_text(segments)
     if not text:
-        return AuditResult(passed=True, category="")
+        return AuditResult(passed=True, category="", match="")
 
     for category, pattern in PATTERNS:
-        if pattern.search(text):
-            return AuditResult(passed=False, category=category)
+        m = pattern.search(text)
+        if m:
+            return AuditResult(passed=False, category=category, match=m.group(0))
 
-    return AuditResult(passed=True, category="")
+    return AuditResult(passed=True, category="", match="")
 
 
 def audit_text(text: str) -> AuditResult:
@@ -129,13 +132,14 @@ def soft_audit_message(segments: list[dict]) -> AuditResult:
     """
     text = _extract_text(segments)
     if not text:
-        return AuditResult(passed=True, category="")
+        return AuditResult(passed=True, category="", match="")
 
     hits = {m.group(1).lower() for m in _PRIVACY_KEY_RE.finditer(text)}
     if len(hits) >= _SOFT_AUDIT_THRESHOLD:
         return AuditResult(
             passed=False,
             category="疑似隐私数据泄露(检测到结构化IP/地理信息)",
+            match=", ".join(sorted(hits)),
         )
 
-    return AuditResult(passed=True, category="")
+    return AuditResult(passed=True, category="", match="")
