@@ -319,7 +319,7 @@ class Dispatcher:
                 session=session,
             )
             session.task_id = task_id
-            self.session_mgr.update_history(session, history, tokens)
+            await self._finish_turn(session, history, tokens, event)
             return
 
         # Normal command handling
@@ -359,12 +359,54 @@ class Dispatcher:
                 session=new_session,
             )
             new_session.task_id = task_id
-            self.session_mgr.update_history(new_session, history, tokens)
+            await self._finish_turn(new_session, history, tokens, event)
 
         elif executor is not None:
             reply = await executor(match.remaining, event, self.deps)
             if reply:
                 await self._send_reply(event, reply)
+
+    async def _finish_turn(
+        self, session, history: list, tokens: int, event: dict
+    ) -> None:
+        """Update session history and handle token-limit rollover.
+
+        On rollover: summarize the old session, create a fresh session carrying
+        the summary as a handoff note, and notify the user.
+        """
+        rolled = self.session_mgr.update_history(session, history, tokens)
+        if not rolled:
+            return
+
+        ctx_id = session.ctx_id
+        agent_name = session.agent_name
+        user_id = session.user_id
+
+        await self._send_reply(event, "（上下文已满，正在压缩摘要，稍后继续...）")
+
+        try:
+            note = await self.agent_runner.summarize(history, agent_name)
+        except Exception:
+            log.exception("Failed to summarize session for ctx=%s", ctx_id)
+            note = ""
+
+        new_session = self.session_mgr.create(ctx_id, agent_name, user_id=user_id)
+        new_session.handoff_note = note
+        log.info("Session rolled over: ctx=%s agent=%s note_len=%d", ctx_id, agent_name, len(note))
+
+        if note:
+            await self._send_reply(event, "（已压缩上下文，新会话已就绪，可继续对话）")
+
+        # Trigger mem_curator slightly after summarizer to stagger API calls
+        # (shared history prefix enables cache hit if models are the same provider)
+        asyncio.create_task(self._run_curator(history, ctx_id, user_id))
+
+    async def _run_curator(self, history: list, ctx_id: int, user_id: int) -> None:
+        """Run mem_curator as a background task after session rollover."""
+        try:
+            await self.agent_runner.curate(history, ctx_id, user_id)
+        except Exception:
+            log.exception("mem_curator failed for ctx=%s", ctx_id)
 
     async def _send_reply(self, event: dict, text: str) -> None:
         """Send a text reply back to the source context."""

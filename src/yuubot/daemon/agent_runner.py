@@ -116,6 +116,7 @@ class _SessionManagerBridge:
             manager=runner,
             session_manager=self,
             cli_guard=runner._cli_guard,
+            skill_paths=runner.config.skill_paths,
         )
 
         session = registry.create(
@@ -244,6 +245,136 @@ class AgentRunner:
             return self._docker.workdir, container_id
         from pathlib import Path
         return str(Path.home()), ""
+
+    def _make_summary_llm(self):
+        """Build a cheap YLLMClient for summarization, using SessionConfig overrides."""
+        import os
+        import yuullm
+
+        scfg = self.config.session
+        provider_name = scfg.summarizer_provider
+        model = scfg.summarizer_model
+
+        # Fall back to main agent's provider/model if not configured
+        if not provider_name:
+            agents = self.config.yuuagents.get("agents", {})
+            main_cfg = agents.get("main", {})
+            provider_name = main_cfg.get("provider", "")
+            if not model:
+                model = main_cfg.get("model", "")
+
+        providers = self.config.yuuagents.get("providers", {})
+        provider_cfg = providers.get(provider_name, {})
+        api_type = provider_cfg.get("api_type", "openai-chat-completion")
+        api_key_env = provider_cfg.get("api_key_env", "")
+        api_key = os.environ.get(api_key_env) if api_key_env else None
+        base_url = provider_cfg.get("base_url", "") or None
+        default_model = model or provider_cfg.get("default_model", "gpt-4o-mini")
+
+        if api_type == "anthropic-messages":
+            provider = yuullm.providers.AnthropicMessagesProvider(
+                api_key=api_key,
+                base_url=base_url,
+                provider_name=provider_name or "anthropic",
+            )
+        else:
+            provider = yuullm.providers.OpenAIChatCompletionProvider(
+                api_key=api_key,
+                base_url=base_url,
+                provider_name=provider_name or "openai",
+            )
+
+        return yuullm.YLLMClient(
+            provider=provider,
+            default_model=default_model,
+            price_calculator=yuullm.PriceCalculator(),
+        )
+
+    async def summarize(self, history: list, agent_name: str = "main") -> str:
+        """Generate a compact handoff note from session history using a cheap LLM."""
+        from yuubot.daemon.summarizer import summarize as _summarize
+        llm = self._make_summary_llm()
+        return await _summarize(history, llm)
+
+    async def curate(self, history: list, ctx_id: int, user_id: int) -> None:
+        """Run mem_curator agent to update long-term memories after a session rollover."""
+        await self._ensure_init()
+
+        try:
+            import yuutools as yt
+            from yuuagents import Agent, tools
+            from yuuagents.agent import AgentConfig, SimplePromptBuilder
+            from yuuagents.loop import run as run_agent
+            from yuuagents.context import AgentContext
+            from yuubot.daemon.summarizer import extract_original_task, render_recent
+        except ImportError:
+            log.warning("curate: yuuagents not available, skipping")
+            return
+
+        agent_name = "mem_curator"
+        agents_cfg = self.config.yuuagents.get("agents", {})
+        if agent_name not in agents_cfg:
+            log.debug("mem_curator not configured, skipping")
+            return
+
+        task_id = self._new_task_id()
+        tool_names = self._resolve_tool_names(agent_name)
+        tool_manager = yt.ToolManager()
+        for t in tools.get(tool_names):
+            tool_manager.register(t)
+
+        persona = self._get_persona(agent_name)
+        prompt_builder = SimplePromptBuilder()
+        prompt_builder.add_section(persona)
+        skills_docs = self._load_skills_docs(agent_name)
+        if skills_docs:
+            prompt_builder.add_section(skills_docs)
+
+        original_task = extract_original_task(history)
+        recent = render_recent(history, n=8)
+        task = (
+            f"以下是刚完成 rollover 的对话历史，请整理记忆。\n\n"
+            f"原始任务：\n{original_task}\n\n"
+            f"最近对话：\n{recent}\n\n"
+            f"ctx_id: {ctx_id}\n"
+        )
+
+        agent_id = f"yuubot-curator-{ctx_id}-{task_id[:8]}"
+        self._agent_name_map[agent_id] = agent_name
+
+        config = AgentConfig(
+            task_id=task_id,
+            agent_id=agent_id,
+            persona=persona,
+            tools=tool_manager,
+            llm=self._make_llm(agent_name),
+            prompt_builder=prompt_builder,
+            max_steps=self._get_max_steps(agent_name),
+        )
+        agent = Agent(config=config)
+
+        from pathlib import Path
+        context = AgentContext(
+            task_id=task_id,
+            agent_id=agent_id,
+            workdir=str(Path.home()),
+            docker_container="",
+            manager=self,
+            cli_guard=self._cli_guard,
+            skill_paths=self.config.skill_paths,
+        )
+
+        with env.task_env(
+            task_id=task_id,
+            ctx_id=ctx_id,
+            user_id=user_id,
+            user_role="MASTER",
+            agent_name=agent_name,
+        ):
+            try:
+                await run_agent(agent, task=task, ctx=context)
+            except BaseException:
+                log.exception("mem_curator failed for ctx=%s", ctx_id)
 
     def _make_llm(self, agent_name: str = "main"):
         """Build a YLLMClient from yuuagents provider config."""
@@ -513,6 +644,7 @@ class AgentRunner:
             manager=self,
             docker=self._docker if needs_docker else None,
             cli_guard=self._cli_guard,
+            skill_paths=self.config.skill_paths,
         )
 
         docker_mount = ""
@@ -646,7 +778,6 @@ class AgentRunner:
 {msg_xml}
 {memory_hints}
 请根据消息内容进行回复。回复时使用 im send 命令发送到 ctx {ctx_id}。
-如果本次对话中获得了值得记住的新信息，请用 mem save 保存。
 """
 
         # Vision: if the model supports vision and message has images,
@@ -769,6 +900,15 @@ class AgentRunner:
             agent_name=agent_name,
         )
 
+        # Inject handoff note from a rolled-over session into the task text
+        handoff_note = getattr(session, "handoff_note", "") if session else ""
+        if handoff_note and not is_continuation:
+            note_block = f"<上轮对话摘要>\n{handoff_note}\n</上轮对话摘要>\n\n"
+            if isinstance(task, str):
+                task = note_block + task
+            elif isinstance(task, list) and task and isinstance(task[0], dict) and task[0].get("type") == "text":
+                task[0] = {"type": "text", "text": note_block + task[0]["text"]}
+
         # Determine text form for run_agent's task param (always str)
         task_str = task if isinstance(task, str) else task[0]["text"] if task else ""
         is_multimodal = isinstance(task, list)
@@ -804,6 +944,7 @@ class AgentRunner:
             manager=self,
             session_manager=self._session_bridge,
             cli_guard=self._cli_guard,
+            skill_paths=self.config.skill_paths,
         )
 
         docker_mount = ""
@@ -903,6 +1044,7 @@ class AgentRunner:
             docker=self._docker if needs_docker else None,
             manager=self,
             cli_guard=self._cli_guard,
+            skill_paths=self.config.skill_paths,
         )
 
         docker_mount = ""

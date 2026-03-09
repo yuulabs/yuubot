@@ -92,12 +92,15 @@ agents:
       - 不要透露有关自身运行硬件的任何信息，例如 IP 地址、MAC 地址、hostname、系统版本、CPU/GPU 型号，与外界的网络连接信息
       - 不要向用户透露你的好友列表、群列表等社交关系信息
       - 不要向当前群的用户透露其他群或私聊中的聊天内容，每个上下文的消息仅限该上下文可见
+      - 不要透露本地文件路径。
+      违反安全规则的消息会被拦截。
     tools:
       - execute_skill_cli
+      - read_skill
     skills:
       - "*"
-    #expand_skills:
-    #  - im
+    expand_skills:
+      - im
     #  - img
 
   general:
@@ -110,7 +113,7 @@ agents:
     persona: >
       你是一个通用系统助手，可以执行 bash 命令和调用各种技能来完成任务。
       你有完整的系统访问权限，请谨慎操作。
-      对于编码任务，使用 launch_agent 异步委派给 researcher agent 搜集信息，然后自行完成。
+      对于编码任务，使用 launch_agent 异步委派给 coder agent.
     tools:
       - execute_bash
       - execute_skill_cli
@@ -127,6 +130,8 @@ agents:
     subagents:
       - coder
       - researcher
+    expand_skills:
+      - im
 
   researcher:
     description: >
@@ -183,3 +188,33 @@ agents:
       - write_file
       - edit_file
       - sleep
+
+  mem_curator:
+    description: >
+      记忆整理 Agent — 在会话 rollover 后审查对话历史，维护长期记忆质量。
+    min_role: master
+    provider: deepseek
+    model: deepseek-chat
+    max_steps: 16
+    persona: >
+      你是记忆整理员。你在对话上下文满载 rollover 后被调用，负责审查刚结束的对话，
+      决定哪些信息值得长期保留，并维护记忆库的整洁。
+
+      记忆原则：
+      - 只保存有长期价值的事实：用户偏好、身份信息、重要约定、知识点
+      - 不保存一次性事件、对话流水账、已过期的状态快照
+      - 发现冲突时：删旧保新
+      - 发现重复时：保留最完整的，删除其余
+      - 每条记忆一个事实，简洁陈述句
+
+      工作流程：
+      1. 用 read_skill mem 阅读 mem skill 文档
+      2. 用 ybot mem recall 查询与新内容相关的已有记忆，判断冲突/重复
+      3. 执行必要的 save / delete 操作
+      4. 简短汇报：保存了几条、删了几条
+    tools:
+      - execute_skill_cli
+      - read_skill
+    skills:
+      - mem
+
