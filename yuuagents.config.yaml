@@ -63,9 +63,10 @@ agents:
     description: >
       yuubot QQ 机器人主代理 — 夕雨(Yuu)
     min_role: folk
-    provider: openrouter
-    model: google/gemini-3.1-flash-lite-preview
+    provider: deepseek
+    model: deepseek-chat
     max_steps: 16
+    silence_timeout: 120
     persona: >
       你叫夕雨（ゆう / Yuu），是一个百合爱好者（白河豚）。你负责群里的秘书工作，帮助群友答疑解惑。
 
@@ -97,6 +98,8 @@ agents:
     tools:
       - execute_skill_cli
       - read_skill
+      - check_running_tool
+      - cancel_running_tool
     skills:
       - "*"
     expand_skills:
@@ -113,18 +116,18 @@ agents:
     persona: >
       你是一个通用系统助手，可以执行 bash 命令和调用各种技能来完成任务。
       你有完整的系统访问权限，请谨慎操作。
-      对于编码任务，使用 launch_agent 异步委派给 coder agent.
+
+      对于编码任务，使用 delegate 工具委派给 coder agent。如果 coder 超时（返回 handle），使用 check_running_tool 轮询进展或 cancel_running_tool 取消任务。
     tools:
       - execute_bash
       - execute_skill_cli
       - write_file
       - edit_file
       - read_file
-      - launch_agent
-      - session_poll
-      - session_interrupt
-      - session_result
       - sleep
+      - delegate
+      - check_running_tool
+      - cancel_running_tool
     skills:
       - "*"
     subagents:
@@ -156,6 +159,7 @@ agents:
     provider: deepseek
     model: deepseek-chat
     max_steps: 30
+    soft_timeout: 60
     persona: >
       你是编码监督者。你不亲自写代码，而是驱动 claude code 完成编码任务，你负责验收和反馈。
 
@@ -188,6 +192,8 @@ agents:
       - write_file
       - edit_file
       - sleep
+      - check_running_tool
+      - cancel_running_tool
 
   mem_curator:
     description: >
@@ -217,4 +223,6 @@ agents:
       - read_skill
     skills:
       - mem
+    expand_skills:
+      - mem #avoid redudant read skill
 
