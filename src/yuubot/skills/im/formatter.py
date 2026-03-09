@@ -36,7 +36,32 @@ async def get_user_alias(user_id: int, ctx_id: int | None = None) -> str | None:
     return alias.alias if alias else None
 
 
-async def format_segments(segments: Message, media_files: list[str] | None = None) -> str:
+async def _resolve_at_name(qq: str, ctx_id: int | None = None) -> str:
+    """Resolve an @mention QQ number to a display name.
+
+    Tries alias first, then nickname from message history, falls back to QQ number.
+    """
+    try:
+        uid = int(qq)
+    except ValueError:
+        return qq
+
+    alias = await get_user_alias(uid, ctx_id)
+    if alias:
+        return alias
+
+    record = await MessageRecord.filter(user_id=uid).order_by("-id").first()
+    if record:
+        return record.display_name or record.nickname or qq
+
+    return qq
+
+
+async def format_segments(
+    segments: Message,
+    media_files: list[str] | None = None,
+    ctx_id: int | None = None,
+) -> str:
     """Format segments to LLM-readable inline content.
 
     Handles text, images, @mentions, and reply expansion (one level).
@@ -67,7 +92,8 @@ async def format_segments(segments: Message, media_files: list[str] | None = Non
             else:
                 parts.append('[图片]')
         elif hasattr(seg, 'qq'):  # AtSegment
-            parts.append(f'@{html.escape(seg.qq)}')
+            name = await _resolve_at_name(seg.qq, ctx_id)
+            parts.append(f'@{html.escape(name)}')
         elif isinstance(seg, ReplySegment):
             reply_tag = await _format_reply(seg.id)
             parts.append(reply_tag)
@@ -84,13 +110,14 @@ async def format_message_to_xml(
     timestamp: datetime | str,
     raw_message: str,
     media_files: list[str],
+    ctx_id: int | None = None,
 ) -> str:
     """Format a single message to LLM-readable XML.
 
     Format: <msg id=X qq=Y name="..." display_name="..." alias="..." time="...">content</msg>
     """
     segments = segments_from_json(raw_message)
-    content = await format_segments(segments, media_files)
+    content = await format_segments(segments, media_files, ctx_id=ctx_id)
 
     # Build attributes — use "qq" so LLM can directly reuse it in at segments
     attrs = [f'id="{msg_id}"', f'qq="{user_id}"']
@@ -147,7 +174,8 @@ async def format_messages_to_xml(messages: list[dict]) -> str:
     xml_parts: list[str] = []
 
     for msg in messages:
-        alias = await get_user_alias(msg['user_id'], msg.get('ctx_id'))
+        ctx_id = msg.get('ctx_id')
+        alias = await get_user_alias(msg['user_id'], ctx_id)
         xml = await format_message_to_xml(
             msg_id=msg['message_id'],
             user_id=msg['user_id'],
@@ -157,6 +185,7 @@ async def format_messages_to_xml(messages: list[dict]) -> str:
             timestamp=msg['timestamp'],
             raw_message=msg['raw_message'],
             media_files=msg.get('media_files', []),
+            ctx_id=ctx_id,
         )
         xml_parts.append(xml)
 
