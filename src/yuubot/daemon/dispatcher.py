@@ -190,8 +190,18 @@ class Dispatcher:
                     event["_session_closed"] = True
                 match = cmd_match
             elif is_llm_match and is_auto:
-                # Auto mode: /yllm = switch agent signal, not a session continuation.
-                # Fall through to normal /yllm handling below.
+                # Auto mode: /yllm is a switch only if it names a different agent.
+                tag_agent, _ = _parse_agent_tag(cmd_match.remaining)
+                if tag_agent == session.agent_name:
+                    # Same agent — treat as continuation
+                    self.session_mgr.touch(session)
+                    log.info("Session continuation (auto/yllm): ctx=%s agent=%s", ctx_id, session.agent_name)
+                    event["_session"] = session
+                    event["_session_agent"] = session.agent_name
+                    event["_session_remaining"] = cmd_match.remaining
+                    self._enqueue(None, event)
+                    return
+                # Different agent — fall through to normal /yllm handling (switch)
                 match = cmd_match
             elif msg_type == "group" and not self._is_at_bot(event) and not is_llm_match:
                 # Group chat, no @bot, not a /yllm command — ignore for session
