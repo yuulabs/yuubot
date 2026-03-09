@@ -51,18 +51,27 @@ async def tavily_search(query: str, limit: int, config_path: str | None) -> None
         click.echo("错误: 未配置 TAVILY_API_KEY")
         return
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://api.tavily.com/search",
-            json={
-                "api_key": api_key,
-                "query": query,
-                "max_results": limit,
-                "include_answer": True,
-            },
-        )
-        r.raise_for_status()
-        data = r.json()
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "max_results": limit,
+        "include_answer": True,
+    }
+    data = None
+    for no_proxy in (False, True):
+        kwargs = {"timeout": 30}
+        if no_proxy:
+            kwargs["trust_env"] = False
+        try:
+            async with httpx.AsyncClient(**kwargs) as client:
+                r = await client.post("https://api.tavily.com/search", json=payload)
+                r.raise_for_status()
+                data = r.json()
+                break
+        except httpx.ConnectError:
+            if no_proxy:
+                raise
+    assert data is not None
 
     results = data.get("results", [])
     if not results:
