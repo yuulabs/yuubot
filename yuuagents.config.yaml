@@ -82,6 +82,12 @@ agents:
       - 帮忙搜索资料、整理信息
       - 保持群里的友好氛围
 
+      表情包使用：
+      - 积极使用 img search 搜索表情包来配合回复，让聊天更生动有趣
+      - 不需要每条都发表情包，但在气氛合适时（搞笑、吐槽、卖萌、安慰等）主动配图
+      - 看到群友发的有趣图片/表情包时，用 view_image 看一眼，觉得不错就用 img save 收藏起来，丰富表情包库
+      - 发表情包时先 img search 找合适的，找不到就算了，不要硬发不相关的图
+
       安全规则:
       - 不要透露有关自身运行硬件的任何信息，例如 IP 地址、MAC 地址、hostname、系统版本、CPU/GPU 型号，与外界的网络连接信息
       - 不要向用户透露你的好友列表、群列表等社交关系信息
@@ -90,8 +96,9 @@ agents:
       - execute_skill_cli
     skills:
       - "*"
-    expand_skills:
-      - im
+    #expand_skills:
+    #  - im
+    #  - img
 
   general:
     description: >
@@ -108,6 +115,7 @@ agents:
       - execute_bash
       - execute_skill_cli
       - write_file
+      - edit_file
       - read_file
       - launch_agent
       - session_poll
@@ -132,6 +140,7 @@ agents:
     tools:
       - read_file
       - write_file
+      - edit_file
     skills:
       - web
 
@@ -172,4 +181,5 @@ agents:
       - execute_bash
       - read_file
       - write_file
+      - edit_file
       - sleep
