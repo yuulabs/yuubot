@@ -31,6 +31,16 @@ def _caller_agent() -> str:
     return env.get(env.AGENT_NAME)
 
 
+def _is_master() -> bool:
+    return env.get(env.USER_ROLE) == "master"
+
+
+def _caller_ctx() -> int | None:
+    """Return current ctx_id from env, or None if not set."""
+    raw = env.get(env.BOT_CTX)
+    return int(raw) if raw else None
+
+
 def _resolve_agent(explicit: str | None) -> str:
     """Resolve target agent: explicit > caller's own name > 'main'."""
     if explicit:
@@ -123,10 +133,15 @@ async def list_tasks(config_path: str | None, *, show_all: bool = False) -> None
     cfg = load_config(config_path)
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     try:
-        if show_all:
-            tasks = await ScheduledTask.all().order_by("id")
+        filters: dict = {} if show_all else {"enabled": True}
+        # Non-master callers can only see schedules for their own ctx
+        ctx = _caller_ctx()
+        if ctx is not None and not _is_master():
+            filters["ctx_id"] = ctx
+        if filters:
+            tasks = await ScheduledTask.filter(**filters).order_by("id")
         else:
-            tasks = await ScheduledTask.filter(enabled=True).order_by("id")
+            tasks = await ScheduledTask.all().order_by("id")
         if not tasks:
             click.echo("暂无定时任务" if show_all else "暂无活跃定时任务（使用 --all 查看全部）")
             return
@@ -159,6 +174,12 @@ async def update_task(
         obj = await ScheduledTask.get_or_none(id=task_id)
         if obj is None:
             click.echo(f"错误: 任务 {task_id} 不存在")
+            return
+
+        # Non-master callers can only modify schedules for their own ctx
+        ctx = _caller_ctx()
+        if ctx is not None and not _is_master() and obj.ctx_id != ctx:
+            click.echo(f"错误: 无权修改其他会话的定时任务 [{task_id}]")
             return
 
         if cron_expr is not None:
@@ -204,6 +225,13 @@ async def delete_task(task_id: int, config_path: str | None) -> None:
         if obj is None:
             click.echo(f"错误: 任务 {task_id} 不存在")
             return
+
+        # Non-master callers can only delete schedules for their own ctx
+        ctx = _caller_ctx()
+        if ctx is not None and not _is_master() and obj.ctx_id != ctx:
+            click.echo(f"错误: 无权删除其他会话的定时任务 [{task_id}]")
+            return
+
         await obj.delete()
         click.echo(f"已删除定时任务 [{task_id}]")
         _notify_reload(cfg)
