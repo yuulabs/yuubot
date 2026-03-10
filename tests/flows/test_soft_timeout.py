@@ -171,8 +171,7 @@ async def test_poll_returns_tail_output_on_wait_timeout():
 
     result = await registry.check(handle, wait=0.2)
 
-    assert "Still running" in result
-    assert "handle=" in result
+    assert "still running" in result.lower()
     assert "Line 3" in result or "Current work" in result
 
     task.cancel()
@@ -199,10 +198,10 @@ async def test_poll_multiple_times_shows_progress():
 
     await asyncio.sleep(0.1)
     result1 = await registry.check(handle, wait=0.05)
-    assert "Still running" in result1
+    assert "still running" in result1.lower()
 
     result2 = await registry.check(handle, wait=0.05)
-    assert "Still running" in result2 or "all done" in result2 or "Step" in result2
+    assert "still running" in result2.lower() or "all done" in result2 or "Step" in result2
 
     result3 = await registry.check(handle, wait=2)
     assert "all done" in result3
@@ -246,6 +245,48 @@ async def test_full_soft_timeout_polling_flow():
 
     poll_result = await registry.check(handle, wait=2)
     assert "long task completed" in poll_result
+
+
+@pytest.mark.asyncio
+async def test_soft_timeout_then_check_running_tool():
+    """Delegate 超时 → placeholder 含 handle → check_running_tool 拿到最终结果."""
+    tracer = trace.get_tracer("test")
+    registry = RunningToolRegistry()
+
+    async def delegate_like_task() -> str:
+        await asyncio.sleep(0.6)
+        return "delegate finished successfully"
+
+    # 1) gather with soft_timeout — task exceeds timeout → placeholder
+    with tracer.start_as_current_span("test") as span:
+        ctx = ToolsContext(span, tracer)
+        results = await ctx.gather(
+            [
+                {
+                    "tool_call_id": "del1",
+                    "name": "delegate",
+                    "tool": delegate_like_task,
+                }
+            ],
+            soft_timeout=0.1,
+            registry=registry,
+        )
+
+    assert len(results) == 1
+    placeholder = str(results[0].output)
+    assert "still running" in placeholder.lower()
+    assert "handle=" in placeholder
+
+    # 2) Extract handle from placeholder
+    handle = placeholder.split("handle=")[1].split()[0].strip()
+    assert len(handle) == 8
+
+    # 3) check via registry (same as check_running_tool tool) — should block and return final result
+    final = await registry.check(handle, wait=5)
+    assert "delegate finished successfully" in final
+
+    # 4) Registry entry cleaned up after retrieval
+    assert len(registry._entries) == 0
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 yuubot 只有一种 session：**Chat Session** —— 用户与 bot 的多轮对话状态，维护在 Daemon 进程内存中。
 
-长时间运行的任务（如编码）通过 `delegate` 工具委派给子 agent。子 agent 的进展通过 **OutputBuffer** 实时同步到父 agent，让父 agent 能看到子 agent 的 LLM 输出和工具调用。如果任务超过 `soft_timeout`，子 agent 会返回一个 handle，父 agent 可以用 `check_running_tool` 轮询或等待完成。
+长时间运行的任务（如编码）通过普通工具调用处理。工具输出持续写入 **OutputBuffer**；如果工具超过 `soft_timeout`，框架返回 handle，agent 后续统一使用 `check_running_tool` / `cancel_running_tool` 继续管理。`delegate` 只是把子 agent 的文本、工具调用和工具输出透传到父 agent，并不引入额外协议。
 
 ---
 
@@ -72,7 +72,7 @@ Auto 模式状态持久化到 `auto_mode` 表（ctx_id + current_agent），Daem
 
 ---
 
-## 长时间任务处理（delegate + OutputBuffer）
+## 长时间任务处理（running tool + delegate）
 
 对于耗时任务（如编码），使用 `delegate` 工具委派给专门的子 agent（如 coder）。
 
@@ -84,11 +84,10 @@ Parent Agent ──delegate()──► Child Agent (coder)
        │    ◄── OutputBuffer ───   │
        │         (stream)           │
        │                            ▼
-       │                  LLM streaming chunks
-       │                  Tool call notifications
-       │                  Tool output (via buffer)
+       │                 execute_bash / execute_skill_cli / ...
+       │                 soft_timeout → handle
        ▼
-Parent sees real-time progress
+Parent sees child text, tool calls, and tool output tail
 ```
 
 ### OutputBuffer 同步机制
@@ -96,15 +95,16 @@ Parent sees real-time progress
 1. **LLM 流式输出**：子 agent 的每个 LLM response chunk 实时写入 `output_buffer`
 2. **工具调用通知**：子 agent 发起工具调用时，写入 `[calling {tool_name}]` 到 buffer
 3. **子工具输出**：子 agent 调用的工具如果产生输出，通过该工具的 `current_output_buffer` 写入
-4. **父 agent 读取**：父 agent 可以通过某种方式读取 buffer 内容（如通过 tool result 或特殊协议）
+4. **父 agent 读取**：父 agent 通过同一个运行中工具的 tail 看到最近进展，无需额外 background 子系统
 
 ### Soft Timeout 处理
 
 yuuagents 的 `ToolsContext.gather()` 支持 `soft_timeout` 参数：
 
 - 如果子 agent 在 `soft_timeout` 内完成：正常返回最终结果
-- 如果超过 `soft_timeout`：返回占位符（包含 handle），子 agent 继续在后台运行
+- 如果超过 `soft_timeout`：返回占位符（包含 handle），该工具继续作为“运行中的工具调用”存在
 - 父 agent 可以用 `check_running_tool(handle)` 轮询进展或等待完成
+- 必要时用 `cancel_running_tool(handle)` 取消该工具，底层命令会收到中断
 
 ```python
 # 伪代码示例
@@ -136,11 +136,11 @@ if silence_interval_first > 0 and ctx.delegate_depth == 0:
 配置在 `yuuagents.config.yaml`。定位为**编码监督者**而非编码者：
 
 1. **委派**：coder agent 分析任务，驱动 claude code 完成编码
-2. **实时同步**：coder agent 的进展通过 OutputBuffer 实时同步给父 agent
-3. **验收**：coder agent 检查产出，父 agent 也能看到过程
-4. **反馈**：如果发现问题，父 agent 可以直接反馈或重新委派
-
-使用 `{background_cli_prompt}` 变量注入 background CLI 使用说明，通过 `background run` 启动 claude code。
+2. **执行**：直接用 `execute_bash("claude ...")` 启动长任务
+3. **实时同步**：coder agent 的进展通过 OutputBuffer 实时同步给父 agent
+4. **超时续跑**：如返回 handle，继续用 `check_running_tool` 查看 tail 或等待完成
+5. **验收**：coder agent 检查产出，父 agent 也能看到过程
+6. **反馈**：如果发现问题，父 agent 可以直接反馈或重新委派
 
 ---
 
@@ -151,3 +151,4 @@ if silence_interval_first > 0 and ctx.delegate_depth == 0:
 - ~~`launch_agent` / `session_poll` / `session_interrupt` / `session_result` 工具~~：从未实际使用，delegate + OutputBuffer 提供更简洁的同步机制
 - ~~yuubot 的 CTX_TIMEOUT~~：已移除。制造了孤儿任务，超时控制完全由 yuuagents 的 `check_running` tool 处理
 - ~~yuubot 的 `_SessionManagerBridge`~~：不再需要，delegate 直接通过 `AgentRunner.delegate()` 运行
+- ~~background run / wait / drain~~：已废弃。长任务统一建模为运行中的工具调用

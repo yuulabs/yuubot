@@ -286,7 +286,13 @@ class AgentRunner:
         """Get persona string for the given agent name."""
         agents = self.config.yuuagents.get("agents", {})
         agent_cfg = agents.get(agent_name, {})
-        return agent_cfg.get("persona", "你是一个有用的QQ机器人助手。")
+        persona = agent_cfg.get("persona", "你是一个有用的QQ机器人助手。")
+        # Expand {var} placeholders from yuuagents prompt fragments.
+        from yuuagents.prompts import get_vars
+
+        for key, value in get_vars().items():
+            persona = persona.replace(f"{{{key}}}", value)
+        return persona
 
     def _get_max_steps(self, agent_name: str) -> int:
         """Get max_steps for the given agent name. 0 = unlimited."""
@@ -514,10 +520,12 @@ class AgentRunner:
             cli_guard=self._cli_guard,
             skill_paths=self.config.skill_paths,
             subprocess_env=run_env,
+            current_output_buffer=output_buffer,
+            output_buffer=output_buffer,
         )
 
         try:
-            await run_agent(agent, task=task, ctx=context, output_buffer=output_buffer)
+            await run_agent(agent, task=task, ctx=context)
         finally:
             self._agent_subprocess_env.pop(runtime_id, None)
         return self._last_assistant_text(agent)

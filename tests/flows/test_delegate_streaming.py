@@ -67,7 +67,7 @@ async def test_running_tool_registry_registration():
     assert handle in registry._entries
 
     result = await registry.check(handle, wait=0.05)
-    assert "Still running" in result
+    assert "still running" in result.lower()
 
     task.cancel()
     try:
@@ -109,9 +109,11 @@ async def test_delegate_receives_output_buffer_via_context():
         workdir="/tmp",
         docker_container="",
         current_output_buffer=buf,
+        output_buffer=buf,
     )
 
     assert ctx.current_output_buffer is buf
+    assert ctx.output_buffer is buf
 
     ctx.current_output_buffer.write(b"Test data")
     assert "Test data" in buf.full()
