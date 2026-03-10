@@ -14,6 +14,7 @@ from yuubot.config import Config
 from yuubot.core.models import Role, ReplySegment, AtSegment, segments_to_plain
 from yuubot.core.onebot import parse_segments, build_send_msg
 from yuubot.daemon.session import SessionManager
+from yuuagents.flow import Ping, PingKind
 
 log = logging.getLogger(__name__)
 
@@ -214,7 +215,7 @@ class Dispatcher:
                     event["_session"] = session
                     event["_session_agent"] = session.agent_name
                     event["_session_remaining"] = cmd_match.remaining
-                    self._enqueue(None, event)
+                    await self._ping_or_enqueue(session, event)
                     return
                 # Different agent — fall through to normal /yllm handling (switch)
                 match = cmd_match
@@ -233,7 +234,7 @@ class Dispatcher:
                 event["_session"] = session
                 event["_session_agent"] = session.agent_name
                 event["_session_remaining"] = remaining
-                self._enqueue(None, event)
+                await self._ping_or_enqueue(session, event)
                 return
         elif is_auto:
             # Auto mode, no active session: auto-resume or command
@@ -296,6 +297,61 @@ class Dispatcher:
             w.start()
         self._workers[key].queue.put_nowait((match, event))
 
+    async def _build_ping_payload(self, event: dict) -> str:
+        """Build XML payload for a ping, same format as continuation task."""
+        from datetime import datetime, timezone
+        from yuubot.core.models import AtSegment as _AtSeg, segments_to_json
+        from yuubot.skills.im.formatter import (
+            format_message_to_xml,
+            get_user_alias,
+        )
+
+        ctx_id = event.get("ctx_id", "?")
+        segments = parse_segments(event.get("message", []))
+        bot_qq = str(self.config.bot.qq)
+        segments = [s for s in segments if not (isinstance(s, _AtSeg) and s.qq == bot_qq)]
+
+        bot_name = await self.agent_runner._get_bot_name()
+        segments = self.agent_runner._replace_command_prefix(segments, bot_name)
+
+        user_id = event.get("user_id", "?")
+        nickname = event.get("sender", {}).get("nickname", "")
+        alias = await get_user_alias(user_id, ctx_id)
+        display_name = event.get("sender", {}).get("card", "")
+        ts = datetime.fromtimestamp(event.get("time", 0), tz=timezone.utc)
+        raw_json = segments_to_json(segments)
+
+        return await format_message_to_xml(
+            msg_id=event.get("message_id", 0),
+            user_id=user_id,
+            nickname=nickname,
+            display_name=display_name,
+            alias=alias,
+            timestamp=ts,
+            raw_message=raw_json,
+            media_files=event.get("media_files", []),
+            ctx_id=int(ctx_id) if ctx_id != "?" else None,
+        )
+
+    async def _ping_or_enqueue(self, session, event: dict) -> None:
+        """If a root flow is running for this ctx, ping it; otherwise enqueue."""
+        ctx_id = event.get("ctx_id", 0)
+        root_flow = self.agent_runner.get_active_flow(ctx_id)
+        if root_flow is not None:
+            payload = await self._build_ping_payload(event)
+            # Re-check: flow might have finished during async payload build
+            if self.agent_runner.get_active_flow(ctx_id) is root_flow:
+                self.session_mgr.touch(session)
+                root_flow.ping(Ping(
+                    kind=PingKind.USER_MESSAGE,
+                    source_flow_id="dispatcher",
+                    payload=payload,
+                ))
+                log.info("Pinged running flow for ctx=%s", ctx_id)
+                return
+        # Flow not running — fall through to _CtxWorker continuation
+        self._enqueue(None, event)
+
     async def _handle(self, match, event: dict) -> None:
         # Session continuation — match is None, session info in event
         session = event.pop("_session", None)
@@ -304,8 +360,7 @@ class Dispatcher:
 
         if session is not None and agent_name is not None:
             # Validate agent still exists
-            agents_cfg = self.config.yuuagents.get("agents", {})
-            if agent_name not in agents_cfg:
+            if not self._agent_exists(agent_name):
                 await self._send_reply(event, f"未知 Agent: {agent_name}")
                 return
 
@@ -347,8 +402,7 @@ class Dispatcher:
             llm_agent_name, remaining = _parse_agent_tag(match.remaining)
             match.remaining = remaining
 
-            agents_cfg = self.config.yuuagents.get("agents", {})
-            if llm_agent_name not in agents_cfg:
+            if not self._agent_exists(llm_agent_name):
                 await self._send_reply(event, f"未知 Agent: {llm_agent_name}")
                 return
 
@@ -487,6 +541,13 @@ class Dispatcher:
             return False
 
         return False
+
+    def _agent_exists(self, name: str) -> bool:
+        """Check if an agent is defined in CHARACTER_REGISTRY or YAML config."""
+        from yuubot.characters import CHARACTER_REGISTRY
+        if name in CHARACTER_REGISTRY:
+            return True
+        return name in self.config.yuuagents.get("agents", {})
 
     async def _is_free_mode(self, event: dict) -> bool:
         """Check if the current context is in free mode."""

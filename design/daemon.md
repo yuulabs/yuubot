@@ -14,185 +14,117 @@ Daemon 是 yuubot 的核心进程，负责：
 ybot up [--config config.yaml]
 ```
 
+## Prompt 管理
+
+### 核心概念
+
+**Character**（角色）= 人格 + 业务意图。例如"夕雨"。
+**AgentSpec**（能力规格）= tools + sections + constraints。一个 Character 持有多个 AgentSpec，运行时根据 provider/model 能力选择最优的一个。
+**PromptSpec** = 运行时产物，可 inspect。
+
+### 数据流
+
+```
+Character × RuntimeInfo → PromptSpec → SimplePromptBuilder → yuuagents
+```
+
+1. `characters.py` 定义所有角色（人格、tools、sections、skills）
+2. `yuuagents.config.yaml` 只提供 provider + model
+3. `prompt.py` 的 `build_prompt_spec()` 确定性地派生出完整 prompt 结构
+4. `build_system_prompt()` 将 PromptSpec 转为 yuuagents 的 SimplePromptBuilder
+
+### System Prompt 结构
+
+固定顺序：`persona → [sections...] → skills_summary → expanded_skills`
+
+每个 agent 的具体 sections：
+
+| Agent | Sections |
+|-------|----------|
+| main | persona → skills_summary → expanded:im |
+| general | persona → subagents → docker → sleep_mechanism → bootstrap → skills_summary → expanded:im |
+| researcher | persona → skills_summary(web) |
+| coder | persona → docker → sleep_mechanism |
+| mem_curator | persona → skills_summary(mem) → expanded:mem |
+
+### 文件分工
+
+| 文件 | 职责 |
+|------|------|
+| `prompt.py` | 数据结构（FileRef, Section, AgentSpec, Character, PromptSpec）+ build 函数 |
+| `characters.py` | 所有角色定义，CHARACTER_REGISTRY |
+| `prompts/yuu.md` | 夕雨 persona（FileRef 热更新） |
+| `yuuagents.config.yaml` | 仅 provider + model |
+
+### 热更新边界
+
+| 可热更（每次新 session 重新加载） | 需重启 |
+|---|---|
+| persona 文件（FileRef） | 端口、进程级配置 |
+| provider / model（config reload） | Docker 镜像 |
+
 ## 模块设计
 
 ### app.py — FastAPI 应用
 
-```python
-app = FastAPI()
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 启动
-    config = load_config()
-    ws_client = WSClient(config.recorder.relay_ws)
-    dispatcher = Dispatcher(config)
-    scheduler = Scheduler(config)
-    agent_runner = AgentRunner(config)
-    
-    await ws_client.connect()
-    scheduler.start()
-    
-    yield
-    
-    # 关闭
-    scheduler.stop()
-    await ws_client.close()
-```
-
-FastAPI 同时提供：
-- 健康检查接口 `GET /health`
-- Agent 状态查询 `GET /agent/status`
-- 手动触发 Agent `POST /agent/trigger`（调试用）
-
-### ws_client.py — Recorder WS 客户端
-
-```python
-class WSClient:
-    """连接 Recorder 内部 WS，接收事件"""
-    
-    async def connect(self):
-        """连接并自动重连"""
-        
-    async def on_event(self, event: dict):
-        """收到事件，交给 dispatcher"""
-        await self.dispatcher.dispatch(event)
-```
-
-特性：
-- 自动重连（Recorder 重启时）
-- 心跳保活
+FastAPI + lifespan 管理：
+- 加载配置，连接 Recorder WS
+- 初始化 Dispatcher, Scheduler, AgentRunner
+- 提供 `/health`, `/agent/status`, `/agent/trigger` 接口
 
 ### dispatcher.py — 消息分发
 
-```python
-class Dispatcher:
-    """消息分发器"""
-    
-    def __init__(self, config, command_tree, agent_runner):
-        self.command_tree = command_tree
-        self.agent_runner = agent_runner
-        self.queue = asyncio.Queue()  # 全局消息队列
-    
-    async def dispatch(self, event: dict):
-        """分发事件"""
-        if event["post_type"] != "message":
-            return  # 暂时只处理消息事件
-        
-        # 1. 检查是否需要响应（at模式/free模式）
-        if not self.should_respond(event):
-            return
-        
-        # 2. 命令解析
-        match = self.command_tree.match(event["message"])
-        if match is None:
-            return  # 不是命令，忽略
-        
-        # 3. 权限检查
-        role = self.get_role(event["user_id"])
-        if not match.command.check_permission(role):
-            return  # 权限不足
-        
-        # 4. 放入队列（全局单 Agent，排队处理）
-        await self.queue.put((match, event))
-    
-    async def process_loop(self):
-        """消费队列，逐个处理"""
-        while True:
-            match, event = await self.queue.get()
-            await self.agent_runner.run(match, event)
-```
+职责：解析命令 → 权限检查 → 分发到 executor 或 agent。
 
-**全局单 Agent**：所有消息排队处理，避免并发资源竞争。队列保证先来先服务。
-
-### scheduler.py — 定时任务
-
-```python
-class Scheduler:
-    """Cron 定时任务，触发主动模式"""
-    
-    def __init__(self, config, agent_runner):
-        self.scheduler = AsyncIOScheduler()
-        
-        # 从配置加载定时任务
-        for job in config.cron_jobs:
-            self.scheduler.add_job(
-                self.trigger_agent,
-                CronTrigger.from_crontab(job.cron),
-                args=[job.task, job.ctx_id],
-            )
-    
-    async def trigger_agent(self, task: str, ctx_id: int | None):
-        """定时触发 Agent"""
-        await self.agent_runner.run_scheduled(task, ctx_id)
-```
+关键机制：
+- **Per-ctx worker**：每个 ctx 一个 `_CtxWorker`，保证同一上下文内串行处理
+- **Session 管理**：活跃 session 内支持续对话，无需重复命令前缀
+- **Ping 机制**：如果 agent 正在运行，新消息通过 Ping 注入而非排队
+- **Auto mode**：DM 中 `/bot on --auto` 开启自动续对话
 
 ### agent_runner.py — Agent 运行器
 
+三个入口：
+- `run()` — 被动模式（命令触发）
+- `run_scheduled()` — 主动模式（Cron 触发）
+- `_run_agent()` — 内部调用（delegation, curator）
+
+所有入口统一调用 `_build_prompt()` 构建 prompt：
 ```python
-import yuutools as yt
-from yuuagents import Agent
-from yuuagents.agent import AgentConfig, SimplePromptBuilder
-from yuuagents.loop import run as run_agent
+prompt_spec, prompt_builder = self._build_prompt(agent_name)
+```
 
-class AgentRunner:
-    """使用 yuuagents SDK 创建并运行 Agent"""
-    
-    def __init__(self, config):
-        self.config = config
-        self.tool_manager = self._setup_tools()
-    
-    def _setup_tools(self) -> yt.ToolManager:
-        """注册所有 tools"""
-        tm = yt.ToolManager()
-        
-        # 注册内置工具
-        from yuuagents import tools
-        for tool in tools.get(["execute_bash"]):
-            tm.register(tool)
-        
-        # execute_bash 已经足够调用 ybot CLI skills
-        # Agent 通过 execute_bash("ybot im send ...") 来使用 skills
-        
-        return tm
-    
-    async def run(self, match, event):
-        """被动模式：处理命令触发的 Agent 任务"""
-        ctx_id = event["ctx_id"]
-        message = event["message"]
-        
-        prompt_builder = SimplePromptBuilder()
-        prompt_builder.add_section(self.config.agent.persona)
-        prompt_builder.add_section(self._load_skills_docs())
-        
-        config = AgentConfig(
-            agent_id=f"yuubot-{ctx_id}",
-            persona=self.config.agent.persona,
-            tools=self.tool_manager,
-            llm=self.llm_client,
-            prompt_builder=prompt_builder,
-        )
-        
-        agent = Agent(config=config)
-        task = self._build_task(match, message, ctx_id)
-        await run_agent(agent, task=task, ctx=self.context)
-    
-    async def run_scheduled(self, task: str, ctx_id: int | None):
-        """主动模式：定时触发的 Agent 任务"""
-        # 类似 run()，但 task 来自配置而非用户消息
-        ...
-    
-    def _load_skills_docs(self) -> str:
-        """加载 skills 文档，注入到 Agent prompt"""
-        # 扫描 ~/.yagents/skills/ 下的 SKILL.md
-        from yuuagents.skills import scan, render
-        return render(scan(self.config.skills.paths))
-    
-    def _build_task(self, match, message, ctx_id) -> str:
-        """构建 Agent 任务描述"""
-        return ...
+**YAML 兼容**：如果 YAML config 中 agent 有 `tools` 字段（测试覆盖），则优先使用 YAML 定义；否则使用 CHARACTER_REGISTRY。
 
-**关键设计**：Agent 通过 `execute_bash` 调用 `ybot` CLI skills。这样 skills 是独立的 CLI 工具，agent 不需要特殊的 tool 注册，只需要知道 CLI 用法（通过 SKILL.md 文档注入 prompt）。
+### 消息渲染
+
+消息格式化在 `skills/im/formatter.py`：
+
+```xml
+<reply to="夕雨yuu">不是哦...</reply>
+<msg name="繁星入梦" qq="948523603" time="03-10 11:11">为什么喜欢百合</msg>
+```
+
+- `name` 取最佳名称（alias > display_name > nickname）
+- 时间格式紧凑（MM-DD HH:MM）
+- reply 作为前置同级元素，与 msg 分离
+
+### Docker 运行时上下文
+
+当 Agent 使用 `execute_bash` / 文件类工具时，Daemon 注入 subprocess env：
+- `YUU_DOCKER_HOST_MOUNT=/mnt/host`
+- `YUU_DOCKER_HOME_DIR`
+- `YUU_DOCKER_HOME_HOST_DIR`
+
+### session.py — 会话管理
+
+- Session = user-visible 连续对话单元，绑定 (ctx_id, agent_name)
+- 支持 TTL 超时、token limit rollover
+- Rollover 时：压缩摘要 → handoff_note → 新 session → 触发 mem_curator
+
+### summarizer.py — 摘要生成
+
+Session rollover 时生成 handoff note，注入下一轮 session。
 
 ## 响应规则
 
@@ -203,29 +135,17 @@ class AgentRunner:
 | 群聊 @bot | at 模式，响应 |
 | 群聊命令（free模式） | 需要 Master 开启 `/bot on --free` |
 
-## 配置项
+## 配置
 
 ```yaml
-daemon:
-  # Recorder 内部 WS 地址
-  recorder_ws: "ws://127.0.0.1:8766"
-  
-  # FastAPI 服务
-  api:
-    host: "127.0.0.1"
-    port: 8780
-  
-  # Agent 配置
-  agent:
-    persona: "你是一个有用的QQ机器人助手"
-    skills:
-      - im
-      - web
-      - mem
-  
-  # 定时任务
-  cron_jobs:
-    - task: "检查待办事项并提醒"
-      cron: "0 9 * * *"  # 每天9点
-      ctx_id: 1           # 发送到指定 ctx
+# yuuagents.config.yaml — 只保留 provider + model
+agents:
+  main:
+    provider: deepseek
+    model: deepseek-chat
+  general:
+    provider: deepseek
+    model: deepseek-chat
 ```
+
+所有行为定义在 `src/yuubot/characters.py`。

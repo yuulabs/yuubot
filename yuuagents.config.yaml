@@ -1,12 +1,12 @@
 # ============================================================================
-# yuuagents — Configuration (full)
+# yuuagents — Configuration
 # ============================================================================
 #
-# This file is merged into yuubot's config at runtime.
-# You can change it later without touching yuubot code.
+# Agent behavior (persona, tools, skills, sections) lives in
+# src/yuubot/characters.py — the single source of truth.
 #
-# Runtime config location used by `yagents` itself:  ~/.yagents/config.yaml
-# yuubot uses this file as overrides merged on top of yuuagents defaults.
+# This file only configures infrastructure: providers, models, and
+# which provider/model each agent uses. Hot-reloadable on new sessions.
 # ============================================================================
 
 db:
@@ -56,179 +56,27 @@ providers:
         vision: true
       anthropic/claude-sonnet-4.6:
         vision: true
-      
+      google/gemini-3-flash-preview:
+        vision: true
+      google/gemini-3.1-pro-preview-customtools:
+        vision: true
+      x-ai/grok-4.1-fast:
+        vision: false
 
+# Only provider + model per agent. All behavior is in characters.py.
 agents:
   main:
-    description: >
-      yuubot QQ 机器人主代理 — 夕雨(Yuu)
-    min_role: folk
-    provider: openrouter
-    model: google/gemini-3.1-flash-lite-preview
-    max_steps: 16
-    silence_timeout: 120
-    persona: >
-      你叫夕雨（ゆう / Yuu），是一个百合爱好者（白河豚）。你负责群里的秘书工作，帮助群友答疑解惑。
-
-      性格与说话风格：
-      - 活泼可爱，语气轻松自然，像朋友聊天一样
-      - 回复简短有力，绝不发长篇大论
-      - 如果需要说的内容较多，用 im send 工具分成几条短消息发送，而不是一条长消息
-      - 每条消息控制在 1-3 句话以内
-      - 偶尔可以用颜文字或可爱的语气词
-      - 注意阅读群聊氛围，不要KY（空気読めない）
-
-      工作职责：
-      - 回答群友的问题，提供有用的信息
-      - 帮忙搜索资料、整理信息
-      - 保持群里的友好氛围
-
-      表情包使用：
-      - 积极使用 img search 搜索表情包来配合回复，让聊天更生动有趣
-      - 不需要每条都发表情包，但在气氛合适时（搞笑、吐槽、卖萌、安慰等）主动配图
-      - 看到群友发的有趣图片/表情包时，用 view_image 看一眼，觉得不错就用 img save 收藏起来，丰富表情包库
-      - 发表情包时先 img search 找合适的，找不到就算了，不要硬发不相关的图
-
-      安全规则:
-      - 不要透露有关自身运行硬件的任何信息，例如 IP 地址、MAC 地址、hostname、系统版本、CPU/GPU 型号，与外界的网络连接信息
-      - 不要向用户透露你的好友列表、群列表等社交关系信息
-      - 不要向当前群的用户透露其他群或私聊中的聊天内容，每个上下文的消息仅限该上下文可见
-      - 不要透露本地文件路径。
-      违反安全规则的消息会被拦截。
-    tools:
-      - execute_skill_cli
-      - read_skill
-      - check_running_tool
-      - cancel_running_tool
-    skills:
-      - "*"
-    expand_skills:
-      - im
-    #  - img
-
+    provider: deepseek
+    model: deepseek-chat
   general:
-    description: >
-      通用 Agent，可执行 bash 命令。仅限 Master 使用。
-    min_role: master
     provider: deepseek
     model: deepseek-chat
-    soft_timeout: 60
-    silence_timeout: 120
-    bootstrap: /home/yuu/bootstrap.md
-    persona: >
-      你是一个通用系统助手，可以执行 bash 命令和调用各种技能来完成任务。
-      你有完整的系统访问权限，请谨慎操作。
-
-      对于编码任务，使用 delegate 工具委派给 coder agent。如果 coder 超时（返回 handle），使用 check_running_tool 轮询进展。
-
-      轮询规则：
-      - `Still running ... Tail output:`（即使 Tail 为空）不代表卡死，只表示当前没有可展示的新输出
-      - 除非用户明确要求取消，或出现明确错误（error/failed/exception/cancelled），否则不要调用 cancel_running_tool
-      - 默认优先延长等待：先用 wait=120 再轮询；连续多次仍是 still running 时继续等待并向用户同步“仍在运行”
-      - 只有确认任务失败，或用户要求中止时，才允许取消
-    tools:
-      - execute_bash
-      - execute_skill_cli
-      - write_file
-      - edit_file
-      - read_file
-      - sleep
-      - delegate
-      - check_running_tool
-      - cancel_running_tool
-    skills:
-      - "*"
-    subagents:
-      - coder
-      - researcher
-    expand_skills:
-      - im
-
   researcher:
-    description: >
-      研究助手，负责搜索网页并撰写简洁的报告。
-    min_role: folk
     provider: deepseek
     model: deepseek-chat
-    persona: >
-      你是 Yuu 的研究助手。你负责搜索网页、查找资料，并把结果整理成简洁清晰的报告。
-      报告应当精炼，突出关键信息。
-    tools:
-      - read_file
-      - write_file
-      - edit_file
-    skills:
-      - web
-
   coder:
-    description: >
-      编码代理，使用外部编码工具完成开发任务。
-    min_role: master
     provider: deepseek
     model: deepseek-chat
-    max_steps: 30
-    soft_timeout: 60
-    persona: >
-      你是编码监督者。你不亲自写代码，而是驱动 claude code 完成编码任务，你负责验收和反馈。
-
-      ## 核心职责
-
-      1. **委派**：把编码任务交给 claude code，给它清晰的上下文和目标
-      2. **验收**：检查 claude code 的产出——功能是否完成、代码质量是否合格、有无技术债
-      3. **反馈**：如果不满意，给 claude code 具体的修改指令，再次启动它完成修正
-      4. **兜底**：只在极简修改（如改一行配置）时才自己动手，其余一律委派
-
-      ## 工作流
-
-      1. 分析任务，用 read_file 了解相关代码上下文
-      2. 直接调用 `execute_bash` 运行 claude code，例如 `claude -p "<详细任务描述，包含文件路径和预期行为>" --allowedTools "Bash,Read,Edit,Write,Glob,Grep"`
-      3. 如果 `execute_bash` 在 soft_timeout 后返回 handle，用 `check_running_tool(handle, wait=120)` 继续等待或查看最新 tail
-      4. 只有用户要求中止，或 tail / 最终结果明确显示失败时，才调用 `cancel_running_tool`
-      5. 审查产出：用 read_file 检查改动的文件，用 execute_bash 运行测试
-      6. 不合格则追加反馈，再次启动 claude code；合格则总结结果
-
-      ## 审查标准
-
-      - 功能正确且完整
-      - 无明显技术债（补丁式修改、重复代码、过度工程）
-      - 测试通过
-      - 符合项目现有风格和约定
-    tools:
-      - execute_bash
-      - read_file
-      - write_file
-      - edit_file
-      - sleep
-      - check_running_tool
-      - cancel_running_tool
-
   mem_curator:
-    description: >
-      记忆整理 Agent — 在会话 rollover 后审查对话历史，维护长期记忆质量。
-    min_role: master
     provider: deepseek
     model: deepseek-chat
-    max_steps: 16
-    persona: >
-      你是记忆整理员。你在对话上下文满载 rollover 后被调用，负责审查刚结束的对话，
-      决定哪些信息值得长期保留，并维护记忆库的整洁。
-
-      记忆原则：
-      - 只保存有长期价值的事实：用户偏好、身份信息、重要约定、知识点
-      - 不保存一次性事件、对话流水账、已过期的状态快照
-      - 发现冲突时：删旧保新
-      - 发现重复时：保留最完整的，删除其余
-      - 每条记忆一个事实，简洁陈述句
-
-      工作流程：
-      1. 用 read_skill mem 阅读 mem skill 文档
-      2. 用 ybot mem recall 查询与新内容相关的已有记忆，判断冲突/重复
-      3. 执行必要的 save / delete 操作
-      4. 简短汇报：保存了几条、删了几条
-    tools:
-      - execute_skill_cli
-      - read_skill
-    skills:
-      - mem
-    expand_skills:
-      - mem #avoid redudant read skill

@@ -3,11 +3,17 @@
 import logging
 import uuid
 
+from yuubot.characters import CHARACTER_REGISTRY, get_character
 from yuubot.commands.tree import MatchResult
 from yuubot.config import Config
 from yuubot.core import env
 from yuubot.core.onebot import parse_segments
 from yuubot.daemon.guard import make_whitelist_guard
+from yuubot.prompt import (
+    RuntimeInfo,
+    build_prompt_spec,
+    build_system_prompt,
+)
 from yuubot.skills.im.formatter import (
     format_message_to_xml,
     format_segments,
@@ -63,6 +69,7 @@ class AgentRunner:
         self._agent_subprocess_env: dict[str, dict] = {}  # agent_id → subprocess env
         self._cli_guard = make_whitelist_guard({"im", "web", "mem", "img", "schedule", "hhsh"})
         self._bot_name: str | None = None  # Cached bot display name
+        self._active_flows: dict[int, object] = {}  # ctx_id → root Flow
 
     @staticmethod
     def _new_task_id() -> str:
@@ -142,6 +149,10 @@ class AgentRunner:
             await self._docker.stop()
             self._docker = None
 
+    def get_active_flow(self, ctx_id: int):
+        """Return running root flow for ctx, or None."""
+        return self._active_flows.get(ctx_id)
+
     async def _resolve_docker(self, task_id: str) -> tuple[str, str]:
         """Return (workdir, container_id) from Docker, or fallback."""
         if self._docker is not None:
@@ -150,6 +161,16 @@ class AgentRunner:
         from pathlib import Path
 
         return str(Path.home()), ""
+
+    async def _docker_home_info(self, container_id: str) -> tuple[str, str, str]:
+        """Return docker mount metadata for skill path translation."""
+        if self._docker is None or not container_id:
+            return "", "", ""
+
+        docker_mount = "/mnt/host"
+        container_home = self._docker.container_home
+        host_home_dir = await self._docker.host_home_dir(container_id)
+        return docker_mount, host_home_dir, container_home
 
     def _make_summary_llm(self):
         """Build a cheap YLLMClient for summarization, using SessionConfig overrides."""
@@ -205,7 +226,7 @@ class AgentRunner:
     async def curate(self, history: list, ctx_id: int, user_id: int) -> None:
         """Run mem_curator agent to update long-term memories after a session rollover."""
         agent_name = "mem_curator"
-        if agent_name not in self.config.yuuagents.get("agents", {}):
+        if agent_name not in CHARACTER_REGISTRY:
             log.debug("mem_curator not configured, skipping")
             return
 
@@ -266,11 +287,8 @@ class AgentRunner:
             price_calculator=yuullm.PriceCalculator(),
         )
 
-    def _has_vision(self, agent_name: str) -> bool:
-        """Check if the agent's model supports vision.
-
-        Looks up providers[provider].models[model].vision from config.
-        """
+    def _get_runtime(self, agent_name: str) -> RuntimeInfo:
+        """Build RuntimeInfo from YAML provider/model config."""
         agents = self.config.yuuagents.get("agents", {})
         agent_cfg = agents.get(agent_name, {})
         provider_name = agent_cfg.get("provider", "")
@@ -280,134 +298,82 @@ class AgentRunner:
         provider_cfg = providers.get(provider_name, {})
         models_cfg = provider_cfg.get("models", {})
         model_cfg = models_cfg.get(model, {})
-        return bool(model_cfg.get("vision", False))
+        supports_vision = bool(model_cfg.get("vision", False))
 
-    def _get_persona(self, agent_name: str) -> str:
-        """Get persona string for the given agent name."""
-        agents = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents.get(agent_name, {})
-        persona = agent_cfg.get("persona", "你是一个有用的QQ机器人助手。")
-        # Expand {var} placeholders from yuuagents prompt fragments.
-        from yuuagents.prompts import get_vars
+        return RuntimeInfo(
+            provider=provider_name,
+            model=model,
+            supports_vision=supports_vision,
+        )
 
-        for key, value in get_vars().items():
-            persona = persona.replace(f"{{{key}}}", value)
-        return persona
+    def _has_vision(self, agent_name: str) -> bool:
+        """Check if the agent's model supports vision."""
+        return self._get_runtime(agent_name).supports_vision
 
-    def _get_max_steps(self, agent_name: str) -> int:
-        """Get max_steps for the given agent name. 0 = unlimited."""
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents_cfg.get(agent_name, {})
-        return int(agent_cfg.get("max_steps", 0))
+    def _build_prompt(self, agent_name: str):
+        """Build PromptSpec and SimplePromptBuilder for an agent.
 
-    def _get_soft_timeout(self, agent_name: str) -> float | None:
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents_cfg.get(agent_name, {})
-        val = agent_cfg.get("soft_timeout")
-        return float(val) if val is not None else None
-
-    def _get_silence_timeout(self, agent_name: str) -> float | None:
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents_cfg.get(agent_name, {})
-        val = agent_cfg.get("silence_timeout")
-        return float(val) if val is not None else None
-
-    def _load_skills_docs(self, agent_name: str = "main") -> str:
-        """Load SKILL.md files and render into prompt section.
-
-        Skills listed in the agent's ``expand_skills`` config have their full
-        SKILL.md content inlined into the prompt so the LLM doesn't need an
-        extra tool call to read them.
+        Returns (prompt_spec, prompt_builder).
+        Uses CHARACTER_REGISTRY when available, but YAML config can override
+        specific fields (tools, max_steps, etc.) for test flexibility.
+        Falls back entirely to YAML for agents not in CHARACTER_REGISTRY.
         """
-        try:
-            from yuuagents.skills import scan, render
+        from yuubot.prompt import AgentSpec, Character
 
-            all_skills = scan(self.config.skill_paths)
-            if not all_skills:
-                return ""
-
-            agents_cfg = self.config.yuuagents.get("agents", {})
-            expand_names = set(agents_cfg.get(agent_name, {}).get("expand_skills", []))
-
-            expanded = []
-            remaining = []
-            for s in all_skills:
-                if s.name in expand_names:
-                    expanded.append(s)
-                else:
-                    remaining.append(s)
-
-            parts: list[str] = []
-
-            # Inline full SKILL.md for expanded skills
-            for s in expanded:
-                try:
-                    from pathlib import Path
-
-                    content = Path(s.location).read_text(encoding="utf-8")
-                    parts.append(
-                        f'<skill_doc name="{s.name}">\n{content}\n</skill_doc>'
-                    )
-                except Exception:
-                    log.warning(
-                        "Failed to read SKILL.md for %s at %s", s.name, s.location
-                    )
-                    remaining.append(s)  # fallback to summary
-
-            # Summary for the rest
-            summary = render(remaining)
-            if summary:
-                parts.append(summary)
-
-            return "\n\n".join(parts)
-        except ImportError:
-            return ""
-        except Exception:
-            log.exception("Failed to load skills docs")
-            return ""
-
-    def _resolve_tool_names(self, agent_name: str) -> list[str]:
-        """Get tool names for an agent."""
         agents_cfg = self.config.yuuagents.get("agents", {})
         agent_cfg = agents_cfg.get(agent_name, {})
-        return list(agent_cfg.get("tools", []))
 
-    def _agent_needs_docker(self, agent_name: str) -> bool:
-        """Return True if the agent uses any docker-dependent tool."""
-        return bool(_DOCKER_TOOLS & set(self._resolve_tool_names(agent_name)))
+        if agent_name in CHARACTER_REGISTRY and "tools" not in agent_cfg:
+            # Pure character — no YAML behavioral override
+            char = get_character(agent_name)
+        else:
+            # Build Character from YAML config (test configs, or YAML-overridden)
+            # If character exists, use its persona/description as defaults
+            base_char = CHARACTER_REGISTRY.get(agent_name)
+            if base_char and "persona" not in agent_cfg:
+                persona = base_char.persona
+                description = base_char.description
+                min_role = base_char.min_role
+            else:
+                persona = agent_cfg.get("persona", "你是一个有用的QQ机器人助手。")
+                description = agent_cfg.get("description", "")
+                min_role = agent_cfg.get("min_role", "folk")
+
+            spec = AgentSpec(
+                tools=list(agent_cfg.get("tools", [])),
+                skills=list(agent_cfg.get("skills", [])),
+                expand_skills=list(agent_cfg.get("expand_skills", [])),
+                subagents=list(agent_cfg.get("subagents", [])),
+                max_steps=int(agent_cfg.get("max_steps", 16)),
+                soft_timeout=float(agent_cfg["soft_timeout"]) if agent_cfg.get("soft_timeout") else None,
+                silence_timeout=float(agent_cfg["silence_timeout"]) if agent_cfg.get("silence_timeout") else None,
+            )
+            char = Character(
+                name=agent_name,
+                description=description,
+                min_role=min_role,
+                persona=persona,
+                agents=[spec],
+                select=lambda rt, s=spec: s,
+            )
+
+        runtime = self._get_runtime(agent_name)
+        prompt_spec = build_prompt_spec(char, runtime, self.config.skill_paths)
+        prompt_builder = build_system_prompt(prompt_spec)
+        return prompt_spec, prompt_builder
+
+    @staticmethod
+    def _needs_docker(tools: list[str]) -> bool:
+        """Return True if the tool list includes any docker-dependent tool."""
+        return bool(_DOCKER_TOOLS & set(tools))
 
     def _any_agent_needs_docker(self) -> bool:
-        """Return True if any configured agent uses docker-dependent tools."""
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        return any(self._agent_needs_docker(name) for name in agents_cfg)
-
-    def _build_subagents_prompt(self, agent_name: str) -> str:
-        """Generate prompt section listing available subagents."""
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents_cfg.get(agent_name, {})
-        subagents = agent_cfg.get("subagents", [])
-        if not subagents:
-            return ""
-
-        if "*" in subagents:
-            targets = [n for n in agents_cfg if n != agent_name]
-        else:
-            targets = [n for n in subagents if n in agents_cfg]
-
-        if not targets:
-            return ""
-
-        lines = [
-            "<agents>",
-            "以下是其他可调用的 Agent。需要时使用 delegate 工具调用。",
-        ]
-        for name in targets:
-            desc = agents_cfg[name].get("description", "").strip()
-            lines.append(f"- name: {name}")
-            if desc:
-                lines.append(f"  description: {desc}")
-        lines.append("</agents>")
-        return "\n".join(lines)
+        """Return True if any registered character uses docker-dependent tools."""
+        for char in CHARACTER_REGISTRY.values():
+            for spec in char.agents:
+                if _DOCKER_TOOLS & set(spec.tools):
+                    return True
+        return False
 
     @staticmethod
     def _last_assistant_text(agent) -> str:
@@ -444,36 +410,28 @@ class AgentRunner:
         """
         import yuutools as yt
         from yuuagents import Agent, tools as agent_tools
-        from yuuagents.agent import AgentConfig, SimplePromptBuilder
+        from yuuagents.agent import AgentConfig
         from yuuagents.context import AgentContext
         from yuuagents.loop import run as run_agent
 
         agents_cfg = self.config.yuuagents.get("agents", {})
-        if agent_name not in agents_cfg:
+        if agent_name not in CHARACTER_REGISTRY and agent_name not in agents_cfg:
             raise ValueError(f"Unknown agent {agent_name!r}")
 
         task_id = self._new_task_id()
         runtime_id = f"agent-{agent_name}-{task_id[:8]}"
         self._agent_name_map[runtime_id] = agent_name
 
-        # Tools
-        names = tool_names if tool_names is not None else self._resolve_tool_names(agent_name)
+        # Build prompt via character system
+        prompt_spec, prompt_builder = self._build_prompt(agent_name)
+
+        # Tools — override if caller specifies
+        names = tool_names if tool_names is not None else list(prompt_spec.tools)
         tool_manager = yt.ToolManager()
         for t in agent_tools.get(names):
             tool_manager.register(t)
 
-        # Prompt
-        persona = self._get_persona(agent_name)
-        prompt_builder = SimplePromptBuilder()
-        prompt_builder.add_section(persona)
-        subagents_prompt = self._build_subagents_prompt(agent_name)
-        if subagents_prompt:
-            prompt_builder.add_section(subagents_prompt)
-        needs_docker = self._agent_needs_docker(agent_name)
-        if needs_docker and self._docker is not None:
-            from yuuagents.daemon.docker import DOCKER_SYSTEM_PROMPT
-            if DOCKER_SYSTEM_PROMPT:
-                prompt_builder.add_section(DOCKER_SYSTEM_PROMPT)
+        needs_docker = self._needs_docker(names)
 
         # Docker / workdir
         if needs_docker:
@@ -483,10 +441,10 @@ class AgentRunner:
             workdir, container_id = str(Path.home()), ""
 
         docker_mount = docker_home = docker_home_dir = ""
-        if needs_docker and self._docker is not None and container_id:
-            docker_mount = "/mnt/host"
-            docker_home = self._docker.host_home_dir(container_id)
-            docker_home_dir = self._docker.container_home
+        if needs_docker:
+            docker_mount, docker_home, docker_home_dir = await self._docker_home_info(
+                container_id
+            )
 
         run_env = dict(subprocess_env)
         run_env[env.TASK_ID] = task_id
@@ -497,6 +455,8 @@ class AgentRunner:
         _set_or_pop(run_env, env.DOCKER_HOME_DIR, docker_home_dir)
         self._agent_subprocess_env[runtime_id] = run_env
 
+        agent_spec = prompt_spec.agent_spec
+        persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
         config = AgentConfig(
             task_id=task_id,
             agent_id=runtime_id,
@@ -504,9 +464,9 @@ class AgentRunner:
             tools=tool_manager,
             llm=self._make_llm(agent_name),
             prompt_builder=prompt_builder,
-            max_steps=self._get_max_steps(agent_name),
-            soft_timeout=self._get_soft_timeout(agent_name),
-            silence_timeout=self._get_silence_timeout(agent_name),
+            max_steps=agent_spec.max_steps,
+            soft_timeout=agent_spec.soft_timeout,
+            silence_timeout=agent_spec.silence_timeout,
         )
         agent = Agent(config=config)
         context = AgentContext(
@@ -548,10 +508,26 @@ class AgentRunner:
                 max_depth=3, current_depth=delegate_depth, target_agent=agent,
             )
 
-        agents_cfg = self.config.yuuagents.get("agents", {})
+        # Validate delegation permission
         caller_name = self._agent_name_map.get(caller_agent, caller_agent)
-        allowed = agents_cfg.get(caller_name, {}).get("subagents", [])
-        if "*" not in allowed and agent not in allowed:
+
+        # Check both CHARACTER_REGISTRY and YAML config for allowed subagents
+        allowed = set()
+        caller_char = CHARACTER_REGISTRY.get(caller_name)
+        if caller_char is not None:
+            runtime = self._get_runtime(caller_name)
+            spec = caller_char.select(runtime)
+            allowed.update(spec.subagents)
+
+        agents_cfg = self.config.yuuagents.get("agents", {})
+        yaml_subagents = agents_cfg.get(caller_name, {}).get("subagents", [])
+        if "*" in yaml_subagents:
+            allowed.update(n for n in agents_cfg if n != caller_name)
+            allowed.update(n for n in CHARACTER_REGISTRY if n != caller_name)
+        else:
+            allowed.update(yaml_subagents)
+
+        if agent not in allowed:
             raise ValueError(f"Agent {caller_name!r} is not allowed to delegate to {agent!r}")
 
         parent_env = self._agent_subprocess_env.get(caller_agent, {})
@@ -791,12 +767,6 @@ class AgentRunner:
 
         return items if len(items) > 1 else text
 
-    def _get_bootstrap(self, agent_name: str) -> str:
-        """Get bootstrap file path for the given agent, or empty string."""
-        agents = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents.get(agent_name, {})
-        return agent_cfg.get("bootstrap", "")
-
     async def run(
         self,
         match: MatchResult,
@@ -815,7 +785,7 @@ class AgentRunner:
         try:
             import yuutools as yt
             from yuuagents import Agent, tools
-            from yuuagents.agent import AgentConfig, SimplePromptBuilder
+            from yuuagents.agent import AgentConfig
             from yuuagents.loop import run as run_agent
             from yuuagents.context import AgentContext
         except ImportError:
@@ -838,46 +808,21 @@ class AgentRunner:
         if event.get("message_type") == "group":
             group_name = await self._resolve_group_name(event.get("group_id", 0))
 
-        # Tool manager
-        tool_names = self._resolve_tool_names(agent_name)
-        if self._has_vision(agent_name) and "view_image" not in tool_names:
-            tool_names.append("view_image")
+        # Build prompt via character system
+        prompt_spec, prompt_builder = self._build_prompt(agent_name)
+        agent_spec = prompt_spec.agent_spec
+        tool_names = list(prompt_spec.tools)
+
         tool_manager = yt.ToolManager()
         for tool in tools.get(tool_names):
             tool_manager.register(tool)
 
-        # Prompt
-        persona = self._get_persona(agent_name)
-        prompt_builder = SimplePromptBuilder()
-        prompt_builder.add_section(persona)
-        subagents_prompt = self._build_subagents_prompt(agent_name)
-        if subagents_prompt:
-            prompt_builder.add_section(subagents_prompt)
-        needs_docker = self._agent_needs_docker(agent_name)
-        if needs_docker and self._docker is not None:
-            from yuuagents.daemon.docker import DOCKER_SYSTEM_PROMPT
-
-            if DOCKER_SYSTEM_PROMPT:
-                prompt_builder.add_section(DOCKER_SYSTEM_PROMPT)
-        skills_docs = self._load_skills_docs(agent_name)
-        if skills_docs:
-            prompt_builder.add_section(skills_docs)
-
-        # Bootstrap prompt
-        bootstrap_path = self._get_bootstrap(agent_name)
-        if bootstrap_path:
-            prompt_builder.add_section(
-                f"<bootstrap>\n"
-                f"你有一个工作手册文件: {bootstrap_path}\n"
-                f"每次启动新会话时请先用 read_file 阅读它，了解已有的工作约定。\n"
-                f"完成任务后，如果有新的工作约定值得记录（如常用路径、操作习惯、项目结构），"
-                f"请用 edit_file 更新这个文件。保持文件简洁，不超过 50 行。\n"
-                f"</bootstrap>"
-            )
+        needs_docker = self._needs_docker(tool_names)
 
         agent_id = f"yuubot-{agent_name}-{ctx_id}"
         self._agent_name_map[agent_id] = agent_name
 
+        persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
         config = AgentConfig(
             task_id=task_id,
             agent_id=agent_id,
@@ -885,9 +830,9 @@ class AgentRunner:
             tools=tool_manager,
             llm=self._make_llm(agent_name),
             prompt_builder=prompt_builder,
-            max_steps=self._get_max_steps(agent_name),
-            soft_timeout=self._get_soft_timeout(agent_name),
-            silence_timeout=self._get_silence_timeout(agent_name),
+            max_steps=agent_spec.max_steps,
+            soft_timeout=agent_spec.soft_timeout,
+            silence_timeout=agent_spec.silence_timeout,
         )
 
         agent = Agent(config=config)
@@ -946,10 +891,10 @@ class AgentRunner:
         docker_mount = ""
         docker_home = ""
         docker_home_dir = ""
-        if needs_docker and self._docker is not None and container_id:
-            docker_mount = "/mnt/host"
-            docker_home = self._docker.host_home_dir(container_id)
-            docker_home_dir = self._docker.container_home
+        if needs_docker:
+            docker_mount, docker_home, docker_home_dir = await self._docker_home_info(
+                container_id
+            )
 
         subprocess_env = self._build_subprocess_env(
             task_id=task_id,
@@ -975,14 +920,23 @@ class AgentRunner:
             subprocess_env=subprocess_env,
         )
 
+        from yuuagents.flow import FlowManager, FlowKind
+
+        flow_manager = FlowManager()
+        root_flow = flow_manager.create(FlowKind.AGENT, name=agent_id)
+        self._active_flows[ctx_id] = root_flow
+
         try:
             if is_continuation or is_multimodal:
-                await run_agent(agent, task=task_str, ctx=context, resume=True)
+                await run_agent(agent, task=task_str, ctx=context, resume=True,
+                                flow_manager=flow_manager, root_flow=root_flow)
             else:
-                await run_agent(agent, task=task_str, ctx=context)
+                await run_agent(agent, task=task_str, ctx=context,
+                                flow_manager=flow_manager, root_flow=root_flow)
         except BaseException:
             log.exception("Agent execution failed for ctx %s", ctx_id)
         finally:
+            self._active_flows.pop(ctx_id, None)
             self._agent_subprocess_env.pop(agent_id, None)
 
         return list(agent.history), agent.total_tokens, task_id
@@ -996,7 +950,7 @@ class AgentRunner:
         try:
             import yuutools as yt
             from yuuagents import Agent, tools
-            from yuuagents.agent import AgentConfig, SimplePromptBuilder
+            from yuuagents.agent import AgentConfig
             from yuuagents.loop import run as run_agent
             from yuuagents.context import AgentContext
         except ImportError:
@@ -1005,26 +959,16 @@ class AgentRunner:
 
         task_id = self._new_task_id()
 
-        tool_names = self._resolve_tool_names(agent_name)
+        # Build prompt via character system
+        prompt_spec, prompt_builder = self._build_prompt(agent_name)
+        agent_spec = prompt_spec.agent_spec
+        tool_names = list(prompt_spec.tools)
+
         tool_manager = yt.ToolManager()
         for tool in tools.get(tool_names):
             tool_manager.register(tool)
 
-        persona = self._get_persona(agent_name)
-        prompt_builder = SimplePromptBuilder()
-        prompt_builder.add_section(persona)
-        subagents_prompt = self._build_subagents_prompt(agent_name)
-        if subagents_prompt:
-            prompt_builder.add_section(subagents_prompt)
-        needs_docker = self._agent_needs_docker(agent_name)
-        if needs_docker and self._docker is not None:
-            from yuuagents.daemon.docker import DOCKER_SYSTEM_PROMPT
-
-            if DOCKER_SYSTEM_PROMPT:
-                prompt_builder.add_section(DOCKER_SYSTEM_PROMPT)
-        skills_docs = self._load_skills_docs(agent_name)
-        if skills_docs:
-            prompt_builder.add_section(skills_docs)
+        needs_docker = self._needs_docker(tool_names)
 
         ctx_str = f"ctx {ctx_id}" if ctx_id else "无指定 ctx"
         full_task = f"""定时任务触发。
@@ -1037,6 +981,7 @@ class AgentRunner:
         agent_id = f"yuubot-cron-{agent_name}-{ctx_id or 'global'}"
         self._agent_name_map[agent_id] = agent_name
 
+        persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
         config = AgentConfig(
             task_id=task_id,
             agent_id=agent_id,
@@ -1044,9 +989,9 @@ class AgentRunner:
             tools=tool_manager,
             llm=self._make_llm(agent_name),
             prompt_builder=prompt_builder,
-            max_steps=self._get_max_steps(agent_name),
-            soft_timeout=self._get_soft_timeout(agent_name),
-            silence_timeout=self._get_silence_timeout(agent_name),
+            max_steps=agent_spec.max_steps,
+            soft_timeout=agent_spec.soft_timeout,
+            silence_timeout=agent_spec.silence_timeout,
         )
 
         agent = Agent(config=config)
@@ -1060,10 +1005,10 @@ class AgentRunner:
         docker_mount = ""
         docker_home = ""
         docker_home_dir = ""
-        if needs_docker and self._docker is not None and container_id:
-            docker_mount = "/mnt/host"
-            docker_home = self._docker.host_home_dir(container_id)
-            docker_home_dir = self._docker.container_home
+        if needs_docker:
+            docker_mount, docker_home, docker_home_dir = await self._docker_home_info(
+                container_id
+            )
 
         subprocess_env = self._build_subprocess_env(
             task_id=task_id,
