@@ -114,10 +114,7 @@ class Config(msgspec.Struct):
     session: SessionConfig = msgspec.field(default_factory=SessionConfig)
 
     def agent_min_role(self, agent_name: str) -> "Role":
-        """Return the minimum Role required to invoke the given agent.
-
-        Reads from CHARACTER_REGISTRY first, falls back to YAML config.
-        """
+        """Return the minimum Role required to invoke the given agent."""
         from yuubot.core.models import Role
 
         _role_map = {
@@ -127,56 +124,18 @@ class Config(msgspec.Struct):
             "deny": Role.DENY,
         }
 
-        # Primary source: CHARACTER_REGISTRY
-        try:
-            from yuubot.characters import CHARACTER_REGISTRY
-            char = CHARACTER_REGISTRY.get(agent_name)
-            if char is not None:
-                return _role_map.get(char.min_role.lower(), Role.FOLK)
-        except ImportError:
-            pass
-
-        # Fallback: YAML config (for test configs that don't use characters.py)
-        agents = self.yuuagents.get("agents", {})
-        agent_cfg = agents.get(agent_name, {})
-        raw = (
-            agent_cfg.get("min_role", "folk") if isinstance(agent_cfg, dict) else "folk"
-        )
-        return _role_map.get(raw.lower(), Role.FOLK)
+        from yuubot.characters import CHARACTER_REGISTRY
+        char = CHARACTER_REGISTRY.get(agent_name)
+        if char is not None:
+            return _role_map.get(char.min_role.lower(), Role.FOLK)
+        return Role.FOLK
 
     def validate_agent_permissions(self) -> None:
-        """Ensure parent min_role >= every subagent's min_role.
-
-        Checks both CHARACTER_REGISTRY and YAML config for maximum coverage
-        (tests may define agents only in YAML).
-        """
-        checked = set()
-
-        # Check CHARACTER_REGISTRY
-        try:
-            from yuubot.characters import CHARACTER_REGISTRY
-            for name, char in CHARACTER_REGISTRY.items():
-                parent_role = self.agent_min_role(name)
-                for spec in char.agents:
-                    for sub_name in spec.subagents:
-                        sub_role = self.agent_min_role(sub_name)
-                        if parent_role < sub_role:
-                            raise ValueError(
-                                f"Privilege escalation: agent {name!r} (min_role={parent_role.name}) "
-                                f"can delegate to {sub_name!r} (min_role={sub_role.name}). "
-                                f"Parent min_role must be >= subagent min_role."
-                            )
-                checked.add(name)
-        except ImportError:
-            pass
-
-        # Also check YAML agents not in CHARACTER_REGISTRY (e.g. test configs)
-        agents = self.yuuagents.get("agents", {})
-        for name, cfg in agents.items():
-            if name in checked or not isinstance(cfg, dict):
-                continue
+        """Ensure parent min_role >= every subagent's min_role."""
+        from yuubot.characters import CHARACTER_REGISTRY
+        for name, char in CHARACTER_REGISTRY.items():
             parent_role = self.agent_min_role(name)
-            for sub_name in cfg.get("subagents", []):
+            for sub_name in char.spec.subagents:
                 sub_role = self.agent_min_role(sub_name)
                 if parent_role < sub_role:
                     raise ValueError(
@@ -187,45 +146,19 @@ class Config(msgspec.Struct):
 
     def validate_subagent_tools(self) -> None:
         """Ensure agents with subagents have delegate tool configured."""
-        checked = set()
-
-        try:
-            from yuubot.characters import CHARACTER_REGISTRY
-            for name, char in CHARACTER_REGISTRY.items():
-                for spec in char.agents:
-                    if spec.subagents and "delegate" not in spec.tools:
-                        raise ValueError(
-                            f"Agent {name!r} has subagents {spec.subagents!r} but 'delegate' "
-                            f"tool is not configured. Add 'delegate' to tools list."
-                        )
-                checked.add(name)
-        except ImportError:
-            pass
-
-        agents = self.yuuagents.get("agents", {})
-        for name, cfg in agents.items():
-            if name in checked or not isinstance(cfg, dict):
-                continue
-            subagents = cfg.get("subagents", [])
-            if not subagents:
-                continue
-            tools = cfg.get("tools", [])
-            if "delegate" not in tools:
+        from yuubot.characters import CHARACTER_REGISTRY
+        for name, char in CHARACTER_REGISTRY.items():
+            if char.spec.subagents and "delegate" not in char.spec.tools:
                 raise ValueError(
-                    f"Agent {name!r} has subagents {subagents!r} but 'delegate' tool "
-                    f"is not configured. Add 'delegate' to tools list."
+                    f"Agent {name!r} has subagents {char.spec.subagents!r} but 'delegate' "
+                    f"tool is not configured. Add 'delegate' to tools list."
                 )
 
     @property
     def persona(self) -> str:
-        try:
-            from yuubot.characters import get_character
-            char = get_character("main")
-            return char.resolve_persona()
-        except (ImportError, KeyError):
-            agents = self.yuuagents.get("agents", {})
-            main = agents.get("main", {})
-            return main.get("persona", "你是一个有用的QQ机器人助手。")
+        from yuubot.characters import get_character
+        char = get_character("main")
+        return char.resolve_persona()
 
     @property
     def skill_paths(self) -> list[str]:

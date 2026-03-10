@@ -95,9 +95,12 @@ Key reason for separation: Recorder stays up while Daemon restarts during develo
 | `daemon/guard.py` | Rate limiting & safety guards |
 | `daemon/session.py` | Multi-turn conversation state with TTL extension for active agent sessions |
 | `daemon/scheduler.py` | APScheduler for cron-based proactive mode |
+| `prompt.py` | Prompt data structures (FileRef, Section, AgentSpec, Character, PromptSpec) + build functions |
+| `characters/` | Character registry package — one file per character, shared sections in `__init__.py` |
 | `commands/tree.py` | Tree-based command matching |
 | `commands/roles.py` | Role permission system |
-| `commands/builtin.py` | Built-in commands (/bot, /help) |
+| `commands/builtin.py` | Built-in commands (/bot, /help, /char) |
+| `commands/ychar.py` | Character inspection and runtime config mutation (/char show, /char config) |
 | `skills/im/` | IM skill: send, search, browse, list |
 | `skills/web/` | Web skill: search (Tavily), read (Playwright+Trafilatura), download |
 | `skills/mem/` | Memory skill: save, recall, delete, show, auto-forget |

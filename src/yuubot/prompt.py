@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable
 
 import attrs
 
@@ -50,7 +49,7 @@ class Section:
 class AgentSpec:
     """Capability specification — tools + sections + constraints."""
 
-    tools: list[str]
+    tools: list[str] = attrs.Factory(list)
     sections: list[Section] = attrs.Factory(list)
     skills: list[str] = attrs.Factory(list)
     expand_skills: list[str] = attrs.Factory(list)
@@ -71,14 +70,15 @@ class RuntimeInfo:
 
 @attrs.define
 class Character:
-    """A persona with one or more AgentSpec variants."""
+    """A persona with a single AgentSpec."""
 
     name: str
     description: str
     min_role: str
     persona: str | FileRef
-    agents: list[AgentSpec]
-    select: Callable[[RuntimeInfo], AgentSpec]
+    spec: AgentSpec
+    provider: str = ""  # runtime-mutable, populated from YAML at startup
+    model: str = ""     # runtime-mutable, populated from YAML at startup
 
     def resolve_persona(self) -> str:
         if isinstance(self.persona, FileRef):
@@ -160,7 +160,7 @@ def build_prompt_spec(
     skill_paths: list[str] | None = None,
 ) -> PromptSpec:
     """Character × Runtime → PromptSpec. Deterministic derivation."""
-    spec = char.select(runtime)
+    spec = char.spec
 
     sections: list[tuple[str, str]] = []
 

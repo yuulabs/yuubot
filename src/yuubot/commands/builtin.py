@@ -89,9 +89,53 @@ def build_command_tree(entries: list[str]) -> RootCommand:
         help_text="查看近期 Agent 开销: /cost [--days N] [--all (Master)]",
     )
 
+    # /char — character inspection and runtime config
+    from yuubot.commands.ychar import (
+        exec_char_config,
+        exec_char_list,
+        exec_char_show_config,
+        exec_char_show_prompt,
+    )
+    char_show_prompt = Command(
+        prefix="prompt",
+        executor=exec_char_show_prompt,
+        min_role=Role.MOD,
+        help_text="显示 Character 的系统提示词结构: /char show prompt [name]",
+    )
+    char_show_config = Command(
+        prefix="config",
+        executor=exec_char_show_config,
+        min_role=Role.MOD,
+        help_text="显示 Character 配置: /char show config [name]",
+    )
+    char_show = Command(
+        prefix="show",
+        subs=[char_show_prompt, char_show_config],
+        min_role=Role.MOD,
+        help_text="查看 Character 详情",
+    )
+    char_config = Command(
+        prefix="config",
+        executor=exec_char_config,
+        min_role=Role.MASTER,
+        help_text="热更新 Character 配置: /char config <name> provider=x model=y",
+    )
+    char_list = Command(
+        prefix="list",
+        executor=exec_char_list,
+        min_role=Role.MOD,
+        help_text="列出所有已注册 Character",
+    )
+    char_cmd = Command(
+        prefix="char",
+        subs=[char_show, char_config, char_list],
+        min_role=Role.MOD,
+        help_text="Character 管理命令",
+    )
+
     root = RootCommand(
         prefix="",
-        subs=[bot_cmd, help_cmd, llm_cmd, hhsh_cmd, close_cmd, cost_cmd],
+        subs=[bot_cmd, help_cmd, llm_cmd, hhsh_cmd, close_cmd, cost_cmd, char_cmd],
         entries=entries,
     )
     return root

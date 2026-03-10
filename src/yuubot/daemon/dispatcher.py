@@ -543,11 +543,9 @@ class Dispatcher:
         return False
 
     def _agent_exists(self, name: str) -> bool:
-        """Check if an agent is defined in CHARACTER_REGISTRY or YAML config."""
+        """Check if an agent is defined in CHARACTER_REGISTRY."""
         from yuubot.characters import CHARACTER_REGISTRY
-        if name in CHARACTER_REGISTRY:
-            return True
-        return name in self.config.yuuagents.get("agents", {})
+        return name in CHARACTER_REGISTRY
 
     async def _is_free_mode(self, event: dict) -> bool:
         """Check if the current context is in free mode."""

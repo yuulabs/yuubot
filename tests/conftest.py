@@ -1,8 +1,13 @@
 """Shared fixtures for end-to-end flow tests."""
 
 import asyncio
+import os
+from pathlib import Path
+import socket
 
+import msgspec
 import pytest
+import yaml
 
 # Set up a no-op TracerProvider so yuutrace.require_initialized() passes
 # but traces do NOT go to the production ~/.yagents/traces.db.
@@ -28,6 +33,53 @@ FOLK_QQ = 20001
 MOD_QQ = 20002
 
 
+# ── Test character registration ──────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def test_characters():
+    """Register test Characters into CHARACTER_REGISTRY, restore on teardown."""
+    from yuubot.characters import CHARACTER_REGISTRY, register
+    from yuubot.prompt import AgentSpec, Character
+
+    original = dict(CHARACTER_REGISTRY)
+
+    # Register test main agent
+    register(Character(
+        name="main",
+        description="Test main agent",
+        min_role="folk",
+        persona="你是测试机器人。",
+        spec=AgentSpec(
+            tools=["execute_skill_cli"],
+            skills=["*"],
+            max_steps=4,
+        ),
+        provider="test",
+        model="test-model",
+    ))
+
+    # Register test general agent
+    register(Character(
+        name="general",
+        description="General agent (master only)",
+        min_role="master",
+        persona="通用助手。",
+        spec=AgentSpec(
+            tools=["execute_bash"],
+            skills=["*"],
+            max_steps=4,
+        ),
+        provider="test",
+        model="test-model",
+    ))
+
+    yield
+
+    # Restore original registry
+    CHARACTER_REGISTRY.clear()
+    CHARACTER_REGISTRY.update(original)
+
+
 # ── Fixtures ─────────────────────────────────────────────────────
 
 
@@ -44,11 +96,18 @@ async def db(tmp_path):
 
 
 @pytest.fixture
-def yuubot_config(tmp_path) -> Config:
+def recorder_api_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.fixture
+def yuubot_config(tmp_path, recorder_api_port) -> Config:
     """Build a programmatic Config with test values."""
     return Config(
         bot=BotConfig(qq=BOT_QQ, master=MASTER_QQ, entries=["/y", "/yuu"]),
-        daemon=DaemonConfig(recorder_api="http://127.0.0.1:8767"),
+        daemon=DaemonConfig(recorder_api=f"http://127.0.0.1:{recorder_api_port}"),
         database=DatabaseConfig(path=str(tmp_path / "yuubot.db")),
         response=ResponseConfig(group_default="at", dm_whitelist=[]),
         session=SessionConfig(ttl=300, max_tokens=60000),
@@ -66,21 +125,11 @@ def yuubot_config(tmp_path) -> Config:
                     "description": "Test main agent",
                     "provider": "test",
                     "model": "test-model",
-                    "max_steps": 4,
-                    "persona": "你是测试机器人。",
-                    "tools": ["execute_skill_cli"],
-                    "skills": ["*"],
-                    "expand_skills": [],
                 },
                 "general": {
                     "description": "General agent (master only)",
-                    "min_role": "master",
                     "provider": "test",
                     "model": "test-model",
-                    "max_steps": 4,
-                    "persona": "通用助手。",
-                    "tools": ["execute_bash"],
-                    "skills": ["*"],
                 },
             },
             "daemon": {"socket": str(tmp_path / "yagents.sock")},
@@ -89,6 +138,24 @@ def yuubot_config(tmp_path) -> Config:
             "docker": {"image": "yuuagents-runtime:latest"},
         },
     )
+
+
+@pytest.fixture
+def config_path(tmp_path, yuubot_config) -> str:
+    """Write config.yaml for subprocess-based skill execution."""
+    raw = msgspec.to_builtins(yuubot_config)
+    path = Path(tmp_path) / "config.yaml"
+    path.write_text(
+        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+@pytest.fixture(autouse=True)
+def recorder_api_env(yuubot_config, config_path, monkeypatch):
+    monkeypatch.setenv("YUUBOT_TEST_RECORDER_API", yuubot_config.daemon.recorder_api)
+    monkeypatch.setenv("YUUBOT_CONFIG", config_path)
 
 
 @pytest.fixture

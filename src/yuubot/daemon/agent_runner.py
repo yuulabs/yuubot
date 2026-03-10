@@ -249,15 +249,23 @@ class AgentRunner:
             log.exception("mem_curator failed for ctx=%s", ctx_id)
 
     def _make_llm(self, agent_name: str = "main"):
-        """Build a YLLMClient from yuuagents provider config."""
+        """Build a YLLMClient from Character fields, falling back to YAML."""
         import os
 
         import yuullm
 
-        agents = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents.get(agent_name, agents.get("main", {}))
-        provider_name = agent_cfg.get("provider", "")
-        model = agent_cfg.get("model", "")
+        char = CHARACTER_REGISTRY.get(agent_name)
+        provider_name = char.provider if char and char.provider else ""
+        model = char.model if char and char.model else ""
+
+        # Fall back to YAML if Character fields are empty
+        if not provider_name or not model:
+            agents = self.config.yuuagents.get("agents", {})
+            agent_cfg = agents.get(agent_name, agents.get("main", {}))
+            if not provider_name:
+                provider_name = agent_cfg.get("provider", "")
+            if not model:
+                model = agent_cfg.get("model", "")
 
         providers = self.config.yuuagents.get("providers", {})
         provider_cfg = providers.get(provider_name, {})
@@ -288,11 +296,19 @@ class AgentRunner:
         )
 
     def _get_runtime(self, agent_name: str) -> RuntimeInfo:
-        """Build RuntimeInfo from YAML provider/model config."""
-        agents = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents.get(agent_name, {})
-        provider_name = agent_cfg.get("provider", "")
-        model = agent_cfg.get("model", "")
+        """Build RuntimeInfo from Character fields, falling back to YAML."""
+        char = CHARACTER_REGISTRY.get(agent_name)
+        provider_name = char.provider if char and char.provider else ""
+        model = char.model if char and char.model else ""
+
+        # Fall back to YAML if Character fields are empty
+        if not provider_name or not model:
+            agents = self.config.yuuagents.get("agents", {})
+            agent_cfg = agents.get(agent_name, {})
+            if not provider_name:
+                provider_name = agent_cfg.get("provider", "")
+            if not model:
+                model = agent_cfg.get("model", "")
 
         providers = self.config.yuuagents.get("providers", {})
         provider_cfg = providers.get(provider_name, {})
@@ -314,49 +330,9 @@ class AgentRunner:
         """Build PromptSpec and SimplePromptBuilder for an agent.
 
         Returns (prompt_spec, prompt_builder).
-        Uses CHARACTER_REGISTRY when available, but YAML config can override
-        specific fields (tools, max_steps, etc.) for test flexibility.
-        Falls back entirely to YAML for agents not in CHARACTER_REGISTRY.
+        Always uses CHARACTER_REGISTRY as the single source of truth.
         """
-        from yuubot.prompt import AgentSpec, Character
-
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        agent_cfg = agents_cfg.get(agent_name, {})
-
-        if agent_name in CHARACTER_REGISTRY and "tools" not in agent_cfg:
-            # Pure character — no YAML behavioral override
-            char = get_character(agent_name)
-        else:
-            # Build Character from YAML config (test configs, or YAML-overridden)
-            # If character exists, use its persona/description as defaults
-            base_char = CHARACTER_REGISTRY.get(agent_name)
-            if base_char and "persona" not in agent_cfg:
-                persona = base_char.persona
-                description = base_char.description
-                min_role = base_char.min_role
-            else:
-                persona = agent_cfg.get("persona", "你是一个有用的QQ机器人助手。")
-                description = agent_cfg.get("description", "")
-                min_role = agent_cfg.get("min_role", "folk")
-
-            spec = AgentSpec(
-                tools=list(agent_cfg.get("tools", [])),
-                skills=list(agent_cfg.get("skills", [])),
-                expand_skills=list(agent_cfg.get("expand_skills", [])),
-                subagents=list(agent_cfg.get("subagents", [])),
-                max_steps=int(agent_cfg.get("max_steps", 16)),
-                soft_timeout=float(agent_cfg["soft_timeout"]) if agent_cfg.get("soft_timeout") else None,
-                silence_timeout=float(agent_cfg["silence_timeout"]) if agent_cfg.get("silence_timeout") else None,
-            )
-            char = Character(
-                name=agent_name,
-                description=description,
-                min_role=min_role,
-                persona=persona,
-                agents=[spec],
-                select=lambda rt, s=spec: s,
-            )
-
+        char = get_character(agent_name)
         runtime = self._get_runtime(agent_name)
         prompt_spec = build_prompt_spec(char, runtime, self.config.skill_paths)
         prompt_builder = build_system_prompt(prompt_spec)
@@ -370,9 +346,8 @@ class AgentRunner:
     def _any_agent_needs_docker(self) -> bool:
         """Return True if any registered character uses docker-dependent tools."""
         for char in CHARACTER_REGISTRY.values():
-            for spec in char.agents:
-                if _DOCKER_TOOLS & set(spec.tools):
-                    return True
+            if _DOCKER_TOOLS & set(char.spec.tools):
+                return True
         return False
 
     @staticmethod
@@ -414,8 +389,7 @@ class AgentRunner:
         from yuuagents.context import AgentContext
         from yuuagents.loop import run as run_agent
 
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        if agent_name not in CHARACTER_REGISTRY and agent_name not in agents_cfg:
+        if agent_name not in CHARACTER_REGISTRY:
             raise ValueError(f"Unknown agent {agent_name!r}")
 
         task_id = self._new_task_id()
@@ -511,21 +485,11 @@ class AgentRunner:
         # Validate delegation permission
         caller_name = self._agent_name_map.get(caller_agent, caller_agent)
 
-        # Check both CHARACTER_REGISTRY and YAML config for allowed subagents
+        # Check CHARACTER_REGISTRY for allowed subagents
         allowed = set()
         caller_char = CHARACTER_REGISTRY.get(caller_name)
         if caller_char is not None:
-            runtime = self._get_runtime(caller_name)
-            spec = caller_char.select(runtime)
-            allowed.update(spec.subagents)
-
-        agents_cfg = self.config.yuuagents.get("agents", {})
-        yaml_subagents = agents_cfg.get(caller_name, {}).get("subagents", [])
-        if "*" in yaml_subagents:
-            allowed.update(n for n in agents_cfg if n != caller_name)
-            allowed.update(n for n in CHARACTER_REGISTRY if n != caller_name)
-        else:
-            allowed.update(yaml_subagents)
+            allowed.update(caller_char.spec.subagents)
 
         if agent not in allowed:
             raise ValueError(f"Agent {caller_name!r} is not allowed to delegate to {agent!r}")

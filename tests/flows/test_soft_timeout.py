@@ -1,312 +1,248 @@
-"""Tests for soft timeout behavior with long-running tool calls."""
+"""Flow: soft timeout as a product behavior."""
 
 from __future__ import annotations
 
 import asyncio
+import json
+import re
+import time
 
-import pytest
+import yuutools as yt
+import yuullm
+from yuuagents import tools as agent_tools
 
-from yuuagents.running_tools import OutputBuffer, RunningToolRegistry
-from yuutrace.context import ToolResult, ToolsContext
-from opentelemetry import trace
+from tests.conftest import MASTER_QQ, make_group_event
+from tests.helpers import history_text
+from tests.mocks import make_text_response, make_tool_call_response, mock_llm, mock_recorder_api
 
 
-@pytest.mark.asyncio
-async def test_soft_timeout_triggers_for_long_running_tool():
-    """当工具执行时间超过 soft_timeout 时，应返回占位符并注册到 registry."""
-    tracer = trace.get_tracer("test")
-    registry = RunningToolRegistry()
+def _extract_handle(text: str) -> str:
+    match = re.search(r"handle=([A-Za-z0-9_]+)", text)
+    assert match is not None, text
+    return match.group(1)
 
-    async def slow_tool() -> str:
-        await asyncio.sleep(10)
-        return "completed after long wait"
 
-    with tracer.start_as_current_span("test") as span:
-        ctx = ToolsContext(span, tracer)
-        results = await ctx.gather(
-            [{"tool_call_id": "tc1", "name": "slow_tool", "tool": slow_tool}],
-            soft_timeout=0.3,
-            registry=registry,
-        )
+def _extract_last_handle(text: str) -> str:
+    matches = re.findall(r"handle=([A-Za-z0-9_]+)", text)
+    assert matches, text
+    return matches[-1]
 
-    assert len(results) == 1
-    result = results[0]
-    assert result.tool_call_id == "tc1"
-    assert "still running" in str(result.output).lower() or "handle=" in str(
-        result.output
+
+def _usage() -> yuullm.Usage:
+    return yuullm.Usage(
+        provider="test",
+        model="test-model",
+        input_tokens=10,
+        output_tokens=10,
+        total_tokens=20,
     )
-    assert len(registry._entries) == 1
-
-    for entry in list(registry._entries.values()):
-        entry.task.cancel()
-        try:
-            await entry.task
-        except asyncio.CancelledError:
-            pass
 
 
-@pytest.mark.asyncio
-async def test_soft_timeout_does_not_trigger_for_fast_tool():
-    """当工具执行时间小于 soft_timeout 时，应正常返回结果."""
-    tracer = trace.get_tracer("test")
-    registry = RunningToolRegistry()
-
-    async def fast_tool() -> str:
-        await asyncio.sleep(0.05)
-        return "fast result"
-
-    with tracer.start_as_current_span("test") as span:
-        ctx = ToolsContext(span, tracer)
-        results = await ctx.gather(
-            [{"tool_call_id": "tc2", "name": "fast_tool", "tool": fast_tool}],
-            soft_timeout=0.5,
-            registry=registry,
-        )
-
-    assert len(results) == 1
-    assert results[0].output == "fast result"
-    assert len(registry._entries) == 0
+async def _wait_worker(dispatcher, key: str, timeout: float = 5.0) -> None:
+    worker = dispatcher._workers.get(key)
+    if worker:
+        await asyncio.wait_for(worker.queue.join(), timeout=timeout)
 
 
-@pytest.mark.asyncio
-async def test_soft_timeout_with_multiple_tools():
-    """多个工具同时调用时，部分超时部分正常完成."""
-    tracer = trace.get_tracer("test")
-    registry = RunningToolRegistry()
+def _install_slow_progress_tool(monkeypatch):
+    """Expose a long-running tool through the public tool registry."""
 
-    async def slow_tool() -> str:
-        await asyncio.sleep(10)
-        return "slow result"
+    @yt.tool(name="slow_progress", description="Emit progress and keep running.")
+    async def slow_progress(
+        current_output_buffer=yt.depends(
+            lambda ctx: getattr(ctx, "current_output_buffer", None)
+        ),
+    ) -> str:
+        if current_output_buffer is not None:
+            current_output_buffer.write(b"phase 1\n")
+        await asyncio.sleep(0.4)
+        if current_output_buffer is not None:
+            current_output_buffer.write(b"phase 2\n")
+        await asyncio.sleep(1.0)
+        return "slow tool finished"
 
-    async def medium_tool() -> str:
-        await asyncio.sleep(0.1)
-        return "medium result"
+    original_get = agent_tools.get
 
-    async def fast_tool() -> str:
-        return "fast result"
+    def patched_get(names):
+        resolved = [name for name in names if name != "slow_progress"]
+        tools = list(original_get(resolved))
+        if "slow_progress" in names:
+            tools.append(slow_progress)
+        return tools
 
-    with tracer.start_as_current_span("test") as span:
-        ctx = ToolsContext(span, tracer)
-        results = await ctx.gather(
-            [
-                {"tool_call_id": "slow", "name": "slow_tool", "tool": slow_tool},
-                {"tool_call_id": "medium", "name": "medium_tool", "tool": medium_tool},
-                {"tool_call_id": "fast", "name": "fast_tool", "tool": fast_tool},
-            ],
-            soft_timeout=0.2,
-            registry=registry,
-        )
-
-    results_map = {r.tool_call_id: r for r in results}
-    assert results_map["fast"].output == "fast result"
-    assert results_map["medium"].output == "medium result"
-    assert "still running" in str(results_map["slow"].output).lower()
-    assert len(registry._entries) == 1
-
-    for entry in list(registry._entries.values()):
-        entry.task.cancel()
-        try:
-            await entry.task
-        except asyncio.CancelledError:
-            pass
+    monkeypatch.setattr(agent_tools, "get", patched_get)
 
 
-@pytest.mark.asyncio
-async def test_poll_returns_immediately_when_tool_done():
-    """轮询已完成的工具应立即返回结果."""
-    registry = RunningToolRegistry()
-    buf = OutputBuffer()
+class _ScriptedProvider:
+    def __init__(self, steps):
+        self._steps = steps
+        self._idx = 0
 
-    async def quick_tool() -> ToolResult:
-        return ToolResult(tool_call_id="tc_quick", output="done!")
+    async def stream(self, messages, *, model, tools=None, **kw):
+        idx = min(self._idx, len(self._steps) - 1)
+        self._idx += 1
+        items = list(self._steps[idx](str(messages)))
 
-    task = asyncio.create_task(quick_tool())
-    await task
-    handle = registry.register("quick_tool", task, buf, "tc_quick")
+        async def _iter():
+            for item in items:
+                yield item
 
-    start = asyncio.get_event_loop().time()
-    result = await registry.check(handle, wait=5)
-    elapsed = asyncio.get_event_loop().time() - start
-
-    assert "done!" in result
-    assert elapsed < 0.1
+        return _iter(), {"usage": _usage(), "cost": None}
 
 
-@pytest.mark.asyncio
-async def test_poll_blocks_until_completion():
-    """轮询运行中的工具应阻塞直到完成或等待超时."""
-    registry = RunningToolRegistry()
-    buf = OutputBuffer()
+def _make_llm_factory(monkeypatch, runner):
+    parent_provider = _ScriptedProvider(
+        [
+            lambda _text: make_tool_call_response(
+                "delegate",
+                json.dumps(
+                    {
+                        "agent": "worker",
+                        "context": "需要执行一个会持续输出进度的慢任务。",
+                        "task": "启动慢任务，然后等待它完成。",
+                    },
+                    ensure_ascii=False,
+                ),
+                "call_delegate",
+            ),
+            lambda _text: make_text_response("parent got delegate handle"),
+            # Step 3: after child completes, the loop injects a synthetic
+            # CHILD_COMPLETED ping.  The LLM sees the result and responds.
+            lambda _text: make_text_response("parent saw child output"),
+        ]
+    )
+    child_provider = _ScriptedProvider(
+        [
+            lambda _text: make_tool_call_response(
+                "slow_progress",
+                json.dumps({}),
+                "call_slow",
+            ),
+            lambda text: make_tool_call_response(
+                "check_running_tool",
+                json.dumps({"handle": _extract_handle(text), "wait": 3}),
+                "call_child_check",
+            ),
+            lambda _text: make_text_response("worker finished"),
+        ]
+    )
 
-    async def slow_tool() -> ToolResult:
-        await asyncio.sleep(0.3)
-        return ToolResult(tool_call_id="tc_slow", output="finished!")
+    original_make_llm = runner._make_llm
 
-    task = asyncio.create_task(slow_tool())
-    handle = registry.register("slow_tool", task, buf, "tc_slow")
+    def _fake_make_llm(agent_name: str = "main"):
+        if agent_name == "worker":
+            return yuullm.YLLMClient(
+                provider=child_provider,
+                default_model="test-model",
+                price_calculator=yuullm.PriceCalculator(),
+            )
+        if agent_name == "main":
+            return yuullm.YLLMClient(
+                provider=parent_provider,
+                default_model="test-model",
+                price_calculator=yuullm.PriceCalculator(),
+            )
+        return original_make_llm(agent_name)
 
-    start = asyncio.get_event_loop().time()
-    result = await registry.check(handle, wait=5)
-    elapsed = asyncio.get_event_loop().time() - start
-
-    assert "finished!" in result
-    assert 0.25 < elapsed < 0.5
-
-
-@pytest.mark.asyncio
-async def test_poll_returns_tail_output_on_wait_timeout():
-    """轮询超时时应返回当前 tail output."""
-    registry = RunningToolRegistry()
-    buf = OutputBuffer()
-    buf.write(b"Line 1: Initial output\n")
-    buf.write(b"Line 2: More progress\n")
-    buf.write(b"Line 3: Current work...\n")
-
-    async def very_slow_tool() -> ToolResult:
-        await asyncio.sleep(100)
-        return ToolResult(tool_call_id="tc_vslow", output="never")
-
-    task = asyncio.create_task(very_slow_tool())
-    handle = registry.register("very_slow", task, buf, "tc_vslow")
-
-    result = await registry.check(handle, wait=0.2)
-
-    assert "still running" in result.lower()
-    assert "Line 3" in result or "Current work" in result
-
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-
-@pytest.mark.asyncio
-async def test_poll_multiple_times_shows_progress():
-    """多次轮询应能跟踪工具进度."""
-    registry = RunningToolRegistry()
-    buf = OutputBuffer()
-
-    async def incremental_tool() -> ToolResult:
-        for i in range(5):
-            buf.write(f"Step {i + 1} complete\n".encode())
-            await asyncio.sleep(0.15)
-        return ToolResult(tool_call_id="tc_inc", output="all done")
-
-    task = asyncio.create_task(incremental_tool())
-    handle = registry.register("incremental", task, buf, "tc_inc")
-
-    await asyncio.sleep(0.1)
-    result1 = await registry.check(handle, wait=0.05)
-    assert "still running" in result1.lower()
-
-    result2 = await registry.check(handle, wait=0.05)
-    assert "still running" in result2.lower() or "all done" in result2 or "Step" in result2
-
-    result3 = await registry.check(handle, wait=2)
-    assert "all done" in result3
+    monkeypatch.setattr(runner, "_make_llm", _fake_make_llm)
 
 
-@pytest.mark.asyncio
-async def test_poll_unknown_handle_returns_error():
-    """轮询不存在的 handle 应返回错误."""
-    registry = RunningToolRegistry()
-    result = await registry.check("unknown_handle_123", wait=1)
-    assert "[ERROR]" in result
-    assert "unknown" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_full_soft_timeout_polling_flow():
-    """完整流程：工具触发软超时 -> 轮询检查 -> 获取最终结果."""
-    tracer = trace.get_tracer("test")
-    registry = RunningToolRegistry()
-
-    async def long_task() -> str:
-        await asyncio.sleep(0.8)
-        return "long task completed"
-
-    with tracer.start_as_current_span("test") as span:
-        ctx = ToolsContext(span, tracer)
-        results = await ctx.gather(
-            [{"tool_call_id": "long", "name": "long_task", "tool": long_task}],
-            soft_timeout=0.2,
-            registry=registry,
-        )
-
-    assert len(results) == 1
-    placeholder = results[0]
-    assert "still running" in str(placeholder.output).lower()
-
-    output_str = str(placeholder.output)
-    handle_start = output_str.find("handle=")
-    assert handle_start != -1
-    handle = output_str[handle_start + 7 :].split()[0].strip()
-
-    poll_result = await registry.check(handle, wait=2)
-    assert "long task completed" in poll_result
-
-
-@pytest.mark.asyncio
-async def test_soft_timeout_then_check_running_tool():
-    """Delegate 超时 → placeholder 含 handle → check_running_tool 拿到最终结果."""
-    tracer = trace.get_tracer("test")
-    registry = RunningToolRegistry()
-
-    async def delegate_like_task() -> str:
-        await asyncio.sleep(0.6)
-        return "delegate finished successfully"
-
-    # 1) gather with soft_timeout — task exceeds timeout → placeholder
-    with tracer.start_as_current_span("test") as span:
-        ctx = ToolsContext(span, tracer)
-        results = await ctx.gather(
-            [
-                {
-                    "tool_call_id": "del1",
-                    "name": "delegate",
-                    "tool": delegate_like_task,
-                }
-            ],
+async def test_soft_timeout_waits_for_children(dispatcher, session_mgr, monkeypatch):
+    """子 flow 未完成时 agent loop 不退出，等子 flow 完成后继续。"""
+    _install_slow_progress_tool(monkeypatch)
+    from yuubot.characters import register
+    from yuubot.prompt import AgentSpec, Character
+    register(Character(
+        name="main",
+        description="Test main agent",
+        min_role="folk",
+        persona="你是测试机器人。",
+        spec=AgentSpec(
+            tools=["slow_progress", "check_running_tool"],
             soft_timeout=0.1,
-            registry=registry,
-        )
+            max_steps=6,
+        ),
+        provider="test",
+        model="test-model",
+    ))
 
-    assert len(results) == 1
-    placeholder = str(results[0].output)
-    assert "still running" in placeholder.lower()
-    assert "handle=" in placeholder
+    responses = [
+        make_tool_call_response("slow_progress", json.dumps({}), "call_slow"),
+        # Step 2: LLM sees "still running" handle, emits text.
+        # Loop detects running children → waits for child completion ping.
+        make_text_response("我先把运行句柄给你"),
+        # Step 3: after child completes (CHILD_COMPLETED ping applied),
+        # LLM is called again and can acknowledge completion.
+        make_text_response("任务完成了"),
+    ]
 
-    # 2) Extract handle from placeholder
-    handle = placeholder.split("handle=")[1].split()[0].strip()
-    assert len(handle) == 8
+    with mock_recorder_api(), mock_llm(responses):
+        await dispatcher.dispatch(make_group_event("/yllm 开始慢任务", user_id=MASTER_QQ))
+        await _wait_worker(dispatcher, "group:1000", timeout=8.0)
 
-    # 3) check via registry (same as check_running_tool tool) — should block and return final result
-    final = await registry.check(handle, wait=5)
-    assert "delegate finished successfully" in final
+    session = session_mgr.get(1)
+    assert session is not None
+    text = history_text(session.history)
+    # The handle was returned during the run
+    assert "still running" in text.lower()
+    assert "handle=" in text
+    # After child completion, the ping was applied as a user message
+    # (not as a synthetic check_running_tool)
+    assert "任务完成了" in text
+    assert "后台通知" in text or "完成" in text
+    # The child's completion output should be visible
+    assert "slow tool finished" in text
 
-    # 4) Registry entry cleaned up after retrieval
-    assert len(registry._entries) == 0
 
+async def test_parent_delegate_can_see_child_tool_output(
+    dispatcher, session_mgr, monkeypatch
+):
+    """delegate 子 flow 完成后，parent 在同一 dispatch 内看到结果。"""
+    _install_slow_progress_tool(monkeypatch)
+    from yuubot.characters import register
+    from yuubot.prompt import AgentSpec, Character
+    register(Character(
+        name="main",
+        description="parent",
+        min_role="folk",
+        persona="你是测试机器人。",
+        spec=AgentSpec(
+            tools=["delegate", "check_running_tool"],
+            subagents=["worker"],
+            soft_timeout=0.1,
+            max_steps=8,
+        ),
+        provider="test",
+        model="test-model",
+    ))
+    register(Character(
+        name="worker",
+        description="worker",
+        min_role="master",
+        persona="你是工作代理。",
+        spec=AgentSpec(
+            tools=["slow_progress", "check_running_tool"],
+            soft_timeout=0.1,
+            max_steps=6,
+        ),
+        provider="test",
+        model="test-model",
+    ))
 
-@pytest.mark.asyncio
-async def test_cancel_running_tool_via_registry():
-    """通过 registry 取消运行中的工具."""
-    registry = RunningToolRegistry()
-    buf = OutputBuffer()
+    _make_llm_factory(monkeypatch, dispatcher.agent_runner)
 
-    async def infinite_task() -> ToolResult:
-        while True:
-            await asyncio.sleep(1)
+    with mock_recorder_api():
+        await dispatcher.dispatch(make_group_event("/yllm 跑起来", user_id=MASTER_QQ))
+        await _wait_worker(dispatcher, "group:1000", timeout=8.0)
 
-    task = asyncio.create_task(infinite_task())
-    handle = registry.register("infinite", task, buf, "tc_inf")
-
-    msg = registry.cancel(handle)
-    assert "Cancelled" in msg
-
-    await asyncio.sleep(0.05)
-    assert task.cancelled()
-
-    result = await registry.check(handle, wait=0.1)
-    assert "cancelled" in result.lower() or "[ERROR]" in result
+    session = session_mgr.get(1)
+    assert session is not None
+    text = history_text(session.history)
+    # Parent saw the delegate handle during soft timeout
+    assert "still running" in text.lower()
+    assert "handle=" in text
+    # After child completed, parent received the output as a ping notification
+    assert "parent saw child output" in text
+    assert "后台通知" in text or "完成" in text
+    # The delegate's output (worker's last text) should be visible
+    assert "worker finished" in text

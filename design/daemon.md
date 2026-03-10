@@ -18,18 +18,18 @@ ybot up [--config config.yaml]
 
 ### 核心概念
 
-**Character**（角色）= 人格 + 业务意图。例如"夕雨"。
-**AgentSpec**（能力规格）= tools + sections + constraints。一个 Character 持有多个 AgentSpec，运行时根据 provider/model 能力选择最优的一个。
+**Character**（角色）= 人格 + 能力规格。例如"夕雨"。每个 Character 持有一个 AgentSpec。
+**AgentSpec**（能力规格）= tools + sections + constraints。
 **PromptSpec** = 运行时产物，可 inspect。
 
 ### 数据流
 
 ```
-Character × RuntimeInfo → PromptSpec → SimplePromptBuilder → yuuagents
+Character.spec + RuntimeInfo → PromptSpec → SimplePromptBuilder → yuuagents
 ```
 
-1. `characters.py` 定义所有角色（人格、tools、sections、skills）
-2. `yuuagents.config.yaml` 只提供 provider + model
+1. `characters/` 包定义所有角色（人格、tools、sections、skills），每个角色一个文件
+2. `yuuagents.config.yaml` 仅提供 provider + model（Character.provider/model 可运行时覆盖）
 3. `prompt.py` 的 `build_prompt_spec()` 确定性地派生出完整 prompt 结构
 4. `build_system_prompt()` 将 PromptSpec 转为 yuuagents 的 SimplePromptBuilder
 
@@ -41,7 +41,7 @@ Character × RuntimeInfo → PromptSpec → SimplePromptBuilder → yuuagents
 
 | Agent | Sections |
 |-------|----------|
-| main | persona → skills_summary → expanded:im |
+| main | persona → safety → messaging → memes → skills_summary → expanded:im |
 | general | persona → subagents → docker → sleep_mechanism → bootstrap → skills_summary → expanded:im |
 | researcher | persona → skills_summary(web) |
 | coder | persona → docker → sleep_mechanism |
@@ -52,16 +52,33 @@ Character × RuntimeInfo → PromptSpec → SimplePromptBuilder → yuuagents
 | 文件 | 职责 |
 |------|------|
 | `prompt.py` | 数据结构（FileRef, Section, AgentSpec, Character, PromptSpec）+ build 函数 |
-| `characters.py` | 所有角色定义，CHARACTER_REGISTRY |
-| `prompts/yuu.md` | 夕雨 persona（FileRef 热更新） |
+| `characters/__init__.py` | CHARACTER_REGISTRY, register/unregister, 共享 sections |
+| `characters/main.py` | 夕雨角色定义 |
+| `characters/general.py` | 通用助手角色 |
+| `characters/researcher.py` | 研究助手角色 |
+| `characters/coder.py` | 编码代理角色 |
+| `characters/curator.py` | 记忆整理角色 |
+| `prompts/main/persona.md` | 夕雨人格 |
+| `prompts/main/safety.md` | 安全规则 |
+| `prompts/main/messaging.md` | 群聊发消息原则 |
+| `prompts/main/memes.md` | 表情包使用 |
 | `yuuagents.config.yaml` | 仅 provider + model |
 
 ### 热更新边界
 
 | 可热更（每次新 session 重新加载） | 需重启 |
 |---|---|
-| persona 文件（FileRef） | 端口、进程级配置 |
-| provider / model（config reload） | Docker 镜像 |
+| persona 文件（FileRef 热加载） | 端口、进程级配置 |
+| provider / model（`/ychar config` 运行时修改） | Docker 镜像 |
+
+### /ychar 命令
+
+| 命令 | 说明 |
+|------|------|
+| `/ychar list` | 列出所有已注册 Character |
+| `/ychar show prompt [name]` | 显示系统提示词结构与大小 |
+| `/ychar show config [name]` | 显示 Character 配置详情 |
+| `/ychar config <name> provider=x model=y` | 运行时热更新 provider/model |
 
 ## 模块设计
 
@@ -94,7 +111,7 @@ FastAPI + lifespan 管理：
 prompt_spec, prompt_builder = self._build_prompt(agent_name)
 ```
 
-**YAML 兼容**：如果 YAML config 中 agent 有 `tools` 字段（测试覆盖），则优先使用 YAML 定义；否则使用 CHARACTER_REGISTRY。
+`_build_prompt()` 只查 CHARACTER_REGISTRY，不回退到 YAML。YAML 仅用于 provider/model 配置。
 
 ### 消息渲染
 
@@ -148,4 +165,4 @@ agents:
     model: deepseek-chat
 ```
 
-所有行为定义在 `src/yuubot/characters.py`。
+所有行为定义在 `src/yuubot/characters/` 包中。
