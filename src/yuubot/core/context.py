@@ -36,5 +36,9 @@ class ContextManager:
         """Resolve ctx_id to CtxInfo."""
         return self._by_id.get(ctx_id)
 
+    def lookup(self, ctx_type: str, target_id: int) -> int | None:
+        """Reverse lookup: (type, target_id) → ctx_id, or None."""
+        return self._by_target.get((ctx_type, target_id))
+
     def all(self) -> list[CtxInfo]:
         return list(self._by_id.values())

@@ -18,7 +18,7 @@ class RelayServer:
 
     async def start(self, host: str, port: int) -> None:
         self._server = await websockets.serve(self._handler, host, port)
-        logger.info("Relay WS listening on %s:%d", host, port)
+        logger.info("Relay WS listening on {}:{}", host, port)
 
     async def stop(self) -> None:
         if self._server:
@@ -27,13 +27,13 @@ class RelayServer:
 
     async def _handler(self, ws: ServerConnection) -> None:
         self._clients.add(ws)
-        logger.info("Daemon connected (%d clients)", len(self._clients))
+        logger.info("Daemon connected ({} clients)", len(self._clients))
         try:
             async for _ in ws:
                 pass  # daemon doesn't send us anything
         finally:
             self._clients.discard(ws)
-            logger.info("Daemon disconnected (%d clients)", len(self._clients))
+            logger.info("Daemon disconnected ({} clients)", len(self._clients))
 
     async def broadcast(self, data: dict) -> None:
         """Send event JSON to all connected daemons."""

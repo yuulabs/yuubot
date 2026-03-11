@@ -58,7 +58,7 @@ class Scheduler:
         await self._sync_db_schedules()
 
     async def _trigger(self, task: str, ctx_id: int | None) -> None:
-        logger.info("Cron trigger: %s (ctx=%s)", task, ctx_id)
+        logger.info("Cron trigger: {} (ctx={})", task, ctx_id)
         await self.agent_runner.run_scheduled(task, ctx_id)
 
     async def _trigger_dynamic(
@@ -77,7 +77,7 @@ class Scheduler:
                 if obj is not None:
                     obj.enabled = False
                     await obj.save()
-                    logger.info("One-shot task id=%d auto-disabled", db_id)
+                    logger.info("One-shot task id={} auto-disabled", db_id)
                     # Remove from scheduler
                     if self._scheduler is not None:
                         job_id = f"{_DB_PREFIX}{db_id}"
@@ -86,7 +86,7 @@ class Scheduler:
                         except Exception:
                             pass
             except Exception:
-                logger.exception("Failed to auto-disable one-shot task id=%d", db_id)
+                logger.exception("Failed to auto-disable one-shot task id={}", db_id)
 
     async def _sync_db_schedules(self) -> None:
         """Full diff between DB enabled tasks and scheduler dynamic jobs."""
@@ -111,7 +111,7 @@ class Scheduler:
         # Remove stale
         for job_id in current_ids - desired_ids:
             await self._scheduler.remove_schedule(job_id)
-            logger.info("Removed stale DB schedule: %s", job_id)
+            logger.info("Removed stale DB schedule: {}", job_id)
 
         # Add new
         for job_id in desired_ids - current_ids:
@@ -122,7 +122,7 @@ class Scheduler:
                 args=[t.id, t.task, t.ctx_id, t.agent, t.once],
                 id=job_id,
             )
-            logger.info("Added DB schedule: %s (%s)", job_id, t.cron)
+            logger.info("Added DB schedule: {} ({})", job_id, t.cron)
 
         # Update changed (remove + re-add)
         for job_id in desired_ids & current_ids:
@@ -149,10 +149,10 @@ class Scheduler:
                         args=[job.task, job.ctx_id],
                         id=f"cron-{job.task[:20]}",
                     )
-                    logger.info("Scheduled: %s @ %s", job.task, job.cron)
+                    logger.info("Scheduled: {} @ {}", job.task, job.cron)
 
                 await scheduler.start_in_background()
-                logger.info("Scheduler started (%d config jobs)", len(jobs))
+                logger.info("Scheduler started ({} config jobs)", len(jobs))
 
                 await self._sync_db_schedules()
                 self._started.set()

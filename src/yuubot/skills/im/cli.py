@@ -133,6 +133,14 @@ async def send_msg(
     # Normalize to OneBot V11 format: {"type": ..., "data": {...}}
     segments = [_normalize_segment(s) for s in segments]
 
+    # Reject empty messages
+    if not segments or all(
+        s.get("type") == "text" and not s.get("data", {}).get("text", "").strip()
+        for s in segments
+    ):
+        click.echo("错误: 消息内容为空")
+        raise SystemExit(1)
+
     # Validate image segments: local file paths must exist
     for seg in segments:
         if seg.get("type") != "image":

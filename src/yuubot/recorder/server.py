@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 
 import uvicorn
 import websockets
@@ -30,17 +31,44 @@ def _inject_local_paths(raw_segments: list[dict], media_paths: list[str]) -> Non
             idx += 1
 
 
+def _build_bot_cmd_re(entries: list[str]) -> re.Pattern:
+    """Build regex matching ``/ybot off`` or ``/y bot off`` etc.
+
+    Captures group 1 = ``on`` | ``off``.
+    """
+    escaped = [re.escape(e) for e in sorted(entries, key=lambda x: -len(x))]
+    prefix = "|".join(escaped)
+    return re.compile(rf"^(?:{prefix})\s*bot\s+(on|off)\b", re.IGNORECASE)
+
+
+def _extract_plain_text(raw_message: list[dict]) -> str:
+    """Extract plain text from raw OneBot message segments."""
+    parts = []
+    for seg in raw_message:
+        if seg.get("type") == "text":
+            parts.append(seg.get("data", {}).get("text", ""))
+    return "".join(parts).strip()
+
+
 class NapCatWSServer:
     """Reverse WS server — NapCat connects here to push events."""
 
-    def __init__(self, store: Store, relay: RelayServer) -> None:
+    def __init__(
+        self,
+        store: Store,
+        relay: RelayServer,
+        muted_ctxs: set[int],
+        entries: list[str],
+    ) -> None:
         self.store = store
         self.relay = relay
+        self._muted_ctxs = muted_ctxs
+        self._bot_cmd_re = _build_bot_cmd_re(entries)
         self._server: Server | None = None
 
     async def start(self, host: str, port: int) -> None:
         self._server = await websockets.serve(self._handler, host, port)
-        logger.info("NapCat WS listening on %s:%d", host, port)
+        logger.info("NapCat WS listening on {}:{}", host, port)
 
     async def stop(self) -> None:
         if self._server:
@@ -65,6 +93,19 @@ class NapCatWSServer:
             ctx_id, media_paths = await self.store.save(event)
             # Enrich raw data with ctx_id and local media paths before relaying
             raw["ctx_id"] = ctx_id
+
+            # Emergency brake: /bot off mutes ctx, /bot on unmutes
+            plain = _extract_plain_text(raw.get("message", []))
+            m = self._bot_cmd_re.match(plain)
+            if m:
+                action = m.group(1).lower()
+                if action == "off":
+                    self._muted_ctxs.add(ctx_id)
+                    logger.info("ctx {} muted (bot off)", ctx_id)
+                elif action == "on":
+                    self._muted_ctxs.discard(ctx_id)
+                    logger.info("ctx {} unmuted (bot on)", ctx_id)
+
             if media_paths:
                 _inject_local_paths(raw.get("message", []), media_paths)
             await self.relay.broadcast(raw)
@@ -81,13 +122,20 @@ async def run_recorder(config_path: str | None = None) -> None:
     ctx_mgr = ContextManager()
     await ctx_mgr.load()
 
+    muted_ctxs: set[int] = set()
+
     downloader = MediaDownloader(cfg.recorder.media_dir)
     store = Store(ctx_mgr=ctx_mgr, downloader=downloader)
     relay = RelayServer()
-    napcat_ws = NapCatWSServer(store=store, relay=relay)
+    napcat_ws = NapCatWSServer(
+        store=store, relay=relay, muted_ctxs=muted_ctxs, entries=cfg.bot.entries,
+    )
 
     shutdown_event = asyncio.Event()
-    api_app = create_api(cfg.recorder.napcat_http, ctx_mgr, shutdown_event, bot_qq=cfg.bot.qq, master_qq=cfg.bot.master)
+    api_app = create_api(
+        cfg.recorder.napcat_http, ctx_mgr, shutdown_event,
+        bot_qq=cfg.bot.qq, master_qq=cfg.bot.master, muted_ctxs=muted_ctxs,
+    )
 
     # Start all services
     await napcat_ws.start(cfg.recorder.napcat_ws.host, cfg.recorder.napcat_ws.port)

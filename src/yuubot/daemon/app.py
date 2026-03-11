@@ -54,6 +54,7 @@ async def run_daemon(config_path: str | None = None) -> None:
         "dm_whitelist": cfg.response.dm_whitelist,
         "session_mgr": session_mgr,
         "config": cfg,
+        "agent_runner": agent_runner,
     }
 
     dispatcher = Dispatcher(

@@ -64,6 +64,143 @@ def render_recent(history: list[Any], n: int = 8) -> str:
     return "\n\n".join(parts) if parts else "（无记录）"
 
 
+def render_for_curator(history: list[Any]) -> str:
+    """Extract only QQ-level message exchanges for the curator.
+
+    Pulls out:
+    1. User turns: raw QQ message text (stripped of XML wrappers)
+    2. im_send calls: the actual message content sent to QQ
+    3. Last assistant text (may contain URL summaries)
+    """
+    parts: list[str] = []
+    for msg in history:
+        if not (isinstance(msg, tuple) and len(msg) == 2):
+            continue
+        role, items = msg
+        if role == "system":
+            continue
+
+        if role == "user":
+            texts = [item for item in items if isinstance(item, str)]
+            joined = "".join(texts).strip()
+            if not joined:
+                continue
+            # Extract content from <msg> XML if present
+            import re
+            msg_matches = re.findall(r"<content>(.*?)</content>", joined, re.DOTALL)
+            if msg_matches:
+                for m in msg_matches:
+                    parts.append(f"[用户]: {m.strip()[:400]}")
+            else:
+                # Skip system injections (silence pings, etc.)
+                if not joined.startswith("[system]"):
+                    parts.append(f"[用户]: {joined[:400]}")
+
+        elif role == "assistant":
+            if not isinstance(items, list):
+                continue
+            # Extract im send calls
+            for item in items:
+                if isinstance(item, dict) and item.get("type") == "tool_call":
+                    name = item.get("name", "")
+                    args = item.get("arguments", "")
+                    if "im" in name and "send" in name:
+                        parts.append(f"[bot发送]: {str(args)[:400]}")
+                    elif name == "execute_skill_cli":
+                        try:
+                            import json
+                            parsed = json.loads(args) if isinstance(args, str) else args
+                            cmd = parsed.get("command", "")
+                            if isinstance(cmd, str) and "im send" in cmd:
+                                parts.append(f"[bot发送]: {cmd[:400]}")
+                        except Exception:
+                            pass
+            # Last assistant text block
+            text_parts = [item for item in items if isinstance(item, str)]
+            text = "".join(text_parts).strip()
+            if text:
+                parts.append(f"[助手思考]: {text[:400]}")
+
+    return "\n\n".join(parts) if parts else "（无记录）"
+
+
+async def compress_summary(history_slice: list[Any], llm: Any, steps_span: int = 8) -> str:
+    """Summarize a history slice for mid-step compression.
+
+    steps_span controls how many recent messages to render for context.
+    """
+    narrative = render_recent(history_slice, n=steps_span)
+    # Build a minimal "history" so summarize() can process it
+    # We use the narrative as if it were the original task + recent conversation
+    import yuullm
+    import yuutrace as ytrace
+    from uuid import uuid4
+
+    user_content = (
+        f"对话记录：\n{narrative}\n\n"
+        "请生成工作交接摘要。"
+    )
+    messages = [
+        yuullm.system(_SYSTEM_PROMPT),
+        yuullm.user(user_content),
+    ]
+
+    model = getattr(llm, "default_model", "unknown")
+
+    async def _call() -> str:
+        from yuullm import Response
+        stream, store = await llm.stream(messages)
+        text_parts: list[str] = []
+        async for item in stream:
+            if isinstance(item, Response) and isinstance(item.item, str):
+                text_parts.append(item.item)
+
+        usage = store.get("usage")
+        if usage is not None:
+            ytrace.record_llm_usage(
+                ytrace.LlmUsageDelta(
+                    provider=usage.provider,
+                    model=usage.model,
+                    request_id=usage.request_id,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                    cache_read_tokens=usage.cache_read_tokens,
+                    cache_write_tokens=usage.cache_write_tokens,
+                    total_tokens=usage.total_tokens,
+                )
+            )
+        cost = store.get("cost")
+        if cost is not None:
+            ytrace.record_cost(
+                category="llm",
+                currency="USD",
+                amount=cost.total_cost,
+                source=cost.source,
+                llm_provider=usage.provider if usage else "",
+                llm_model=usage.model if usage else "",
+                llm_request_id=usage.request_id if usage else None,
+            )
+        return "".join(text_parts).strip()
+
+    try:
+        with ytrace.conversation(id=uuid4(), agent="compressor", model=model) as chat:
+            chat.system(_SYSTEM_PROMPT)
+            chat.user(user_content)
+            with chat.llm_gen() as gen:
+                result = await _call()
+                gen.log([{"type": "text", "text": result}])
+                return result
+    except ytrace.TracingNotInitializedError:
+        try:
+            return await _call()
+        except Exception:
+            logger.exception("Compress summary LLM call failed")
+            return render_recent(history_slice, n=4)
+    except Exception:
+        logger.exception("Compress summary LLM call failed")
+        return render_recent(history_slice, n=4)
+
+
 async def summarize(history: list[Any], llm: Any) -> str:
     """Call the LLM to produce a compact handoff note from session history."""
     import yuullm

@@ -208,14 +208,28 @@ async def _exec_on(remaining: str, event: dict, deps: dict) -> str | None:
 
 
 async def _exec_off(remaining: str, event: dict, deps: dict) -> str | None:
-    """Disable bot in group, or disable auto mode in private chat (MOD+)."""
+    """Disable bot in group, or disable auto mode in private chat (MOD+).
+
+    Emergency brake: recorder already muted this ctx on seeing /bot off.
+    Daemon side cancels running flows, stops workers, and closes sessions.
+    """
+    ctx_id = event.get("ctx_id", 0)
+
+    # ── Daemon-side cleanup ──
+    agent_runner = deps.get("agent_runner")
+    if agent_runner:
+        agent_runner.cancel_ctx(ctx_id)
+
+    session_mgr = deps.get("session_mgr")
+    if session_mgr:
+        session_mgr.close(ctx_id)
+
+    # ── Original logic ──
     if event.get("message_type") == "private":
-        ctx_id = event.get("ctx_id", 0)
-        session_mgr = deps.get("session_mgr")
         if session_mgr and session_mgr.is_auto(ctx_id):
             await session_mgr.disable_auto(ctx_id)
-            return "已关闭 auto 模式"
-        return "当前未开启 auto 模式"
+            return "已关闭 auto 模式（紧急制动已执行）"
+        return "已执行紧急制动"
 
     from yuubot.core.models import GroupSetting
 
@@ -226,7 +240,7 @@ async def _exec_off(remaining: str, event: dict, deps: dict) -> str | None:
         defaults={"bot_enabled": False, "response_mode": "at"},
         group_id=gid,
     )
-    return "Bot 已关闭"
+    return "Bot 已关闭（紧急制动已执行）"
 
 
 async def _exec_set(remaining: str, event: dict, deps: dict) -> str | None:

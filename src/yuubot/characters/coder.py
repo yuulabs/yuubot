@@ -22,4 +22,5 @@ register(Character(
     min_role="master",
     persona="你是编码者。你负责根据用户需求编写代码。保持良好的软件工程实践，拒绝劣质代码。",
     spec=_spec,
+    max_tokens=128000,
 ))

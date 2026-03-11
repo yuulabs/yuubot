@@ -49,6 +49,12 @@ def cli(ctx: click.Context, config: str | None) -> None:
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config
 
+    # In-bot subprocess: suppress all console logging so tool output is clean.
+    # Logs still go to log files via the daemon process.
+    if _in_bot():
+        from loguru import logger
+        logger.remove()
+
 
 # ── Phase 0: Setup ──────────────────────────────────────────────
 

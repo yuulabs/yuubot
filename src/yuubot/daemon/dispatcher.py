@@ -90,14 +90,14 @@ class _CtxWorker:
                     try:
                         await self.dispatcher._handle(match, event)
                     except Exception:
-                        logger.exception("Error handling command in ctx=%s", self.key)
+                        logger.exception("Error handling command in ctx={}", self.key)
 
                 for _ in batch:
                     self.queue.task_done()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Worker loop error in ctx=%s, continuing", self.key)
+                logger.exception("Worker loop error in ctx={}", continuing, self.key)
 
 
 def _group_batch(batch: list) -> list[list]:
@@ -179,7 +179,7 @@ class Dispatcher:
             and not (isinstance(s, AtSegment) and s.qq == bot_qq)
         ]
         plain = segments_to_plain(others + replies).strip()
-        logger.info("Message text: %s", plain)
+        logger.info("Message text: {}", plain)
 
         # Try command match early — non-LLM commands bypass session entirely.
         # Session is an LLM-only concept; built-in commands (/ping, /cost, /help, etc.)
@@ -197,15 +197,22 @@ class Dispatcher:
             scope = str(event.get("group_id", "global"))
             role = await self.role_mgr.get(event["user_id"], scope)
             if not cmd_match.command.check_permission(role):
-                logger.info("Permission denied (non-llm): user=%s role=%s cmd=%s", user_id, role, cmd_match.command.prefix)
+                logger.info("Permission denied (non-llm): user={} role={} cmd={}", user_id, role, cmd_match.command.prefix)
                 return
-            logger.info("Command accepted (non-llm): user=%s cmd=%s", user_id, cmd_match.command.prefix)
-            self._enqueue(cmd_match, event)
+            logger.info("Command accepted (non-llm): user={} cmd={}", user_id, cmd_match.command.prefix)
+            # Execute inline — non-LLM commands are fast and must not queue
+            # behind slow LLM agent runs in the per-ctx worker.
+            try:
+                reply = await cmd_match.command.executor(cmd_match.remaining, event, self.deps)
+                if reply:
+                    await self._send_reply(event, reply)
+            except Exception:
+                logger.exception("Error executing non-llm command: {}", cmd_match.command.prefix)
             return
 
         # LLM / session path — check whether we should respond in this context.
         should_respond = await self._should_respond(event)
-        logger.info("should_respond check: user=%s group=%s type=%s result=%s", user_id, group_id, msg_type, should_respond)
+        logger.info("should_respond check: user={} group={} type={} result={}", user_id, group_id, msg_type, should_respond)
         if not should_respond:
             return
 
@@ -221,7 +228,7 @@ class Dispatcher:
                 if tag_agent == session.agent_name:
                     # Same agent — treat as continuation
                     self.session_mgr.touch(session)
-                    logger.info("Session continuation (auto/yllm): ctx=%s agent=%s", ctx_id, session.agent_name)
+                    logger.info("Session continuation (auto/yllm): ctx={} agent={}", ctx_id, session.agent_name)
                     event["_session"] = session
                     event["_session_agent"] = session.agent_name
                     event["_session_remaining"] = cmd_match.remaining
@@ -238,7 +245,7 @@ class Dispatcher:
                 if is_llm_match:
                     remaining = cmd_match.remaining
                 self.session_mgr.touch(session)
-                logger.info("Session continuation: ctx=%s agent=%s", ctx_id, session.agent_name)
+                logger.info("Session continuation: ctx={} agent={}", ctx_id, session.agent_name)
                 event["_session"] = session
                 event["_session_agent"] = session.agent_name
                 event["_session_remaining"] = remaining
@@ -253,7 +260,7 @@ class Dispatcher:
                 match = cmd_match
             elif cur_agent is not None and cmd_match is None:
                 # Auto-resume: session expired but we know the current agent
-                logger.info("Auto mode resume: ctx=%s agent=%s", ctx_id, cur_agent)
+                logger.info("Auto mode resume: ctx={} agent={}", ctx_id, cur_agent)
                 new_session = self.session_mgr.create(
                     ctx_id, cur_agent, user_id=event.get("user_id", 0),
                 )
@@ -263,16 +270,16 @@ class Dispatcher:
                 self._enqueue(None, event)
                 return
             else:
-                logger.info("Auto mode: no agent selected yet, ignoring: %s", plain)
+                logger.info("Auto mode: no agent selected yet, ignoring: {}", plain)
                 return
         else:
             # No active session — must be an LLM command (non-LLM already handled above)
             if cmd_match is None:
-                logger.info("No command match for: %s", plain)
+                logger.info("No command match for: {}", plain)
                 return
             match = cmd_match
 
-        logger.info("Matched command: %s", match.command.prefix)
+        logger.info("Matched command: {}", match.command.prefix)
 
         # Permission check (LLM path)
         scope = str(event.get("group_id", "global"))
@@ -281,15 +288,15 @@ class Dispatcher:
         is_free_mode = await self._is_free_mode(event)
         is_llm_cmd = match.command.executor is _exec_llm
 
-        logger.info("Permission check: user=%s role=%s cmd=%s free_mode=%s is_llm=%s",
+        logger.info("Permission check: user={} role={} cmd={} free_mode={} is_llm={}",
                  user_id, role, match.command.prefix, is_free_mode, is_llm_cmd)
 
         if not (is_free_mode and is_llm_cmd):
             if not match.command.check_permission(role):
-                logger.info("Permission denied: user=%s role=%s cmd=%s", event["user_id"], role, match.command.prefix)
+                logger.info("Permission denied: user={} role={} cmd={}", event["user_id"], role, match.command.prefix)
                 return
 
-        logger.info("Command accepted: user=%s cmd=%s", user_id, match.command.prefix)
+        logger.info("Command accepted: user={} cmd={}", user_id, match.command.prefix)
         self._enqueue(match, event)
 
     def _enqueue(self, match, event: dict) -> None:
@@ -351,7 +358,7 @@ class Dispatcher:
                     source_flow_id="dispatcher",
                     payload=payload,
                 ))
-                logger.info("Pinged running flow for ctx=%s", ctx_id)
+                logger.info("Pinged running flow for ctx={}", ctx_id)
                 return
         # Flow not running — fall through to _CtxWorker continuation
         self._enqueue(None, event)
@@ -462,12 +469,12 @@ class Dispatcher:
         try:
             note = await self.agent_runner.summarize(history, agent_name)
         except Exception:
-            logger.exception("Failed to summarize session for ctx=%s", ctx_id)
+            logger.exception("Failed to summarize session for ctx={}", ctx_id)
             note = ""
 
         new_session = self.session_mgr.create(ctx_id, agent_name, user_id=user_id)
         new_session.handoff_note = note
-        logger.info("Session rolled over: ctx=%s agent=%s note_len=%d", ctx_id, agent_name, len(note))
+        logger.info("Session rolled over: ctx={} agent={} note_len={}", ctx_id, agent_name, len(note))
 
         if note:
             await self._send_reply(event, "（已压缩上下文，新会话已就绪，可继续对话）")
@@ -480,7 +487,7 @@ class Dispatcher:
         try:
             await self.agent_runner.curate(history, ctx_id, user_id)
         except Exception:
-            logger.exception("mem_curator failed for ctx=%s", ctx_id)
+            logger.exception("mem_curator failed for ctx={}", ctx_id)
 
     async def _send_reply(self, event: dict, text: str) -> None:
         """Send a text reply back to the source context."""

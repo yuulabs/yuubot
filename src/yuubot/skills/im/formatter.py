@@ -1,15 +1,7 @@
 """Format messages to LLM-readable XML.
 
-Reply is extracted as a sibling element before <msg>, and msg attributes
-are simplified: best name only, shorter time format, no redundant fields.
-
-Before:
-  <msg id="..." qq="..." name="x" display_name="y" alias="z" time="2026-03-10 11:11 +0000">
-    <reply msg_id="..." sender_name="bot" content="不是哦..."/> 为什么喜欢百合</msg>
-
-After:
-  <reply to="夕雨yuu">不是哦...</reply>
-  <msg name="繁星入梦" qq="948523603" time="03-10 19:11 +0800">为什么喜欢百合</msg>
+Example:
+  <msg id="42" name="Alice" qq="123456789" time="03-10 19:11 +0800"><quote from="Bob">原文...</quote>回复内容</msg>
 """
 
 import html
@@ -22,7 +14,6 @@ from yuubot.core.models import (
     MessageRecord,
     ReplySegment,
     segments_from_json,
-    segments_to_plain,
     UserAlias,
 )
 
@@ -142,12 +133,7 @@ async def format_message_to_xml(
     media_files: list[str],
     ctx_id: int | None = None,
 ) -> str:
-    """Format a single message to LLM-readable XML.
-
-    New format:
-      <reply to="sender">content</reply>
-      <msg name="best_name" qq="123" time="03-10 11:11">content</msg>
-    """
+    """Format a single message to LLM-readable XML."""
     segments = segments_from_json(raw_message)
     content, reply_tags = await format_segments(
         segments, media_files, ctx_id=ctx_id, extract_replies=True,
@@ -156,7 +142,7 @@ async def format_message_to_xml(
     name = _best_name(nickname, display_name, alias)
 
     # Build attributes
-    attrs_parts = []
+    attrs_parts = [f'id="{msg_id}"']
     if name:
         attrs_parts.append(f'name="{html.escape(name)}"')
     attrs_parts.append(f'qq="{user_id}"')
@@ -168,24 +154,21 @@ async def format_message_to_xml(
     attrs_parts.append(f'time="{_format_time(ts)}"')
 
     attrs_str = ' '.join(attrs_parts)
-    msg_tag = f'<msg {attrs_str}>{content}</msg>'
-
-    if reply_tags:
-        return '\n'.join(reply_tags) + '\n' + msg_tag
-    return msg_tag
+    quote_str = ''.join(reply_tags)
+    return f'<msg {attrs_str}>{quote_str}{content}</msg>'
 
 
 async def _format_reply_standalone(reply_msg_id: str) -> str:
-    """Format a reply as a standalone sibling element: <reply to="sender">content</reply>."""
+    """Format a quoted message as <quote from="sender">content</quote>."""
     record = await MessageRecord.filter(message_id=int(reply_msg_id)).first()
     if record is None:
         return f'<reply to="?">[unknown message]</reply>'
 
     segs = segments_from_json(record.raw_message)
-    content = segments_to_plain(segs)
+    content = await format_segments(segs, record.media_files)
     sender = _best_name(record.nickname, record.display_name, None)
 
-    return f'<reply to="{html.escape(sender)}">{html.escape(content)}</reply>'
+    return f'<quote from="{html.escape(sender)}">{content}</quote>'
 
 
 async def _format_reply_inline(reply_msg_id: str) -> str:
@@ -195,7 +178,7 @@ async def _format_reply_inline(reply_msg_id: str) -> str:
         return f'<reply msg_id="{html.escape(reply_msg_id)}"/>'
 
     segs = segments_from_json(record.raw_message)
-    content = segments_to_plain(segs)
+    content = await format_segments(segs, record.media_files)
     sender = record.display_name or record.nickname or ""
 
     return (

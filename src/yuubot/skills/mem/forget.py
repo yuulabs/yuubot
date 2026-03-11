@@ -27,6 +27,6 @@ async def cleanup_stale() -> int:
     count = await Memory.filter(last_accessed__lt=cutoff).count()
     if count > 0:
         await Memory.filter(last_accessed__lt=cutoff).delete()
-        logger.info("Auto-forget: deleted %d stale memories (older than %d days)", count, days)
+        logger.info("Auto-forget: deleted {} stale memories (older than {} days)", count, days)
 
     return count

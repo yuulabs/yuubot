@@ -52,7 +52,7 @@ class SessionManager:
             if r.current_agent:
                 self._current_agent[r.ctx_id] = r.current_agent
         if records:
-            logger.info("Loaded auto mode for %d ctx(s)", len(records))
+            logger.info("Loaded auto mode for {} ctx(s)", len(records))
 
     async def enable_auto(self, ctx_id: int) -> None:
         from yuubot.core.models import AutoModeSetting
@@ -61,14 +61,14 @@ class SessionManager:
             defaults={"current_agent": self._current_agent.get(ctx_id, "")},
             ctx_id=ctx_id,
         )
-        logger.info("Auto mode enabled: ctx=%s", ctx_id)
+        logger.info("Auto mode enabled: ctx={}", ctx_id)
 
     async def disable_auto(self, ctx_id: int) -> None:
         from yuubot.core.models import AutoModeSetting
         self._auto_ctxs.discard(ctx_id)
         self._current_agent.pop(ctx_id, None)
         await AutoModeSetting.filter(ctx_id=ctx_id).delete()
-        logger.info("Auto mode disabled: ctx=%s", ctx_id)
+        logger.info("Auto mode disabled: ctx={}", ctx_id)
 
     def is_auto(self, ctx_id: int) -> bool:
         return ctx_id in self._auto_ctxs
@@ -96,7 +96,7 @@ class SessionManager:
                 return None
             if self._is_expired(session):
                 del self._sessions[key]
-                logger.info("Session expired: ctx=%s agent=%s", ctx_id, agent_name)
+                logger.info("Session expired: ctx={} agent={}", ctx_id, agent_name)
                 return None
             return session
 
@@ -106,7 +106,7 @@ class SessionManager:
                 continue
             if self._is_expired(session):
                 del self._sessions[key]
-                logger.info("Session expired: ctx=%s agent=%s", *key)
+                logger.info("Session expired: ctx={} agent={}", *key)
                 continue
             return session
         return None
@@ -126,7 +126,7 @@ class SessionManager:
             self._sync_current_agent(ctx_id, agent_name)
         session = Session(ctx_id=ctx_id, agent_name=agent_name, user_id=user_id)
         self._sessions[(ctx_id, agent_name)] = session
-        logger.info("Session created: ctx=%s agent=%s", ctx_id, agent_name)
+        logger.info("Session created: ctx={} agent={}", ctx_id, agent_name)
         return session
 
     def _sync_current_agent(self, ctx_id: int, agent_name: str) -> None:
@@ -138,7 +138,7 @@ class SessionManager:
             try:
                 await AutoModeSetting.filter(ctx_id=ctx_id).update(current_agent=agent_name)
             except Exception:
-                logger.warning("Failed to sync current_agent for ctx=%s", ctx_id)
+                logger.warning("Failed to sync current_agent for ctx={}", ctx_id)
 
         try:
             loop = asyncio.get_running_loop()
@@ -156,7 +156,7 @@ class SessionManager:
         closed = [self._sessions.pop(key) for key in keys]
         self._current_agent.pop(ctx_id, None)
         if keys:
-            logger.info("Session closed: ctx=%s", ctx_id)
+            logger.info("Session closed: ctx={}", ctx_id)
         return closed
 
     def collect_expired(self) -> list[Session]:
@@ -166,7 +166,7 @@ class SessionManager:
             session = self._sessions[key]
             if self._is_expired(session):
                 del self._sessions[key]
-                logger.info("Session expired: ctx=%s agent=%s", *key)
+                logger.info("Session expired: ctx={} agent={}", *key)
                 expired.append(session)
         return expired
 

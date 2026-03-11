@@ -36,7 +36,7 @@ class WSClient:
         while self._running:
             try:
                 async with websockets.connect(self.url) as ws:
-                    logger.info("Connected to Recorder relay: %s", self.url)
+                    logger.info("Connected to Recorder relay: {}", self.url)
                     async for raw in ws:
                         try:
                             data = json.loads(raw)
@@ -44,7 +44,7 @@ class WSClient:
                         except Exception:
                             logger.exception("Error handling event")
             except (ConnectionRefusedError, OSError, websockets.ConnectionClosed) as e:
-                logger.warning("Relay connection lost (%s), reconnecting in 3s...", e)
+                logger.warning("Relay connection lost ({}), reconnecting in 3s...", e)
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
                 break

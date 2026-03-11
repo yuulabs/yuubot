@@ -92,10 +92,9 @@ class ResponseConfig(msgspec.Struct):
 class SessionConfig(msgspec.Struct):
     ttl: int = 300  # seconds before session expires
     max_tokens: int = 60000  # context window token limit
-    summarizer_provider: str = (
-        ""  # provider name from yuuagents.providers (default: main agent's)
-    )
-    summarizer_model: str = ""  # model to use for summary (default: main agent's model)
+    summarizer_provider: str = ""  # provider for summarizer/compressor LLM (required)
+    summarizer_model: str = ""  # model for summarizer/compressor LLM (required)
+    summarize_steps_span: int = 8  # steps to look back when generating compression summary
 
 
 class Config(msgspec.Struct):

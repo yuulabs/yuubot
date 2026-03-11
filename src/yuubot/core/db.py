@@ -175,17 +175,17 @@ async def _load_simple_ext(conn, ext_path: str = "") -> bool:
         await raw_conn.load_extension(path)
         await raw_conn.enable_load_extension(False)
         _simple_loaded = True
-        logger.info("Loaded libsimple from %s", path)
+        logger.info("Loaded libsimple from {}", path)
 
         # Init jieba dict — look for dict/ next to libsimple binary
         dict_dir = Path(path).parent / "dict"
         if dict_dir.is_dir():
             await conn.execute_query("SELECT jieba_dict(?)", [str(dict_dir)])
-            logger.info("Loaded jieba dict from %s", dict_dir)
+            logger.info("Loaded jieba dict from {}", dict_dir)
 
         return True
     except Exception:
-        logger.warning("Failed to load libsimple from %s, using default tokenizer", path, exc_info=True)
+        logger.opt(exception=True).warning("Failed to load libsimple from {}, using default tokenizer", path)
         return False
 
 
@@ -255,7 +255,7 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
     for check_sql, migrate_sql in _MIGRATIONS:
         _, rows = await conn.execute_query(check_sql)
         if not rows:
-            logger.info("Running migration: %s", migrate_sql[:60])
+            logger.info("Running migration: {}", migrate_sql[:60])
             await conn.execute_query(migrate_sql)
 
     # Load simple tokenizer for Chinese FTS5 support
