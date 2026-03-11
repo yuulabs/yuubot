@@ -1,6 +1,5 @@
 """HTTP API proxy — sits between skills/daemon and NapCat HTTP API."""
 
-import logging
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -14,7 +13,7 @@ from yuubot.core.context import ContextManager
 from yuubot.core.models import MessageRecord, segments_to_plain, segments_to_json
 from yuubot.core.onebot import parse_segments
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 async def _log_bot_msg(body: dict, resp: dict, ctx_mgr: ContextManager, bot_qq: int) -> None:
@@ -40,9 +39,9 @@ async def _log_bot_msg(body: dict, resp: dict, ctx_mgr: ContextManager, bot_qq: 
             timestamp=datetime.now(tz=timezone.utc),
             media_files=[],
         )
-        log.info("Bot msg logged: ctx=%d content=%s", ctx_id, plain[:80])
+        logger.info("Bot msg logged: ctx=%d content=%s", ctx_id, plain[:80])
     except Exception:
-        log.exception("Failed to log bot message")
+        logger.exception("Failed to log bot message")
 
 
 def create_api(napcat_http: str, ctx_mgr: ContextManager, shutdown_event, bot_qq: int = 0, master_qq: int = 0) -> FastAPI:
@@ -66,7 +65,7 @@ def create_api(napcat_http: str, ctx_mgr: ContextManager, shutdown_event, bot_qq
             and body.get("user_id") == master_qq
         )
         if not result.passed:
-            log.warning("安全审查拦截: %s | match=%r | body=%s", result.category, result.match, body)
+            logger.warning("安全审查拦截: %s | match=%r | body=%s", result.category, result.match, body)
             if is_master_private:
                 error_msg = (
                     f"安全审查拦截: 消息包含{result.category}，"
@@ -80,7 +79,7 @@ def create_api(napcat_http: str, ctx_mgr: ContextManager, shutdown_event, bot_qq
         if request.headers.get("X-Bot-Mode") == "1":
             soft_result = soft_audit_message(segments)
             if not soft_result.passed:
-                log.warning("软审查拦截: %s | match=%r | body=%s", soft_result.category, soft_result.match, body)
+                logger.warning("软审查拦截: %s | match=%r | body=%s", soft_result.category, soft_result.match, body)
                 if is_master_private:
                     error_msg = (
                         f"安全审查拦截: {soft_result.category}，"

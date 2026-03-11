@@ -1,7 +1,6 @@
 """Built-in commands: /bot, /help, /llm, /new, /cost, /ping."""
 
 import json
-import logging
 import re
 import sqlite3
 import time
@@ -13,7 +12,7 @@ from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import Command, RootCommand
 from yuubot.core.models import Role
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 def build_command_tree(entries: list[str]) -> RootCommand:
@@ -422,7 +421,7 @@ async def _exec_cost(remaining: str, event: dict, deps: dict) -> str | None:
             ).fetchall()
         conn.close()
     except Exception:
-        log.exception("Failed to query traces.db")
+        logger.exception("Failed to query traces.db")
         return "查询开销失败"
 
     if not rows:

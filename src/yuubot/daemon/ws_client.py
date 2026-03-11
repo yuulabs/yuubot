@@ -2,12 +2,11 @@
 
 import asyncio
 import json
-import logging
 from typing import Callable, Awaitable
 
 import websockets
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 class WSClient:
@@ -37,15 +36,15 @@ class WSClient:
         while self._running:
             try:
                 async with websockets.connect(self.url) as ws:
-                    log.info("Connected to Recorder relay: %s", self.url)
+                    logger.info("Connected to Recorder relay: %s", self.url)
                     async for raw in ws:
                         try:
                             data = json.loads(raw)
                             await self.on_event(data)
                         except Exception:
-                            log.exception("Error handling event")
+                            logger.exception("Error handling event")
             except (ConnectionRefusedError, OSError, websockets.ConnectionClosed) as e:
-                log.warning("Relay connection lost (%s), reconnecting in 3s...", e)
+                logger.warning("Relay connection lost (%s), reconnecting in 3s...", e)
                 await asyncio.sleep(3)
             except asyncio.CancelledError:
                 break

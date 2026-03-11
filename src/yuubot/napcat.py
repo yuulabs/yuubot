@@ -1,12 +1,11 @@
 """NapCat lifecycle management — detect, start, stop."""
 
 import json
-import logging
 import subprocess
 import time
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 NAPCAT_HOME = Path.home() / "Napcat"
 NAPCAT_QQ_BIN = NAPCAT_HOME / "opt" / "QQ" / "qq"
@@ -38,7 +37,7 @@ def is_running() -> bool:
 def start() -> None:
     """Start napcat in a detached screen session."""
     if is_running():
-        log.info("NapCat already running in screen session '%s'", SCREEN_SESSION)
+        logger.info("NapCat already running in screen session '%s'", SCREEN_SESSION)
         return
     if not is_installed():
         raise RuntimeError("NapCat is not installed. Run `ybot setup` first.")
@@ -47,19 +46,19 @@ def start() -> None:
         ["screen", "-dmS", SCREEN_SESSION, "bash", "-c", cmd],
         check=True,
     )
-    log.info("NapCat started in screen session '%s'", SCREEN_SESSION)
+    logger.info("NapCat started in screen session '%s'", SCREEN_SESSION)
 
 
 def stop() -> None:
     """Stop the napcat screen session."""
     if not is_running():
-        log.info("NapCat is not running.")
+        logger.info("NapCat is not running.")
         return
     subprocess.run(
         ["screen", "-S", SCREEN_SESSION, "-X", "quit"],
         check=True,
     )
-    log.info("NapCat stopped.")
+    logger.info("NapCat stopped.")
 
 
 def wait_ready(timeout: int = 30) -> bool:
@@ -108,7 +107,7 @@ def write_webui_port(port: int) -> None:
     data["port"] = port
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    log.info("Updated NapCat WebUI port to %d in %s", port, p)
+    logger.info("Updated NapCat WebUI port to %d in %s", port, p)
 
 
 def webui_token() -> str | None:
@@ -163,5 +162,5 @@ def write_onebot_config(qq: int, ws_port: int, http_port: int) -> Path:
     path = onebot_config_path(qq)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
-    log.info("Wrote NapCat OneBot11 config: %s", path)
+    logger.info("Wrote NapCat OneBot11 config: %s", path)
     return path

@@ -1,9 +1,8 @@
 """Context summarizer — compress session history into a handoff note on rollover."""
 
-import logging
 from typing import Any
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 _SYSTEM_PROMPT = (
     "你是一个对话摘要助手。根据提供的对话历史，生成一份简洁的工作交接摘要，"
@@ -135,8 +134,8 @@ async def summarize(history: list[Any], llm: Any) -> str:
         try:
             return await _call()
         except Exception:
-            log.exception("Summary LLM call failed, using fallback excerpt")
+            logger.exception("Summary LLM call failed, using fallback excerpt")
             return f"（原任务摘要：{original_task[:200]}）"
     except Exception:
-        log.exception("Summary LLM call failed, using fallback excerpt")
+        logger.exception("Summary LLM call failed, using fallback excerpt")
         return f"（原任务摘要：{original_task[:200]}）"

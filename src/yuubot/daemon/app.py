@@ -1,11 +1,12 @@
 """Daemon FastAPI app — main bot process."""
 
 import asyncio
-import logging
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+
+from loguru import logger
 
 from yuubot.commands.builtin import build_command_tree
 from yuubot.commands.entry import EntryManager
@@ -17,8 +18,7 @@ from yuubot.daemon.dispatcher import Dispatcher
 from yuubot.daemon.scheduler import Scheduler
 from yuubot.daemon.session import SessionManager
 from yuubot.daemon.ws_client import WSClient
-
-log = logging.getLogger(__name__)
+from yuubot.log import setup as setup_logging
 
 
 def _init_tracing() -> None:
@@ -30,10 +30,10 @@ def _init_tracing() -> None:
 
 
 async def run_daemon(config_path: str | None = None) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
     _init_tracing()
 
     cfg = load_config(config_path)
+    setup_logging(cfg.log_dir)
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
 
     role_mgr = RoleManager(master_qq=cfg.bot.master)
@@ -100,7 +100,7 @@ async def run_daemon(config_path: str | None = None) -> None:
     api_server = uvicorn.Server(api_config)
     api_task = asyncio.create_task(api_server.serve())
 
-    log.info("Daemon running. POST /shutdown to stop.")
+    logger.info("Daemon running. POST /shutdown to stop.")
     try:
         await shutdown_event.wait()
     except asyncio.CancelledError:
@@ -113,4 +113,4 @@ async def run_daemon(config_path: str | None = None) -> None:
         api_server.should_exit = True
         await api_task
         await close_db()
-        log.info("Daemon stopped.")
+        logger.info("Daemon stopped.")

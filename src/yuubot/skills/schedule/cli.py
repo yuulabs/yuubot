@@ -1,6 +1,5 @@
 """Schedule skill CLI implementations."""
 
-import logging
 
 import click
 import httpx
@@ -11,7 +10,7 @@ from yuubot.core.db import init_db, close_db
 from yuubot.core.models import ScheduledTask
 from yuubot.skills.schedule.cron import is_long_cycle, validate_cron
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 def _daemon_api(cfg) -> str:

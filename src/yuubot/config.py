@@ -103,6 +103,7 @@ class Config(msgspec.Struct):
     recorder: RecorderConfig = msgspec.field(default_factory=RecorderConfig)
     daemon: DaemonConfig = msgspec.field(default_factory=DaemonConfig)
     database: DatabaseConfig = msgspec.field(default_factory=DatabaseConfig)
+    log_dir: str = "~/.yuubot/logs"
     yuuagents: dict[str, object] = msgspec.field(default_factory=dict)
     llm: LLMConfig = msgspec.field(default_factory=LLMConfig)
     api_keys: dict[str, str] = msgspec.field(default_factory=dict)
@@ -198,7 +199,7 @@ def _expand_path(p: str) -> str:
 
 def _walk_expand_paths(obj, path_keys: set[str] | None = None):
     """Expand ~ in known path fields."""
-    _path_keys = path_keys or {"path", "browser_profile", "download_dir", "media_dir"}
+    _path_keys = path_keys or {"path", "browser_profile", "download_dir", "media_dir", "log_dir"}
     if isinstance(obj, dict):
         return {
             k: (

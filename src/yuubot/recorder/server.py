@@ -2,11 +2,12 @@
 
 import asyncio
 import json
-import logging
 
 import uvicorn
 import websockets
 from websockets.asyncio.server import Server, ServerConnection
+
+from loguru import logger
 
 from yuubot.config import load_config
 from yuubot.core.context import ContextManager
@@ -17,8 +18,7 @@ from yuubot.recorder.api import create_api
 from yuubot.recorder.downloader import MediaDownloader
 from yuubot.recorder.relay import RelayServer
 from yuubot.recorder.store import Store
-
-log = logging.getLogger(__name__)
+from yuubot.log import setup as setup_logging
 
 
 def _inject_local_paths(raw_segments: list[dict], media_paths: list[str]) -> None:
@@ -40,7 +40,7 @@ class NapCatWSServer:
 
     async def start(self, host: str, port: int) -> None:
         self._server = await websockets.serve(self._handler, host, port)
-        log.info("NapCat WS listening on %s:%d", host, port)
+        logger.info("NapCat WS listening on %s:%d", host, port)
 
     async def stop(self) -> None:
         if self._server:
@@ -48,16 +48,16 @@ class NapCatWSServer:
             await self._server.wait_closed()
 
     async def _handler(self, ws: ServerConnection) -> None:
-        log.info("NapCat connected")
+        logger.info("NapCat connected")
         try:
             async for raw in ws:
                 try:
                     data = json.loads(raw)
                     await self._on_event(data)
                 except Exception:
-                    log.exception("Error processing event")
+                    logger.exception("Error processing event")
         finally:
-            log.info("NapCat disconnected")
+            logger.info("NapCat disconnected")
 
     async def _on_event(self, raw: dict) -> None:
         event = parse_event(raw)
@@ -75,9 +75,8 @@ class NapCatWSServer:
 
 async def run_recorder(config_path: str | None = None) -> None:
     """Entry point: start recorder (WS server + relay + HTTP API)."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-
     cfg = load_config(config_path)
+    setup_logging(cfg.log_dir)
     await init_db(cfg.database.path)
     ctx_mgr = ContextManager()
     await ctx_mgr.load()
@@ -104,7 +103,7 @@ async def run_recorder(config_path: str | None = None) -> None:
 
     api_task = asyncio.create_task(api_server.serve())
 
-    log.info("Recorder running. Press Ctrl+C or POST /shutdown to stop.")
+    logger.info("Recorder running. Press Ctrl+C or POST /shutdown to stop.")
     try:
         await shutdown_event.wait()
     except asyncio.CancelledError:
@@ -116,4 +115,4 @@ async def run_recorder(config_path: str | None = None) -> None:
         await relay.stop()
         await downloader.close()
         await close_db()
-        log.info("Recorder stopped.")
+        logger.info("Recorder stopped.")

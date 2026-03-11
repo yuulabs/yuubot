@@ -19,6 +19,7 @@ dependencies = [
     "attrs",
     "msgspec",
     "yuuagents",
+    "loguru>=0.7.3",
 ]
 
 [project.optional-dependencies]

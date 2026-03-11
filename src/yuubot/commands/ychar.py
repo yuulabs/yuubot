@@ -1,10 +1,9 @@
 """Character inspection and runtime config mutation: /ychar."""
 
-import logging
 
 from yuubot.core.models import Role
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 async def exec_char_show_prompt(remaining: str, event: dict, deps: dict) -> str | None:

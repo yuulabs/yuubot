@@ -1,12 +1,11 @@
 """Tortoise ORM connection management and schema initialization."""
 
 import glob
-import logging
 from pathlib import Path
 
 from tortoise import Tortoise, connections
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 # ── FTS5 schemas ─────────────────────────────────────────────────
 # Messages FTS uses default tokenizer (mostly ASCII/mixed content).
@@ -168,7 +167,7 @@ async def _load_simple_ext(conn, ext_path: str = "") -> bool:
     global _simple_loaded
     path = ext_path or _find_libsimple()
     if not path:
-        log.info("libsimple not found, using default FTS5 tokenizer")
+        logger.info("libsimple not found, using default FTS5 tokenizer")
         return False
     try:
         raw_conn = conn._connection
@@ -176,17 +175,17 @@ async def _load_simple_ext(conn, ext_path: str = "") -> bool:
         await raw_conn.load_extension(path)
         await raw_conn.enable_load_extension(False)
         _simple_loaded = True
-        log.info("Loaded libsimple from %s", path)
+        logger.info("Loaded libsimple from %s", path)
 
         # Init jieba dict — look for dict/ next to libsimple binary
         dict_dir = Path(path).parent / "dict"
         if dict_dir.is_dir():
             await conn.execute_query("SELECT jieba_dict(?)", [str(dict_dir)])
-            log.info("Loaded jieba dict from %s", dict_dir)
+            logger.info("Loaded jieba dict from %s", dict_dir)
 
         return True
     except Exception:
-        log.warning("Failed to load libsimple from %s, using default tokenizer", path, exc_info=True)
+        logger.warning("Failed to load libsimple from %s, using default tokenizer", path, exc_info=True)
         return False
 
 
@@ -219,7 +218,7 @@ async def _migrate_memory_fts(conn, simple_available: bool) -> None:
     if simple_available == has_simple_tokenizer:
         return  # tokenizer matches, nothing to do
 
-    log.info(
+    logger.info(
         "Migrating memories_fts: %s → %s tokenizer",
         "simple" if has_simple_tokenizer else "default",
         "simple" if simple_available else "default",
@@ -256,7 +255,7 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
     for check_sql, migrate_sql in _MIGRATIONS:
         _, rows = await conn.execute_query(check_sql)
         if not rows:
-            log.info("Running migration: %s", migrate_sql[:60])
+            logger.info("Running migration: %s", migrate_sql[:60])
             await conn.execute_query(migrate_sql)
 
     # Load simple tokenizer for Chinese FTS5 support
@@ -274,7 +273,7 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
 
     # Rebuild FTS index if table was just (re)created with new tokenizer
     if _fts_rebuilt:
-        log.info("Rebuilding memories_fts index after tokenizer change")
+        logger.info("Rebuilding memories_fts index after tokenizer change")
         await conn.execute_script(_REBUILD_MEMORY_FTS)
 
     await conn.execute_script(SEED_SQL)

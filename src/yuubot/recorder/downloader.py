@@ -1,14 +1,13 @@
 """Media file downloader for multimodal messages."""
 
 import hashlib
-import logging
 import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 class MediaDownloader:
@@ -34,11 +33,11 @@ class MediaDownloader:
             if ext_from_url:
                 candidate = self.media_dir / f"{url_hash}{ext_from_url}"
                 if candidate.exists():
-                    log.debug("Media already exists: %s", candidate)
+                    logger.debug("Media already exists: %s", candidate)
                     return str(candidate)
 
             # Download file
-            log.info("Downloading media: %s", url)
+            logger.info("Downloading media: %s", url)
             response = await self.client.get(url)
             response.raise_for_status()
 
@@ -51,13 +50,13 @@ class MediaDownloader:
             local_path = self.media_dir / filename
 
             if local_path.exists():
-                log.debug("Media already exists: %s", local_path)
+                logger.debug("Media already exists: %s", local_path)
                 return str(local_path)
 
             local_path.write_bytes(response.content)
-            log.info("Saved media to: %s", local_path)
+            logger.info("Saved media to: %s", local_path)
             return str(local_path)
 
         except Exception:
-            log.exception("Failed to download media: %s", url)
+            logger.exception("Failed to download media: %s", url)
             return None

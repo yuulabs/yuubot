@@ -9,7 +9,7 @@ Before:
 
 After:
   <reply to="夕雨yuu">不是哦...</reply>
-  <msg name="繁星入梦" qq="948523603" time="03-10 11:11">为什么喜欢百合</msg>
+  <msg name="繁星入梦" qq="948523603" time="03-10 19:11 +0800">为什么喜欢百合</msg>
 """
 
 import html
@@ -125,10 +125,10 @@ async def format_segments(
 
 
 def _format_time(ts: datetime) -> str:
-    """Format timestamp to compact form: MM-DD HH:MM."""
+    """Format timestamp in local timezone: MM-DD HH:MM +HHMM."""
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
-    return ts.strftime("%m-%d %H:%M")
+    return ts.astimezone().strftime("%m-%d %H:%M %z")
 
 
 async def format_message_to_xml(

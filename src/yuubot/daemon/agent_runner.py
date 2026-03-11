@@ -1,6 +1,5 @@
 """Agent runner — create and run yuuagents Agent for tasks."""
 
-import logging
 import uuid
 
 from yuubot.characters import CHARACTER_REGISTRY, get_character
@@ -20,7 +19,7 @@ from yuubot.skills.im.formatter import (
     get_user_alias,
 )
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 def _set_or_pop(d: dict, key: str, value: str) -> None:
@@ -129,19 +128,19 @@ class AgentRunner:
 
                     self._docker = DockerManager(image=cfg.docker.image)
                     await self._docker.start()
-                    log.info("Docker initialized for AgentRunner")
+                    logger.info("Docker initialized for AgentRunner")
                 except Exception:
-                    log.warning(
+                    logger.warning(
                         "Docker not available, execute_bash will not work",
                         exc_info=True,
                     )
                     self._docker = None
             else:
-                log.info("No agent uses docker tools, skipping Docker initialization")
+                logger.info("No agent uses docker tools, skipping Docker initialization")
         except ImportError:
-            log.warning("yuuagents not installed, agent features disabled")
+            logger.warning("yuuagents not installed, agent features disabled")
         except Exception:
-            log.exception("Failed to initialize yuuagents")
+            logger.exception("Failed to initialize yuuagents")
 
     async def stop(self) -> None:
         """Shut down Docker and release resources."""
@@ -227,7 +226,7 @@ class AgentRunner:
         """Run mem_curator agent to update long-term memories after a session rollover."""
         agent_name = "mem_curator"
         if agent_name not in CHARACTER_REGISTRY:
-            log.debug("mem_curator not configured, skipping")
+            logger.debug("mem_curator not configured, skipping")
             return
 
         await self._ensure_init()
@@ -246,7 +245,7 @@ class AgentRunner:
         try:
             await self._run_agent(agent_name, task, subprocess_env=subprocess_env)
         except Exception:
-            log.exception("mem_curator failed for ctx=%s", ctx_id)
+            logger.exception("mem_curator failed for ctx=%s", ctx_id)
 
     def _make_llm(self, agent_name: str = "main"):
         """Build a YLLMClient from Character fields, falling back to YAML."""
@@ -522,7 +521,7 @@ class AgentRunner:
                             "group_name", ""
                         )
         except Exception:
-            log.warning("Failed to fetch group list for name resolution")
+            logger.warning("Failed to fetch group list for name resolution")
         return self._group_names.get(group_id, "")
 
     async def _get_bot_name(self) -> str:
@@ -544,14 +543,14 @@ class AgentRunner:
                     nickname = data.get("nickname", "")
                     if nickname:
                         self._bot_name = nickname
-                        log.info("Bot name fetched: %s", nickname)
+                        logger.info("Bot name fetched: %s", nickname)
                         return self._bot_name
         except Exception:
-            log.warning("Failed to fetch bot nickname from API", exc_info=True)
+            logger.warning("Failed to fetch bot nickname from API", exc_info=True)
 
         # Fallback to bot QQ number
         self._bot_name = str(self.config.bot.qq)
-        log.info("Using bot QQ as name: %s", self._bot_name)
+        logger.info("Using bot QQ as name: %s", self._bot_name)
         return self._bot_name
 
     def _replace_command_prefix(self, segments: list, bot_name: str) -> list:
@@ -601,7 +600,7 @@ class AgentRunner:
                 f'（可用 ybot mem recall "<关键词>" 查看详情）\n'
             )
         except Exception:
-            log.debug("Memory hints probe failed", exc_info=True)
+            logger.debug("Memory hints probe failed", exc_info=True)
             return ""
 
     async def _build_task(
@@ -753,7 +752,7 @@ class AgentRunner:
             from yuuagents.loop import run as run_agent
             from yuuagents.context import AgentContext
         except ImportError:
-            log.error("yuuagents not available, cannot run agent")
+            logger.error("yuuagents not available, cannot run agent")
             return [], 0, ""
 
         ctx_id = event.get("ctx_id", 0)
@@ -890,6 +889,10 @@ class AgentRunner:
         root_flow = flow_manager.create(FlowKind.AGENT, name=agent_id)
         self._active_flows[ctx_id] = root_flow
 
+        logger.info(
+            "agent start: ctx={} agent={} task_id={} continuation={}",
+            ctx_id, agent_name, task_id, is_continuation,
+        )
         try:
             if is_continuation or is_multimodal:
                 await run_agent(agent, task=task_str, ctx=context, resume=True,
@@ -898,11 +901,15 @@ class AgentRunner:
                 await run_agent(agent, task=task_str, ctx=context,
                                 flow_manager=flow_manager, root_flow=root_flow)
         except BaseException:
-            log.exception("Agent execution failed for ctx %s", ctx_id)
+            logger.exception("agent failed: ctx={} agent={} task_id={}", ctx_id, agent_name, task_id)
         finally:
             self._active_flows.pop(ctx_id, None)
             self._agent_subprocess_env.pop(agent_id, None)
 
+        logger.info(
+            "agent done: ctx={} agent={} task_id={} tokens={}",
+            ctx_id, agent_name, task_id, agent.total_tokens,
+        )
         return list(agent.history), agent.total_tokens, task_id
 
     async def run_scheduled(
@@ -918,7 +925,7 @@ class AgentRunner:
             from yuuagents.loop import run as run_agent
             from yuuagents.context import AgentContext
         except ImportError:
-            log.error("yuuagents not available")
+            logger.error("yuuagents not available")
             return
 
         task_id = self._new_task_id()
@@ -999,6 +1006,6 @@ class AgentRunner:
         try:
             await run_agent(agent, task=full_task, ctx=context)
         except BaseException:
-            log.exception("Scheduled agent failed: %s", task)
+            logger.exception("Scheduled agent failed: %s", task)
         finally:
             self._agent_subprocess_env.pop(agent_id, None)

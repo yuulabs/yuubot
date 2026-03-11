@@ -1,11 +1,10 @@
 """Auto-forget — clean up stale memories."""
 
-import logging
 from datetime import datetime, timedelta, timezone
 
 from yuubot.core.models import Memory, MemoryConfigKV
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 async def get_forget_days() -> int:
@@ -28,6 +27,6 @@ async def cleanup_stale() -> int:
     count = await Memory.filter(last_accessed__lt=cutoff).count()
     if count > 0:
         await Memory.filter(last_accessed__lt=cutoff).delete()
-        log.info("Auto-forget: deleted %d stale memories (older than %d days)", count, days)
+        logger.info("Auto-forget: deleted %d stale memories (older than %d days)", count, days)
 
     return count

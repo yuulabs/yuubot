@@ -7,12 +7,11 @@ build_system_prompt(), eliminating scattered ad-hoc construction.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import attrs
 
-log = logging.getLogger(__name__)
+from loguru import logger
 
 
 @attrs.define
@@ -145,7 +144,7 @@ def _load_skills_docs(
                 f'<skill_doc name="{s.name}">\n{content}\n</skill_doc>',
             ))
         except Exception:
-            log.warning("Failed to read SKILL.md for %s at %s", s.name, s.location)
+            logger.warning("Failed to read SKILL.md for %s at %s", s.name, s.location)
             # Fallback: add to remaining for summary
             fallback = render([s])
             if fallback:
