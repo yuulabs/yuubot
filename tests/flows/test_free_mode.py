@@ -1,64 +1,58 @@
-"""Flow: free mode — no @bot needed, bot off stops everything."""
+"""Flow: free mode — user-visible behavior only."""
 
-import pytest
-
-from tests.conftest import (
-    MASTER_QQ, FOLK_QQ, GROUP_ID,
-    make_group_event, send,
+from tests.conftest import MASTER_QQ, FOLK_QQ, make_group_event, send
+from tests.helpers import history_text, sent_texts
+from tests.mocks import (
+    make_text_response,
+    mock_llm,
+    mock_recorder_api,
 )
-from tests.mocks import mock_recorder_api, mock_llm
 
 
-async def test_free_mode_no_at_needed(dispatcher):
-    """In free mode, messages without @bot still get processed."""
-    # Enable free mode
-    with mock_recorder_api():
-        event = make_group_event("/ybot on --free", user_id=MASTER_QQ)
-        await send(dispatcher, event)
-
-    # Folk sends /yllm without @bot → should work in free mode
-    with mock_recorder_api() as sent, mock_llm():
-        event = make_group_event(
-            "/yllm hello", user_id=FOLK_QQ, at_bot=False,
+async def test_free_mode_accepts_llm_without_at_and_creates_session(
+    dispatcher, session_mgr,
+):
+    """群聊 free 模式下，/yllm 不 @bot 也会被受理并建立 session。"""
+    with mock_recorder_api(), mock_llm([make_text_response("free-mode-reply")]):
+        await send(dispatcher, make_group_event("/ybot on --free", user_id=MASTER_QQ))
+        await send(
+            dispatcher,
+            make_group_event("/yllm hello", user_id=FOLK_QQ, at_bot=False),
+            wait=1.0,
         )
-        await send(dispatcher, event, wait=1.0)
 
-    # In free mode, _should_respond returns True even without @bot,
-    # and free mode + llm command bypasses permission check
+    session = session_mgr.get(1)
+    assert session is not None
+    assert session.agent_name == "main"
+    assert "free-mode-reply" in history_text(session.history)
 
 
-async def test_bot_off_stops_free_mode(dispatcher):
-    """Turning bot off stops all responses including free mode."""
-    # Enable free mode
+async def test_bot_off_blocks_free_mode_traffic(dispatcher):
+    """群聊关闭后，free 模式下的普通用户消息应被忽略。"""
     with mock_recorder_api():
-        event = make_group_event("/ybot on --free", user_id=MASTER_QQ)
-        await send(dispatcher, event)
-
-    # Turn bot off
+        await send(dispatcher, make_group_event("/ybot on --free", user_id=MASTER_QQ))
     with mock_recorder_api():
-        event = make_group_event("/ybot off", user_id=MASTER_QQ)
-        await send(dispatcher, event)
+        await send(dispatcher, make_group_event("/ybot off", user_id=MASTER_QQ))
 
-    # Folk sends with @bot → should be ignored (bot is off)
     with mock_recorder_api() as sent:
-        event = make_group_event("/yhelp", user_id=FOLK_QQ)
-        await send(dispatcher, event)
+        await send(
+            dispatcher,
+            make_group_event("/yllm hello", user_id=FOLK_QQ, at_bot=False),
+            wait=0.5,
+        )
 
-    assert len(sent) == 0
+    assert sent == []
 
 
-async def test_free_mode_non_llm_still_needs_at(dispatcher):
-    """In free mode, non-llm commands still need @bot or command prefix."""
-    # Enable free mode
+async def test_free_mode_still_allows_normal_prefixed_commands(dispatcher):
+    """free 模式下，普通前缀命令无需 @bot 也能执行。"""
     with mock_recorder_api():
-        event = make_group_event("/ybot on --free", user_id=MASTER_QQ)
-        await send(dispatcher, event)
+        await send(dispatcher, make_group_event("/ybot on --free", user_id=MASTER_QQ))
 
-    # Folk sends /yhelp without @bot → _should_respond returns True (free mode),
-    # but the command tree matching still works on the text
     with mock_recorder_api() as sent:
-        event = make_group_event("/yhelp", user_id=FOLK_QQ, at_bot=False)
-        await send(dispatcher, event)
+        await send(
+            dispatcher,
+            make_group_event("/yhelp", user_id=FOLK_QQ, at_bot=False),
+        )
 
-    # In free mode, _should_respond returns True, so the command gets processed
-    assert len(sent) >= 1
+    assert any("help" in text or "子命令" in text for text in sent_texts(sent))

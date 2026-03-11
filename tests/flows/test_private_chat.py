@@ -1,49 +1,47 @@
-"""Flow: private chat — master DM, non-whitelisted ignored, allow-dm."""
+"""Flow: private chat — user-visible behavior only."""
 
-import pytest
-
-from tests.conftest import (
-    MASTER_QQ, FOLK_QQ, GROUP_ID,
-    make_private_event, make_group_event, send,
+from tests.conftest import MASTER_QQ, FOLK_QQ, make_group_event, make_private_event, send
+from tests.helpers import history_text, sent_texts
+from tests.mocks import (
+    make_text_response,
+    mock_llm,
+    mock_recorder_api,
 )
-from tests.mocks import mock_recorder_api, mock_llm
 
 
-async def test_master_dm_always_works(dispatcher):
-    """Master can always send private messages."""
-    with mock_recorder_api() as sent, mock_llm():
-        event = make_private_event("/yllm hello", user_id=MASTER_QQ)
-        await send(dispatcher, event, wait=1.0)
+async def test_master_dm_always_works(dispatcher, session_mgr):
+    """Master 私聊 /yllm 一定会被受理并建立 session。"""
+    with mock_recorder_api(), mock_llm([make_text_response("master-dm-ok")]):
+        await send(
+            dispatcher,
+            make_private_event("/yllm hello", user_id=MASTER_QQ),
+            wait=1.0,
+        )
 
-    # Master should get through — session created
-    # (no assertion on sent since agent may not call im send)
+    session = session_mgr.get(2)
+    assert session is not None
+    assert session.agent_name == "main"
+    assert "master-dm-ok" in history_text(session.history)
 
 
 async def test_non_whitelisted_dm_ignored(dispatcher):
-    """Non-whitelisted user's DM is ignored."""
+    """非白名单用户私聊默认不应得到响应。"""
     with mock_recorder_api() as sent:
-        event = make_private_event("/yhelp", user_id=FOLK_QQ)
-        await send(dispatcher, event)
+        await send(dispatcher, make_private_event("/yhelp", user_id=FOLK_QQ))
 
-    assert len(sent) == 0  # not whitelisted, ignored
+    assert sent == []
 
 
-async def test_allow_dm_then_works(dispatcher, yuubot_config):
-    """Master grants DM access → user can send private messages."""
-    # Master grants allow-dm (must be from group context since it's a bot command)
+async def test_allow_dm_then_help_works(dispatcher):
+    """Master 显式 allow-dm 后，对方私聊普通命令可以得到回复。"""
     with mock_recorder_api() as sent:
-        event = make_group_event(
-            f"/ybot allow-dm @{FOLK_QQ}",
-            user_id=MASTER_QQ,
+        await send(
+            dispatcher,
+            make_group_event(f"/ybot allow-dm @{FOLK_QQ}", user_id=MASTER_QQ),
         )
-        await send(dispatcher, event)
+    assert any("允许" in text for text in sent_texts(sent))
 
-    assert len(sent) >= 1
-    assert "允许" in sent[0]["message"][0]["data"]["text"]
-
-    # Now folk can DM
     with mock_recorder_api() as sent:
-        event = make_private_event("/yhelp", user_id=FOLK_QQ)
-        await send(dispatcher, event)
+        await send(dispatcher, make_private_event("/yhelp", user_id=FOLK_QQ))
 
-    assert len(sent) >= 1
+    assert any("help" in text or "子命令" in text for text in sent_texts(sent))

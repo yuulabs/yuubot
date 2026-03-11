@@ -88,15 +88,39 @@ def show_conversation(conn: sqlite3.Connection, conv_id: str, show_tool_output: 
     if not spans:
         sys.exit(f"ERROR: conversation not found: {conv_id}")
 
-    # Index by span_id for parent lookup
-    by_id = {r["span_id"]: r for r in spans}
+    # Fetch user events from conversation spans to interleave in timeline
+    conv_span_ids = [r["span_id"] for r in spans if r["name"] == "conversation"]
+    user_events: list[sqlite3.Row] = []
+    if conv_span_ids:
+        placeholders = ",".join("?" * len(conv_span_ids))
+        user_events = conn.execute(
+            f"SELECT span_id, name, time_unix_nano, attributes_json FROM events "
+            f"WHERE span_id IN ({placeholders}) AND name = 'user' "
+            f"ORDER BY time_unix_nano",
+            conv_span_ids,
+        ).fetchall()
 
-    # Find agent/model from first conversation span
+    # Build merged timeline of spans and user events, sorted by timestamp
+    timeline: list[tuple[int, str, sqlite3.Row]] = [
+        (r["start_time_unix_nano"], "span", r) for r in spans
+    ] + [
+        (ev["time_unix_nano"], "user_event", ev) for ev in user_events
+    ]
+    timeline.sort(key=lambda x: x[0])
+
     meta_printed = False
 
-    for row in spans:
+    for ts_nano, kind, row in timeline:
+        ts = ns_to_time(ts_nano)
+
+        if kind == "user_event":
+            attrs = json.loads(row["attributes_json"])
+            print(f"[{ts}] USER")
+            print(attrs.get("content", "").strip())
+            print()
+            continue
+
         name = row["name"]
-        ts = ns_to_time(row["start_time_unix_nano"])
         attrs = json.loads(row["attributes_json"])
 
         if name == "conversation":
@@ -106,11 +130,7 @@ def show_conversation(conn: sqlite3.Connection, conv_id: str, show_tool_output: 
                 print(f"model:  {attrs.get('yuu.conversation.model', '?')}")
                 print()
                 meta_printed = True
-
-            user_content = attrs.get("yuu.context.user.content", "")
-            print(f"[{ts}] USER")
-            print(user_content.strip())
-            print()
+            # user messages are now shown as events; skip this span's body
 
         elif name == "llm_gen":
             raw_items = attrs.get("yuu.llm_gen.items")

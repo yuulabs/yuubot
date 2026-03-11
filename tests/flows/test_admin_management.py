@@ -45,8 +45,8 @@ async def test_grant_mod_then_bot_off(dispatcher):
     assert len(sent) >= 1  # master bypasses bot_enabled check
 
 
-async def test_mod_turns_bot_on(dispatcher):
-    """After bot is off, mod can turn it back on."""
+async def test_master_turns_bot_back_on_after_shutdown(dispatcher):
+    """bot 被关闭后，Master 可以重新开启，普通用户随后恢复可用。"""
     # Grant mod first
     with mock_recorder_api():
         event = make_group_event(f"/ybot grand @{MOD_QQ} mod", user_id=MASTER_QQ)

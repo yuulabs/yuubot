@@ -66,17 +66,22 @@ providers:
 # Only provider + model per agent. All behavior is in characters.py.
 agents:
   main:
+    description: "主 QQ 机器人 agent，处理日常对话、回答问题、执行用户指令。具备 IM/Web/Memory 技能，可以发送消息、搜索网页、管理记忆。"
     provider: deepseek
     model: deepseek-chat
   general:
+    description: "通用助手 agent，处理各类通用任务，包括信息查询、文本处理、逻辑推理等。适合需要灵活处理的任务。"
     provider: deepseek
     model: deepseek-chat
   researcher:
+    description: "研究型 agent，专注于深度信息检索、资料整理、知识综合。适合需要多轮搜索、交叉验证、形成完整报告的任务。"
     provider: deepseek
     model: deepseek-chat
   coder:
+    description: "编程 agent，专注于代码编写、调试、重构。具备文件读写、bash 执行能力，适合软件开发任务。"
     provider: deepseek
     model: deepseek-chat
   mem_curator:
+    description: "记忆管理 agent，负责在会话结束后自动整理长期记忆，提取关键信息并归档。通常由系统自动触发，不需要手动 delegate。"
     provider: deepseek
     model: deepseek-chat

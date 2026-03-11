@@ -2,7 +2,7 @@
 name: img
 description: >
   图片/表情包库。
-  命令: save(保存图片+描述), search(按描述/标签搜索), delete(删除), list(列表/标签)。
+  命令: save(保存图片+描述, 用详细desc), search(按描述/标签搜索), delete(删除), list(列表/标签)。
 ---
 
 # Image Skill

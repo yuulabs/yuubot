@@ -44,6 +44,7 @@ async def run_daemon(config_path: str | None = None) -> None:
         max_tokens=cfg.session.max_tokens,
     )
     await session_mgr.load_auto()
+    session_mgr._is_ctx_active = lambda ctx_id: agent_runner.get_active_flow(ctx_id) is not None
     root = build_command_tree(cfg.bot.entries)
 
     deps = {
@@ -73,7 +74,7 @@ async def run_daemon(config_path: str | None = None) -> None:
 
     @app.get("/health")
     async def health() -> JSONResponse:
-        return JSONResponse({"status": "ok", "queue_size": dispatcher.queue.qsize()})
+        return JSONResponse({"status": "ok", "workers": len(dispatcher._workers)})
 
     @app.post("/shutdown")
     async def do_shutdown() -> JSONResponse:

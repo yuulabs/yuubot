@@ -38,7 +38,7 @@ class SessionManager:
     auto_ttl: float = 1800.0
     max_tokens: int = 60000
     _sessions: dict[tuple[int, str], Session] = attrs.field(factory=dict)
-    _has_active_agent_sessions: object = None  # callable() -> bool, set by daemon
+    _is_ctx_active: object = None  # callable(int) -> bool, set by daemon
     _auto_ctxs: set[int] = attrs.field(factory=set)
     _current_agent: dict[int, str] = attrs.field(factory=dict)  # ctx_id → agent_name
 
@@ -188,7 +188,7 @@ class SessionManager:
         self.touch(session)
         if last_turn >= self.max_tokens:
             key = (session.ctx_id, session.agent_name)
-            del self._sessions[key]
+            self._sessions.pop(key, None)
             log.info(
                 "Session closed (token limit): ctx=%s agent=%s last_turn=%d",
                 session.ctx_id, session.agent_name, last_turn,
@@ -201,10 +201,10 @@ class SessionManager:
         effective_ttl = self.auto_ttl if session.ctx_id in self._auto_ctxs else self.ttl
         if elapsed <= effective_ttl:
             return False
-        # Extend TTL if there are active agent sessions
-        if self._has_active_agent_sessions is not None:
+        # Extend TTL if this ctx has a running agent flow
+        if self._is_ctx_active is not None:
             try:
-                if self._has_active_agent_sessions():
+                if self._is_ctx_active(session.ctx_id):
                     return False
             except Exception:
                 pass

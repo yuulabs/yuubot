@@ -94,7 +94,7 @@ if not tool_calls and agent.done():
         lines = [format_ping(p, flow_manager) for p in pending_pings]
         summary = “[system] 后台通知:\n” + “\n”.join(lines)
         agent.history.append(yuullm.user(summary))
-        chat.inject(summary)
+        chat.user(summary)
         agent.status = AgentStatus.RUNNING  # 保持循环活跃
 ```
 

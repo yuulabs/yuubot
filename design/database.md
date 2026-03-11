@@ -160,6 +160,32 @@ class AutoModeSetting(Model):
 - Daemon 启动时从此表恢复 `_auto_ctxs` 和 `_current_agent`
 - `/ybot on --auto` 写入，`/ybot off` 删除
 
+### Session 持久化边界
+
+session 可以落盘，但落盘内容只限于**用户视角的会话状态**，不包括进程内运行态。
+
+可以持久化的内容：
+
+- `ctx_id`
+- `agent_name`
+- `history`
+- `task_id`
+- `handoff_note`
+- `last_active`
+- `status`（如 `idle / running / closed / expired / rolled_over`）
+
+不持久化的内容：
+
+- 正在运行的 tool flow
+- 正在运行的 subagent flow
+- `asyncio.Task`
+- `OutputBuffer`
+- PTY / subprocess 句柄
+
+原因很简单：这些对象本质上属于当前 Daemon 进程。进程重启后恢复不了，强行建表保存只会制造复杂性和伪状态。
+
+如果未来需要增加 session 表，也应只恢复“会话元数据”和“已完成轮次 history”，而不恢复运行中的 flow tree。
+
 ### EntryMapping — 入口映射
 
 ```python
@@ -216,3 +242,4 @@ SQLite WAL 模式支持一写多读，满足需求。
 - **消息**：暂不自动清理，后续可配置保留天数
 - **记忆**：自动遗忘系统，定期清理 `last_accessed` 超过 `forget_days` 的记忆
 - **FTS 索引**：随消息删除自动同步
+- **Session**：如未来落盘，只恢复会话元数据，不恢复运行中的 flow / tool 状态

@@ -1,6 +1,11 @@
 """Mock fixtures for external APIs — the only things we mock."""
 
 from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+import threading
+from urllib.parse import urlparse
 from unittest.mock import patch
 
 import httpx
@@ -15,29 +20,86 @@ HHSH_RESPONSE = [{"name": "yyds", "trans": ["永远的神"]}]
 RECORDER_SEND_OK = {"status": "ok", "retcode": 0}
 
 GROUP_LIST = [{"group_id": 1000, "group_name": "测试群"}]
+LOGIN_INFO = {"nickname": "测试机器人"}
 
 OPENAI_RESPONSE_TEXT = "Hello from mock LLM"
 
 
 # ── Recorder API mock (respx) ───────────────────────────────────
 
+def _default_base_url() -> str:
+    return os.environ.get("YUUBOT_TEST_RECORDER_API", "http://127.0.0.1:8767")
+
+
 @contextmanager
-def mock_recorder_api(base_url: str = "http://127.0.0.1:8767"):
+def mock_recorder_api(base_url: str | None = None):
     """Mock Recorder HTTP API. Yields list of captured send_msg request bodies."""
+    base_url = base_url or _default_base_url()
     sent: list[dict] = []
 
     with respx.mock(assert_all_called=False) as router:
-        import json as _json
-
         def _capture_send(request: httpx.Request) -> httpx.Response:
-            sent.append(_json.loads(request.content))
+            sent.append(json.loads(request.content))
             return httpx.Response(200, json=RECORDER_SEND_OK)
 
         router.post(f"{base_url}/send_msg").mock(side_effect=_capture_send)
         router.get(f"{base_url}/get_group_list").mock(
             return_value=httpx.Response(200, json={"data": GROUP_LIST}),
         )
+        router.get(f"{base_url}/get_login_info").mock(
+            return_value=httpx.Response(200, json={"data": LOGIN_INFO}),
+        )
         yield sent
+
+
+@contextmanager
+def fake_recorder_api_server(host: str = "127.0.0.1", port: int | None = None):
+    """Serve a minimal recorder_api over real HTTP for subprocess-based tests."""
+    if port is None:
+        parsed = urlparse(_default_base_url())
+        port = parsed.port or 8767
+
+    sent: list[dict] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def _reply(self, status: int, payload: dict) -> None:
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            if self.path == "/get_group_list":
+                self._reply(200, {"data": GROUP_LIST})
+                return
+            if self.path == "/get_login_info":
+                self._reply(200, {"data": LOGIN_INFO})
+                return
+            self._reply(404, {"error": "not found"})
+
+        def do_POST(self) -> None:
+            if self.path != "/send_msg":
+                self._reply(404, {"error": "not found"})
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length else b"{}"
+            sent.append(json.loads(body))
+            self._reply(200, RECORDER_SEND_OK)
+
+    server = ThreadingHTTPServer((host, port), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield sent
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 # ── hhsh API mock (respx) ───────────────────────────────────────

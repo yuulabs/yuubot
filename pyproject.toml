@@ -40,6 +40,8 @@ allow-direct-references = true
 
 [tool.uv.sources]
 yuuagents = { path = "../yuuagents", editable = true }
+yuullm = { path = "../yuullm", editable = true }
+yuutrace = { path = "../yuutrace", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yuubot"]

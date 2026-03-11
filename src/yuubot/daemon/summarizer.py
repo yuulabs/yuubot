@@ -25,7 +25,7 @@ def extract_original_task(history: list[Any]) -> str:
     return ""
 
 
-def render_recent(history: list[Any], n: int = 4) -> str:
+def render_recent(history: list[Any], n: int = 8) -> str:
     """Render the last N non-system messages as readable narrative."""
     msgs = [(role, items) for role, items in history if role != "system"]
     recent = msgs[-n:]
