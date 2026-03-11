@@ -27,29 +27,6 @@ pytest tests/ -m live            # Run live integration tests (require real serv
 pytest tests/ -k "test_name"     # Run specific test by name
 ```
 
-## Debugging by Conversation ID
-
-When something goes wrong and you have a `conversation_id` (UUID), use `scripts/conv.py` to inspect the full conversation from `~/.yagents/traces.db`:
-
-```bash
-# List recent conversations (agent, model, turn count, tool call count)
-.venv/bin/python scripts/conv.py
-
-# Show full conversation with tool outputs
-.venv/bin/python scripts/conv.py <conversation_id>
-
-# Compact view: show only assistant text + tool calls, hide outputs
-.venv/bin/python scripts/conv.py <conversation_id> -n
-
-# Explicit DB path
-.venv/bin/python scripts/conv.py --db ~/.yagents/traces.db <conversation_id>
-```
-
-The script reads `spans` and `events` tables from the yuuagents tracing DB, strips irrelevant metadata (system prompt, tool schemas, resource info), and prints:
-- `[USER]` — the incoming QQ message with ctx/group context
-- `[ASSISTANT]` — LLM text output and tool calls (`→ tool_name(args)`)
-- `[TOOL: name]` — tool result (truncated at 600 chars)
-
 ## Architecture
 
 Three-process design, each with independent lifecycle:
@@ -131,6 +108,7 @@ Detailed design docs live in `design/`. Read these before making architectural c
 - `database.md` — SQLite schema, FTS5, concurrent access
 - `config.md` — Configuration format & loading logic
 - `sessions.md` — Async agent sessions, background CLI, coder agent
+- `ops.md` — **Operations: process management, log查询, fault diagnosis**
 
 ## API References
 
