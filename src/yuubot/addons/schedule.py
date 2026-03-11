@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from yuubot.addons import addon, get_context, text_block, ContentBlock
 from yuubot.config import load_config
-from yuubot.core.db import init_db, close_db
 from yuubot.core.models import ScheduledTask
 from yuubot.skills.schedule.cron import is_long_cycle, validate_cron
 
@@ -82,53 +81,47 @@ class ScheduleAddon:
         task = " ".join(_positional[1:])
 
         cfg = _get_config()
-        await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
-        try:
-            validate_cron(cron_expr)
-            resolved_agent = _resolve_agent(agent)
+        validate_cron(cron_expr)
+        resolved_agent = _resolve_agent(agent)
 
-            err = _check_agent_permission(cfg, resolved_agent)
-            if err:
-                return [text_block(err)]
+        err = _check_agent_permission(cfg, resolved_agent)
+        if err:
+            return [text_block(err)]
 
-            once = not recurring
-            if not once and is_long_cycle(cron_expr):
-                existing_long = 0
-                for t in await ScheduledTask.filter(enabled=True, once=False).all():
-                    if is_long_cycle(t.cron):
-                        existing_long += 1
-                if existing_long >= cfg.schedule.max_long_cycle:
-                    return [text_block(
-                        f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。"
-                        f"请先删除或禁用已有的长周期任务。"
-                    )]
+        once = not recurring
+        if not once and is_long_cycle(cron_expr):
+            existing_long = 0
+            for t in await ScheduledTask.filter(enabled=True, once=False).all():
+                if is_long_cycle(t.cron):
+                    existing_long += 1
+            if existing_long >= cfg.schedule.max_long_cycle:
+                return [text_block(
+                    f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。"
+                    f"请先删除或禁用已有的长周期任务。"
+                )]
 
-            from yuubot.core import env
-            created_by = _caller_agent() or str(get_context().user_id or "")
-            obj = await ScheduledTask.create(
-                cron=cron_expr,
-                task=task,
-                agent=resolved_agent,
-                ctx_id=ctx,
-                once=once,
-                created_by=created_by,
-            )
-            lines = [
-                f"已创建定时任务 [id: {obj.id}]",
-                f"  cron: {cron_expr}",
-                f"  task: {task}",
-                f"  agent: {resolved_agent}",
-            ]
-            if ctx is not None:
-                lines.append(f"  ctx: {ctx}")
-            if once:
-                lines.append("  once: yes (触发一次后自动禁用)")
-            _notify_reload(cfg)
-            return [text_block("\n".join(lines))]
-        except ValueError as e:
-            return [text_block(f"错误: {e}")]
-        finally:
-            await close_db()
+        from yuubot.core import env
+        created_by = _caller_agent() or str(get_context().user_id or "")
+        obj = await ScheduledTask.create(
+            cron=cron_expr,
+            task=task,
+            agent=resolved_agent,
+            ctx_id=ctx,
+            once=once,
+            created_by=created_by,
+        )
+        lines = [
+            f"已创建定时任务 [id: {obj.id}]",
+            f"  cron: {cron_expr}",
+            f"  task: {task}",
+            f"  agent: {resolved_agent}",
+        ]
+        if ctx is not None:
+            lines.append(f"  ctx: {ctx}")
+        if once:
+            lines.append("  once: yes (触发一次后自动禁用)")
+        _notify_reload(cfg)
+        return [text_block("\n".join(lines))]
 
     async def list(
         self,
@@ -138,34 +131,30 @@ class ScheduleAddon:
     ) -> list[ContentBlock]:
         """List scheduled tasks."""
         cfg = _get_config()
-        await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
-        try:
-            filters: dict = {} if all else {"enabled": True}
-            ctx = _caller_ctx()
-            if ctx is not None and not _is_master():
-                filters["ctx_id"] = ctx
-            if filters:
-                tasks = await ScheduledTask.filter(**filters).order_by("id")
-            else:
-                tasks = await ScheduledTask.all().order_by("id")
-            if not tasks:
-                msg = "暂无定时任务" if all else "暂无活跃定时任务（使用 --all 查看全部）"
-                return [text_block(msg)]
-            lines = []
-            for t in tasks:
-                status = "enabled" if t.enabled else "disabled"
-                once_tag = " [once]" if t.once else " [recurring]"
-                ctx_str = f" ctx={t.ctx_id}" if t.ctx_id is not None else ""
-                lines.append(
-                    f"[{t.id}] ({status}{once_tag}) cron=\"{t.cron}\" "
-                    f"agent={t.agent}{ctx_str}"
-                )
-                lines.append(f"     task: {t.task}")
-            label = "全部" if all else "活跃"
-            lines.append(f"共 {len(tasks)} 条{label}定时任务")
-            return [text_block("\n".join(lines))]
-        finally:
-            await close_db()
+        filters: dict = {} if all else {"enabled": True}
+        ctx = _caller_ctx()
+        if ctx is not None and not _is_master():
+            filters["ctx_id"] = ctx
+        if filters:
+            tasks = await ScheduledTask.filter(**filters).order_by("id")
+        else:
+            tasks = await ScheduledTask.all().order_by("id")
+        if not tasks:
+            msg = "暂无定时任务" if all else "暂无活跃定时任务（使用 --all 查看全部）"
+            return [text_block(msg)]
+        lines = []
+        for t in tasks:
+            status = "enabled" if t.enabled else "disabled"
+            once_tag = " [once]" if t.once else " [recurring]"
+            ctx_str = f" ctx={t.ctx_id}" if t.ctx_id is not None else ""
+            lines.append(
+                f"[{t.id}] ({status}{once_tag}) cron=\"{t.cron}\" "
+                f"agent={t.agent}{ctx_str}"
+            )
+            lines.append(f"     task: {t.task}")
+        label = "全部" if all else "活跃"
+        lines.append(f"共 {len(tasks)} 条{label}定时任务")
+        return [text_block("\n".join(lines))]
 
     async def update(
         self,
@@ -191,43 +180,37 @@ class ScheduleAddon:
             enable_val = False
 
         cfg = _get_config()
-        await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
-        try:
-            obj = await ScheduledTask.get_or_none(id=task_id)
-            if obj is None:
-                return [text_block(f"错误: 任务 {task_id} 不存在")]
+        obj = await ScheduledTask.get_or_none(id=task_id)
+        if obj is None:
+            return [text_block(f"错误: 任务 {task_id} 不存在")]
 
-            ctx = _caller_ctx()
-            if ctx is not None and not _is_master() and obj.ctx_id != ctx:
-                return [text_block(f"错误: 无权修改其他会话的定时任务 [{task_id}]")]
+        ctx = _caller_ctx()
+        if ctx is not None and not _is_master() and obj.ctx_id != ctx:
+            return [text_block(f"错误: 无权修改其他会话的定时任务 [{task_id}]")]
 
-            if cron is not None:
-                validate_cron(cron)
-                if not obj.once and is_long_cycle(cron):
-                    existing_long = 0
-                    for t in await ScheduledTask.filter(enabled=True, once=False).exclude(id=task_id).all():
-                        if is_long_cycle(t.cron):
-                            existing_long += 1
-                    if existing_long >= cfg.schedule.max_long_cycle:
-                        return [text_block(f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。")]
-                obj.cron = cron
-            if task is not None:
-                obj.task = task
-            if agent is not None:
-                err = _check_agent_permission(cfg, agent)
-                if err:
-                    return [text_block(err)]
-                obj.agent = agent
-            if enable_val is not None:
-                obj.enabled = enable_val
+        if cron is not None:
+            validate_cron(cron)
+            if not obj.once and is_long_cycle(cron):
+                existing_long = 0
+                for t in await ScheduledTask.filter(enabled=True, once=False).exclude(id=task_id).all():
+                    if is_long_cycle(t.cron):
+                        existing_long += 1
+                if existing_long >= cfg.schedule.max_long_cycle:
+                    return [text_block(f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。")]
+            obj.cron = cron
+        if task is not None:
+            obj.task = task
+        if agent is not None:
+            err = _check_agent_permission(cfg, agent)
+            if err:
+                return [text_block(err)]
+            obj.agent = agent
+        if enable_val is not None:
+            obj.enabled = enable_val
 
-            await obj.save()
-            _notify_reload(cfg)
-            return [text_block(f"已更新定时任务 [{task_id}]")]
-        except ValueError as e:
-            return [text_block(f"错误: {e}")]
-        finally:
-            await close_db()
+        await obj.save()
+        _notify_reload(cfg)
+        return [text_block(f"已更新定时任务 [{task_id}]")]
 
     async def delete(
         self,
@@ -241,20 +224,14 @@ class ScheduleAddon:
         task_id = int(_positional[0])
 
         cfg = _get_config()
-        await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
-        try:
-            obj = await ScheduledTask.get_or_none(id=task_id)
-            if obj is None:
-                return [text_block(f"错误: 任务 {task_id} 不存在")]
+        obj = await ScheduledTask.get_or_none(id=task_id)
+        if obj is None:
+            return [text_block(f"错误: 任务 {task_id} 不存在")]
 
-            ctx = _caller_ctx()
-            if ctx is not None and not _is_master() and obj.ctx_id != ctx:
-                return [text_block(f"错误: 无权删除其他会话的定时任务 [{task_id}]")]
+        ctx = _caller_ctx()
+        if ctx is not None and not _is_master() and obj.ctx_id != ctx:
+            return [text_block(f"错误: 无权删除其他会话的定时任务 [{task_id}]")]
 
-            await obj.delete()
-            _notify_reload(cfg)
-            return [text_block(f"已删除定时任务 [{task_id}]")]
-        except Exception as e:
-            return [text_block(f"错误: {e}")]
-        finally:
-            await close_db()
+        await obj.delete()
+        _notify_reload(cfg)
+        return [text_block(f"已删除定时任务 [{task_id}]")]

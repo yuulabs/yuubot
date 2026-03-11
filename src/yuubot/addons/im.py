@@ -14,7 +14,6 @@ import httpx
 
 from yuubot.addons import addon, get_context, text_block, ContentBlock
 from yuubot.config import load_config
-from yuubot.core.db import init_db, close_db
 from yuubot.skills.im.query import search_messages, browse_messages
 from yuubot.skills.im.formatter import format_messages_to_xml
 
@@ -156,15 +155,11 @@ class ImAddon:
 
         ctx_id = _enforce_bot_ctx(ctx)
         cfg = _get_config()
-        await init_db(cfg.database.path)
-        try:
-            results = await search_messages(keywords, ctx_id, limit, days)
-            if not results:
-                return [text_block("未找到消息")]
-            xml_output = await format_messages_to_xml(results)
-            return [text_block(xml_output)]
-        finally:
-            await close_db()
+        results = await search_messages(keywords, ctx_id, limit, days)
+        if not results:
+            return [text_block("未找到消息")]
+        xml_output = await format_messages_to_xml(results)
+        return [text_block(xml_output)]
 
     async def browse(
         self,
@@ -181,26 +176,22 @@ class ImAddon:
         """Browse messages around a msg_id or time range."""
         ctx_id = _enforce_bot_ctx(ctx)
         cfg = _get_config()
-        await init_db(cfg.database.path)
-        try:
-            since_dt = datetime.fromisoformat(since) if since else None
-            until_dt = datetime.fromisoformat(until) if until else None
+        since_dt = datetime.fromisoformat(since) if since else None
+        until_dt = datetime.fromisoformat(until) if until else None
 
-            results = await browse_messages(
-                msg_id=msg,
-                ctx_id=ctx_id,
-                before=before,
-                after=after,
-                since=since_dt,
-                until=until_dt,
-                limit=limit,
-            )
-            if not results:
-                return [text_block("未找到消息")]
-            xml_output = await format_messages_to_xml(results)
-            return [text_block(xml_output)]
-        finally:
-            await close_db()
+        results = await browse_messages(
+            msg_id=msg,
+            ctx_id=ctx_id,
+            before=before,
+            after=after,
+            since=since_dt,
+            until=until_dt,
+            limit=limit,
+        )
+        if not results:
+            return [text_block("未找到消息")]
+        xml_output = await format_messages_to_xml(results)
+        return [text_block(xml_output)]
 
     async def list(
         self,
