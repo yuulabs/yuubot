@@ -204,6 +204,11 @@ async def execute(
     addon_name, subcommand, args, data = _parse_command(command)
     parsed = _parse_args(args)
 
+    logger.debug("Addon execute: {} {} (ctx_id={}, agent={})",
+                 addon_name, subcommand,
+                 context.ctx_id if context else None,
+                 context.agent_name if context else None)
+
     instance = get_addon(addon_name)
     method = getattr(instance, subcommand, None)
     if method is None:
@@ -225,6 +230,10 @@ async def execute(
     _current_context = context
     try:
         result = await method(**parsed)
+        logger.debug("Addon done: {} {}", addon_name, subcommand)
+    except Exception as e:
+        logger.error("Addon failed: {} {} - {}", addon_name, subcommand, e)
+        raise
     finally:
         _current_context = prev
 

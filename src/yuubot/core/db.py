@@ -239,6 +239,11 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
         simple_ext: Path to libsimple extension (without .so suffix).
             Empty string triggers auto-detection under vendor/.
     """
+    import inspect
+    caller = inspect.currentframe().f_back
+    caller_loc = f"{caller.f_code.co_filename}:{caller.f_lineno}" if caller else "?"
+    logger.debug("init_db from {}", caller_loc)
+
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     await Tortoise.init(
         db_url=f"sqlite://{db_path}",
@@ -284,6 +289,11 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
 
 async def close_db() -> None:
     """Close all Tortoise connections and reset global context."""
+    import inspect
+    caller = inspect.currentframe().f_back
+    caller_loc = f"{caller.f_code.co_filename}:{caller.f_lineno}" if caller else "?"
+    logger.warning("close_db from {} (destroys Tortoise context!)", caller_loc)
+
     global _simple_loaded, _fts_rebuilt
     _simple_loaded = False
     _fts_rebuilt = False

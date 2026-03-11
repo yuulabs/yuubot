@@ -538,7 +538,16 @@ class Dispatcher:
         if msg_type == "group":
             gid = event.get("group_id", 0)
             from yuubot.core.models import GroupSetting
-            setting = await GroupSetting.filter(group_id=gid).first()
+            try:
+                setting = await GroupSetting.filter(group_id=gid).first()
+            except Exception as e:
+                from tortoise import Tortoise
+                ctx = Tortoise._get_context()
+                logger.error("DB query failed | ctx={} inited={} conn={}",
+                           id(ctx) if ctx else None,
+                           ctx.inited if ctx else None,
+                           id(ctx._connections) if ctx and ctx._connections else None)
+                raise
             if setting:
                 if not setting.bot_enabled:
                     return False
