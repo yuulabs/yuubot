@@ -11,7 +11,7 @@ from yuubot.characters import (
 
 _spec = AgentSpec(
     tools=[
-        "execute_bash", "execute_skill_cli",
+        "execute_bash", "execute_addon_cli",
         "write_file", "edit_file", "read_file",
         "sleep", "delegate",
         "check_running_tool", "cancel_running_tool",
@@ -22,8 +22,8 @@ _spec = AgentSpec(
         SLEEP_MECHANISM,
         bootstrap_section("/home/yuu/bootstrap.md"),
     ],
-    skills=["*"],
-    expand_skills=["im"],
+    addons=["*"],
+    expand_addons=["im"],
     subagents=["coder", "researcher"],
     soft_timeout=60,
     silence_timeout=120,
@@ -39,4 +39,5 @@ register(Character(
         "对于编码任务，使用 delegate 工具委派给 coder agent。"
     ),
     spec=_spec,
+    max_tokens=128000,
 ))

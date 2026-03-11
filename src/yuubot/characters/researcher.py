@@ -4,8 +4,9 @@ from yuubot.prompt import AgentSpec, Character
 from yuubot.characters import register
 
 _spec = AgentSpec(
-    tools=["read_file", "write_file", "edit_file"],
-    skills=["web"],
+    tools=["read_file", "write_file", "edit_file", "execute_addon_cli", "read_addon_doc"],
+    addons=["web"],
+    expand_addons=["web"],
     max_steps=16,
 )
 
@@ -18,4 +19,5 @@ register(Character(
         "报告应当精炼，突出关键信息。"
     ),
     spec=_spec,
+    max_tokens=60000,
 ))

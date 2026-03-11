@@ -5,7 +5,7 @@ from yuubot.characters import register
 
 _spec = AgentSpec(
     tools=[
-        "execute_skill_cli", "read_skill",
+        "execute_addon_cli", "read_addon_doc",
         "check_running_tool", "cancel_running_tool",
     ],
     sections=[
@@ -13,8 +13,8 @@ _spec = AgentSpec(
         Section("messaging", FileRef("prompts/main/messaging.md")),
         Section("memes", FileRef("prompts/main/memes.md")),
     ],
-    skills=["*"],
-    expand_skills=["im"],
+    addons=["*"],
+    expand_addons=["im"],
     max_steps=16,
     silence_timeout=120,
 )
@@ -25,4 +25,5 @@ register(Character(
     min_role="folk",
     persona=FileRef("prompts/main/persona.md"),
     spec=_spec,
+    max_tokens=30000,
 ))

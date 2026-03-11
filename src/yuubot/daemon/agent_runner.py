@@ -21,6 +21,20 @@ from yuubot.skills.im.formatter import (
 
 from loguru import logger
 
+# Addon tools — defined in yuubot, registered alongside builtin tools
+_ADDON_TOOLS = {}
+
+def _get_addon_tools() -> dict:
+    """Lazy-load addon tools to avoid circular imports."""
+    global _ADDON_TOOLS
+    if not _ADDON_TOOLS:
+        from yuubot.addons.tools import execute_addon_cli, read_addon_doc
+        _ADDON_TOOLS = {
+            "execute_addon_cli": execute_addon_cli,
+            "read_addon_doc": read_addon_doc,
+        }
+    return _ADDON_TOOLS
+
 
 def _set_or_pop(d: dict, key: str, value: str) -> None:
     """Set key=value in dict, or remove the key if value is empty."""
@@ -69,6 +83,46 @@ class AgentRunner:
         self._cli_guard = make_whitelist_guard({"im", "web", "mem", "img", "schedule", "hhsh"})
         self._bot_name: str | None = None  # Cached bot display name
         self._active_flows: dict[int, object] = {}  # ctx_id → root Flow
+
+    def _build_tool_manager(self, tool_names: list[str]):
+        """Build a ToolManager with both builtin and addon tools."""
+        import yuutools as yt
+        from yuuagents import tools as agent_tools
+
+        addon_tools = _get_addon_tools()
+        tool_manager = yt.ToolManager()
+
+        # Separate addon tools from builtin tools
+        builtin_names = [n for n in tool_names if n not in addon_tools]
+        addon_names = [n for n in tool_names if n in addon_tools]
+
+        for t in agent_tools.get(builtin_names):
+            tool_manager.register(t)
+        for n in addon_names:
+            tool_manager.register(addon_tools[n])
+
+        return tool_manager
+
+    def _build_addon_context(
+        self,
+        *,
+        ctx_id: int | str = "",
+        user_id: int | str = "",
+        user_role: str = "",
+        agent_name: str = "",
+        task_id: str = "",
+    ):
+        """Build an AddonContext for in-process addon execution."""
+        from yuubot.addons import AddonContext
+
+        return AddonContext(
+            config=self.config,
+            ctx_id=int(ctx_id) if ctx_id else None,
+            user_id=int(user_id) if user_id else None,
+            user_role=user_role,
+            agent_name=agent_name,
+            task_id=task_id,
+        )
 
     @staticmethod
     def _new_task_id() -> str:
@@ -130,9 +184,8 @@ class AgentRunner:
                     await self._docker.start()
                     logger.info("Docker initialized for AgentRunner")
                 except Exception:
-                    logger.warning(
+                    logger.opt(exception=True).warning(
                         "Docker not available, execute_bash will not work",
-                        exc_info=True,
                     )
                     self._docker = None
             else:
@@ -151,6 +204,19 @@ class AgentRunner:
     def get_active_flow(self, ctx_id: int):
         """Return running root flow for ctx, or None."""
         return self._active_flows.get(ctx_id)
+
+    def cancel_ctx(self, ctx_id: int) -> bool:
+        """Cancel the active flow for a ctx. Returns True if cancelled."""
+        from yuuagents.flow import FlowStatus
+
+        flow = self._active_flows.pop(ctx_id, None)
+        if flow is None:
+            return False
+        if flow.task is not None and not flow.task.done():
+            flow.task.cancel()
+        flow.status = FlowStatus.CANCELLED
+        logger.info("Flow cancelled for ctx={}", ctx_id)
+        return True
 
     async def _resolve_docker(self, task_id: str) -> tuple[str, str]:
         """Return (workdir, container_id) from Docker, or fallback."""
@@ -172,7 +238,10 @@ class AgentRunner:
         return docker_mount, host_home_dir, container_home
 
     def _make_summary_llm(self):
-        """Build a cheap YLLMClient for summarization, using SessionConfig overrides."""
+        """Build a YLLMClient for summarization/compression.
+
+        Requires explicit summarizer_provider and summarizer_model in SessionConfig.
+        """
         import os
         import yuullm
 
@@ -180,13 +249,11 @@ class AgentRunner:
         provider_name = scfg.summarizer_provider
         model = scfg.summarizer_model
 
-        # Fall back to main agent's provider/model if not configured
-        if not provider_name:
-            agents = self.config.yuuagents.get("agents", {})
-            main_cfg = agents.get("main", {})
-            provider_name = main_cfg.get("provider", "")
-            if not model:
-                model = main_cfg.get("model", "")
+        if not provider_name or not model:
+            raise ValueError(
+                "session.summarizer_provider and session.summarizer_model must be "
+                "explicitly configured for summarization/compression to work."
+            )
 
         providers = self.config.yuuagents.get("providers", {})
         provider_cfg = providers.get(provider_name, {})
@@ -194,25 +261,51 @@ class AgentRunner:
         api_key_env = provider_cfg.get("api_key_env", "")
         api_key = os.environ.get(api_key_env) if api_key_env else None
         base_url = provider_cfg.get("base_url", "") or None
-        default_model = model or provider_cfg.get("default_model", "gpt-4o-mini")
 
         if api_type == "anthropic-messages":
             provider = yuullm.providers.AnthropicMessagesProvider(
                 api_key=api_key,
                 base_url=base_url,
-                provider_name=provider_name or "anthropic",
+                provider_name=provider_name,
             )
         else:
             provider = yuullm.providers.OpenAIChatCompletionProvider(
                 api_key=api_key,
                 base_url=base_url,
-                provider_name=provider_name or "openai",
+                provider_name=provider_name,
             )
 
         return yuullm.YLLMClient(
             provider=provider,
-            default_model=default_model,
+            default_model=model,
             price_calculator=yuullm.PriceCalculator(),
+        )
+
+    def _make_compressor(self, agent_name: str):
+        """Build a SessionCompressor for an agent.
+
+        Returns None if summarizer_provider/model not configured.
+        """
+        scfg = self.config.session
+        if not scfg.summarizer_provider or not scfg.summarizer_model:
+            return None
+
+        from yuubot.daemon.compressor import SessionCompressor
+
+        llm = self._make_summary_llm()
+
+        async def _summarize_fn(history_slice: list, steps_span: int) -> str:
+            from yuubot.daemon.summarizer import compress_summary
+            return await compress_summary(history_slice, llm, steps_span=steps_span)
+
+        char = CHARACTER_REGISTRY.get(agent_name)
+        if char is None:
+            return None
+
+        return SessionCompressor(
+            max_tokens=char.max_tokens,
+            summarize_fn=_summarize_fn,
+            summarize_steps_span=scfg.summarize_steps_span,
         )
 
     async def summarize(self, history: list, agent_name: str = "main") -> str:
@@ -231,12 +324,12 @@ class AgentRunner:
 
         await self._ensure_init()
 
-        from yuubot.daemon.summarizer import extract_original_task, render_recent
+        from yuubot.daemon.summarizer import extract_original_task, render_for_curator
 
         task = (
-            f"以下是本轮 session 的完整对话历史，请整理记忆。\n\n"
+            f"以下是本轮 session 的对话摘要，请整理记忆。\n\n"
             f"原始任务：\n{extract_original_task(history)}\n\n"
-            f"完整对话：\n{render_recent(history, n=len(history))}\n\n"
+            f"对话内容：\n{render_for_curator(history)}\n\n"
             f"ctx_id: {ctx_id}\n"
         )
         subprocess_env = self._build_subprocess_env(
@@ -245,7 +338,7 @@ class AgentRunner:
         try:
             await self._run_agent(agent_name, task, subprocess_env=subprocess_env)
         except Exception:
-            logger.exception("mem_curator failed for ctx=%s", ctx_id)
+            logger.exception("mem_curator failed for ctx={}", ctx_id)
 
     def _make_llm(self, agent_name: str = "main"):
         """Build a YLLMClient from Character fields, falling back to YAML."""
@@ -400,9 +493,7 @@ class AgentRunner:
 
         # Tools — override if caller specifies
         names = tool_names if tool_names is not None else list(prompt_spec.tools)
-        tool_manager = yt.ToolManager()
-        for t in agent_tools.get(names):
-            tool_manager.register(t)
+        tool_manager = self._build_tool_manager(names)
 
         needs_docker = self._needs_docker(names)
 
@@ -430,6 +521,7 @@ class AgentRunner:
 
         agent_spec = prompt_spec.agent_spec
         persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
+        compressor = self._make_compressor(agent_name)
         config = AgentConfig(
             task_id=task_id,
             agent_id=runtime_id,
@@ -440,8 +532,16 @@ class AgentRunner:
             max_steps=agent_spec.max_steps,
             soft_timeout=agent_spec.soft_timeout,
             silence_timeout=agent_spec.silence_timeout,
+            compressor=compressor,
         )
         agent = Agent(config=config)
+        addon_ctx = self._build_addon_context(
+            ctx_id=subprocess_env.get(env.BOT_CTX, ""),
+            user_id=subprocess_env.get(env.USER_ID, ""),
+            user_role=subprocess_env.get(env.USER_ROLE, ""),
+            agent_name=agent_name,
+            task_id=task_id,
+        )
         context = AgentContext(
             task_id=task_id,
             agent_id=runtime_id,
@@ -455,6 +555,7 @@ class AgentRunner:
             subprocess_env=run_env,
             current_output_buffer=output_buffer,
             output_buffer=output_buffer,
+            addon_context=addon_ctx,
         )
 
         try:
@@ -543,14 +644,14 @@ class AgentRunner:
                     nickname = data.get("nickname", "")
                     if nickname:
                         self._bot_name = nickname
-                        logger.info("Bot name fetched: %s", nickname)
+                        logger.info("Bot name fetched: {}", nickname)
                         return self._bot_name
         except Exception:
-            logger.warning("Failed to fetch bot nickname from API", exc_info=True)
+            logger.opt(exception=True).warning("Failed to fetch bot nickname from API")
 
         # Fallback to bot QQ number
         self._bot_name = str(self.config.bot.qq)
-        logger.info("Using bot QQ as name: %s", self._bot_name)
+        logger.info("Using bot QQ as name: {}", self._bot_name)
         return self._bot_name
 
     def _replace_command_prefix(self, segments: list, bot_name: str) -> list:
@@ -597,10 +698,10 @@ class AgentRunner:
                 return ""
             return (
                 f"\n记忆关键词命中: {', '.join(hits)}\n"
-                f'（可用 ybot mem recall "<关键词>" 查看详情）\n'
+                f'（可用 mem recall "<关键词>" 查看详情）\n'
             )
         except Exception:
-            logger.debug("Memory hints probe failed", exc_info=True)
+            logger.opt(exception=True).debug("Memory hints probe failed")
             return ""
 
     async def _build_task(
@@ -746,8 +847,7 @@ class AgentRunner:
         await self._ensure_init()
 
         try:
-            import yuutools as yt
-            from yuuagents import Agent, tools
+            from yuuagents import Agent
             from yuuagents.agent import AgentConfig
             from yuuagents.loop import run as run_agent
             from yuuagents.context import AgentContext
@@ -776,9 +876,7 @@ class AgentRunner:
         agent_spec = prompt_spec.agent_spec
         tool_names = list(prompt_spec.tools)
 
-        tool_manager = yt.ToolManager()
-        for tool in tools.get(tool_names):
-            tool_manager.register(tool)
+        tool_manager = self._build_tool_manager(tool_names)
 
         needs_docker = self._needs_docker(tool_names)
 
@@ -786,6 +884,7 @@ class AgentRunner:
         self._agent_name_map[agent_id] = agent_name
 
         persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
+        compressor = self._make_compressor(agent_name)
         config = AgentConfig(
             task_id=task_id,
             agent_id=agent_id,
@@ -796,6 +895,7 @@ class AgentRunner:
             max_steps=agent_spec.max_steps,
             soft_timeout=agent_spec.soft_timeout,
             silence_timeout=agent_spec.silence_timeout,
+            compressor=compressor,
         )
 
         agent = Agent(config=config)
@@ -871,6 +971,13 @@ class AgentRunner:
         )
         self._agent_subprocess_env[agent_id] = subprocess_env
 
+        addon_ctx = self._build_addon_context(
+            ctx_id=ctx_id,
+            user_id=user_id,
+            user_role=user_role,
+            agent_name=agent_name,
+            task_id=task_id,
+        )
         context = AgentContext(
             task_id=task_id,
             agent_id=agent_id,
@@ -881,6 +988,7 @@ class AgentRunner:
             cli_guard=self._cli_guard,
             skill_paths=self.config.skill_paths,
             subprocess_env=subprocess_env,
+            addon_context=addon_ctx,
         )
 
         from yuuagents.flow import FlowManager, FlowKind
@@ -919,8 +1027,7 @@ class AgentRunner:
         await self._ensure_init()
 
         try:
-            import yuutools as yt
-            from yuuagents import Agent, tools
+            from yuuagents import Agent
             from yuuagents.agent import AgentConfig
             from yuuagents.loop import run as run_agent
             from yuuagents.context import AgentContext
@@ -935,9 +1042,7 @@ class AgentRunner:
         agent_spec = prompt_spec.agent_spec
         tool_names = list(prompt_spec.tools)
 
-        tool_manager = yt.ToolManager()
-        for tool in tools.get(tool_names):
-            tool_manager.register(tool)
+        tool_manager = self._build_tool_manager(tool_names)
 
         needs_docker = self._needs_docker(tool_names)
 
@@ -946,13 +1051,14 @@ class AgentRunner:
 任务: {task}
 目标: {ctx_str}
 
-如需发送消息，使用 `ybot im send '<msg_json>' --ctx <ctx_id>`。
+如需发送消息，使用 im send 命令发送到对应 ctx。
 """
 
         agent_id = f"yuubot-cron-{agent_name}-{ctx_id or 'global'}"
         self._agent_name_map[agent_id] = agent_name
 
         persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
+        compressor = self._make_compressor(agent_name)
         config = AgentConfig(
             task_id=task_id,
             agent_id=agent_id,
@@ -963,6 +1069,7 @@ class AgentRunner:
             max_steps=agent_spec.max_steps,
             soft_timeout=agent_spec.soft_timeout,
             silence_timeout=agent_spec.silence_timeout,
+            compressor=compressor,
         )
 
         agent = Agent(config=config)
@@ -991,6 +1098,11 @@ class AgentRunner:
         )
         self._agent_subprocess_env[agent_id] = subprocess_env
 
+        addon_ctx = self._build_addon_context(
+            ctx_id=ctx_id or "",
+            agent_name=agent_name,
+            task_id=task_id,
+        )
         context = AgentContext(
             task_id=task_id,
             agent_id=agent_id,
@@ -1001,11 +1113,12 @@ class AgentRunner:
             cli_guard=self._cli_guard,
             skill_paths=self.config.skill_paths,
             subprocess_env=subprocess_env,
+            addon_context=addon_ctx,
         )
 
         try:
             await run_agent(agent, task=full_task, ctx=context)
         except BaseException:
-            logger.exception("Scheduled agent failed: %s", task)
+            logger.exception("Scheduled agent failed: {}", task)
         finally:
             self._agent_subprocess_env.pop(agent_id, None)

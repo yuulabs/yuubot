@@ -46,7 +46,8 @@ Key reason for separation: Recorder stays up while Daemon restarts during develo
 ## Key Concepts
 
 - **ctx_id**: Auto-incrementing integer mapping to (type, target_id) pairs (private/group + user_id/group_id). Assigned on first message from a chat. Avoids exposing raw QQ numbers to LLM. Hot-loaded from DB on startup.
-- **Skills**: CLI tools under `ybot im|web|mem`. Agent calls them via subprocess (`execute_skill_cli` tool). Each skill has a SKILL.md injected into agent prompt.
+- **Addons**: Built-in capabilities (im, web, mem, etc.) that run in-process in the daemon. Agent calls them via `execute_addon_cli("addon subcommand --flags -- json_data")`. Docs in `addons/docs/`. See `design/addons.md`.
+- **Skills**: Third-party CLI tools under `ybot im|web|mem`. Agent calls them via `execute_skill_cli` subprocess. Each skill has a SKILL.md injected into agent prompt. Legacy — addons are preferred for built-in capabilities.
 - **Command Tree** (`commands/tree.py`): Hierarchical longest-prefix-first matching. Entry prefixes (`/y`, `/yuu`) are stripped before matching.
 - **Roles**: Master > Mod > Folk > Deny. Per-agent `min_role` in config controls access.
 - **Message format**: JSON array of segments: `[{"type":"text","text":"hello"}, {"type":"image","url":"..."}, {"type":"at","qq":"123456"}]`
@@ -81,6 +82,14 @@ Key reason for separation: Recorder stays up while Daemon restarts during develo
 | `skills/im/` | IM skill: send, search, browse, list |
 | `skills/web/` | Web skill: search (Tavily), read (Playwright+Trafilatura), download |
 | `skills/mem/` | Memory skill: save, recall, delete, show, auto-forget |
+| `addons/` | In-process addon framework: registry, execute_addon_cli tool, addon docs |
+| `addons/im.py` | IM addon: send, search, browse, list (calls skills/im/ internals) |
+| `addons/mem.py` | Memory addon: save, recall, delete, show, config |
+| `addons/web.py` | Web addon: search, read, download |
+| `addons/img.py` | Image addon: save, search, delete, list |
+| `addons/schedule.py` | Schedule addon: create, list, update, delete |
+| `addons/hhsh.py` | hhsh addon: guess abbreviations |
+| `addons/tools.py` | execute_addon_cli + read_addon_doc yuutools Tool definitions |
 
 ## Configuration
 
@@ -105,6 +114,7 @@ Detailed design docs live in `design/`. Read these before making architectural c
 - `daemon.md` / `recorder.md` — Per-process detailed design
 - `commands.md` — Command tree, roles, built-in commands
 - `skills.md` — Skill specifications (im, web, mem)
+- `addons.md` — Addon architecture (in-process capabilities, two-layer model)
 - `database.md` — SQLite schema, FTS5, concurrent access
 - `config.md` — Configuration format & loading logic
 - `sessions.md` — Async agent sessions, background CLI, coder agent
