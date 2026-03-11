@@ -1,4 +1,4 @@
-"""Built-in commands: /bot, /help, /llm, /new, /cost."""
+"""Built-in commands: /bot, /help, /llm, /new, /cost, /ping."""
 
 import json
 import logging
@@ -89,6 +89,13 @@ def build_command_tree(entries: list[str]) -> RootCommand:
         help_text="查看近期 Agent 开销: /cost [--days N] [--all (Master)]",
     )
 
+    ping_cmd = Command(
+        prefix="ping",
+        executor=_exec_ping,
+        min_role=Role.FOLK,
+        help_text="测试 bot 是否存活: /ping → pong",
+    )
+
     # /char — character inspection and runtime config
     from yuubot.commands.ychar import (
         exec_char_config,
@@ -99,19 +106,19 @@ def build_command_tree(entries: list[str]) -> RootCommand:
     char_show_prompt = Command(
         prefix="prompt",
         executor=exec_char_show_prompt,
-        min_role=Role.MOD,
+        min_role=Role.MASTER,
         help_text="显示 Character 的系统提示词结构: /char show prompt [name]",
     )
     char_show_config = Command(
         prefix="config",
         executor=exec_char_show_config,
-        min_role=Role.MOD,
+        min_role=Role.MASTER,
         help_text="显示 Character 配置: /char show config [name]",
     )
     char_show = Command(
         prefix="show",
         subs=[char_show_prompt, char_show_config],
-        min_role=Role.MOD,
+        min_role=Role.MASTER,
         help_text="查看 Character 详情",
     )
     char_config = Command(
@@ -123,19 +130,19 @@ def build_command_tree(entries: list[str]) -> RootCommand:
     char_list = Command(
         prefix="list",
         executor=exec_char_list,
-        min_role=Role.MOD,
+        min_role=Role.MASTER,
         help_text="列出所有已注册 Character",
     )
     char_cmd = Command(
         prefix="char",
         subs=[char_show, char_config, char_list],
-        min_role=Role.MOD,
+        min_role=Role.MASTER,
         help_text="Character 管理命令",
     )
 
     root = RootCommand(
         prefix="",
-        subs=[bot_cmd, help_cmd, llm_cmd, hhsh_cmd, close_cmd, cost_cmd, char_cmd],
+        subs=[bot_cmd, help_cmd, llm_cmd, hhsh_cmd, close_cmd, cost_cmd, ping_cmd, char_cmd],
         entries=entries,
     )
     return root
@@ -290,11 +297,11 @@ async def _exec_close(remaining: str, event: dict, deps: dict) -> str | None:
 
 
 def _sanitize_agent_name(raw: str) -> str:
-    """Strip ctx_id suffix from agent names to avoid leaking context info.
+    """Strip ctx_id / hex suffix from agent names for clean aggregation.
 
-    New format: ``yuubot-{agent_name}-{ctx_id}`` → ``yuubot ({agent_name})``,
+    ``yuubot-{agent_name}-{ctx_id}`` → ``yuubot ({agent_name})``,
     ``yuubot-cron-{agent_name}-{ctx_id}`` → ``yuubot-cron ({agent_name})``,
-    ``delegate-{name}-{hex8}`` → ``delegate-{name}``.
+    ``agent-{name}-{hex8}`` / ``delegate-{name}-{hex8}`` → strip hex suffix.
     Legacy format (no agent_name): ``yuubot-3`` → ``yuubot``.
     """
     if not raw:
@@ -319,12 +326,21 @@ def _sanitize_agent_name(raw: str) -> str:
         if rest.isdigit():
             return "yuubot"
         return "yuubot"
-    # delegate-{name}-{hex8} → delegate-{name}
-    if raw.startswith("delegate-"):
+    # agent-{name}-{hex8} or delegate-{name}-{hex8} → strip hex suffix
+    if raw.startswith(("agent-", "delegate-")):
         parts = raw.rsplit("-", 1)
         if len(parts) == 2 and len(parts[1]) == 8:
-            return parts[0]
+            try:
+                int(parts[1], 16)
+                return parts[0]
+            except ValueError:
+                pass
     return raw
+
+
+async def _exec_ping(remaining: str, event: dict, deps: dict) -> str | None:
+    """Return pong — used to check bot liveness."""
+    return "pong"
 
 
 async def _exec_cost(remaining: str, event: dict, deps: dict) -> str | None:

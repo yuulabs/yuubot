@@ -77,24 +77,29 @@ class _CtxWorker:
 
     async def _loop(self) -> None:
         while True:
-            first = await self.queue.get()
-            # Drain queued items to debounce consecutive continuations
-            batch = [first]
-            while not self.queue.empty():
-                batch.append(self.queue.get_nowait())
+            try:
+                first = await self.queue.get()
+                # Drain queued items to debounce consecutive continuations
+                batch = [first]
+                while not self.queue.empty():
+                    batch.append(self.queue.get_nowait())
 
-            groups = _group_batch(batch)
-            for group in groups:
-                match, event = group[0]
-                if len(group) > 1:
-                    event["_extra_events"] = [e for _, e in group[1:]]
-                try:
-                    await self.dispatcher._handle(match, event)
-                except Exception:
-                    log.exception("Error handling command in ctx=%s", self.key)
+                groups = _group_batch(batch)
+                for group in groups:
+                    match, event = group[0]
+                    if len(group) > 1:
+                        event["_extra_events"] = [e for _, e in group[1:]]
+                    try:
+                        await self.dispatcher._handle(match, event)
+                    except Exception:
+                        log.exception("Error handling command in ctx=%s", self.key)
 
-            for _ in batch:
-                self.queue.task_done()
+                for _ in batch:
+                    self.queue.task_done()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Worker loop error in ctx=%s, continuing", self.key)
 
 
 def _group_batch(batch: list) -> list[list]:
@@ -139,7 +144,7 @@ class Dispatcher:
         pass  # workers are created lazily on first message per ctx
 
     async def stop(self) -> None:
-        for w in self._workers.values():
+        for w in list(self._workers.values()):
             await w.stop()
         self._workers.clear()
 
@@ -167,10 +172,8 @@ class Dispatcher:
             f.write(f"[MESSAGE] user={user_id} group={group_id} type={msg_type}\n")
             f.flush()
 
-        # Check if we should respond
-        should_respond = await self._should_respond(event)
-        log.info("should_respond check: user=%s group=%s type=%s result=%s", user_id, group_id, msg_type, should_respond)
-        if not should_respond:
+        # Self-ignore early (avoid unnecessary work)
+        if user_id == self.config.bot.qq:
             return
 
         # Extract plain text
@@ -185,27 +188,41 @@ class Dispatcher:
         plain = segments_to_plain(others + replies).strip()
         log.info("Message text: %s", plain)
 
-        # Check for active session BEFORE command matching
+        # Try command match early — non-LLM commands bypass session entirely.
+        # Session is an LLM-only concept; built-in commands (/ping, /cost, /help, etc.)
+        # respond immediately without touching session state.
+        cmd_match = self.root.match_message(plain)
+        is_llm_match = cmd_match is not None and cmd_match.command.executor is _exec_llm
+
+        if cmd_match is not None and not is_llm_match:
+            # Non-LLM command: respond immediately without touching session state.
+            # Session is LLM-only — built-in commands (/ping, /cost, /help, etc.)
+            # execute independently regardless of whether a session is active.
+            should_respond = await self._should_respond(event)
+            if not should_respond:
+                return
+            scope = str(event.get("group_id", "global"))
+            role = await self.role_mgr.get(event["user_id"], scope)
+            if not cmd_match.command.check_permission(role):
+                log.info("Permission denied (non-llm): user=%s role=%s cmd=%s", user_id, role, cmd_match.command.prefix)
+                return
+            log.info("Command accepted (non-llm): user=%s cmd=%s", user_id, cmd_match.command.prefix)
+            self._enqueue(cmd_match, event)
+            return
+
+        # LLM / session path — check whether we should respond in this context.
+        should_respond = await self._should_respond(event)
+        log.info("should_respond check: user=%s group=%s type=%s result=%s", user_id, group_id, msg_type, should_respond)
+        if not should_respond:
+            return
+
         ctx_id = event.get("ctx_id", 0)
         is_auto = self.session_mgr.is_auto(ctx_id)
         session = self.session_mgr.get(ctx_id)
-        if session is not None:
-            # Try command match first to detect non-llm commands
-            cmd_match = self.root.match_message(plain)
-            is_llm_match = cmd_match is not None and cmd_match.command.executor is _exec_llm
 
-            if cmd_match is not None and not is_llm_match:
-                # Non-llm command (e.g. /close, /bot, /help)
-                # In normal mode: close session. In auto mode: keep session alive.
-                if not is_auto:
-                    closed = self.session_mgr.close(ctx_id)
-                    log.info("Session closed by command: ctx=%s cmd=%s", ctx_id, cmd_match.command.prefix)
-                    event["_session_closed"] = True
-                    for s in closed:
-                        if _session_worth_curating(s):
-                            asyncio.create_task(self._run_curator(s.history, s.ctx_id, s.user_id))
-                match = cmd_match
-            elif is_llm_match and is_auto:
+        if session is not None:
+            # Active session — route LLM messages as continuation.
+            if is_llm_match and is_auto:
                 # Auto mode: /yllm is a switch only if it names a different agent.
                 tag_agent, _ = _parse_agent_tag(cmd_match.remaining)
                 if tag_agent == session.agent_name:
@@ -224,8 +241,6 @@ class Dispatcher:
                 return
             else:
                 # Continue session: @bot, private chat, or /yllm all count
-                # Role check happens in _handle — anyone meeting the agent's
-                # min_role can continue (e.g. FOLK agent is open to all).
                 remaining = plain
                 if is_llm_match:
                     remaining = cmd_match.remaining
@@ -237,9 +252,7 @@ class Dispatcher:
                 await self._ping_or_enqueue(session, event)
                 return
         elif is_auto:
-            # Auto mode, no active session: auto-resume or command
-            cmd_match = self.root.match_message(plain)
-            is_llm_match = cmd_match is not None and cmd_match.command.executor is _exec_llm
+            # Auto mode, no active session: auto-resume or /yllm switch
             cur_agent = self.session_mgr.current_agent(ctx_id)
 
             if is_llm_match:
@@ -256,21 +269,19 @@ class Dispatcher:
                 event["_session_remaining"] = plain
                 self._enqueue(None, event)
                 return
-            elif cmd_match is not None:
-                match = cmd_match
             else:
                 log.info("Auto mode: no agent selected yet, ignoring: %s", plain)
                 return
         else:
-            # No active session — normal command matching
-            match = self.root.match_message(plain)
-            if match is None:
+            # No active session — must be an LLM command (non-LLM already handled above)
+            if cmd_match is None:
                 log.info("No command match for: %s", plain)
                 return
+            match = cmd_match
 
         log.info("Matched command: %s", match.command.prefix)
 
-        # Permission check
+        # Permission check (LLM path)
         scope = str(event.get("group_id", "global"))
         role = await self.role_mgr.get(event["user_id"], scope)
 

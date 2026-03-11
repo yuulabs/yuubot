@@ -1,154 +1,274 @@
 # Session 设计
 
-yuubot 只有一种 session：**Chat Session** —— 用户与 bot 的多轮对话状态，维护在 Daemon 进程内存中。
+yuubot 只有一种 session：**Chat Session**。它表示“某个 ctx 下，某个 agent 的一次持续工作”。这里的“工作”不只是聊天历史，还包括当前正在跑的 agent / tool / subagent 流程。
 
-长时间运行的任务（如编码）通过普通工具调用处理。工具输出持续写入 **OutputBuffer**；如果工具超过 `soft_timeout`，框架返回 handle，agent 后续统一使用 `check_running_tool` / `cancel_running_tool` 继续管理。`delegate` 只是把子 agent 的文本、工具调用和工具输出透传到父 agent，并不引入额外协议。
+一句话说清楚：
 
----
-
-## Chat Session
-
-Chat Session 让用户和 bot 进行多轮对话，而不需要每次都输入 `/yllm` 命令。
-
-### 普通模式生命周期
-
-1. **创建**：用户发送 `/yllm` 命令时创建，绑定到 `(ctx_id, agent_name)`。每个 ctx 同时只能有一个 chat session。
-2. **延续**：在 TTL 内，后续消息自动归入同一 session，agent 能看到完整对话历史。
-3. **过期**：最后一次活跃后 300 秒（5 分钟）无新消息则自动过期。
-4. **主动关闭**：发送非 LLM 命令（如 `/bot`、`/help`）会立即关闭当前 session。
-5. **Token 上限（Context Rollover）**：当某一轮 LLM 调用的 token 增量达到 `max_tokens` 阈值时，触发自动上下文滚动：
-   - 旧 session 关闭；
-   - 调用廉价摘要模型（默认 deepseek-chat）生成工作交接摘要（基于原始任务 + 最后 4 条消息）；
-   - 创建新 session，摘要注入为 `handoff_note`；
-   - 下一轮对话时，摘要以 `<上轮对话摘要>` 块注入任务文本，LLM 可以无缝继续。
-   - 用户收到两条系统通知：压缩中 / 新会话就绪。
-
-### 记忆整理（mem curator）
-
-session 关闭时，若本次 session 足够实质性，则自动触发 `mem_curator` agent 在后台整理记忆。
-
-- **触发时机**：TTL 自然过期（惰性，收到下一条消息时检测）、主动命令关闭、context rollover。三种关闭路径均受同一条件约束。
-- **条件**：session 至少有 3 个 assistant 回合，且持续时间 ≥ 60 秒。过短的 session（问天气、算术等）不触发。
-- **无副作用**：curator 作为 background task 运行，不阻塞当前消息处理，也不通知用户。
-
-### Auto 模式（私聊专用）
-
-MOD+ 用户可对私聊 ctx 开启 auto 模式（`/ybot on --auto`），行为与普通模式有以下不同：
-
-| 维度 | 普通模式 | Auto 模式 |
-|------|----------|-----------|
-| TTL | 300s | 1800s（30min） |
-| Session 过期后 | 需重新发 `/yllm` | 自动以当前 agent 重建 session |
-| `/yllm#agent` | 切换并关闭旧 session | 切换 agent，旧 session 保留（供历史前缀缓存） |
-| 非 LLM 命令 | 关闭 session | 执行命令，session 不受影响 |
-| 同时存活 session 数 | 最多 1 个 | 每个 agent 一个，互不干扰 |
-
-Auto 模式的 `/yllm` 语义变为 "选定/切换 agent"，而非 "开始会话"。第一条消息之前必须至少发送一次 `/yllm` 来选定 agent；此后 session 过期时会自动重建，无需再次发送。
-
-关闭 auto 模式：`/ybot off`（同时关闭所有 session）。
-
-Auto 模式状态持久化到 `auto_mode` 表（ctx_id + current_agent），Daemon 重启后自动恢复。Session 历史仍然是内存态，重启后丢失。
-
-### 消息归入规则
-
-不是所有消息都会归入 session，规则取决于聊天类型：
-
-| 场景 | 是否归入 session |
-|------|-----------------|
-| 私聊，有活跃 session | 是 |
-| 私聊 auto 模式，session 过期但有 current_agent | 是（自动重建） |
-| 群聊，@bot，有活跃 session | 是 |
-| 群聊，不 @bot，有活跃 session | 否（忽略） |
-| 群聊，`/yllm` 命令 | 创建新 session |
-| 普通模式，非 LLM 命令 | 关闭 session，执行命令 |
-| Auto 模式，非 LLM 命令 | 执行命令，session 不关闭 |
-
-关键点：**群聊中必须 @bot 才能延续 session**，普通群消息不会被归入。这避免了群里其他人的闲聊污染对话上下文。
-
-### 实现
-
-- `SessionManager`（`daemon/session.py`）：管理所有 chat session 的创建、查询、过期、关闭；维护 `_auto_ctxs` 和 `_current_agent`。
-- `Dispatcher`（`daemon/dispatcher.py`）：在命令匹配前检查是否有活跃 session，决定消息走 session 延续还是新命令；auto 模式下实现 agent 切换和自动重建逻辑。
+- session 是用户视角的工作单元；
+- flow 是框架内部的运行单元；
+- 一轮交互完成，不是 LLM 先说完就算，而是这轮里所有子 flow 都完成，并且最终回复已经生成。
 
 ---
 
-## 长时间任务处理（running tool + delegate）
+## Session 是 LLM 专属概念
 
-对于耗时任务（如编码），使用 `delegate` 工具委派给专门的子 agent（如 coder）。
+Session 只与 LLM 交互链路有关。非 LLM 命令（`/ping`、`/help`、`/cost`、`/bot` 等内置命令）**完全绕过 session**，不读取、不修改、不关闭 session，直接执行并返回。仅受 recorder API 限流约束。
 
-### 架构
-
-```
-Parent Agent ──delegate()──► Child Agent (coder)
-       │                            │
-       │    ◄── OutputBuffer ───   │
-       │         (stream)           │
-       │                            ▼
-       │                 execute_bash / execute_skill_cli / ...
-       │                 soft_timeout → handle
-       ▼
-Parent sees child text, tool calls, and tool output tail
-```
-
-### OutputBuffer 同步机制
-
-1. **LLM 流式输出**：子 agent 的每个 LLM response chunk 实时写入 `output_buffer`
-2. **工具调用通知**：子 agent 发起工具调用时，写入 `[calling {tool_name}]` 到 buffer
-3. **子工具输出**：子 agent 调用的工具如果产生输出，通过该工具的 `current_output_buffer` 写入
-4. **父 agent 读取**：父 agent 通过同一个运行中工具的 tail 看到最近进展，无需额外 background 子系统
-
-### Soft Timeout 处理
-
-yuuagents 的 `ToolsContext.gather()` 支持 `soft_timeout` 参数：
-
-- 如果子 agent 在 `soft_timeout` 内完成：正常返回最终结果
-- 如果超过 `soft_timeout`：返回占位符（包含 handle），该工具继续作为“运行中的工具调用”存在
-- 父 agent 可以用 `check_running_tool(handle)` 轮询进展或等待完成
-- 必要时用 `cancel_running_tool(handle)` 取消该工具，底层命令会收到中断
-
-```python
-# 伪代码示例
-result = await delegate(agent="coder", task="implement feature X")
-# 如果超时，result 可能是:
-# "Still running (65s). handle=abc123\nTail output:\n[writing file...]"
-
-# 后续轮询
-final = await check_running_tool("abc123", wait=120)
-```
-
-### Silence Detection
-
-Silence detection（长时间无消息提醒）只在 **root agent** 生效：
-
-```python
-# loop.py 中
-if silence_interval_first > 0 and ctx.delegate_depth == 0:
-    # 检测逻辑...
-```
-
-子 agent（delegate_depth > 0）不会触发 silence detection，因为：
-1. 子 agent 的进展通过 OutputBuffer 实时同步给父 agent
-2. 父 agent 可以向用户报告进展
-3. 避免多层 agent 同时触发 silence 造成消息混乱
-
-### Coder Agent 工作流
-
-配置在 `yuuagents.config.yaml`。定位为**编码监督者**而非编码者：
-
-1. **委派**：coder agent 分析任务，驱动 claude code 完成编码
-2. **执行**：直接用 `execute_bash("claude ...")` 启动长任务
-3. **实时同步**：coder agent 的进展通过 OutputBuffer 实时同步给父 agent
-4. **超时续跑**：如返回 handle，继续用 `check_running_tool` 查看 tail 或等待完成
-5. **验收**：coder agent 检查产出，父 agent 也能看到过程
-6. **反馈**：如果发现问题，父 agent 可以直接反馈或重新委派
+这意味着：
+- 用户在 LLM session 进行中发 `/ping`，session **不受影响**，ping 直接响应 "pong"
+- 非 LLM 命令仍受 `_should_respond` 门控（bot_enabled、DM 白名单等），但不经过 session 路径
 
 ---
 
-## 已移除的机制
+## 核心概念
 
-以下机制已被移除，统一使用上述标准工具流：
+### Session
 
-- ~~`launch_agent` / `session_poll` / `session_interrupt` / `session_result` 工具~~：从未实际使用，delegate + OutputBuffer 提供更简洁的同步机制
-- ~~yuubot 的 CTX_TIMEOUT~~：已移除。制造了孤儿任务，超时控制完全由 yuuagents 的 `check_running` tool 处理
-- ~~yuubot 的 `_SessionManagerBridge`~~：不再需要，delegate 直接通过 `AgentRunner.delegate()` 运行
-- ~~background run / wait / drain~~：已废弃。长任务统一建模为运行中的工具调用
+session 是用户看见的连续对话。它绑定 `(ctx_id, agent_name)`，保存：
+
+- 已完成轮次的 history
+- 当前 root flow 是否仍在运行
+- 当前轮次里暂存的 ping / 用户补充消息
+- token 统计、handoff note 等会话级元数据
+
+session 关注的是“这段工作现在处于什么阶段”，而不是具体某个工具调用的内部细节。
+
+### Flow
+
+flow 是统一的运行抽象。下面三种东西本质上都是 flow：
+
+1. root agent
+2. tool，例如 `bash`
+3. subagent / delegate 出去的子代理
+
+每个 flow 都有：
+
+- `flow_id`
+- `parent_flow_id`
+- `kind`：`agent | tool`
+- `status`：`running | waiting_input | done | error | cancelled`
+- `children`
+- `ping()` 接口
+
+`handle` 只是 flow 的外部地址，不再是“长任务补丁机制”的专有概念。
+
+### Ping
+
+Ping 是统一的事件注入机制。不要把它理解成“只有 tool 完成时发一句 system message”，而要把它看成 flow 之间互相唤醒、补充信息、继续运行的标准方式。
+
+常见 ping 类型：
+
+- `user_message`：用户在 root agent 仍在处理时又发来新消息
+- `child_completed`：某个子 flow 已经完成
+- `child_failed`：某个子 flow 出错
+- `tool_output`：工具产生了新的可见输出
+- `stdin`：给可交互工具写入标准输入
+- `context_query`：子代理向父代理索取更精确的上下文
+- `cancel`：请求取消某个 flow
+- `system_note`：框架内部注入的状态通知
+
+框架内部使用结构化 ping；渲染给 LLM 时，才把它转成适合模型理解的文本。
+
+---
+
+## 一轮交互何时算完成
+
+这是本设计最关键的定义。
+
+一轮交互完成，必须同时满足：
+
+1. 当前轮次启动的所有子 tool flow 都已完成、失败或取消
+2. 这些子 flow 的子 flow 也都已经收敛
+3. 当前 agent 已经消费了这些完成信号
+4. 当前 agent 生成了最终回复
+
+只要某个子 flow 还没完成，这一轮就还在进行中。
+
+换句话说：
+
+- “底层工具返回了 handle” 不等于一轮结束
+- “LLM 先说了一句我已经开始处理了” 也不等于一轮结束
+
+如果某个工具超时，只是说明这个 flow 暂时还没完成，后续应该通过 ping 把完成事件送回父 flow，而不是把这轮误判成已经 finished。
+
+---
+
+## Flow Tree
+
+一次 session 的活动可以表示成一棵 flow tree：
+
+```text
+Session(ctx=1, agent=main)
+└── Root Agent Flow
+    ├── Tool Flow: delegate(worker)
+    │   └── Agent Flow: worker
+    │       └── Tool Flow: execute_bash
+    └── Tool Flow: im_send
+```
+
+树上的每个节点都是 flow。
+
+父子关系的含义是：
+
+- 父 flow 创建子 flow
+- 子 flow 的完成/失败会以 ping 的形式回到父 flow
+- 父 flow 在等待子 flow 期间，不视为本轮完成
+
+这比“LLM 调工具 -> 工具返回 still running -> 下一轮人工 check”更符合真实语义。
+
+---
+
+## Root Agent 也是 Flow
+
+root agent 不应被特殊对待。它和子代理遵守同一套规则：
+
+- 可以接收 ping
+- 可以被取消
+- 可以等待子 flow
+- 可以在运行中收到用户补充消息
+
+例如，用户在 root agent 还没完成当前工作时再次发言：
+
+1. dispatcher 检查 `agent_runner.get_active_flow(ctx_id)`
+2. 如果有 running root flow → 构建 XML payload → `root_flow.ping(USER_MESSAGE)`
+3. loop 在下个 step 开头 drain 到这条 ping，merge 后追加到 agent history
+4. 如果 flow 已经跑完 → 回退到 `_CtxWorker` continuation 路径（排队等下一轮）
+
+这不是”下一轮 continuation”，而是”当前未完成轮次收到补充输入”。
+
+实现路径：`dispatcher._ping_or_enqueue()` 做判断，`agent_runner._active_flows` 追踪 ctx → root flow 映射。
+
+---
+
+## Tool Flow
+
+tool 不应该一律被建模成“同步返回字符串的函数”。至少对长任务或交互式工具不是这样。
+
+例如 `bash`：
+
+- 启动 PTY / subprocess 后，它本身就是一个 tool flow
+- stdout/stderr 形成 `tool_output` ping
+- stdin 通过 `stdin` ping 注入
+- 进程退出时发 `child_completed`
+
+这样才支持真正的交互式工具，而不是只能跑一次性命令。
+
+同样，`delegate` 也不是特殊协议，它只是创建了一个子 agent flow。
+
+---
+
+## 子代理与向上询问
+
+子代理和 root agent 用同一套 flow 机制。
+
+子代理不仅可以向下继续创建工具/子代理，也可以向父 flow 发送 ping，例如：
+
+- “当前上下文不够，请补充约束”
+- “目标分支不明确，请确认”
+- “是否允许中断当前任务并切换方案”
+
+这里的规则是：
+
+- 子代理默认只 ping 直接父 flow
+- 是否继续往上询问，由父 flow 决定
+
+这样树结构清晰，也避免任意子节点越级打断 root。
+
+---
+
+## Session 状态
+
+session 只保留最少、直观的状态：
+
+- `idle`：当前没有正在运行的 root flow，可以开始新一轮
+- `running`：当前有 root flow 在运行
+- `closed`：用户显式结束，或被命令关闭
+- `expired`：TTL 到期
+- `rolled_over`：因上下文压缩而被新 session 接替
+
+这里不再引入“running handle 需要跨重启恢复”的复杂状态。
+
+原因很简单：
+
+- 正在运行的 tool / agent flow 依赖进程内对象
+- Daemon 重启后，这些运行时对象天然消失
+- 强行从 DB 恢复它们只会把框架复杂化，而且恢复不出真正的执行上下文
+
+因此，Daemon 重启时：
+
+- 可以恢复 session 的基础元数据（如果未来要持久化 session）
+- 但**不恢复正在运行的 flow**
+- 这些 flow 统一视为中断
+
+---
+
+## 持久化边界
+
+当前设计下，真正需要持久化的是“用户视角的会话边界”，不是进程内 flow 运行态。
+
+最小持久化内容：
+
+- auto mode 设置
+- session 的基础元数据（如果未来决定落盘）
+- 已完成轮次的 history
+- handoff note
+
+不持久化：
+
+- 正在运行的 tool flow
+- 正在运行的 subagent flow
+- `asyncio.Task`
+- `OutputBuffer`
+- PTY / subprocess 句柄
+
+如果 Daemon 在任务运行中重启，正确行为不是“假装能恢复运行”，而是明确地把当前运行态视为中断。
+
+---
+
+## 两种超时的语义区分
+
+系统中有两种超时，语义完全不同：
+
+**工具超时**（execute_bash 的 `timeout` 参数）：命令本身的执行时限。超时后命令被中断（tmux 发送 C-c），返回 `[ERROR] Command timed out`。这是真正的失败——命令没跑完。
+
+**软超时**（agent config 的 `soft_timeout`）：agent loop 等待工具返回的时限。超时后工具继续在后台运行，系统返回 handle。这不是失败——工具还在跑，只是 agent loop 先让出执行权。
+
+## 与 soft timeout 的关系
+
+`soft_timeout` 仍然有用，但它的意义变了：
+
+- 它不再意味着”这一轮结束，返回一个以后再查的 handle”
+- 它只意味着”当前子 flow 暂时没完成，父 flow 先让出执行权，等待后续 ping”
+
+LLM 收到 handle 后不需要手动轮询。框架会在子 flow 完成时自动注入一条合成的 `check_running_tool` 调用和结果到 LLM 历史中，让 LLM 看到完成事件。
+
+框架内部保存结构化事件（Ping），渲染给 LLM 时才转成文本。
+
+---
+
+## 实现方向
+
+- `SessionManager` 负责管理 session 生命周期、用户消息队列、TTL 和 rollover
+- `FlowManager` 负责管理运行中的 flow tree、父子关系和 ping 分发
+- `AgentRunner` 不再把一次 `run()` 当成“完整的一轮”，而是驱动某个 agent flow 前进到下一个稳定点
+- `check_running_tool` / `cancel_running_tool` 最终会退化成对某个 tool flow 的通用操作接口，而不是特殊补丁机制
+
+---
+
+## 已拒绝的方案
+
+### 1. 把 running handle 全部持久化到 DB，并在重启后恢复
+
+拒绝原因：
+
+- 恢复不了真正的运行时对象
+- 只能恢复一堆“名字像还活着”的元数据
+- 会让 session、tool registry、DB 三方耦合得过重
+
+### 2. 只要 tool 返回 handle，就认为这一轮已经完成
+
+拒绝原因：
+
+- 违反“所有子 flow 收敛后才算完成”的定义
+- 会把未完成工作伪装成已完成轮次
+- 正是当前 `unknown handle` 问题的根源
