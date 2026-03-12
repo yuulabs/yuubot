@@ -221,6 +221,7 @@ async def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
         agent_runner=agent_runner,
         conv_mgr=session_mgr,
     )
+    deps["dispatcher"] = disp
     yield disp
     await disp.stop()
     await agent_runner.stop()

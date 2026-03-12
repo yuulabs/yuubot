@@ -38,9 +38,9 @@ FTS5 中文分词静默降级，搜索质量下降但调用方无任何感知。
 
 `_build_memory_hints()` 捕获所有异常返回 `""`，记忆功能静默失效。
 
-### 1.4 `session.py:150-151` — 异步任务失败仅记录警告
+### 1.4 `session.py:150-151` — 异步任务失败仅记录警告 **[已修复]**
 
-`_sync_current_agent()` 是 fire-and-forget 任务，失败时无人知晓，agent 状态可能与 DB 不一致。
+~~`session.py` 已删除~~，由 `conversation.py` 替代。`_sync_current_agent()` 行为保持不变（fire-and-forget），已迁移到 `ConversationManager`。
 
 ### 1.5 `compressor.py:44-46` — compress() 失败返回 None
 
@@ -149,15 +149,11 @@ _alias_cache: dict[int, str] = {}  # 无 TTL，无大小限制
 
 **性能影响**：规模扩大时性能线性或指数退化。
 
-### 4.1 `dispatcher.py:317` — 每条群消息查询 GroupSetting
+### 4.1 `dispatcher.py:317` — 每条群消息查询 GroupSetting **[已修复]**
 
-```python
-# 每条消息都执行一次数据库查询
-setting = await GroupSetting.filter(group_id=gid).first()
-```
+~~每条消息都执行一次数据库查询。~~
 
-**问题**：高频群聊中每秒可能数十次查询。
-**修复方向**：在 `Dispatcher` 初始化时加载所有 GroupSetting，用 dict 缓存，监听配置变更事件刷新。
+已修复：Dispatcher 内置 `_group_settings_cache`（TTL 60s），启动时及过期后批量加载所有 GroupSetting，消除逐条查询。
 
 ### 4.2 `agent_runner.py:607-626` — 获取所有群列表后缓存
 

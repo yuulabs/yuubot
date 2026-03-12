@@ -74,6 +74,7 @@ async def run_daemon(config_path: str | None = None) -> None:
         conv_mgr=conv_mgr,
     )
 
+    deps["dispatcher"] = dispatcher
     ws_client = WSClient(url=cfg.daemon.recorder_ws, on_event=dispatcher.dispatch)
     scheduler = Scheduler(config=cfg, agent_runner=agent_runner)
 

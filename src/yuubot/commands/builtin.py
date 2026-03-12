@@ -205,6 +205,9 @@ async def _exec_on(remaining: str, event: dict, deps: dict) -> str | None:
         defaults={"bot_enabled": True, "response_mode": mode},
         group_id=gid,
     )
+    dispatcher = deps.get("dispatcher")
+    if dispatcher and hasattr(dispatcher, "invalidate_group_settings_cache"):
+        dispatcher.invalidate_group_settings_cache()
     return f"Bot 已开启 (模式: {mode})"
 
 
@@ -241,6 +244,9 @@ async def _exec_off(remaining: str, event: dict, deps: dict) -> str | None:
         defaults={"bot_enabled": False, "response_mode": "at"},
         group_id=gid,
     )
+    dispatcher = deps.get("dispatcher")
+    if dispatcher and hasattr(dispatcher, "invalidate_group_settings_cache"):
+        dispatcher.invalidate_group_settings_cache()
     return "Bot 已关闭（紧急制动已执行）"
 
 

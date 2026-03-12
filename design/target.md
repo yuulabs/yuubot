@@ -422,3 +422,36 @@ continuation:
 本文档只定义目标设计，不规定具体代码文件名，也不绑定当前实现细节。
 
 如果某个现有模块无法自然映射到本文档中的概念，优先重命名或拆分模块，而不是修改本文档去迁就旧实现。
+
+---
+
+## 10. 重构落地记录（2026-03）
+
+以下模块已按本文档的目标设计完成重构：
+
+### 新增模块
+
+| 模块 | 对应目标概念 | 职责 |
+|------|-------------|------|
+| `core/types.py` | Message, Route | 领域类型定义（InboundMessage, CommandRoute, ConversationRoute） |
+| `daemon/routing.py` | Route | 纯函数路由判定，从 dispatcher 中解耦 |
+| `daemon/conversation.py` | Conversation | 统一会话模型，替代 session + active flow + ping |
+| `daemon/render.py` | RenderPolicy | 集中式消息渲染，显式策略配置 |
+| `daemon/llm_factory.py` | — | LLM/compressor 构建逻辑，从 agent_runner 中提取 |
+| `daemon/bot_info.py` | — | Bot 元信息查询（名称、群名），从 agent_runner 中提取 |
+| `capabilities/` | Capability | typed capability 契约层，替代 addons 的核心实现 |
+| `core/errors.py` | — | 统一错误层级（YuubotError, ConfigurationError, CapabilityError, MessageSendError） |
+
+### 删除模块
+
+| 模块 | 原因 |
+|------|------|
+| `daemon/session.py` | 被 `daemon/conversation.py` 完全替代 |
+
+### 过渡层
+
+`addons/__init__.py` 保留为向后兼容桥接层，将所有导入重定向到 `capabilities/`。计划在下一个版本周期移除。
+
+### 性能修复
+
+- `dispatcher.py`：GroupSetting N+1 查询改为 TTL 内存缓存（60s 刷新）

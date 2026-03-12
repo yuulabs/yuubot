@@ -1,6 +1,9 @@
 """Message dispatcher — thin router: parse → permission → execute or queue."""
 
+from __future__ import annotations
+
 import asyncio
+import time
 
 import httpx
 
@@ -106,6 +109,9 @@ class Dispatcher:
         self.agent_runner = agent_runner
         self.conv_mgr = conv_mgr or ConversationManager()
         self._workers: dict[str, _CtxWorker] = {}
+        self._group_settings_cache: dict[int, object] = {}  # group_id → GroupSetting
+        self._group_settings_loaded_at: float = 0.0
+        self._group_settings_ttl: float = 60.0  # seconds
 
     def start(self) -> None:
         pass  # workers are created lazily on first message per ctx
@@ -313,19 +319,7 @@ class Dispatcher:
 
         if msg_type == "group":
             gid = event.get("group_id", 0)
-            from yuubot.core.models import GroupSetting
-            try:
-                setting = await GroupSetting.filter(group_id=gid).first()
-            except Exception as e:
-                from tortoise import Tortoise
-                ctx = Tortoise._get_context()
-                logger.error(
-                    "DB query failed | ctx={} inited={} conn={}",
-                    id(ctx) if ctx else None,
-                    ctx.inited if ctx else None,
-                    id(ctx._connections) if ctx and ctx._connections else None,
-                )
-                raise
+            setting = await self._get_group_setting(gid)
             if setting:
                 if not setting.bot_enabled:
                     return False
@@ -339,3 +333,25 @@ class Dispatcher:
             return False
 
         return False
+
+    def invalidate_group_settings_cache(self) -> None:
+        """Force next _get_group_setting call to reload from DB."""
+        self._group_settings_loaded_at = 0.0
+
+    async def _get_group_setting(self, group_id: int):
+        """Return cached GroupSetting for a group, refreshing if TTL expired."""
+        now = time.monotonic()
+        if now - self._group_settings_loaded_at > self._group_settings_ttl:
+            await self._reload_group_settings()
+        return self._group_settings_cache.get(group_id)
+
+    async def _reload_group_settings(self) -> None:
+        """Load all GroupSettings into the in-memory cache."""
+        from yuubot.core.models import GroupSetting
+
+        try:
+            settings = await GroupSetting.all()
+            self._group_settings_cache = {s.group_id: s for s in settings}
+            self._group_settings_loaded_at = time.monotonic()
+        except Exception:
+            logger.exception("Failed to reload GroupSettings cache")

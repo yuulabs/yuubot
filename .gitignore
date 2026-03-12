@@ -229,3 +229,4 @@ config.yaml
 
 # Vendor (downloaded binaries, e.g. libsimple)
 vendor/
+.claude/
