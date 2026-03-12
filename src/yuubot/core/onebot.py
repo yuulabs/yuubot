@@ -15,6 +15,7 @@ from yuubot.core.models import (
     Segment,
     TextSegment,
 )
+from yuubot.core.types import InboundMessage, Sender
 
 
 def parse_event(raw: dict) -> MessageEvent | NoticeEvent | MetaEvent | None:
@@ -71,6 +72,29 @@ def segments_to_onebot(segments: Message) -> list[dict]:
         elif isinstance(seg, ReplySegment):
             result.append({"type": "reply", "data": {"id": seg.id}})
     return result
+
+
+def to_inbound_message(event: dict) -> InboundMessage:
+    """Convert a raw OneBot V11 message event dict to an InboundMessage."""
+    sender_dict = event.get("sender", {})
+    sender = Sender(
+        user_id=event.get("user_id", 0),
+        nickname=sender_dict.get("nickname", ""),
+        card=sender_dict.get("card", ""),
+        role=sender_dict.get("role", ""),
+    )
+    msg_type = event.get("message_type", "private")
+    ctx_id = event.get("ctx_id", 0)
+    segments = parse_segments(event.get("message", []))
+    return InboundMessage(
+        message_id=event.get("message_id", 0),
+        ctx_id=ctx_id,
+        chat_type=msg_type,
+        sender=sender,
+        segments=segments,
+        timestamp=event.get("time", 0),
+        raw_event=event,
+    )
 
 
 def build_send_msg(
