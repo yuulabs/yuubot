@@ -2,6 +2,16 @@
 
 import time
 
+_CURATOR_MIN_TURNS = 3
+_CURATOR_MIN_SECONDS = 60
+
+
+def session_worth_curating(session: "Session") -> bool:
+    """True if the session is substantial enough for the curator to bother."""
+    duration = session.last_active - session.created_at
+    turns = sum(1 for role, _ in session.history if role == "assistant")
+    return turns >= _CURATOR_MIN_TURNS and duration >= _CURATOR_MIN_SECONDS
+
 import attrs
 
 from loguru import logger

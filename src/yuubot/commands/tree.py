@@ -21,6 +21,7 @@ class Command:
     executor: Callable[..., Awaitable] | None = None
     min_role: Role = Role.FOLK
     help_text: str = ""
+    interactive: bool = False  # True → queued in per-ctx worker (e.g. LLM), False → inline
 
     def match(self, text: str) -> MatchResult | None:
         """Try to match text against this command and its subtree."""

@@ -15,7 +15,7 @@ from yuubot.core.models import Role
 from loguru import logger
 
 
-def build_command_tree(entries: list[str]) -> RootCommand:
+def build_command_tree(entries: list[str], llm_executor=None) -> RootCommand:
     """Construct the full command tree with built-in commands."""
     # /bot sub-commands
     grand_cmd = Command(
@@ -62,9 +62,10 @@ def build_command_tree(entries: list[str]) -> RootCommand:
     )
     llm_cmd = Command(
         prefix="llm",
-        executor=_exec_llm,
+        executor=llm_executor,
         min_role=Role.FOLK,
-        help_text="触发 Agent 回答问题。使用yllm#agent_name 来指定 Agent。",
+        interactive=True,
+        help_text="触发 Agent。用 #agent_name 指定；@bot 等价于 yllm continue。",
     )
 
     hhsh_cmd = Command(
@@ -291,11 +292,6 @@ async def _exec_hhsh(remaining: str, event: dict, deps: dict) -> str | None:
         return "hhsh 查询失败"
     return result or "(无结果)"
 
-
-async def _exec_llm(remaining: str, event: dict, deps: dict) -> str | None:
-    """Trigger agent — returns None, dispatcher handles agent invocation."""
-    # This is a marker; dispatcher checks for this command and runs agent
-    return None
 
 
 async def _exec_close(remaining: str, event: dict, deps: dict) -> str | None:

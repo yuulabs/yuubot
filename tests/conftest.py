@@ -22,6 +22,7 @@ from yuubot.config import Config, BotConfig, DaemonConfig, DatabaseConfig, Respo
 from yuubot.core.db import init_db, close_db
 from yuubot.daemon.agent_runner import AgentRunner
 from yuubot.daemon.dispatcher import Dispatcher
+from yuubot.daemon.llm import LLMExecutor
 from yuubot.daemon.session import SessionManager
 
 # ── Constants ────────────────────────────────────────────────────
@@ -188,10 +189,17 @@ async def _lightweight_init(runner: AgentRunner) -> None:
 @pytest.fixture
 async def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
     """Build a real Dispatcher with real command tree, roles, agent runner."""
-    root = build_command_tree(yuubot_config.bot.entries)
     role_mgr = RoleManager(master_qq=yuubot_config.bot.master)
     entry_mgr = EntryManager()
     agent_runner = AgentRunner(yuubot_config)
+    session_mgr_for_llm = session_mgr  # same instance
+    llm_exec = LLMExecutor(
+        session_mgr=session_mgr_for_llm,
+        agent_runner=agent_runner,
+        config=yuubot_config,
+        role_mgr=role_mgr,
+    )
+    root = build_command_tree(yuubot_config.bot.entries, llm_executor=llm_exec)
 
     deps = {
         "root": root,

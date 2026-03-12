@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from yuubot.commands.builtin import build_command_tree
+from yuubot.daemon.llm import LLMExecutor
 from yuubot.commands.entry import EntryManager
 from yuubot.commands.roles import RoleManager
 from yuubot.config import load_config
@@ -45,7 +46,14 @@ async def run_daemon(config_path: str | None = None) -> None:
     )
     await session_mgr.load_auto()
     session_mgr._is_ctx_active = lambda ctx_id: agent_runner.get_active_flow(ctx_id) is not None
-    root = build_command_tree(cfg.bot.entries)
+
+    llm_exec = LLMExecutor(
+        session_mgr=session_mgr,
+        agent_runner=agent_runner,
+        config=cfg,
+        role_mgr=role_mgr,
+    )
+    root = build_command_tree(cfg.bot.entries, llm_executor=llm_exec)
 
     deps = {
         "role_mgr": role_mgr,
