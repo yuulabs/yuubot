@@ -15,6 +15,7 @@ Left side: shlex-parsed arguments. Right side: raw JSON (no escaping needed).
 from __future__ import annotations
 
 import json
+import inspect
 import shlex
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,22 @@ from loguru import logger
 # ContentBlock: reuse yuullm's dict-based content items.
 # A tool result is list[ContentBlock] — text, images, etc.
 ContentBlock = dict[str, Any]
+
+
+def uri_to_path(s: str) -> str:
+    """Convert ``file:///path`` URI to local path. Bare paths pass through."""
+    if s.startswith("file:///"):
+        return s[len("file://"):]  # file:///home/x → /home/x
+    if s.startswith("file://"):
+        return s[len("file://"):]
+    return s
+
+
+def path_to_uri(s: str) -> str:
+    """Ensure a local path is in ``file:///`` URI form."""
+    if s.startswith("file://"):
+        return s
+    return f"file://{s}" if s.startswith("/") else s
 
 
 def text_block(text: str) -> ContentBlock:
@@ -225,12 +242,36 @@ async def execute(
     if data is not None:
         parsed["data"] = data
 
+    # Detect unknown arguments that would be silently swallowed by **_kw
+    sig = inspect.signature(method)
+    has_var_kw = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+    if has_var_kw:
+        known = {
+            name for name, p in sig.parameters.items()
+            if p.kind not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+        }
+        unknown = set(parsed.keys()) - known
+        if unknown:
+            raise ValueError(
+                f"addon {addon_name!r} command {subcommand!r} got unknown arguments: "
+                f"{', '.join(sorted(unknown))}. "
+                f"Call read_addon_doc('{addon_name}') to see correct usage."
+            )
+
     # Set context for the duration of the call
     prev = _current_context
     _current_context = context
     try:
         result = await method(**parsed)
         logger.debug("Addon done: {} {}", addon_name, subcommand)
+    except TypeError as e:
+        # Wrong/missing arguments — nudge LLM to read the doc
+        raise ValueError(
+            f"{e}. "
+            f"Call read_addon_doc('{addon_name}') to see correct usage."
+        ) from e
     except Exception as e:
         logger.error("Addon failed: {} {} - {}", addon_name, subcommand, e)
         raise
@@ -302,3 +343,4 @@ from yuubot.addons import web     # noqa: E402, F401
 from yuubot.addons import img     # noqa: E402, F401
 from yuubot.addons import schedule as _schedule  # noqa: E402, F401
 from yuubot.addons import hhsh    # noqa: E402, F401
+from yuubot.addons import vision  # noqa: E402, F401

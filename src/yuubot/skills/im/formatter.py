@@ -17,6 +17,14 @@ from yuubot.core.models import (
     UserAlias,
 )
 
+# Cache for user aliases to avoid N+1 queries
+_alias_cache: dict[tuple[int, str], str | None] = {}
+
+
+def clear_alias_cache() -> None:
+    """Clear the alias cache. Call this when aliases are updated."""
+    _alias_cache.clear()
+
 
 def _docker_host_path(path: str) -> str:
     """Prefix a host path with the Docker mount point when running inside Docker."""
@@ -28,13 +36,29 @@ def _docker_host_path(path: str) -> str:
 
 async def get_user_alias(user_id: int, ctx_id: int | None = None) -> str | None:
     """Get user alias for a given user_id and context."""
+    # Check context-specific alias first
     if ctx_id is not None:
-        alias = await UserAlias.filter(user_id=user_id, scope=f"ctx_{ctx_id}").first()
-        if alias:
-            return alias.alias
+        scope = f"ctx_{ctx_id}"
+        cache_key = (user_id, scope)
+        if cache_key in _alias_cache:
+            return _alias_cache[cache_key]
 
-    alias = await UserAlias.filter(user_id=user_id, scope="global").first()
-    return alias.alias if alias else None
+        alias = await UserAlias.filter(user_id=user_id, scope=scope).first()
+        if alias:
+            _alias_cache[cache_key] = alias.alias
+            return alias.alias
+        _alias_cache[cache_key] = None
+
+    # Check global alias
+    global_scope = "global"
+    cache_key = (user_id, global_scope)
+    if cache_key in _alias_cache:
+        return _alias_cache[cache_key]
+
+    alias = await UserAlias.filter(user_id=user_id, scope=global_scope).first()
+    result = alias.alias if alias else None
+    _alias_cache[cache_key] = result
+    return result
 
 
 def _best_name(nickname: str | None, display_name: str | None, alias: str | None) -> str:
@@ -103,10 +127,10 @@ async def format_segments(
             parts.append(f'@{html.escape(name)}')
         elif isinstance(seg, ReplySegment):
             if extract_replies:
-                tag = await _format_reply_standalone(seg.id)
+                tag = await _format_reply_standalone(seg.id, ctx_id)
                 reply_tags.append(tag)
             else:
-                tag = await _format_reply_inline(seg.id)
+                tag = await _format_reply_inline(seg.id, ctx_id)
                 parts.append(tag)
 
     content = ''.join(parts)
@@ -158,7 +182,7 @@ async def format_message_to_xml(
     return f'<msg {attrs_str}>{quote_str}{content}</msg>'
 
 
-async def _format_reply_standalone(reply_msg_id: str) -> str:
+async def _format_reply_standalone(reply_msg_id: str, ctx_id: int | None = None) -> str:
     """Format a quoted message as <quote from="sender">content</quote>."""
     record = await MessageRecord.filter(message_id=int(reply_msg_id)).first()
     if record is None:
@@ -166,12 +190,13 @@ async def _format_reply_standalone(reply_msg_id: str) -> str:
 
     segs = segments_from_json(record.raw_message)
     content = await format_segments(segs, record.media_files)
-    sender = _best_name(record.nickname, record.display_name, None)
+    alias = await get_user_alias(record.user_id, ctx_id)
+    sender = _best_name(record.nickname, record.display_name, alias)
 
     return f'<quote from="{html.escape(sender)}">{content}</quote>'
 
 
-async def _format_reply_inline(reply_msg_id: str) -> str:
+async def _format_reply_inline(reply_msg_id: str, ctx_id: int | None = None) -> str:
     """Format a reply inline (legacy format for non-XML contexts)."""
     record = await MessageRecord.filter(message_id=int(reply_msg_id)).first()
     if record is None:
@@ -179,7 +204,8 @@ async def _format_reply_inline(reply_msg_id: str) -> str:
 
     segs = segments_from_json(record.raw_message)
     content = await format_segments(segs, record.media_files)
-    sender = record.display_name or record.nickname or ""
+    alias = await get_user_alias(record.user_id, ctx_id)
+    sender = _best_name(record.nickname, record.display_name, alias)
 
     return (
         f'<reply msg_id="{html.escape(reply_msg_id)}"'

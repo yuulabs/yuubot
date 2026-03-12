@@ -1,5 +1,7 @@
 """Image library storage — CRUD + FTS5 search."""
 
+from pathlib import Path
+
 from tortoise import connections
 
 from yuubot.core.db import has_simple
@@ -19,13 +21,23 @@ async def _build_fts_query(words: list[str]) -> str:
     return " OR ".join(parts)
 
 
+def normalize_path(path: str) -> str:
+    """Strip file:// prefix to ensure consistent plain filesystem paths."""
+    if path.startswith("file://"):
+        return path[len("file://"):]
+    return path
+
+
 async def save(
     local_path: str,
     description: str = "",
     tags: list[str] | None = None,
     source_msg_id: int | None = None,
 ) -> int:
-    """Save an image entry. Returns image id."""
+    """Save an image entry. Returns image id. Raises FileNotFoundError if path doesn't exist."""
+    local_path = normalize_path(local_path)
+    if not Path(local_path).is_file():
+        raise FileNotFoundError(f"图片文件不存在: {local_path}")
     entry, created = await ImageEntry.get_or_create(
         local_path=local_path,
         defaults={

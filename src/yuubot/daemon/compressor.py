@@ -40,7 +40,7 @@ class SessionCompressor:
         tool_stats = _extract_tool_stats(to_compress)
 
         try:
-            summary = await self.summarize_fn(to_compress, self.summarize_steps_span)
+            summary = await self.summarize_fn(rest, self.summarize_steps_span)
         except Exception:
             logger.exception("Compression summarize failed, skipping")
             return None

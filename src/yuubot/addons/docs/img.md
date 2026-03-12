@@ -14,7 +14,7 @@ description: >
 ### 保存图片
 `img save <path> --desc "描述" [--tags "猫,搞笑"]`
 
-- path: 图片本地路径（从消息中的 `<image url="file:///path"/>` 获取）
+- path: 图片路径，支持 `file:///path` URI 或裸路径 `/path`
 - desc: 图片描述，用于后续搜索
 - tags: 逗号分隔的标签，可选
 
@@ -38,8 +38,8 @@ description: >
 
 ### 收藏表情包
 如果你发现群友发了有趣的图，或者消息记录中有有趣的图片，注意 `<image url="file:///path/to/img.jpg"/>`：
-1. 提取路径（去掉 `file://` 前缀）
-2. `img save /path/to/img.jpg --desc "猫猫表示无语" --tags "猫,无语"`
+1. 直接使用 `file:///path` 格式的路径
+2. `img save file:///path/to/img.jpg --desc "猫猫表示无语" --tags "猫,无语"`
 
 ### 发送表情包
 1. `img search "猫"` 找到合适的图片

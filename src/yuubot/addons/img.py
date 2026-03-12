@@ -2,16 +2,8 @@
 
 from __future__ import annotations
 
-from yuubot.addons import addon, get_context, text_block, ContentBlock
-from yuubot.config import load_config
+from yuubot.addons import addon, text_block, ContentBlock, uri_to_path
 from yuubot.skills.img import store as img_store
-
-
-def _get_config():
-    ctx = get_context()
-    if ctx.config is not None:
-        return ctx.config
-    return load_config(None)
 
 
 @addon("img")
@@ -26,15 +18,13 @@ class ImgAddon:
         **_kw,
     ) -> list[ContentBlock]:
         """Save an image to the library."""
-        path = _positional[0] if _positional else ""
+        path = uri_to_path(_positional[0]) if _positional else ""
         if not path:
             return [text_block("错误: 请提供图片路径")]
 
-        cfg = _get_config()
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
         img_id = await img_store.save(path, description=desc, tags=tag_list)
-        tag_display = ", ".join(tag_list) if tag_list else "无"
-        return [text_block(f"已保存图片 [id: {img_id}]，描述: {desc}，标签: {tag_display}")]
+        return [text_block(f"已保存 [img {img_id}]")]
 
     async def search(
         self,
@@ -46,7 +36,6 @@ class ImgAddon:
     ) -> list[ContentBlock]:
         """Search images by description/tags."""
         query = " ".join(_positional) if _positional else ""
-        cfg = _get_config()
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
         results = await img_store.search(query=query, tags=tag_list, limit=limit)
         if not results:
@@ -73,7 +62,6 @@ class ImgAddon:
         if not _positional:
             return [text_block("错误: 请提供图片 ID")]
         image_id = int(_positional[0])
-        cfg = _get_config()
         ok = await img_store.delete(image_id)
         if ok:
             return [text_block(f"已删除图片 [id: {image_id}]")]
@@ -87,7 +75,6 @@ class ImgAddon:
         **_kw,
     ) -> list[ContentBlock]:
         """List images or tags."""
-        cfg = _get_config()
         if tags:
             tag_list = await img_store.list_tags()
             if not tag_list:
@@ -103,7 +90,7 @@ class ImgAddon:
             lines = []
             for r in results:
                 tag_display = ", ".join(r["tags"]) if r["tags"] else ""
-                desc = r["description"][:40] if r["description"] else ""
+                desc = r["description"] or ""
                 lines.append(f"[img {r['id']}] {r['local_path']}  {desc}  {tag_display}")
             lines.append(f"共 {len(results)} 张图片")
             return [text_block("\n".join(lines))]

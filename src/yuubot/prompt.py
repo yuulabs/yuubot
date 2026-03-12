@@ -108,6 +108,17 @@ def _render_addons_summary(addon_names: list[str]) -> str:
     from yuubot.addons import addon_summary
 
     lines = ["<addons>"]
+    lines.append(
+        "Addon 是你的增强插件，每个 addon 提供一组子命令。"
+        "你通过 execute_addon_cli('addon_name subcommand --flags ...') 调用它们。"
+    )
+    lines.append(
+        "⚠️ 重要：每个 addon 的参数格式各不相同，你无法猜到正确的参数。"
+        "首次使用某个 addon 前，必须先调用 read_addon_doc('<name>') 阅读文档。"
+        "传错参数会直接报错。"
+    )
+    lines.append("")
+    lines.append("可用 addon 列表：")
     for name in addon_names:
         desc = addon_summary(name)
         if desc:
@@ -115,11 +126,6 @@ def _render_addons_summary(addon_names: list[str]) -> str:
         else:
             lines.append(f"<{name}>(no description)</{name}>")
     lines.append("</addons>")
-    lines.append(
-        "\n使用 execute_addon_cli 工具执行上述 Addon 命令。\n"
-        "⚠️ 首次调用某个 Addon 的命令前，必须先用 read_addon_doc('<name>') 阅读其文档，"
-        "确认参数格式后再调用。不要猜测参数。"
-    )
     return "\n".join(lines)
 
 
