@@ -23,7 +23,7 @@ from yuubot.core.db import init_db, close_db
 from yuubot.daemon.agent_runner import AgentRunner
 from yuubot.daemon.dispatcher import Dispatcher
 from yuubot.daemon.llm import LLMExecutor
-from yuubot.daemon.session import SessionManager
+from yuubot.daemon.conversation import ConversationManager
 
 # ── Constants ────────────────────────────────────────────────────
 
@@ -160,8 +160,8 @@ def recorder_api_env(yuubot_config, config_path, monkeypatch):
 
 
 @pytest.fixture
-def session_mgr() -> SessionManager:
-    return SessionManager(ttl=300, max_tokens=60000)
+def session_mgr() -> ConversationManager:
+    return ConversationManager(ttl=300, max_tokens=60000)
 
 
 async def _lightweight_init(runner: AgentRunner) -> None:
@@ -194,7 +194,7 @@ async def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
     agent_runner = AgentRunner(yuubot_config)
     session_mgr_for_llm = session_mgr  # same instance
     llm_exec = LLMExecutor(
-        session_mgr=session_mgr_for_llm,
+        conv_mgr=session_mgr_for_llm,
         agent_runner=agent_runner,
         config=yuubot_config,
         role_mgr=role_mgr,
@@ -219,7 +219,7 @@ async def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
         role_mgr=role_mgr,
         deps=deps,
         agent_runner=agent_runner,
-        session_mgr=session_mgr,
+        conv_mgr=session_mgr,
     )
     yield disp
     await disp.stop()

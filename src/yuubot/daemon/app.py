@@ -17,7 +17,7 @@ from yuubot.core.db import init_db, close_db
 from yuubot.daemon.agent_runner import AgentRunner
 from yuubot.daemon.dispatcher import Dispatcher
 from yuubot.daemon.scheduler import Scheduler
-from yuubot.daemon.session import SessionManager
+from yuubot.daemon.conversation import ConversationManager
 from yuubot.daemon.ws_client import WSClient
 from yuubot.log import setup as setup_logging
 
@@ -40,15 +40,15 @@ async def run_daemon(config_path: str | None = None) -> None:
     role_mgr = RoleManager(master_qq=cfg.bot.master)
     entry_mgr = EntryManager()
     agent_runner = AgentRunner(config=cfg)
-    session_mgr = SessionManager(
+    conv_mgr = ConversationManager(
         ttl=float(cfg.session.ttl),
         max_tokens=cfg.session.max_tokens,
     )
-    await session_mgr.load_auto()
-    session_mgr._is_ctx_active = lambda ctx_id: agent_runner.get_active_flow(ctx_id) is not None
+    await conv_mgr.load_auto()
+    conv_mgr._is_ctx_active = lambda ctx_id: agent_runner.get_active_flow(ctx_id) is not None
 
     llm_exec = LLMExecutor(
-        session_mgr=session_mgr,
+        conv_mgr=conv_mgr,
         agent_runner=agent_runner,
         config=cfg,
         role_mgr=role_mgr,
@@ -60,7 +60,7 @@ async def run_daemon(config_path: str | None = None) -> None:
         "entry_mgr": entry_mgr,
         "root": root,
         "dm_whitelist": cfg.response.dm_whitelist,
-        "session_mgr": session_mgr,
+        "session_mgr": conv_mgr,
         "config": cfg,
         "agent_runner": agent_runner,
     }
@@ -71,7 +71,7 @@ async def run_daemon(config_path: str | None = None) -> None:
         role_mgr=role_mgr,
         deps=deps,
         agent_runner=agent_runner,
-        session_mgr=session_mgr,
+        conv_mgr=conv_mgr,
     )
 
     ws_client = WSClient(url=cfg.daemon.recorder_ws, on_event=dispatcher.dispatch)

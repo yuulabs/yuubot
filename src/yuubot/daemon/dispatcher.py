@@ -11,8 +11,7 @@ from yuubot.core.models import Role, ReplySegment, AtSegment, segments_to_plain
 from yuubot.core.onebot import parse_segments, build_send_msg, to_inbound_message
 from yuubot.core.types import CommandRoute, ConversationRoute
 from yuubot.daemon.routing import resolve_route
-from yuubot.daemon.session import SessionManager, session_worth_curating
-from yuuagents.flow import Ping, PingKind
+from yuubot.daemon.conversation import ConversationManager, conversation_worth_curating
 
 from loguru import logger
 
@@ -98,14 +97,14 @@ class Dispatcher:
         role_mgr: RoleManager,
         deps: dict,
         agent_runner,
-        session_mgr: SessionManager | None = None,
+        conv_mgr: ConversationManager | None = None,
     ) -> None:
         self.config = config
         self.root = root
         self.role_mgr = role_mgr
         self.deps = deps
         self.agent_runner = agent_runner
-        self.session_mgr = session_mgr or SessionManager()
+        self.conv_mgr = conv_mgr or ConversationManager()
         self._workers: dict[str, _CtxWorker] = {}
 
     def start(self) -> None:
@@ -122,8 +121,8 @@ class Dispatcher:
             return
 
         # Lazily collect expired sessions and trigger curator for substantial ones
-        for expired in self.session_mgr.collect_expired():
-            if session_worth_curating(expired):
+        for expired in self.conv_mgr.collect_expired():
+            if conversation_worth_curating(expired):
                 asyncio.create_task(
                     self.agent_runner.curate(expired.history, expired.ctx_id, expired.user_id)
                 )
@@ -143,8 +142,8 @@ class Dispatcher:
         route = resolve_route(
             inbound,
             self.root,
-            has_active_conversation=lambda cid: self.session_mgr.get(cid) is not None,
-            is_auto=self.session_mgr.is_auto,
+            has_active_conversation=lambda cid: self.conv_mgr.get(cid) is not None,
+            is_auto=self.conv_mgr.is_auto,
             bot_qq=self.config.bot.qq,
         )
 
@@ -157,7 +156,7 @@ class Dispatcher:
             cmd_match = MatchResult(
                 command=llm_cmd,
                 remaining=route.text,
-                entry="@" if not self.session_mgr.is_auto(ctx_id) else "auto",
+                entry="@" if not self.conv_mgr.is_auto(ctx_id) else "auto",
             )
         else:
             # CommandRoute → re-match to get the Command object (transition shim)
@@ -194,7 +193,7 @@ class Dispatcher:
         logger.info("Command accepted: user={} cmd={}", user_id, cmd_match.command.prefix)
 
         if cmd_match.command.interactive:
-            await self._ping_or_enqueue(cmd_match, event)
+            await self._enqueue_or_pending(cmd_match, event)
         else:
             try:
                 reply = await cmd_match.command.executor(cmd_match.remaining, event, self.deps)
@@ -212,28 +211,22 @@ class Dispatcher:
             w.start()
         self._workers[key].queue.put_nowait((match, event))
 
-    async def _ping_or_enqueue(self, match: MatchResult, event: dict) -> None:
-        """If a root flow is running for this ctx, ping it; otherwise enqueue."""
+    async def _enqueue_or_pending(self, match: MatchResult, event: dict) -> None:
+        """If conversation is running, enqueue as pending; otherwise enqueue for worker."""
         ctx_id = event.get("ctx_id", 0)
-        root_flow = self.agent_runner.get_active_flow(ctx_id)
-        if root_flow is not None:
-            payload = await self._build_ping_payload(event)
-            # Re-check: flow might have finished during async payload build
-            if self.agent_runner.get_active_flow(ctx_id) is root_flow:
-                session = self.session_mgr.get(ctx_id)
-                if session:
-                    self.session_mgr.touch(session)
-                root_flow.ping(Ping(
-                    kind=PingKind.USER_MESSAGE,
-                    source_flow_id="dispatcher",
-                    payload=payload,
-                ))
-                logger.info("Pinged running flow for ctx={}", ctx_id)
-                return
+        conv = self.conv_mgr.get(ctx_id)
+        if conv is not None and conv.state == "running":
+            payload = await self._build_pending_payload(event)
+            self.conv_mgr.enqueue_pending(ctx_id, payload)
+            conv_obj = self.conv_mgr.get(ctx_id)
+            if conv_obj:
+                self.conv_mgr.touch(conv_obj)
+            logger.info("Enqueued pending message for running conv ctx={}", ctx_id)
+            return
         self._enqueue(match, event)
 
-    async def _build_ping_payload(self, event: dict) -> str:
-        """Build XML payload for a ping, same format as continuation task."""
+    async def _build_pending_payload(self, event: dict) -> str:
+        """Build XML payload for a pending message."""
         from datetime import datetime, timezone
         from yuubot.core.models import AtSegment as _AtSeg, segments_to_json
         from yuubot.skills.im.formatter import format_message_to_xml, get_user_alias
@@ -306,7 +299,7 @@ class Dispatcher:
 
         # Active session: respond to continue it
         ctx_id = event.get("ctx_id", 0)
-        if ctx_id and self.session_mgr.get(ctx_id) is not None:
+        if ctx_id and self.conv_mgr.get(ctx_id) is not None:
             if msg_type == "private":
                 return True
             if msg_type == "group":

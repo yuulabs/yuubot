@@ -14,7 +14,7 @@ from loguru import logger
 from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import Command, MatchResult
 from yuubot.config import Config
-from yuubot.daemon.session import Session, SessionManager, session_worth_curating
+from yuubot.daemon.conversation import Conversation, ConversationManager, conversation_worth_curating
 
 _AGENT_TAG_RE = re.compile(r"^#(\w+)\s*")
 
@@ -55,7 +55,7 @@ class LLMExecutor:
     - Post-turn history update and rollover (_finish_turn)
     """
 
-    session_mgr: SessionManager
+    conv_mgr: ConversationManager
     agent_runner: object  # AgentRunner (avoid circular import with type annotation)
     config: Config
     role_mgr: RoleManager
@@ -77,13 +77,13 @@ class LLMExecutor:
         msg_type = event.get("message_type", "private")
 
         # 2. Get current session
-        session = self.session_mgr.get(ctx_id)
+        session = self.conv_mgr.get(ctx_id)
 
         # 3. Decide which session/agent to use
         if session is not None:
             if is_continue or agent_name == session.agent_name:
                 # Continue existing session — keep agent
-                self.session_mgr.touch(session)
+                self.conv_mgr.touch(session)
                 agent_name = session.agent_name
             else:
                 # Different agent requested
@@ -91,12 +91,12 @@ class LLMExecutor:
                     await _send_reply(event, "请先使用 /close 关闭当前会话再切换 Agent", self.config)
                     return
                 # Private: close old session and switch
-                self.session_mgr.close(ctx_id)
+                self.conv_mgr.close(ctx_id)
                 await _send_reply(event, f"已切换到 Agent: {agent_name}", self.config)
                 session = None
-        elif self.session_mgr.is_auto(ctx_id):
+        elif self.conv_mgr.is_auto(ctx_id):
             # Auto mode, no active session — auto-resume or honour explicit agent
-            cur_agent = self.session_mgr.current_agent(ctx_id)
+            cur_agent = self.conv_mgr.current_agent(ctx_id)
             if cur_agent and (is_continue or agent_name == "main"):
                 agent_name = cur_agent
 
@@ -119,7 +119,7 @@ class LLMExecutor:
 
         # Create a new session if needed (no active session, or switched agent)
         if session is None or session.agent_name != agent_name:
-            session = self.session_mgr.create(ctx_id, agent_name, user_id=user_id)
+            session = self.conv_mgr.create(ctx_id, agent_name, user_id=user_id)
 
         # 6. Build synthetic MatchResult for agent_runner (carries remaining text)
         synth_match = MatchResult(
@@ -145,17 +145,17 @@ class LLMExecutor:
         return name in CHARACTER_REGISTRY
 
     async def _finish_turn(
-        self, session: Session, history: list, tokens: int, event: dict
+        self, conv: Conversation, history: list, tokens: int, event: dict
     ) -> None:
-        """Update session history and handle token-limit rollover."""
-        rolled = self.session_mgr.update_history(session, history, tokens)
+        """Update conversation history and handle token-limit rollover."""
+        rolled = self.conv_mgr.update_history(conv, history, tokens)
         if not rolled:
             return
 
-        ctx_id = session.ctx_id
-        agent_name = session.agent_name
-        user_id = session.user_id
-        worth_curating = session_worth_curating(session)
+        ctx_id = conv.ctx_id
+        agent_name = conv.agent_name
+        user_id = conv.started_by
+        worth_curating = conversation_worth_curating(conv)
 
         await _send_reply(event, "（上下文已满，正在压缩摘要，稍后继续...）", self.config)
 
@@ -165,7 +165,7 @@ class LLMExecutor:
             logger.exception("Failed to summarize session for ctx={}", ctx_id)
             note = ""
 
-        new_session = self.session_mgr.create(ctx_id, agent_name, user_id=user_id)
+        new_session = self.conv_mgr.create(ctx_id, agent_name, user_id=user_id)
         new_session.handoff_note = note
         logger.info("Session rolled over: ctx={} agent={} note_len={}", ctx_id, agent_name, len(note))
 
