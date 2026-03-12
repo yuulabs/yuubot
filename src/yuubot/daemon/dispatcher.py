@@ -8,7 +8,9 @@ from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import RootCommand, MatchResult
 from yuubot.config import Config
 from yuubot.core.models import Role, ReplySegment, AtSegment, segments_to_plain
-from yuubot.core.onebot import parse_segments, build_send_msg
+from yuubot.core.onebot import parse_segments, build_send_msg, to_inbound_message
+from yuubot.core.types import CommandRoute, ConversationRoute
+from yuubot.daemon.routing import resolve_route
 from yuubot.daemon.session import SessionManager, session_worth_curating
 from yuuagents.flow import Ping, PingKind
 
@@ -136,35 +138,41 @@ class Dispatcher:
         if user_id == self.config.bot.qq:
             return
 
-        # Extract plain text (filter @bot and ReplySegments)
-        segments = parse_segments(event.get("message", []))
-        bot_qq = str(self.config.bot.qq)
-        replies = [s for s in segments if isinstance(s, ReplySegment)]
-        others = [
-            s for s in segments
-            if not isinstance(s, ReplySegment)
-            and not (isinstance(s, AtSegment) and s.qq == bot_qq)
-        ]
-        plain = segments_to_plain(others + replies).strip()
-        logger.info("Message text: {}", plain)
+        # Route the message using pure routing logic
+        inbound = to_inbound_message(event)
+        route = resolve_route(
+            inbound,
+            self.root,
+            has_active_conversation=lambda cid: self.session_mgr.get(cid) is not None,
+            is_auto=self.session_mgr.is_auto,
+            bot_qq=self.config.bot.qq,
+        )
 
-        cmd_match = self.root.match_message(plain)
-
-        # @bot with no command → treat as "yllm continue <plain>"
-        if cmd_match is None and self._is_at_bot(event):
-            llm_cmd = self.root.find(["llm"])
-            if llm_cmd and llm_cmd.executor is not None:
-                cmd_match = MatchResult(command=llm_cmd, remaining="continue " + plain, entry="@")
-
-        # Auto mode private: bare text (no command, no @bot) → treat as "yllm continue <plain>"
-        if cmd_match is None and msg_type == "private" and self.session_mgr.is_auto(ctx_id):
-            llm_cmd = self.root.find(["llm"])
-            if llm_cmd and llm_cmd.executor is not None:
-                cmd_match = MatchResult(command=llm_cmd, remaining="continue " + plain, entry="auto")
-
-        if cmd_match is None:
-            logger.info("No command match: {}", plain)
+        if route is None:
             return
+
+        # Convert route back to MatchResult for existing executor flow (transition)
+        if isinstance(route, ConversationRoute):
+            llm_cmd = self.root.find(["llm"])
+            cmd_match = MatchResult(
+                command=llm_cmd,
+                remaining=route.text,
+                entry="@" if not self.session_mgr.is_auto(ctx_id) else "auto",
+            )
+        else:
+            # CommandRoute → re-match to get the Command object (transition shim)
+            segments = parse_segments(event.get("message", []))
+            bot_qq_str = str(self.config.bot.qq)
+            filtered = [
+                s for s in segments
+                if not isinstance(s, ReplySegment)
+                and not (isinstance(s, AtSegment) and s.qq == bot_qq_str)
+            ]
+            replies = [s for s in segments if isinstance(s, ReplySegment)]
+            plain = segments_to_plain(filtered + replies).strip()
+            cmd_match = self.root.match_message(plain)
+            if cmd_match is None:
+                return
 
         should_respond = await self._should_respond(event)
         logger.info(
