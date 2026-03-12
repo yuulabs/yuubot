@@ -1,0 +1,23 @@
+name: img
+summary: 图片/表情包库管理
+actions:
+  - name: save
+    summary: 保存图片到库
+    usage: img save <path> --desc "描述" --tags "猫,搞笑"
+    payload_rule: none
+    return_shape: text
+  - name: search
+    summary: 按描述/标签搜索图片
+    usage: img search "<query>" --tags "猫" --limit 5
+    payload_rule: none
+    return_shape: text
+  - name: delete
+    summary: 按 ID 删除图片
+    usage: img delete <id>
+    payload_rule: none
+    return_shape: text
+  - name: list
+    summary: 列出图片或标签
+    usage: img list --tags --limit 20
+    payload_rule: none
+    return_shape: text

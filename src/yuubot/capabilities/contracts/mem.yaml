@@ -1,0 +1,28 @@
+name: mem
+summary: 记忆存储、检索与自动遗忘
+actions:
+  - name: save
+    summary: 保存一条记忆
+    usage: mem save "<content>" --tags <tag1>,<tag2> --scope private|public
+    payload_rule: none
+    return_shape: text
+  - name: recall
+    summary: 按关键词/标签检索记忆
+    usage: mem recall "<words>" --tags "<tags>" --limit 10
+    payload_rule: none
+    return_shape: text
+  - name: delete
+    summary: 按 ID 删除记忆
+    usage: mem delete <id1>,<id2>,...
+    payload_rule: none
+    return_shape: text
+  - name: show
+    summary: 查看记忆标签列表
+    usage: mem show --tags
+    payload_rule: none
+    return_shape: text
+  - name: config
+    summary: 配置记忆系统参数
+    usage: mem config --forget-days <days>
+    payload_rule: none
+    return_shape: text

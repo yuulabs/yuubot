@@ -1,0 +1,8 @@
+name: vision
+summary: 图片视觉识别与描述
+actions:
+  - name: describe
+    summary: 分析图片内容，返回中文描述
+    usage: vision describe <path>
+    payload_rule: none
+    return_shape: text

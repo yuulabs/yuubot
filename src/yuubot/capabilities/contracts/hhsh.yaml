@@ -1,0 +1,8 @@
+name: hhsh
+summary: 翻译网络缩写/黑话
+actions:
+  - name: guess
+    summary: 查询缩写含义
+    usage: hhsh guess "<text>"
+    payload_rule: none
+    return_shape: text

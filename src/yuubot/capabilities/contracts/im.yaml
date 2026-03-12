@@ -1,0 +1,23 @@
+name: im
+summary: QQ 即时消息收发、搜索与浏览
+actions:
+  - name: send
+    summary: 发送消息到指定会话
+    usage: im send --ctx <ctx_id> -- <message_json>
+    payload_rule: "JSON array of message segments after --"
+    return_shape: text
+  - name: search
+    summary: 关键词全文搜索消息
+    usage: im search "<keywords>" --ctx <ctx_id> --limit 20 --days 7
+    payload_rule: none
+    return_shape: text
+  - name: browse
+    summary: 按 msg_id 或时间范围浏览消息上下文
+    usage: im browse --msg <msg_id> --before 10 --after 10
+    payload_rule: none
+    return_shape: text
+  - name: list
+    summary: 列出好友/群/成员/ctx
+    usage: im list friends|groups|members|contexts [--gid <group_id>]
+    payload_rule: none
+    return_shape: text

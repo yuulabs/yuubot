@@ -1,0 +1,23 @@
+name: schedule
+summary: 定时任务管理（cron）
+actions:
+  - name: create
+    summary: 创建定时任务
+    usage: schedule create "<cron>" "<task>" --agent <name> --ctx <id> --recurring
+    payload_rule: none
+    return_shape: text
+  - name: list
+    summary: 列出定时任务
+    usage: schedule list --all
+    payload_rule: none
+    return_shape: text
+  - name: update
+    summary: 修改定时任务
+    usage: schedule update <id> --cron "..." --task "..." --enable --disable
+    payload_rule: none
+    return_shape: text
+  - name: delete
+    summary: 删除定时任务
+    usage: schedule delete <id>
+    payload_rule: none
+    return_shape: text
