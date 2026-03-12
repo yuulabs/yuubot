@@ -8,11 +8,15 @@ import html
 import os
 from datetime import datetime, timezone
 
+from functools import lru_cache
+
 from yuubot.core.models import (
+    AtSegment,
     ImageSegment,
     Message,
     MessageRecord,
     ReplySegment,
+    TextSegment,
     segments_from_json,
     UserAlias,
 )
@@ -105,7 +109,7 @@ async def format_segments(
     media_idx = 0
 
     for seg in segments:
-        if hasattr(seg, 'text'):  # TextSegment
+        if isinstance(seg, TextSegment):
             parts.append(html.escape(seg.text))
         elif isinstance(seg, ImageSegment):
             if seg.local_path:
@@ -122,7 +126,7 @@ async def format_segments(
                 parts.append(f'<image url="{html.escape(url)}"/>')
             else:
                 parts.append('[图片]')
-        elif hasattr(seg, 'qq'):  # AtSegment
+        elif isinstance(seg, AtSegment):
             name = await _resolve_at_name(seg.qq, ctx_id)
             parts.append(f'@{html.escape(name)}')
         elif isinstance(seg, ReplySegment):

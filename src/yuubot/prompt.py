@@ -83,6 +83,7 @@ class Character:
     max_tokens: int = 60000  # compression threshold in input tokens
     provider: str = ""  # runtime-mutable, populated from YAML at startup
     model: str = ""     # runtime-mutable, populated from YAML at startup
+    render_policy: object | None = None  # RenderPolicy from daemon.render, optional
 
     def resolve_persona(self) -> str:
         if isinstance(self.persona, FileRef):
