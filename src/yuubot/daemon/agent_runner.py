@@ -1,5 +1,7 @@
 """Agent runner — create and run yuuagents Agent for tasks."""
 
+from __future__ import annotations
+
 import uuid
 
 from yuubot.characters import CHARACTER_REGISTRY, get_character
@@ -7,22 +9,27 @@ from yuubot.commands.tree import MatchResult
 from yuubot.config import Config
 from yuubot.core import env
 from yuubot.core.onebot import parse_segments
+from yuubot.daemon.bot_info import BotInfo
 from yuubot.daemon.guard import make_whitelist_guard
+from yuubot.daemon.llm_factory import make_compressor, make_llm, make_summary_llm
+from yuubot.daemon.render import (
+    RenderContext,
+    RenderPolicy,
+    render_memory_hints,
+    render_task,
+    replace_command_prefix,
+)
 from yuubot.prompt import (
     RuntimeInfo,
     build_prompt_spec,
     build_system_prompt,
-)
-from yuubot.skills.im.formatter import (
-    format_message_to_xml,
-    format_segments,
-    get_user_alias,
 )
 
 from loguru import logger
 
 # Addon tools — defined in yuubot, registered alongside builtin tools
 _ADDON_TOOLS = {}
+
 
 def _get_addon_tools() -> dict:
     """Lazy-load addon tools to avoid circular imports."""
@@ -77,12 +84,11 @@ class AgentRunner:
         self.config = config
         self._initialized = False
         self._docker = None  # DockerManager | None
-        self._group_names: dict[int, str] = {}
         self._agent_name_map: dict[str, str] = {}  # runtime_id → config_name
         self._agent_subprocess_env: dict[str, dict] = {}  # agent_id → subprocess env
         self._cli_guard = make_whitelist_guard({"im", "web", "mem", "img", "schedule", "hhsh"})
-        self._bot_name: str | None = None  # Cached bot display name
         self._active_flows: dict[int, object] = {}  # ctx_id → root Flow
+        self.bot_info = BotInfo(config=config)
 
     def _build_tool_manager(self, tool_names: list[str]):
         """Build a ToolManager with both builtin and addon tools."""
@@ -92,7 +98,6 @@ class AgentRunner:
         addon_tools = _get_addon_tools()
         tool_manager = yt.ToolManager()
 
-        # Separate addon tools from builtin tools
         builtin_names = [n for n in tool_names if n not in addon_tools]
         addon_names = [n for n in tool_names if n in addon_tools]
 
@@ -140,12 +145,7 @@ class AgentRunner:
         docker_home: str = "",
         docker_home_dir: str = "",
     ) -> dict:
-        """Build a subprocess env snapshot with the correct per-run values.
-
-        Taking os.environ as base ensures PATH and other system vars are
-        inherited, while we explicitly set/unset the YUU_* keys so that
-        concurrent agent runs never see each other's context.
-        """
+        """Build a subprocess env snapshot with the correct per-run values."""
         import os as _os
         e = dict(_os.environ)
         e[env.TASK_ID] = task_id
@@ -175,7 +175,6 @@ class AgentRunner:
             await setup(cfg)
             self._initialized = True
 
-            # Initialize Docker only if at least one agent uses docker tools
             if self._any_agent_needs_docker():
                 try:
                     from yuuagents.daemon.docker import DockerManager
@@ -237,82 +236,11 @@ class AgentRunner:
         host_home_dir = await self._docker.host_home_dir(container_id)
         return docker_mount, host_home_dir, container_home
 
-    def _make_summary_llm(self):
-        """Build a YLLMClient for summarization/compression.
-
-        Requires explicit summarizer_provider and summarizer_model in SessionConfig.
-        """
-        import os
-        import yuullm
-
-        scfg = self.config.session
-        provider_name = scfg.summarizer_provider
-        model = scfg.summarizer_model
-
-        if not provider_name or not model:
-            raise ValueError(
-                "session.summarizer_provider and session.summarizer_model must be "
-                "explicitly configured for summarization/compression to work."
-            )
-
-        providers = self.config.yuuagents.get("providers", {})
-        provider_cfg = providers.get(provider_name, {})
-        api_type = provider_cfg.get("api_type", "openai-chat-completion")
-        api_key_env = provider_cfg.get("api_key_env", "")
-        api_key = os.environ.get(api_key_env) if api_key_env else None
-        base_url = provider_cfg.get("base_url", "") or None
-
-        if api_type == "anthropic-messages":
-            provider = yuullm.providers.AnthropicMessagesProvider(
-                api_key=api_key,
-                base_url=base_url,
-                provider_name=provider_name,
-            )
-        else:
-            provider = yuullm.providers.OpenAIChatCompletionProvider(
-                api_key=api_key,
-                base_url=base_url,
-                provider_name=provider_name,
-            )
-
-        return yuullm.YLLMClient(
-            provider=provider,
-            default_model=model,
-            price_calculator=yuullm.PriceCalculator(),
-        )
-
-    def _make_compressor(self, agent_name: str):
-        """Build a SessionCompressor for an agent.
-
-        Returns None if summarizer_provider/model not configured.
-        """
-        scfg = self.config.session
-        if not scfg.summarizer_provider or not scfg.summarizer_model:
-            return None
-
-        from yuubot.daemon.compressor import SessionCompressor
-
-        llm = self._make_summary_llm()
-
-        async def _summarize_fn(history_slice: list, steps_span: int) -> str:
-            from yuubot.daemon.summarizer import compress_summary
-            return await compress_summary(history_slice, llm, steps_span=steps_span)
-
-        char = CHARACTER_REGISTRY.get(agent_name)
-        if char is None:
-            return None
-
-        return SessionCompressor(
-            max_tokens=char.max_tokens,
-            summarize_fn=_summarize_fn,
-            summarize_steps_span=scfg.summarize_steps_span,
-        )
-
     async def summarize(self, history: list, agent_name: str = "main") -> str:
         """Generate a compact handoff note from session history using a cheap LLM."""
         from yuubot.daemon.summarizer import summarize as _summarize
 
-        llm = self._make_summary_llm()
+        llm = make_summary_llm(self.config)
         return await _summarize(history, llm)
 
     async def curate(self, history: list, ctx_id: int, user_id: int) -> None:
@@ -340,60 +268,12 @@ class AgentRunner:
         except Exception:
             logger.exception("mem_curator failed for ctx={}", ctx_id)
 
-    def _make_llm(self, agent_name: str = "main"):
-        """Build a YLLMClient from Character fields, falling back to YAML."""
-        import os
-
-        import yuullm
-
-        char = CHARACTER_REGISTRY.get(agent_name)
-        provider_name = char.provider if char and char.provider else ""
-        model = char.model if char and char.model else ""
-
-        # Fall back to YAML if Character fields are empty
-        if not provider_name or not model:
-            agents = self.config.yuuagents.get("agents", {})
-            agent_cfg = agents.get(agent_name, agents.get("main", {}))
-            if not provider_name:
-                provider_name = agent_cfg.get("provider", "")
-            if not model:
-                model = agent_cfg.get("model", "")
-
-        providers = self.config.yuuagents.get("providers", {})
-        provider_cfg = providers.get(provider_name, {})
-
-        api_type = provider_cfg.get("api_type", "openai-chat-completion")
-        api_key_env = provider_cfg.get("api_key_env", "")
-        api_key = os.environ.get(api_key_env) if api_key_env else None
-        base_url = provider_cfg.get("base_url", "") or None
-        default_model = model or provider_cfg.get("default_model", "gpt-4o")
-
-        if api_type == "anthropic-messages":
-            provider = yuullm.providers.AnthropicMessagesProvider(
-                api_key=api_key,
-                base_url=base_url,
-                provider_name=provider_name or "anthropic",
-            )
-        else:
-            provider = yuullm.providers.OpenAIChatCompletionProvider(
-                api_key=api_key,
-                base_url=base_url,
-                provider_name=provider_name or "openai",
-            )
-
-        return yuullm.YLLMClient(
-            provider=provider,
-            default_model=default_model,
-            price_calculator=yuullm.PriceCalculator(),
-        )
-
     def _get_runtime(self, agent_name: str) -> RuntimeInfo:
         """Build RuntimeInfo from Character fields, falling back to YAML."""
         char = CHARACTER_REGISTRY.get(agent_name)
         provider_name = char.provider if char and char.provider else ""
         model = char.model if char and char.model else ""
 
-        # Fall back to YAML if Character fields are empty
         if not provider_name or not model:
             agents = self.config.yuuagents.get("agents", {})
             agent_cfg = agents.get(agent_name, {})
@@ -419,11 +299,7 @@ class AgentRunner:
         return self._get_runtime(agent_name).supports_vision
 
     def _build_prompt(self, agent_name: str):
-        """Build PromptSpec and SimplePromptBuilder for an agent.
-
-        Returns (prompt_spec, prompt_builder).
-        Always uses CHARACTER_REGISTRY as the single source of truth.
-        """
+        """Build PromptSpec and SimplePromptBuilder for an agent."""
         char = get_character(agent_name)
         runtime = self._get_runtime(agent_name)
         prompt_spec = build_prompt_spec(char, runtime, self.config.skill_paths)
@@ -470,11 +346,7 @@ class AgentRunner:
         delegate_depth: int = 0,
         output_buffer=None,
     ) -> str:
-        """Launch a configured agent and return its last assistant text.
-
-        subprocess_env must already contain BOT_CTX, USER_ID, USER_ROLE etc.
-        Task-specific keys (TASK_ID, AGENT_NAME, DOCKER_*) are set here.
-        """
+        """Launch a configured agent and return its last assistant text."""
         import yuutools as yt
         from yuuagents import Agent, tools as agent_tools
         from yuuagents.agent import AgentConfig
@@ -488,16 +360,13 @@ class AgentRunner:
         runtime_id = f"agent-{agent_name}-{task_id[:8]}"
         self._agent_name_map[runtime_id] = agent_name
 
-        # Build prompt via character system
         prompt_spec, prompt_builder = self._build_prompt(agent_name)
 
-        # Tools — override if caller specifies
         names = tool_names if tool_names is not None else list(prompt_spec.tools)
         tool_manager = self._build_tool_manager(names)
 
         needs_docker = self._needs_docker(names)
 
-        # Docker / workdir
         if needs_docker:
             workdir, container_id = await self._resolve_docker(task_id)
         else:
@@ -521,7 +390,7 @@ class AgentRunner:
 
         agent_spec = prompt_spec.agent_spec
         persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
-        compressor = self._make_compressor(agent_name)
+        compressor = make_compressor(agent_name, self.config)
         config = AgentConfig(
             task_id=task_id,
             agent_id=runtime_id,
@@ -582,10 +451,8 @@ class AgentRunner:
                 max_depth=3, current_depth=delegate_depth, target_agent=agent,
             )
 
-        # Validate delegation permission
         caller_name = self._agent_name_map.get(caller_agent, caller_agent)
 
-        # Check CHARACTER_REGISTRY for allowed subagents
         allowed = set()
         caller_char = CHARACTER_REGISTRY.get(caller_name)
         if caller_char is not None:
@@ -604,106 +471,6 @@ class AgentRunner:
             output_buffer=output_buffer,
         )
 
-    async def _resolve_group_name(self, group_id: int) -> str:
-        """Resolve group_id to group_name, with caching."""
-        if group_id in self._group_names:
-            return self._group_names[group_id]
-        try:
-            import httpx
-
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    f"{self.config.daemon.recorder_api}/get_group_list",
-                )
-                data = r.json().get("data", r.json())
-                if isinstance(data, list):
-                    for g in data:
-                        self._group_names[g.get("group_id", 0)] = g.get(
-                            "group_name", ""
-                        )
-        except Exception:
-            logger.warning("Failed to fetch group list for name resolution")
-        return self._group_names.get(group_id, "")
-
-    async def _get_bot_name(self) -> str:
-        """Get bot's display name, with caching.
-
-        Falls back to bot QQ number if nickname fetch fails.
-        """
-        if self._bot_name is not None:
-            return self._bot_name
-        try:
-            import httpx
-
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    f"{self.config.daemon.recorder_api}/get_login_info",
-                )
-                data = r.json().get("data", r.json())
-                if isinstance(data, dict):
-                    nickname = data.get("nickname", "")
-                    if nickname:
-                        self._bot_name = nickname
-                        logger.info("Bot name fetched: {}", nickname)
-                        return self._bot_name
-        except Exception:
-            logger.opt(exception=True).warning("Failed to fetch bot nickname from API")
-
-        # Fallback to bot QQ number
-        self._bot_name = str(self.config.bot.qq)
-        logger.info("Using bot QQ as name: {}", self._bot_name)
-        return self._bot_name
-
-    def _replace_command_prefix(self, segments: list, bot_name: str) -> list:
-        """Replace /yllm command prefix with @bot_name in the first text segment.
-
-        Handles: /yllm, /y, /yuu with optional #agent_name suffix.
-        Skips leading non-text segments (e.g. ReplySegment) to find the command.
-        Returns a new list with modified segments.
-        """
-        from yuubot.core.models import TextSegment
-        import re
-
-        pattern = r"^(/yllm|/yuu|/y)(?:#\w+)?\s*"
-
-        for i, seg in enumerate(segments):
-            if not isinstance(seg, TextSegment):
-                continue
-            text = seg.text.strip()
-            match = re.match(pattern, text)
-            if match:
-                new_text = f"@{bot_name} " + text[match.end():]
-                new_segments = list(segments)
-                new_segments[i] = TextSegment(text=new_text)
-                return new_segments
-            # Stop at the first text segment regardless
-            break
-
-        return segments
-
-
-    async def _build_memory_hints(self, text: str, ctx_id: int | str = "") -> str:
-        """Probe message text against memory FTS5, return hint string.
-
-        Uses jieba segmentation for accurate Chinese tokenization.
-        Best-effort: returns empty string on any failure.
-        Filters by ctx_id scope (private + public).
-        """
-        try:
-            from yuubot.skills.mem.store import probe_text
-
-            int_ctx = int(ctx_id) if ctx_id else None
-            hits = await probe_text(text, ctx_id=int_ctx)
-            if not hits:
-                return ""
-            return (
-                f"\n记忆关键词命中: {', '.join(hits)}\n"
-                f'（可用 mem recall "<关键词>" 查看详情）\n'
-            )
-        except Exception:
-            logger.opt(exception=True).debug("Memory hints probe failed")
-            return ""
-
     async def _build_task(
         self,
         match: MatchResult,
@@ -718,97 +485,46 @@ class AgentRunner:
         Returns str for text-only, or list[Item] when vision is enabled
         and the message contains images.
         """
+        from yuubot.core.onebot import to_inbound_message
+        from yuubot.skills.im.formatter import format_segments
+
         ctx_id = event.get("ctx_id", "?")
         segments = parse_segments(event.get("message", []))
+        msg_text = match.remaining or await format_segments(segments)
 
-        # Strip @bot AtSegments — redundant noise for the LLM
-        from yuubot.core.models import AtSegment as _AtSeg
-        bot_qq = str(self.config.bot.qq)
-        segments = [s for s in segments if not (isinstance(s, _AtSeg) and s.qq == bot_qq)]
+        # Use render.py for the text portion
+        bot_name = await self.bot_info.bot_name()
+        inbound = to_inbound_message(event)
 
-        formatted = await format_segments(segments)
-        user_id = event.get("user_id", "?")
-        nickname = event.get("sender", {}).get("nickname", "")
-        msg_type = event.get("message_type", "private")
-        msg_text = match.remaining or formatted
-
-        if msg_type == "group":
-            group_id = event.get("group_id", "?")
-            if group_name:
-                location = f"群聊「{group_name}」(group_id={group_id}, ctx={ctx_id})"
-            else:
-                location = f"群聊 (group_id={group_id}, ctx={ctx_id})"
-        else:
-            location = f"私聊 (ctx={ctx_id})"
-
-        memory_hints = await self._build_memory_hints(msg_text, ctx_id)
-
-        from datetime import datetime, timezone
-        from yuubot.core.models import segments_to_json, TextSegment
-
-        # Replace /yllm command prefix with @bot_name for cleaner LLM history
-        bot_name = await self._get_bot_name()
-        segments = self._replace_command_prefix(segments, bot_name)
-
-        alias = await get_user_alias(user_id, ctx_id)
-        display_name = event.get("sender", {}).get("card", "")
-        ts = datetime.fromtimestamp(event.get("time", 0), tz=timezone.utc)
-        raw_json = segments_to_json(segments)
-
-        msg_xml = await format_message_to_xml(
-            msg_id=event.get("message_id", 0),
-            user_id=user_id,
-            nickname=nickname,
-            display_name=display_name,
-            alias=alias,
-            timestamp=ts,
-            raw_message=raw_json,
-            media_files=event.get("media_files", []),
-            ctx_id=int(ctx_id) if ctx_id else None,
+        memory_hints = await render_memory_hints(
+            msg_text, int(ctx_id) if ctx_id != "?" else None,
         )
 
-        # Append extra <msg> blocks from debounced continuation events
-        extra_events = event.get("_extra_events", [])
-        for extra in extra_events:
-            extra_segments = parse_segments(extra.get("message", []))
-            extra_segments = self._replace_command_prefix(extra_segments, bot_name)
-            extra_user_id = extra.get("user_id", "?")
-            extra_nickname = extra.get("sender", {}).get("nickname", "")
-            extra_alias = await get_user_alias(extra_user_id, ctx_id)
-            extra_display = extra.get("sender", {}).get("card", "")
-            extra_ts = datetime.fromtimestamp(extra.get("time", 0), tz=timezone.utc)
-            extra_json = segments_to_json(extra_segments)
-            extra_xml = await format_message_to_xml(
-                msg_id=extra.get("message_id", 0),
-                user_id=extra_user_id,
-                nickname=extra_nickname,
-                display_name=extra_display,
-                alias=extra_alias,
-                timestamp=extra_ts,
-                raw_message=extra_json,
-                media_files=extra.get("media_files", []),
-                ctx_id=int(ctx_id) if ctx_id else None,
-            )
-            msg_xml += "\n" + extra_xml
+        rctx = RenderContext(
+            group_name=group_name,
+            bot_name=bot_name,
+            has_vision=self._has_vision(agent_name),
+            bot_qq=str(self.config.bot.qq),
+        )
+        policy = RenderPolicy()
 
-        if is_continuation:
-            total_msgs = 1 + len(extra_events)
-            count_hint = f"你收到了{total_msgs}条新消息:\n" if total_msgs > 1 else ""
-            text = f"""{count_hint}{msg_xml}
-{memory_hints}"""
-        else:
-            text = f"""你收到了来自{location}的消息。
-{msg_xml}
-{memory_hints}
-回复时使用 im send 命令发送到 ctx {ctx_id}。遇到奇怪的问题时可使用im工具查看上下文。你自己生成的回复不会被看到，简单输出结束即可。
-"""
+        text = await render_task(
+            inbound,
+            policy,
+            rctx,
+            is_continuation=is_continuation,
+            memory_hints=memory_hints,
+        )
 
         # Vision: if the model supports vision and message has images,
         # build multimodal content items
         if not self._has_vision(agent_name):
             return text
 
-        from yuubot.core.models import ImageSegment
+        from yuubot.core.models import AtSegment as _AtSeg, ImageSegment
+
+        bot_qq = str(self.config.bot.qq)
+        segments = [s for s in segments if not (isinstance(s, _AtSeg) and s.qq == bot_qq)]
 
         image_segments = [s for s in segments if isinstance(s, ImageSegment)]
         for extra in event.get("_extra_events", []):
@@ -869,7 +585,7 @@ class AgentRunner:
         # Resolve group name for context
         group_name = ""
         if event.get("message_type") == "group":
-            group_name = await self._resolve_group_name(event.get("group_id", 0))
+            group_name = await self.bot_info.group_name(event.get("group_id", 0))
 
         # Build prompt via character system
         prompt_spec, prompt_builder = self._build_prompt(agent_name)
@@ -884,7 +600,7 @@ class AgentRunner:
         self._agent_name_map[agent_id] = agent_name
 
         persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
-        compressor = self._make_compressor(agent_name)
+        compressor = make_compressor(agent_name, self.config)
         config = AgentConfig(
             task_id=task_id,
             agent_id=agent_id,
@@ -934,7 +650,6 @@ class AgentRunner:
             agent.state.status = AgentStatus.RUNNING
             agent.state.task = task_str
         elif is_multimodal:
-            # Non-continuation multimodal: manually build history
             import yuullm
             from yuuagents.agent import AgentStatus
 
@@ -1037,7 +752,6 @@ class AgentRunner:
 
         task_id = self._new_task_id()
 
-        # Build prompt via character system
         prompt_spec, prompt_builder = self._build_prompt(agent_name)
         agent_spec = prompt_spec.agent_spec
         tool_names = list(prompt_spec.tools)
@@ -1058,7 +772,7 @@ class AgentRunner:
         self._agent_name_map[agent_id] = agent_name
 
         persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
-        compressor = self._make_compressor(agent_name)
+        compressor = make_compressor(agent_name, self.config)
         config = AgentConfig(
             task_id=task_id,
             agent_id=agent_id,
@@ -1122,3 +836,17 @@ class AgentRunner:
             logger.exception("Scheduled agent failed: {}", task)
         finally:
             self._agent_subprocess_env.pop(agent_id, None)
+
+    # ── Backward-compat aliases ─────────────────────────────────
+
+    def _make_llm(self, agent_name: str = "main"):
+        """Backward-compat alias for llm_factory.make_llm()."""
+        return make_llm(agent_name, self.config)
+
+    async def _get_bot_name(self) -> str:
+        """Backward-compat alias for bot_info.bot_name()."""
+        return await self.bot_info.bot_name()
+
+    def _replace_command_prefix(self, segments: list, bot_name: str) -> list:
+        """Backward-compat alias for render.replace_command_prefix()."""
+        return replace_command_prefix(segments, bot_name)
