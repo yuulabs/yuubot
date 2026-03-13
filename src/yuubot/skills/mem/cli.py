@@ -6,7 +6,7 @@ from yuubot.config import load_config
 from yuubot.core import env
 from yuubot.core.db import init_db, close_db
 from yuubot.skills.mem import store as mem_store
-from yuubot.skills.mem.forget import cleanup_stale, get_forget_days, set_forget_days
+from yuubot.skills.mem.forget import get_forget_days, set_forget_days
 
 
 def _get_ctx_id() -> int | None:
@@ -69,18 +69,25 @@ async def recall_memory(
 
 
 async def delete_memory(ids_str: str, config_path: str | None) -> None:
-    # Permission check: only Master can delete
-    role = env.get(env.USER_ROLE)
-    if role and role != "MASTER":
-        click.echo("错误: 仅 Master 可以删除记忆")
-        return
-
+    """Soft-delete (trash) memories. Restoring is possible until forget period expires."""
     cfg = load_config(config_path)
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     try:
         ids = [int(x.strip()) for x in ids_str.split(",") if x.strip()]
-        count = await mem_store.delete(ids)
-        click.echo(f"已删除 {count} 条记忆: {', '.join(str(i) for i in ids)}")
+        count = await mem_store.trash(ids)
+        click.echo(f"已移入垃圾桶 {count} 条记忆: {', '.join(str(i) for i in ids)}。可用 mem restore 回滚。")
+    finally:
+        await close_db()
+
+
+async def restore_memory(ids_str: str, config_path: str | None) -> None:
+    """Restore trashed memories."""
+    cfg = load_config(config_path)
+    await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
+    try:
+        ids = [int(x.strip()) for x in ids_str.split(",") if x.strip()]
+        count = await mem_store.restore(ids)
+        click.echo(f"已恢复 {count} 条记忆: {', '.join(str(i) for i in ids)}")
     finally:
         await close_db()
 

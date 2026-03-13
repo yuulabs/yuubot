@@ -2,7 +2,7 @@
 name: mem
 description: >
   记忆存储、检索与自动遗忘。
-  命令: save(保存), recall(关键词/标签匹配检索，非语义搜索), delete(删除), show(查看标签), config(配置)。
+  命令: save(保存), recall(关键词/标签匹配检索，非语义搜索), show(查看标签), config(配置)。
 ---
 
 # Memory Addon
@@ -35,17 +35,10 @@ words 和 tags 空格分隔，匹配任意一个。至少提供一个。
 看到命中提示时，可用 `mem recall "<关键词>"` 查看详情。
 不需要每次都 recall，只在觉得有用时查。
 
-## 写操作（仅 mem_curator 使用）
-
 ### 保存记忆
 `mem save "<content>" --tags <tag1>,<tag2>,... [--scope private|public]`
 
 content 不宜过长（默认 < 500 字）。tags 可选。scope 默认 private，public 需 Master 权限。
-
-### 删除记忆
-`mem delete <ids>`
-
-ids 是逗号分隔的记忆 ID。仅 Master 可执行。
 
 ### 配置
 `mem config --forget-days <days>`

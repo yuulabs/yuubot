@@ -136,6 +136,11 @@ _MIGRATIONS = [
         "SELECT 1 FROM pragma_table_info('memories') WHERE name='scope'",
         "ALTER TABLE memories ADD COLUMN scope VARCHAR(16) DEFAULT 'private'",
     ),
+    # v0.5: add trashed_at for soft-delete (trash bin)
+    (
+        "SELECT 1 FROM pragma_table_info('memories') WHERE name='trashed_at'",
+        "ALTER TABLE memories ADD COLUMN trashed_at TIMESTAMP NULL",
+    ),
 ]
 
 # Post-migration: set scope=public for memories with NULL ctx_id
@@ -240,7 +245,8 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
             Empty string triggers auto-detection under vendor/.
     """
     import inspect
-    caller = inspect.currentframe().f_back
+    frame = inspect.currentframe()
+    caller = frame.f_back if frame is not None else None
     caller_loc = f"{caller.f_code.co_filename}:{caller.f_lineno}" if caller else "?"
     logger.debug("init_db from {}", caller_loc)
 
@@ -290,7 +296,8 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
 async def close_db() -> None:
     """Close all Tortoise connections and reset global context."""
     import inspect
-    caller = inspect.currentframe().f_back
+    frame = inspect.currentframe()
+    caller = frame.f_back if frame is not None else None
     caller_loc = f"{caller.f_code.co_filename}:{caller.f_lineno}" if caller else "?"
     logger.warning("close_db from {} (destroys Tortoise context!)", caller_loc)
 

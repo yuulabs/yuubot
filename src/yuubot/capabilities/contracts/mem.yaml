@@ -12,8 +12,14 @@ actions:
     payload_rule: none
     return_shape: text
   - name: delete
-    summary: 按 ID 删除记忆
+    summary: 将记忆移入垃圾桶（仅 mem_curator 可调用）
     usage: mem delete <id1>,<id2>,...
+    payload_rule: none
+    return_shape: text
+    notes: 软删除，可用 mem restore 回滚；forget 周期到期后自动永久删除
+  - name: restore
+    summary: 从垃圾桶恢复记忆（仅 mem_curator 或 CLI 可调用）
+    usage: mem restore <id1>,<id2>,...
     payload_rule: none
     return_shape: text
   - name: show

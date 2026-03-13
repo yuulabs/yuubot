@@ -124,6 +124,9 @@ async def recall(
         else:
             q &= Q(id__in=tag_mem_ids)
 
+    # Always exclude trashed memories
+    q &= Q(trashed_at__isnull=True)
+
     if not show_all:
         if ctx_id is not None:
             q &= (Q(ctx_id=ctx_id, scope="private") | Q(scope="public"))
@@ -137,11 +140,11 @@ async def recall(
 
     results = []
     for m in memories:
-        mem_tags = await MemoryTag.filter(memory_id=m.id).values_list("tag", flat=True)
+        mem_tags: list[str] = list(await MemoryTag.filter(memory_id=m.id).values_list("tag", flat=True))  # type: ignore[arg-type]
         results.append({
             "id": m.id,
             "content": m.content,
-            "ctx_id": m.ctx_id,
+            "ctx_id": m.ctx_id,  # type: ignore[attr-defined]
             "created_at": m.created_at.isoformat() if m.created_at else "",
             "last_accessed": m.last_accessed.isoformat() if m.last_accessed else "",
             "tags": ", ".join(mem_tags) if mem_tags else "",
@@ -173,6 +176,7 @@ async def probe(tokens: list[str], ctx_id: int | None = None) -> list[str]:
                 "SELECT f.rowid FROM memories_fts f "
                 "JOIN memories m ON f.rowid = m.id "
                 "WHERE f.memories_fts MATCH ? "
+                "AND m.trashed_at IS NULL "
                 "AND ((m.ctx_id = ? AND m.scope = 'private') OR m.scope = 'public') "
                 "LIMIT 1",
                 [fts_expr, ctx_id],
@@ -181,7 +185,7 @@ async def probe(tokens: list[str], ctx_id: int | None = None) -> list[str]:
             rows = await conn.execute_query_dict(
                 "SELECT f.rowid FROM memories_fts f "
                 "JOIN memories m ON f.rowid = m.id "
-                "WHERE f.memories_fts MATCH ? AND m.scope = 'public' "
+                "WHERE f.memories_fts MATCH ? AND m.trashed_at IS NULL AND m.scope = 'public' "
                 "LIMIT 1",
                 [fts_expr],
             )
@@ -202,8 +206,29 @@ async def probe_text(text: str, ctx_id: int | None = None) -> list[str]:
     return await probe(tokens, ctx_id=ctx_id)
 
 
-async def delete(ids: list[int]) -> int:
-    """Delete memories by IDs. Returns count deleted."""
+async def trash(ids: list[int]) -> int:
+    """Soft-delete memories by moving them to trash. Returns count trashed.
+
+    Trashed memories are invisible to recall/probe but can be restored until
+    the forget period expires, after which cleanup_stale() hard-deletes them.
+    """
+    if not ids:
+        return 0
+    now = datetime.now(timezone.utc)
+    count = await Memory.filter(id__in=ids, trashed_at__isnull=True).update(trashed_at=now)
+    return count
+
+
+async def restore(ids: list[int]) -> int:
+    """Restore trashed memories back to active. Returns count restored."""
+    if not ids:
+        return 0
+    count = await Memory.filter(id__in=ids, trashed_at__isnull=False).update(trashed_at=None)
+    return count
+
+
+async def hard_delete(ids: list[int]) -> int:
+    """Permanently delete memories (used by cleanup_stale only). Returns count deleted."""
     if not ids:
         return 0
     count = await Memory.filter(id__in=ids).count()

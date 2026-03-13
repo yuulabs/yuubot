@@ -5,7 +5,7 @@ from __future__ import annotations
 from yuubot.capabilities import capability, get_context, text_block, ContentBlock
 from yuubot.config import load_config
 from yuubot.skills.mem import store as mem_store
-from yuubot.skills.mem.forget import cleanup_stale, get_forget_days, set_forget_days
+from yuubot.skills.mem.forget import get_forget_days, set_forget_days
 
 
 def _get_config():
@@ -61,7 +61,6 @@ class MemCapability:
         limit: int = 10,
         **_kw,
     ) -> list[ContentBlock]:
-        cfg = _get_config()
         show_all = not _is_bot()
         words = _positional if _positional else []
         tag_list = tags.split() if tags else []
@@ -84,18 +83,37 @@ class MemCapability:
         _positional: list[str] | None = None,
         **_kw,
     ) -> list[ContentBlock]:
+        """Soft-delete (trash) memories. Only mem_curator agent may call this in-bot."""
         actx = get_context()
-        if actx.user_role and actx.user_role != "MASTER":
-            return [text_block("错误: 仅 Master 可以删除记忆")]
+        if _is_bot() and actx.agent_name != "mem_curator":
+            raise PermissionError(f"Agent '{actx.agent_name}' 无权调用 mem delete。仅 mem_curator 可删除记忆。")
 
         ids_str = ",".join(_positional) if _positional else ""
         if not ids_str:
             return [text_block("错误: 请提供记忆 ID")]
 
-        cfg = _get_config()
         ids = [int(x.strip()) for x in ids_str.split(",") if x.strip()]
-        count = await mem_store.delete(ids)
-        return [text_block(f"已删除 {count} 条记忆: {', '.join(str(i) for i in ids)}")]
+        count = await mem_store.trash(ids)
+        return [text_block(f"已移入垃圾桶 {count} 条记忆 (ID: {', '.join(str(i) for i in ids)})。可用 mem restore 回滚。")]
+
+    async def restore(
+        self,
+        *,
+        _positional: list[str] | None = None,
+        **_kw,
+    ) -> list[ContentBlock]:
+        """Restore trashed memories. Curator agent or CLI only."""
+        actx = get_context()
+        if _is_bot() and actx.agent_name != "mem_curator":
+            raise PermissionError(f"Agent '{actx.agent_name}' 无权调用 mem restore。仅 mem_curator 可回滚记忆。")
+
+        ids_str = ",".join(_positional) if _positional else ""
+        if not ids_str:
+            return [text_block("错误: 请提供记忆 ID")]
+
+        ids = [int(x.strip()) for x in ids_str.split(",") if x.strip()]
+        count = await mem_store.restore(ids)
+        return [text_block(f"已恢复 {count} 条记忆 (ID: {', '.join(str(i) for i in ids)})")]
 
     async def show(
         self,
@@ -103,7 +121,6 @@ class MemCapability:
         tags: bool = False,
         **_kw,
     ) -> list[ContentBlock]:
-        cfg = _get_config()
         show_all = not _is_bot()
         tag_list = await mem_store.show_tags(_ctx_id(), show_all=show_all)
         if not tag_list:
@@ -123,7 +140,6 @@ class MemCapability:
         forget_days: int | None = None,
         **_kw,
     ) -> list[ContentBlock]:
-        cfg = _get_config()
         if forget_days is not None:
             await set_forget_days(forget_days)
             return [text_block(f"记忆保留天数已设为 {forget_days}")]

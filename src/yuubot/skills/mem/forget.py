@@ -20,13 +20,25 @@ async def set_forget_days(days: int) -> None:
 
 
 async def cleanup_stale() -> int:
-    """Delete memories not accessed within forget_days. Returns count deleted."""
+    """Hard-delete stale and expired-trashed memories. Returns total count deleted.
+
+    Two cases:
+    - Active memories not accessed within forget_days → hard delete
+    - Trashed memories whose trashed_at is older than forget_days → hard delete
+    """
     days = await get_forget_days()
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
-    count = await Memory.filter(last_accessed__lt=cutoff).count()
-    if count > 0:
-        await Memory.filter(last_accessed__lt=cutoff).delete()
-        logger.info("Auto-forget: deleted {} stale memories (older than {} days)", count, days)
+    # Active memories past last_accessed cutoff
+    stale = await Memory.filter(last_accessed__lt=cutoff, trashed_at__isnull=True).count()
+    if stale > 0:
+        await Memory.filter(last_accessed__lt=cutoff, trashed_at__isnull=True).delete()
+        logger.info("Auto-forget: deleted {} stale memories (older than {} days)", stale, days)
 
-    return count
+    # Trashed memories whose trash date is past forget period
+    expired_trash = await Memory.filter(trashed_at__lt=cutoff).count()
+    if expired_trash > 0:
+        await Memory.filter(trashed_at__lt=cutoff).delete()
+        logger.info("Auto-forget: purged {} expired trashed memories", expired_trash)
+
+    return stale + expired_trash

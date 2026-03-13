@@ -14,7 +14,8 @@
 7. [循环导入的症状性修复](#7-循环导入的症状性修复)
 8. [不一致的错误处理](#8-不一致的错误处理)
 9. [其他代码异味](#9-其他代码异味)
-10. [优先级建议](#10-优先级建议)
+10. [Agent行为控制](#10-agent行为控制)
+11. [优先级建议](#11-优先级建议)
 
 ---
 
@@ -122,6 +123,26 @@ def _get_addon_tools() -> dict[str, Tool]:
 
 **问题**：并发调用可能重复加载，或读到半初始化状态。
 **修复方向**：用 `@functools.lru_cache` 或显式单例模式。
+
+### 3.2.1 `agent_runner.py` — 运行时上下文靠多个共享表回查
+
+```python
+_agent_name_map: dict[str, str]
+_agent_subprocess_env: dict[str, dict]
+_active_flows: dict[int, object]
+```
+
+**问题**：
+
+1. 同一次运行的上下文被拆散存到多个共享字典。
+2. `delegate()`、`cancel_ctx()`、普通运行和定时运行走的是不同的拼装路径。
+3. 这会把 builder 本应在线性流程里携带的信息，退化成并发不安全的隐式全局状态。
+
+**修复方向**：
+
+1. 引入 `TurnContext`、`RunContext`、`TaskBundle`。
+2. 用 builder 在函数内部逐步累积上下文。
+3. 只有取消中的 `ctx_id -> flow` 这类确实需要跨调用访问的句柄才保留注册表，而且应收窄成 typed handle。
 
 ### 3.3 `addons/__init__.py:58-59, 195` — 全局注册表
 
@@ -387,7 +408,48 @@ if not msg:
 
 ---
 
-## 10. 优先级建议
+## 10. Agent行为控制
+
+**问题**：LLM agent在使用web搜索时可能出现过度搜索行为，导致token浪费。
+
+### 10.1 Web搜索过度使用 **[已优化]**
+
+**症状**：
+- agent反复尝试不同关键词搜索，即使首次搜索无果
+- 达到搜索限制后仍在做其他无效操作
+- max_steps设置过大，允许过多无效尝试
+
+**已实施的优化**（2026-03-12）：
+
+1. **改进反馈信息**（`capabilities/web.py`）：
+   - 搜索无果时返回明确指导："搜索无结果。这可能意味着：1) 信息不在网上 2) 关键词不准确。不要反复尝试相似搜索。"
+   - 达到限制时明确告知："停止搜索，基于已有信息回答或告知用户无法获取。"
+
+2. **添加使用指南**（`capabilities/contracts/web.yaml`）：
+   - 在contract中添加`usage_guidelines`字段
+   - 明确说明搜索限制和使用策略
+
+3. **降低max_steps**：
+   - `main` character: 16 → 12
+   - `researcher` character: 16 → 10
+
+4. **强化persona指导**（`characters/researcher.py`）：
+   - 在persona中添加明确的搜索策略
+   - 强调"优先基于已有信息回答，而非无限搜索"
+
+**效果预期**：
+- 减少无效搜索尝试
+- 降低单次对话token消耗
+- 保持正常任务完成能力
+
+**后续可选方案**：
+- 在agent runtime层添加工具调用模式监控
+- 检测连续失败的工具调用并主动中断
+- 添加per-capability的调用频率限制
+
+---
+
+## 11. 优先级建议
 
 ### P0（立即修复，影响稳定性）
 
@@ -437,3 +499,38 @@ if not msg:
 - 新增功能前，先检查本文档对应模块是否有已知问题，优先修复后再添加功能
 - 修复问题时，更新本文档标记为"已修复"并注明 commit hash
 - 每季度重新审阅一次，识别新引入的反模式
+
+## 12. 记忆管理权限控制 **[已实施]**
+
+**实施日期**：2026-03-13
+
+### 12.1 软删除（垃圾桶）机制
+
+记忆删除改为软删除（trash bin）模式：
+
+- `mem delete` 设置 `trashed_at` 时间戳，记忆从 recall/probe 结果中隐藏
+- `mem restore` 清除 `trashed_at`，恢复记忆可见性
+- `forget.cleanup_stale()` 在 forget 周期到期后永久删除垃圾桶中的记忆
+
+**数据库变更**：
+- `Memory` 模型新增 `trashed_at` 字段（nullable datetime）
+- 迁移：`ALTER TABLE memories ADD COLUMN trashed_at TIMESTAMP NULL`
+
+### 12.2 Curator 专属权限
+
+`mem delete` 和 `mem restore` 仅限 `mem_curator` agent 调用：
+
+- 在 `capabilities/mem.py` 中检查 `agent_name == "mem_curator"`
+- 非 curator 调用时抛出 `PermissionError`（硬错误，非软提示）
+- CLI 调用（无 agent_name）允许通过（管理员操作）
+
+**文档隔离**：
+- `addons/docs/mem.md`：通用文档，不包含 delete/restore
+- `addons/docs/mem_curator.md`：curator 专用文档，包含完整权限说明
+- curator 的 `expand_addons=["mem_curator"]` 加载专用文档
+
+**设计原则**：
+- 权限控制在 capability 层强制执行（fail-fast）
+- 文档隔离防止 agent 看到无权使用的操作
+- 软删除 + 自动清理平衡了误删保护和存储管理
+

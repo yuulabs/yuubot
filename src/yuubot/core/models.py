@@ -171,6 +171,7 @@ class Memory(Model):
     created_at = fields.DatetimeField(auto_now_add=True)
     last_accessed = fields.DatetimeField(auto_now_add=True)
     source_user_id = fields.BigIntField(null=True)
+    trashed_at = fields.DatetimeField(null=True)  # set = trashed; None = active
 
     class Meta:
         table = "memories"
