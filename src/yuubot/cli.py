@@ -568,7 +568,7 @@ def docker_shell(ctx: click.Context, container: str) -> None:
         click.echo(f"Container is {status}, starting it...")
         subprocess.run(["docker", "start", container], check=True)
 
-    cmd = ["docker", "exec", "-it", container, "/bin/bash"]
+    cmd = ["docker", "exec", "-it", "-u", "root", container, "/bin/bash"]
     click.echo(f"Attaching to {container}...")
     os.execvp("docker", cmd)
 
