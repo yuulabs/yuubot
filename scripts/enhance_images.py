@@ -165,7 +165,7 @@ async def enhance_descriptions(dry_run: bool = False, force: bool = False, limit
     Only processes images that are already in the database (shown by `img list`).
     Uses the same limit as `img list` to avoid processing too many images.
     """
-    from yuubot.skills.img import store
+    from yuubot.capabilities.img import store
 
     # Use img.search() with no query to get recent images (same as `img list`)
     results = await store.search(limit=limit)

@@ -8,10 +8,13 @@ while the agent is running, and all the session metadata previously in Session.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Literal
 
 import attrs
 from loguru import logger
+
+from yuubot.core.types import InboundMessage
 
 ConversationState = Literal["idle", "running", "closed"]
 
@@ -33,13 +36,13 @@ class Conversation:
     mode: str = "normal"  # "normal" | "auto"
     state: ConversationState = "idle"
     history: list = attrs.field(factory=list)
-    pending_messages: list = attrs.field(factory=list)  # messages received while running
+    pending_messages: list[InboundMessage] = attrs.field(factory=list)
     started_by: int = 0  # user_id who started it
     last_active_at: float = attrs.field(factory=time.monotonic)
-    handoff_note: str = ""
     task_id: str = ""
     total_tokens: int = 0
     created_at: float = attrs.field(factory=time.monotonic)
+    summary_prompt: str = ""
 
     # Aliases for backward compatibility with Session field names
     @property
@@ -68,7 +71,7 @@ class ConversationManager:
     auto_ttl: float = 1800.0
     max_tokens: int = 60000
     _conversations: dict[tuple[int, str], Conversation] = attrs.field(factory=dict)
-    _is_ctx_active: object = None  # callable(int) -> bool, set by daemon
+    _is_ctx_active: Callable[[int], bool] | None = None  # set by daemon
     _auto_ctxs: set[int] = attrs.field(factory=set)
     _current_agent: dict[int, str] = attrs.field(factory=dict)  # ctx_id → agent_name
 
@@ -231,13 +234,13 @@ class ConversationManager:
 
     # ── Pending message support (replaces Ping mechanism) ──────────────────────
 
-    def enqueue_pending(self, ctx_id: int, msg_payload: str) -> None:
+    def enqueue_pending(self, ctx_id: int, message: InboundMessage) -> None:
         """Add a message to pending while conversation is running."""
         conv = self.get(ctx_id)
         if conv and conv.state == "running":
-            conv.pending_messages.append(msg_payload)
+            conv.pending_messages.append(message)
 
-    def drain_pending(self, ctx_id: int) -> list[str]:
+    def drain_pending(self, ctx_id: int) -> list[InboundMessage]:
         """Take all pending messages after agent turn ends."""
         conv = self.get(ctx_id)
         if conv:

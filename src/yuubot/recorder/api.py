@@ -5,6 +5,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 import httpx
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -52,8 +53,14 @@ def create_api(
     master_qq: int = 0,
     muted_ctxs: set[int] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="yuubot-recorder-api")
     client = httpx.AsyncClient(base_url=napcat_http, timeout=30)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        await client.aclose()
+
+    app = FastAPI(title="yuubot-recorder-api", lifespan=lifespan)
 
     if muted_ctxs is None:
         muted_ctxs = set()
@@ -172,9 +179,5 @@ def create_api(
     async def do_shutdown() -> JSONResponse:
         shutdown_event.set()
         return JSONResponse({"status": "shutting down"})
-
-    @app.on_event("shutdown")
-    async def _close_client() -> None:
-        await client.aclose()
 
     return app

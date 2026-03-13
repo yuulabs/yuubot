@@ -1,250 +1,85 @@
-"""Agent runner — create and run yuuagents Agent for tasks."""
+"""Agent runner — orchestrate builder, runtime, and active runs."""
 
 from __future__ import annotations
 
-import uuid
+from typing import Any
 
-from yuubot.characters import CHARACTER_REGISTRY, get_character
+import yuullm
+from loguru import logger
+from yuuagents import Agent, resume_agent, start_agent
+from yuuagents.agent import AgentConfig, AgentStatus
+from yuuagents.context import AgentContext, DelegateDepthExceededError
+from yuuagents.flow import FlowKind, FlowManager, FlowStatus
+
+from yuubot.characters import CHARACTER_REGISTRY
 from yuubot.commands.tree import MatchResult
 from yuubot.config import Config
 from yuubot.core import env
-from yuubot.core.onebot import parse_segments
+from yuubot.core.types import InboundMessage
 from yuubot.daemon.bot_info import BotInfo
-from yuubot.daemon.guard import make_whitelist_guard
-from yuubot.daemon.llm_factory import make_compressor, make_llm, make_summary_llm
-from yuubot.daemon.render import (
-    RenderContext,
-    RenderPolicy,
-    render_memory_hints,
-    render_task,
-    replace_command_prefix,
-)
-from yuubot.prompt import (
-    RuntimeInfo,
-    build_prompt_spec,
-    build_system_prompt,
-)
-
-from loguru import logger
-
-# Addon tools — defined in yuubot, registered alongside builtin tools
-_ADDON_TOOLS = {}
-
-
-def _get_addon_tools() -> dict:
-    """Lazy-load addon tools to avoid circular imports."""
-    global _ADDON_TOOLS
-    if not _ADDON_TOOLS:
-        from yuubot.addons.tools import execute_addon_cli, read_addon_doc
-        _ADDON_TOOLS = {
-            "execute_addon_cli": execute_addon_cli,
-            "read_addon_doc": read_addon_doc,
-        }
-    return _ADDON_TOOLS
-
-
-def _set_or_pop(d: dict, key: str, value: str) -> None:
-    """Set key=value in dict, or remove the key if value is empty."""
-    if value:
-        d[key] = value
-    else:
-        d.pop(key, None)
-
-
-# Tools that require a Docker container to function.
-_DOCKER_TOOLS = {"execute_bash", "read_file", "write_file", "edit_file", "delete_file"}
-
-_MIME_MAP = {
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-}
-
-
-def _file_to_data_uri(path: str) -> str:
-    """Read a local file and return a base64 data URI."""
-    import base64
-    from pathlib import Path
-
-    p = Path(path)
-    if not p.is_file():
-        return f"file://{path}"  # fallback
-    mime = _MIME_MAP.get(p.suffix.lower(), "application/octet-stream")
-    data = base64.b64encode(p.read_bytes()).decode()
-    return f"data:{mime};base64,{data}"
+from yuubot.daemon.builder import ActiveRun, AgentRunBuilder, SubprocessEnv, TaskBundle, TurnContext
+from yuubot.daemon.llm_factory import make_compressor, make_summary_llm
+from yuubot.daemon.runtime import AgentRuntime
 
 
 class AgentRunner:
-    """Uses yuuagents SDK to create and run Agent instances."""
+    """Create agent turns, launch them, and expose a small public API."""
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self._initialized = False
-        self._docker = None  # DockerManager | None
-        self._agent_name_map: dict[str, str] = {}  # runtime_id → config_name
-        self._agent_subprocess_env: dict[str, dict] = {}  # agent_id → subprocess env
-        self._cli_guard = make_whitelist_guard({"im", "web", "mem", "img", "schedule", "hhsh"})
-        self._active_flows: dict[int, object] = {}  # ctx_id → root Flow
+        self.runtime = AgentRuntime(config)
         self.bot_info = BotInfo(config=config)
+        self._active_runs_by_runtime: dict[str, ActiveRun] = {}
+        self._active_runs_by_ctx: dict[int, ActiveRun] = {}
 
-    def _build_tool_manager(self, tool_names: list[str]):
-        """Build a ToolManager with both builtin and addon tools."""
-        import yuutools as yt
-        from yuuagents import tools as agent_tools
-
-        addon_tools = _get_addon_tools()
-        tool_manager = yt.ToolManager()
-
-        builtin_names = [n for n in tool_names if n not in addon_tools]
-        addon_names = [n for n in tool_names if n in addon_tools]
-
-        for t in agent_tools.get(builtin_names):
-            tool_manager.register(t)
-        for n in addon_names:
-            tool_manager.register(addon_tools[n])
-
-        return tool_manager
-
-    def _build_addon_context(
-        self,
-        *,
-        ctx_id: int | str = "",
-        user_id: int | str = "",
-        user_role: str = "",
-        agent_name: str = "",
-        task_id: str = "",
-    ):
-        """Build an AddonContext for in-process addon execution."""
-        from yuubot.addons import AddonContext
-
-        return AddonContext(
+    @property
+    def _builder(self) -> AgentRunBuilder:
+        return AgentRunBuilder(
             config=self.config,
-            ctx_id=int(ctx_id) if ctx_id else None,
-            user_id=int(user_id) if user_id else None,
-            user_role=user_role,
-            agent_name=agent_name,
-            task_id=task_id,
+            bot_info=self.bot_info,
+            build_prompt=self.runtime.build_prompt,
+            build_tool_manager=self.runtime.build_tool_manager,
+            build_subprocess_env=self.runtime.build_subprocess_env,
+            build_capability_context=self.runtime.build_capability_context,
+            resolve_docker=self.runtime.resolve_docker,
+            docker_home_info=self.runtime.docker_home_info,
+            needs_docker=self.runtime.needs_docker,
+            has_vision=self.runtime.has_vision,
+            docker=self.runtime.docker,
         )
 
-    @staticmethod
-    def _new_task_id() -> str:
-        return uuid.uuid4().hex
-
-    def _build_subprocess_env(
-        self,
-        *,
-        task_id: str,
-        ctx_id: int | str = "",
-        user_id: int | str = "",
-        user_role: str = "",
-        agent_name: str = "",
-        docker_mount: str = "",
-        docker_home: str = "",
-        docker_home_dir: str = "",
-    ) -> dict:
-        """Build a subprocess env snapshot with the correct per-run values."""
-        import os as _os
-        e = dict(_os.environ)
-        e[env.TASK_ID] = task_id
-        e[env.IN_BOT] = "1"
-        _set_or_pop(e, env.BOT_CTX, str(ctx_id) if ctx_id else "")
-        _set_or_pop(e, env.USER_ID, str(user_id) if user_id else "")
-        _set_or_pop(e, env.USER_ROLE, user_role)
-        _set_or_pop(e, env.AGENT_NAME, agent_name)
-        _set_or_pop(e, env.DOCKER_HOST_MOUNT, docker_mount)
-        _set_or_pop(e, env.DOCKER_HOME_HOST_DIR, docker_home)
-        _set_or_pop(e, env.DOCKER_HOME_DIR, docker_home_dir)
-        return e
-
     async def _ensure_init(self) -> None:
-        if self._initialized:
-            return
-        try:
-            from yuuagents.init import setup
-            import json
-            import msgspec
-            from yuuagents.config import Config as YuuagentsConfig
-            from yuubot import config as yuubot_config
-
-            base_data = json.loads(msgspec.json.encode(YuuagentsConfig()))
-            merged_data = yuubot_config._deep_merge(base_data, self.config.yuuagents)
-            cfg = msgspec.convert(merged_data, YuuagentsConfig)
-            await setup(cfg)
-            self._initialized = True
-
-            if self._any_agent_needs_docker():
-                try:
-                    from yuuagents.daemon.docker import DockerManager
-
-                    self._docker = DockerManager(image=cfg.docker.image)
-                    await self._docker.start()
-                    logger.info("Docker initialized for AgentRunner")
-                except Exception:
-                    logger.opt(exception=True).warning(
-                        "Docker not available, execute_bash will not work",
-                    )
-                    self._docker = None
-            else:
-                logger.info("No agent uses docker tools, skipping Docker initialization")
-        except ImportError:
-            logger.warning("yuuagents not installed, agent features disabled")
-        except Exception:
-            logger.exception("Failed to initialize yuuagents")
+        await self.runtime.ensure_init()
 
     async def stop(self) -> None:
-        """Shut down Docker and release resources."""
-        if self._docker is not None:
-            await self._docker.stop()
-            self._docker = None
+        await self.runtime.stop()
 
-    def get_active_flow(self, ctx_id: int):
-        """Return running root flow for ctx, or None."""
-        return self._active_flows.get(ctx_id)
+    def _make_llm(self, agent_name: str):
+        """Compatibility shim for tests and older call sites."""
+        return self.runtime.make_llm(agent_name)
+
+    def get_active_flow(self, ctx_id: int) -> object | None:
+        active = self._active_runs_by_ctx.get(ctx_id)
+        return None if active is None else active.flow
 
     def cancel_ctx(self, ctx_id: int) -> bool:
-        """Cancel the active flow for a ctx. Returns True if cancelled."""
-        from yuuagents.flow import FlowStatus
-
-        flow = self._active_flows.pop(ctx_id, None)
-        if flow is None:
+        active = self._active_runs_by_ctx.pop(ctx_id, None)
+        if active is None or active.flow is None:
             return False
-        if flow.task is not None and not flow.task.done():
-            flow.task.cancel()
-        flow.status = FlowStatus.CANCELLED
+        self._active_runs_by_runtime.pop(active.runtime_id, None)
+        if active.flow.task is not None and not active.flow.task.done():
+            active.flow.task.cancel()
+        active.flow.status = FlowStatus.CANCELLED
         logger.info("Flow cancelled for ctx={}", ctx_id)
         return True
 
-    async def _resolve_docker(self, task_id: str) -> tuple[str, str]:
-        """Return (workdir, container_id) from Docker, or fallback."""
-        if self._docker is not None:
-            container_id = await self._docker.resolve(task_id=task_id)
-            return self._docker.workdir, container_id
-        from pathlib import Path
-
-        return str(Path.home()), ""
-
-    async def _docker_home_info(self, container_id: str) -> tuple[str, str, str]:
-        """Return docker mount metadata for skill path translation."""
-        if self._docker is None or not container_id:
-            return "", "", ""
-
-        docker_mount = "/mnt/host"
-        container_home = self._docker.container_home
-        host_home_dir = await self._docker.host_home_dir(container_id)
-        return docker_mount, host_home_dir, container_home
-
     async def summarize(self, history: list, agent_name: str = "main") -> str:
-        """Generate a compact handoff note from session history using a cheap LLM."""
-        from yuubot.daemon.summarizer import summarize as _summarize
+        from yuubot.daemon.summarizer import summarize as summarize_history
 
         llm = make_summary_llm(self.config)
-        return await _summarize(history, llm)
+        return await summarize_history(history, llm)
 
     async def curate(self, history: list, ctx_id: int, user_id: int) -> None:
-        """Run mem_curator agent to update long-term memories after a session rollover."""
         agent_name = "mem_curator"
         if agent_name not in CHARACTER_REGISTRY:
             logger.debug("mem_curator not configured, skipping")
@@ -260,69 +95,26 @@ class AgentRunner:
             f"对话内容：\n{render_for_curator(history)}\n\n"
             f"ctx_id: {ctx_id}\n"
         )
-        subprocess_env = self._build_subprocess_env(
-            task_id="", ctx_id=ctx_id, user_id=user_id, user_role="MASTER",
+        base_env = SubprocessEnv(
+            self.runtime.build_subprocess_env(
+                task_id="",
+                ctx_id=ctx_id,
+                user_id=user_id,
+                user_role="MASTER",
+            )
+        )
+        turn = self._builder.build_delegated_turn(
+            agent_name=agent_name,
+            first_user_message=task,
+            parent_env=base_env,
         )
         try:
-            await self._run_agent(agent_name, task, subprocess_env=subprocess_env)
+            await self._run_simple_turn(turn)
         except Exception:
             logger.exception("mem_curator failed for ctx={}", ctx_id)
 
-    def _get_runtime(self, agent_name: str) -> RuntimeInfo:
-        """Build RuntimeInfo from Character fields, falling back to YAML."""
-        char = CHARACTER_REGISTRY.get(agent_name)
-        provider_name = char.provider if char and char.provider else ""
-        model = char.model if char and char.model else ""
-
-        if not provider_name or not model:
-            agents = self.config.yuuagents.get("agents", {})
-            agent_cfg = agents.get(agent_name, {})
-            if not provider_name:
-                provider_name = agent_cfg.get("provider", "")
-            if not model:
-                model = agent_cfg.get("model", "")
-
-        providers = self.config.yuuagents.get("providers", {})
-        provider_cfg = providers.get(provider_name, {})
-        models_cfg = provider_cfg.get("models", {})
-        model_cfg = models_cfg.get(model, {})
-        supports_vision = bool(model_cfg.get("vision", False))
-
-        return RuntimeInfo(
-            provider=provider_name,
-            model=model,
-            supports_vision=supports_vision,
-        )
-
-    def _has_vision(self, agent_name: str) -> bool:
-        """Check if the agent's model supports vision."""
-        return self._get_runtime(agent_name).supports_vision
-
-    def _build_prompt(self, agent_name: str):
-        """Build PromptSpec and SimplePromptBuilder for an agent."""
-        char = get_character(agent_name)
-        runtime = self._get_runtime(agent_name)
-        prompt_spec = build_prompt_spec(char, runtime, self.config.skill_paths)
-        prompt_builder = build_system_prompt(prompt_spec)
-        return prompt_spec, prompt_builder
-
     @staticmethod
-    def _needs_docker(tools: list[str]) -> bool:
-        """Return True if the tool list includes any docker-dependent tool."""
-        return bool(_DOCKER_TOOLS & set(tools))
-
-    def _any_agent_needs_docker(self) -> bool:
-        """Return True if any registered character uses docker-dependent tools."""
-        for char in CHARACTER_REGISTRY.values():
-            if _DOCKER_TOOLS & set(char.spec.tools):
-                return True
-        return False
-
-    @staticmethod
-    def _last_assistant_text(agent) -> str:
-        """Extract last assistant text from agent history."""
-        from typing import Any
-
+    def _last_assistant_text(agent: Any) -> str:
         for msg in reversed(agent.history):
             role: str | None = None
             items: list[Any] | None = None
@@ -330,108 +122,203 @@ class AgentRunner:
                 role, items = msg
             if role != "assistant" or not isinstance(items, list):
                 continue
-            text_parts = [item for item in items if isinstance(item, str)]
-            text = "".join(text_parts).strip()
+            text = "".join(item for item in items if isinstance(item, str)).strip()
             if text:
                 return text
         return ""
+
+    @staticmethod
+    def _build_continuation(session_history: list, bundle: TaskBundle) -> tuple[list, str]:
+        """Merge or append new user message into session history.
+
+        Returns (new_history, trigger) where trigger is what gets logged to the trace.
+        Merges into the last user message when both sides are plain text (avoids
+        consecutive user turns that confuse some LLMs).
+        """
+        history = list(session_history)
+        if (
+            history
+            and isinstance(history[-1], tuple)
+            and history[-1][0] == "user"
+            and len(history[-1]) == 2
+            and isinstance(history[-1][1], list)
+            and not bundle.is_multimodal
+            and len(bundle.user_items) == 1
+            and isinstance(bundle.user_items[0], str)
+            and history[-1][1]
+            and isinstance(history[-1][1][0], str)
+        ):
+            merged = f"{history[-1][1][0]}\n\n{bundle.user_items[0]}"
+            history[-1] = ("user", [merged])
+            return history, merged
+        else:
+            history.append(("user", bundle.user_items))
+            trigger = bundle.user_items[0] if bundle.user_items and isinstance(bundle.user_items[0], str) else bundle.task_text
+            return history, trigger
+
+    def _register_active_run(
+        self,
+        *,
+        runtime_id: str,
+        agent_name: str,
+        subprocess_env: SubprocessEnv,
+        flow: object | None,
+        ctx_id: int | None,
+    ) -> None:
+        active = ActiveRun(
+            runtime_id=runtime_id,
+            agent_name=agent_name,
+            subprocess_env=subprocess_env,
+            flow=flow,
+        )
+        self._active_runs_by_runtime[runtime_id] = active
+        if ctx_id is not None:
+            self._active_runs_by_ctx[ctx_id] = active
+
+    def _unregister_active_run(self, runtime_id: str, ctx_id: int | None) -> None:
+        self._active_runs_by_runtime.pop(runtime_id, None)
+        if ctx_id is None:
+            return
+        active = self._active_runs_by_ctx.get(ctx_id)
+        if active is not None and active.runtime_id == runtime_id:
+            self._active_runs_by_ctx.pop(ctx_id, None)
+
+    async def _launch(
+        self,
+        *,
+        turn: TurnContext,
+        task_id: str,
+        runtime_id: str,
+        tool_names: list[str] | None = None,
+        session_history: list | None = None,
+        delegate_depth: int = 0,
+        output_buffer: object | None = None,
+        track_ctx: bool = False,
+    ) -> Any:
+        bundle = await self._builder.build_task_bundle(turn)
+        run_ctx = await self._builder.build_run_context(
+            turn=turn,
+            task_id=task_id,
+            runtime_id=runtime_id,
+            tool_names=tool_names,
+            delegate_depth=delegate_depth,
+            output_buffer=output_buffer,
+        )
+        agent = Agent(
+            config=AgentConfig(
+                task_id=task_id,
+                agent_id=runtime_id,
+                persona=run_ctx.persona,
+                tools=run_ctx.tool_manager,
+                llm=self._make_llm(turn.agent_name),
+                prompt_builder=run_ctx.prompt_builder,
+                max_steps=run_ctx.prompt_spec.agent_spec.max_steps,
+                soft_timeout=run_ctx.prompt_spec.agent_spec.soft_timeout,
+                silence_timeout=run_ctx.prompt_spec.agent_spec.silence_timeout,
+                compressor=make_compressor(turn.agent_name, self.config),
+            )
+        )
+        context = AgentContext(
+            task_id=task_id,
+            agent_id=runtime_id,
+            workdir=run_ctx.docker_binding.workdir,
+            docker_container=run_ctx.docker_binding.container_id,
+            delegate_depth=delegate_depth,
+            manager=self,
+            docker=run_ctx.docker,
+            skill_paths=self.config.skill_paths,
+            subprocess_env=run_ctx.subprocess_env.values,
+            current_output_buffer=output_buffer,
+            output_buffer=output_buffer,
+            addon_context=run_ctx.addon_context,
+        )
+        flow_manager = None
+        root_flow = None
+        ctx_id = turn.message.ctx_id if track_ctx else None
+        if track_ctx:
+            flow_manager = FlowManager()
+            root_flow = flow_manager.create(FlowKind.AGENT, name=runtime_id)
+        self._register_active_run(
+            runtime_id=runtime_id,
+            agent_name=turn.agent_name,
+            subprocess_env=run_ctx.subprocess_env,
+            flow=root_flow,
+            ctx_id=ctx_id,
+        )
+        run_kwargs: dict[str, Any] = {"ctx": context}
+        if flow_manager is not None and root_flow is not None:
+            run_kwargs["flow_manager"] = flow_manager
+            run_kwargs["root_flow"] = root_flow
+        try:
+            if turn.is_continuation and session_history is not None:
+                # Continuation: merge or append new message, then resume from
+                # the computed history. Caller owns all history content.
+                history, trigger = self._build_continuation(session_history, bundle)
+                agent.state.history = history
+                agent.state.task = bundle.task_text
+                agent.state.status = AgentStatus.RUNNING
+                await resume_agent(agent, trigger, **run_kwargs)
+            elif bundle.is_multimodal:
+                # Fresh multimodal start: build history with image items directly.
+                agent.state.history = [
+                    yuullm.system(agent.full_system_prompt),
+                    ("user", bundle.user_items),
+                ]
+                agent.state.task = bundle.task_text
+                agent.state.status = AgentStatus.RUNNING
+                await resume_agent(agent, bundle.task_text, **run_kwargs)
+            else:
+                await start_agent(agent, bundle.task_text, **run_kwargs)
+        finally:
+            self._unregister_active_run(runtime_id, ctx_id)
+        return agent
+
+    async def _run_simple_turn(
+        self,
+        turn: TurnContext,
+        *,
+        tool_names: list[str] | None = None,
+        delegate_depth: int = 0,
+        output_buffer: object | None = None,
+    ) -> str:
+        task_id = turn.task_id or self.runtime.new_task_id()
+        ctx_id = turn.message.ctx_id
+        runtime_id = f"agent-{turn.agent_name}-{ctx_id}" if ctx_id else f"agent-{turn.agent_name}-{task_id[:8]}"
+        agent = await self._launch(
+            turn=turn,
+            task_id=task_id,
+            runtime_id=runtime_id,
+            tool_names=tool_names,
+            delegate_depth=delegate_depth,
+            output_buffer=output_buffer,
+        )
+        return self._last_assistant_text(agent)
 
     async def _run_agent(
         self,
         agent_name: str,
         task: str,
         *,
-        subprocess_env: dict,
+        subprocess_env: dict[str, str],
         tool_names: list[str] | None = None,
         delegate_depth: int = 0,
-        output_buffer=None,
+        output_buffer: object | None = None,
     ) -> str:
-        """Launch a configured agent and return its last assistant text."""
-        import yuutools as yt
-        from yuuagents import Agent, tools as agent_tools
-        from yuuagents.agent import AgentConfig
-        from yuuagents.context import AgentContext
-        from yuuagents.loop import run as run_agent
-
         if agent_name not in CHARACTER_REGISTRY:
             raise ValueError(f"Unknown agent {agent_name!r}")
-
-        task_id = self._new_task_id()
-        runtime_id = f"agent-{agent_name}-{task_id[:8]}"
-        self._agent_name_map[runtime_id] = agent_name
-
-        prompt_spec, prompt_builder = self._build_prompt(agent_name)
-
-        names = tool_names if tool_names is not None else list(prompt_spec.tools)
-        tool_manager = self._build_tool_manager(names)
-
-        needs_docker = self._needs_docker(names)
-
-        if needs_docker:
-            workdir, container_id = await self._resolve_docker(task_id)
-        else:
-            from pathlib import Path
-            workdir, container_id = str(Path.home()), ""
-
-        docker_mount = docker_home = docker_home_dir = ""
-        if needs_docker:
-            docker_mount, docker_home, docker_home_dir = await self._docker_home_info(
-                container_id
-            )
-
         run_env = dict(subprocess_env)
-        run_env[env.TASK_ID] = task_id
-        run_env[env.IN_BOT] = "1"
         run_env[env.AGENT_NAME] = agent_name
-        _set_or_pop(run_env, env.DOCKER_HOST_MOUNT, docker_mount)
-        _set_or_pop(run_env, env.DOCKER_HOME_HOST_DIR, docker_home)
-        _set_or_pop(run_env, env.DOCKER_HOME_DIR, docker_home_dir)
-        self._agent_subprocess_env[runtime_id] = run_env
-
-        agent_spec = prompt_spec.agent_spec
-        persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
-        compressor = make_compressor(agent_name, self.config)
-        config = AgentConfig(
-            task_id=task_id,
-            agent_id=runtime_id,
-            persona=persona,
-            tools=tool_manager,
-            llm=self._make_llm(agent_name),
-            prompt_builder=prompt_builder,
-            max_steps=agent_spec.max_steps,
-            soft_timeout=agent_spec.soft_timeout,
-            silence_timeout=agent_spec.silence_timeout,
-            compressor=compressor,
-        )
-        agent = Agent(config=config)
-        addon_ctx = self._build_addon_context(
-            ctx_id=subprocess_env.get(env.BOT_CTX, ""),
-            user_id=subprocess_env.get(env.USER_ID, ""),
-            user_role=subprocess_env.get(env.USER_ROLE, ""),
+        turn = self._builder.build_delegated_turn(
             agent_name=agent_name,
-            task_id=task_id,
+            first_user_message=task,
+            parent_env=SubprocessEnv(run_env),
         )
-        context = AgentContext(
-            task_id=task_id,
-            agent_id=runtime_id,
-            workdir=workdir,
-            docker_container=container_id,
+        return await self._run_simple_turn(
+            turn,
+            tool_names=tool_names,
             delegate_depth=delegate_depth,
-            manager=self,
-            docker=self._docker if needs_docker else None,
-            cli_guard=self._cli_guard,
-            skill_paths=self.config.skill_paths,
-            subprocess_env=run_env,
-            current_output_buffer=output_buffer,
             output_buffer=output_buffer,
-            addon_context=addon_ctx,
         )
-
-        try:
-            await run_agent(agent, task=task, ctx=context)
-        finally:
-            self._agent_subprocess_env.pop(runtime_id, None)
-        return self._last_assistant_text(agent)
 
     async def delegate(
         self,
@@ -441,111 +328,31 @@ class AgentRunner:
         first_user_message: str,
         tools: list[str] | None,
         delegate_depth: int,
-        output_buffer=None,
+        output_buffer: object | None = None,
     ) -> str:
-        """DelegateManager protocol — run a subagent and return its response."""
-        from yuuagents.context import DelegateDepthExceededError
-
         if delegate_depth > 3:
             raise DelegateDepthExceededError(
-                max_depth=3, current_depth=delegate_depth, target_agent=agent,
+                max_depth=3,
+                current_depth=delegate_depth,
+                target_agent=agent,
             )
-
-        caller_name = self._agent_name_map.get(caller_agent, caller_agent)
-
+        parent = self._active_runs_by_runtime.get(caller_agent)
+        caller_name = caller_agent if parent is None else parent.agent_name
         allowed = set()
         caller_char = CHARACTER_REGISTRY.get(caller_name)
         if caller_char is not None:
             allowed.update(caller_char.spec.subagents)
-
         if agent not in allowed:
             raise ValueError(f"Agent {caller_name!r} is not allowed to delegate to {agent!r}")
-
-        parent_env = self._agent_subprocess_env.get(caller_agent, {})
+        parent_env = {} if parent is None else dict(parent.subprocess_env.values)
         return await self._run_agent(
             agent,
             first_user_message,
-            subprocess_env=dict(parent_env),
+            subprocess_env=parent_env,
             tool_names=tools,
             delegate_depth=delegate_depth,
             output_buffer=output_buffer,
         )
-
-    async def _build_task(
-        self,
-        match: MatchResult,
-        event: dict,
-        group_name: str = "",
-        *,
-        is_continuation: bool = False,
-        agent_name: str = "main",
-    ) -> str | list:
-        """Build agent task description from command match and event.
-
-        Returns str for text-only, or list[Item] when vision is enabled
-        and the message contains images.
-        """
-        from yuubot.core.onebot import to_inbound_message
-        from yuubot.skills.im.formatter import format_segments
-
-        ctx_id = event.get("ctx_id", "?")
-        segments = parse_segments(event.get("message", []))
-        msg_text = match.remaining or await format_segments(segments)
-
-        # Use render.py for the text portion
-        bot_name = await self.bot_info.bot_name()
-        inbound = to_inbound_message(event)
-
-        memory_hints = await render_memory_hints(
-            msg_text, int(ctx_id) if ctx_id != "?" else None,
-        )
-
-        rctx = RenderContext(
-            group_name=group_name,
-            bot_name=bot_name,
-            has_vision=self._has_vision(agent_name),
-            bot_qq=str(self.config.bot.qq),
-        )
-        policy = RenderPolicy()
-
-        text = await render_task(
-            inbound,
-            policy,
-            rctx,
-            is_continuation=is_continuation,
-            memory_hints=memory_hints,
-        )
-
-        # Vision: if the model supports vision and message has images,
-        # build multimodal content items
-        if not self._has_vision(agent_name):
-            return text
-
-        from yuubot.core.models import AtSegment as _AtSeg, ImageSegment
-
-        bot_qq = str(self.config.bot.qq)
-        segments = [s for s in segments if not (isinstance(s, _AtSeg) and s.qq == bot_qq)]
-
-        image_segments = [s for s in segments if isinstance(s, ImageSegment)]
-        for extra in event.get("_extra_events", []):
-            extra_segs = parse_segments(extra.get("message", []))
-            image_segments.extend(s for s in extra_segs if isinstance(s, ImageSegment))
-        if not image_segments:
-            return text
-
-        from yuullm import ImageItem, TextItem
-
-        items: list = [TextItem(type="text", text=text)]
-        for seg in image_segments:
-            url = ""
-            if seg.local_path:
-                url = _file_to_data_uri(seg.local_path)
-            elif seg.url:
-                url = seg.url
-            if url:
-                items.append(ImageItem(type="image_url", image_url={"url": url}))
-
-        return items if len(items) > 1 else text
 
     async def run(
         self,
@@ -555,298 +362,72 @@ class AgentRunner:
         agent_name: str = "main",
         user_role: str = "",
         session: object | None = None,
+        pending_messages: list[InboundMessage] | None = None,
+        handoff_text: str = "",
     ) -> tuple[list, int, str]:
-        """Passive mode: handle a command-triggered agent task.
-
-        Returns (history, total_tokens, task_id) for session management.
-        """
         await self._ensure_init()
-
-        try:
-            from yuuagents import Agent
-            from yuuagents.agent import AgentConfig
-            from yuuagents.loop import run as run_agent
-            from yuuagents.context import AgentContext
-        except ImportError:
-            logger.error("yuuagents not available, cannot run agent")
-            return [], 0, ""
-
-        ctx_id = event.get("ctx_id", 0)
-        user_id = event.get("user_id", 0)
-        is_continuation = session is not None and bool(
-            getattr(session, "history", None)
-        )
+        session_history = getattr(session, "history", None)
         task_id = (
-            session.task_id
-            if is_continuation and getattr(session, "task_id", "")
-            else self._new_task_id()
+            getattr(session, "task_id", "")
+            if session_history and getattr(session, "task_id", "")
+            else self.runtime.new_task_id()
         )
-
-        # Resolve group name for context
-        group_name = ""
-        if event.get("message_type") == "group":
-            group_name = await self.bot_info.group_name(event.get("group_id", 0))
-
-        # Build prompt via character system
-        prompt_spec, prompt_builder = self._build_prompt(agent_name)
-        agent_spec = prompt_spec.agent_spec
-        tool_names = list(prompt_spec.tools)
-
-        tool_manager = self._build_tool_manager(tool_names)
-
-        needs_docker = self._needs_docker(tool_names)
-
-        agent_id = f"yuubot-{agent_name}-{ctx_id}"
-        self._agent_name_map[agent_id] = agent_name
-
-        persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
-        compressor = make_compressor(agent_name, self.config)
-        config = AgentConfig(
-            task_id=task_id,
-            agent_id=agent_id,
-            persona=persona,
-            tools=tool_manager,
-            llm=self._make_llm(agent_name),
-            prompt_builder=prompt_builder,
-            max_steps=agent_spec.max_steps,
-            soft_timeout=agent_spec.soft_timeout,
-            silence_timeout=agent_spec.silence_timeout,
-            compressor=compressor,
-        )
-
-        agent = Agent(config=config)
-        task = await self._build_task(
-            match,
-            event,
-            group_name=group_name,
-            is_continuation=is_continuation,
+        turn = await self._builder.build_turn_context(
+            event=event,
             agent_name=agent_name,
-        )
-
-        # Inject handoff note from a rolled-over session into the task text
-        handoff_note = getattr(session, "handoff_note", "") if session else ""
-        if handoff_note and not is_continuation:
-            note_block = f"<上轮对话摘要>\n{handoff_note}\n</上轮对话摘要>\n\n"
-            if isinstance(task, str):
-                task = note_block + task
-            elif (
-                isinstance(task, list)
-                and task
-                and isinstance(task[0], dict)
-                and task[0].get("type") == "text"
-            ):
-                task[0] = {"type": "text", "text": note_block + task[0]["text"]}
-
-        # Determine text form for run_agent's task param (always str)
-        task_str = task if isinstance(task, str) else task[0]["text"] if task else ""
-        is_multimodal = isinstance(task, list)
-
-        if is_continuation:
-            from yuuagents.agent import AgentStatus
-
-            agent.state.history = list(session.history)
-            user_items = task if is_multimodal else [task_str]
-            agent.state.history.append(("user", user_items))
-            agent.state.status = AgentStatus.RUNNING
-            agent.state.task = task_str
-        elif is_multimodal:
-            import yuullm
-            from yuuagents.agent import AgentStatus
-
-            agent.state.history = [
-                yuullm.system(agent.full_system_prompt),
-                ("user", task),
-            ]
-            agent.state.status = AgentStatus.RUNNING
-            agent.state.task = task_str
-        if needs_docker:
-            workdir, container_id = await self._resolve_docker(task_id)
-        else:
-            from pathlib import Path
-
-            workdir, container_id = str(Path.home()), ""
-
-        docker_mount = ""
-        docker_home = ""
-        docker_home_dir = ""
-        if needs_docker:
-            docker_mount, docker_home, docker_home_dir = await self._docker_home_info(
-                container_id
-            )
-
-        subprocess_env = self._build_subprocess_env(
-            task_id=task_id,
-            ctx_id=ctx_id,
-            user_id=user_id,
             user_role=user_role,
-            agent_name=agent_name,
-            docker_mount=docker_mount,
-            docker_home=docker_home,
-            docker_home_dir=docker_home_dir,
-        )
-        self._agent_subprocess_env[agent_id] = subprocess_env
-
-        addon_ctx = self._build_addon_context(
-            ctx_id=ctx_id,
-            user_id=user_id,
-            user_role=user_role,
-            agent_name=agent_name,
+            text_override=match.remaining,
+            handoff_text=handoff_text,
+            is_continuation=bool(session_history),
+            pending_messages=pending_messages,
             task_id=task_id,
-        )
-        context = AgentContext(
-            task_id=task_id,
-            agent_id=agent_id,
-            workdir=workdir,
-            docker_container=container_id,
-            docker=self._docker if needs_docker else None,
-            manager=self,
-            cli_guard=self._cli_guard,
-            skill_paths=self.config.skill_paths,
-            subprocess_env=subprocess_env,
-            addon_context=addon_ctx,
-        )
-
-        from yuuagents.flow import FlowManager, FlowKind
-
-        flow_manager = FlowManager()
-        root_flow = flow_manager.create(FlowKind.AGENT, name=agent_id)
-        self._active_flows[ctx_id] = root_flow
-
-        logger.info(
-            "agent start: ctx={} agent={} task_id={} continuation={}",
-            ctx_id, agent_name, task_id, is_continuation,
         )
         try:
-            if is_continuation or is_multimodal:
-                await run_agent(agent, task=task_str, ctx=context, resume=True,
-                                flow_manager=flow_manager, root_flow=root_flow)
-            else:
-                await run_agent(agent, task=task_str, ctx=context,
-                                flow_manager=flow_manager, root_flow=root_flow)
+            agent = await self._launch(
+                turn=turn,
+                task_id=task_id,
+                runtime_id=f"yuubot-{agent_name}-{turn.message.ctx_id}",
+                session_history=list(session_history) if session_history else None,
+                track_ctx=True,
+            )
         except BaseException:
-            logger.exception("agent failed: ctx={} agent={} task_id={}", ctx_id, agent_name, task_id)
-        finally:
-            self._active_flows.pop(ctx_id, None)
-            self._agent_subprocess_env.pop(agent_id, None)
-
-        logger.info(
-            "agent done: ctx={} agent={} task_id={} tokens={}",
-            ctx_id, agent_name, task_id, agent.total_tokens,
-        )
+            logger.exception("agent failed: ctx={} agent={} task_id={}", turn.message.ctx_id, agent_name, task_id)
+            return [], 0, task_id
         return list(agent.history), agent.total_tokens, task_id
 
     async def run_scheduled(
-        self, task: str, ctx_id: int | None, *, agent_name: str = "main"
+        self,
+        task: str,
+        ctx_id: int | None,
+        *,
+        agent_name: str = "main",
     ) -> None:
-        """Active mode: run a scheduled agent task."""
         await self._ensure_init()
-
-        try:
-            from yuuagents import Agent
-            from yuuagents.agent import AgentConfig
-            from yuuagents.loop import run as run_agent
-            from yuuagents.context import AgentContext
-        except ImportError:
-            logger.error("yuuagents not available")
-            return
-
-        task_id = self._new_task_id()
-
-        prompt_spec, prompt_builder = self._build_prompt(agent_name)
-        agent_spec = prompt_spec.agent_spec
-        tool_names = list(prompt_spec.tools)
-
-        tool_manager = self._build_tool_manager(tool_names)
-
-        needs_docker = self._needs_docker(tool_names)
-
+        task_id = self.runtime.new_task_id()
         ctx_str = f"ctx {ctx_id}" if ctx_id else "无指定 ctx"
-        full_task = f"""定时任务触发。
-任务: {task}
-目标: {ctx_str}
-
-如需发送消息，使用 im send 命令发送到对应 ctx。
-"""
-
-        agent_id = f"yuubot-cron-{agent_name}-{ctx_id or 'global'}"
-        self._agent_name_map[agent_id] = agent_name
-
-        persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
-        compressor = make_compressor(agent_name, self.config)
-        config = AgentConfig(
-            task_id=task_id,
-            agent_id=agent_id,
-            persona=persona,
-            tools=tool_manager,
-            llm=self._make_llm(agent_name),
-            prompt_builder=prompt_builder,
-            max_steps=agent_spec.max_steps,
-            soft_timeout=agent_spec.soft_timeout,
-            silence_timeout=agent_spec.silence_timeout,
-            compressor=compressor,
+        full_task = (
+            "定时任务触发。\n"
+            f"任务: {task}\n"
+            f"目标: {ctx_str}\n\n"
+            "如需发送消息，使用 im send 命令发送到对应 ctx。\n"
         )
-
-        agent = Agent(config=config)
-        if needs_docker:
-            workdir, container_id = await self._resolve_docker(task_id)
-        else:
-            from pathlib import Path
-
-            workdir, container_id = str(Path.home()), ""
-
-        docker_mount = ""
-        docker_home = ""
-        docker_home_dir = ""
-        if needs_docker:
-            docker_mount, docker_home, docker_home_dir = await self._docker_home_info(
-                container_id
+        base_env = SubprocessEnv(
+            self.runtime.build_subprocess_env(
+                task_id=task_id,
+                ctx_id=ctx_id or "",
+                agent_name=agent_name,
             )
-
-        subprocess_env = self._build_subprocess_env(
-            task_id=task_id,
-            ctx_id=ctx_id or "",
+        )
+        turn = self._builder.build_delegated_turn(
             agent_name=agent_name,
-            docker_mount=docker_mount,
-            docker_home=docker_home,
-            docker_home_dir=docker_home_dir,
+            first_user_message=full_task,
+            parent_env=base_env,
         )
-        self._agent_subprocess_env[agent_id] = subprocess_env
-
-        addon_ctx = self._build_addon_context(
-            ctx_id=ctx_id or "",
-            agent_name=agent_name,
-            task_id=task_id,
-        )
-        context = AgentContext(
-            task_id=task_id,
-            agent_id=agent_id,
-            workdir=workdir,
-            docker_container=container_id,
-            docker=self._docker if needs_docker else None,
-            manager=self,
-            cli_guard=self._cli_guard,
-            skill_paths=self.config.skill_paths,
-            subprocess_env=subprocess_env,
-            addon_context=addon_ctx,
-        )
-
         try:
-            await run_agent(agent, task=full_task, ctx=context)
+            await self._launch(
+                turn=turn,
+                task_id=task_id,
+                runtime_id=f"yuubot-cron-{agent_name}-{ctx_id}" if ctx_id else f"yuubot-cron-{agent_name}-{task_id[:8]}",
+            )
         except BaseException:
             logger.exception("Scheduled agent failed: {}", task)
-        finally:
-            self._agent_subprocess_env.pop(agent_id, None)
-
-    # ── Backward-compat aliases ─────────────────────────────────
-
-    def _make_llm(self, agent_name: str = "main"):
-        """Backward-compat alias for llm_factory.make_llm()."""
-        return make_llm(agent_name, self.config)
-
-    async def _get_bot_name(self) -> str:
-        """Backward-compat alias for bot_info.bot_name()."""
-        return await self.bot_info.bot_name()
-
-    def _replace_command_prefix(self, segments: list, bot_name: str) -> list:
-        """Backward-compat alias for render.replace_command_prefix()."""
-        return replace_command_prefix(segments, bot_name)

@@ -181,6 +181,11 @@ bot 要向 LLM 暴露一组内建能力，例如：
 2. 它有哪些 action。
 3. 每个 action 通过 `cap_call_cli` 调用时的 raw CLI usage 是什么。
 
+这些信息必须集中在一份 machine-readable contract 里，而不是分散在 README、prompt 文案和代码注释中重复维护。
+因为不同 agent 看到的 action 集可能不同，所以系统还必须支持“按 agent 过滤 action 后再生成 prompt / 文档”。
+但这套过滤只作用于 agent 运行时；人类通过 `ybot ...` 直接调用 capability CLI 时，始终视为运维者，拥有完整可见性与最高权限。
+Capability CLI 应由 capability 自身的 contract 自动注册，避免为每个 action 再手写一份 click 命令。新增 capability 时，程序员只需实现 capability runtime 并提供 `contract.yaml`。
+
 ### 3.4 LLM 输入透明
 
 这是本轮最重要的非功能需求之一。

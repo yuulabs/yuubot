@@ -1,6 +1,5 @@
 """OneBot V11 message parsing and construction."""
 
-import json
 
 import msgspec
 
@@ -12,6 +11,7 @@ from yuubot.core.models import (
     MetaEvent,
     NoticeEvent,
     ReplySegment,
+    ForwardSegment,
     Segment,
     TextSegment,
 )
@@ -48,6 +48,11 @@ def parse_segments(raw_segments: list[dict]) -> Message:
             result.append(AtSegment(qq=str(data.get("qq", ""))))
         elif t == "reply":
             result.append(ReplySegment(id=str(data.get("id", ""))))
+        elif t in {"forward", "node"} and data.get("id"):
+            result.append(ForwardSegment(
+                id=str(data.get("id", "")),
+                summary=str(data.get("summary", "")),
+            ))
         else:
             # Unknown segment type — store as text placeholder
             result.append(TextSegment(text=f"[{t}]"))
@@ -71,6 +76,8 @@ def segments_to_onebot(segments: Message) -> list[dict]:
             result.append({"type": "at", "data": {"qq": seg.qq}})
         elif isinstance(seg, ReplySegment):
             result.append({"type": "reply", "data": {"id": seg.id}})
+        elif isinstance(seg, ForwardSegment):
+            result.append({"type": "forward", "data": {"id": seg.id, "summary": seg.summary}})
     return result
 
 

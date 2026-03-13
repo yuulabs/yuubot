@@ -17,9 +17,15 @@ from yuubot.core.models import MessageEvent
 from yuubot.core.onebot import parse_event
 from yuubot.recorder.api import create_api
 from yuubot.recorder.downloader import MediaDownloader
+from yuubot.recorder.forward import ForwardResolver, _render_forward_log_lines
 from yuubot.recorder.relay import RelayServer
 from yuubot.recorder.store import Store
 from yuubot.log import setup as setup_logging
+
+
+def _log_raw_event(raw: dict) -> None:
+    """Log the original NapCat payload for replay/debugging."""
+    logger.debug("NapCat raw event: {}", json.dumps(raw, ensure_ascii=False, sort_keys=True))
 
 
 def _inject_local_paths(raw_segments: list[dict], media_paths: list[str]) -> None:
@@ -88,9 +94,10 @@ class NapCatWSServer:
             logger.info("NapCat disconnected")
 
     async def _on_event(self, raw: dict) -> None:
+        _log_raw_event(raw)
         event = parse_event(raw)
         if isinstance(event, MessageEvent):
-            ctx_id, media_paths = await self.store.save(event)
+            ctx_id, media_paths, forward_logs = await self.store.save(event)
             # Enrich raw data with ctx_id and local media paths before relaying
             raw["ctx_id"] = ctx_id
 
@@ -108,6 +115,9 @@ class NapCatWSServer:
 
             if media_paths:
                 _inject_local_paths(raw.get("message", []), media_paths)
+            for item in forward_logs:
+                for line in _render_forward_log_lines(item["forward_id"], item["nodes"], max_depth=3):
+                    logger.info(line)
             await self.relay.broadcast(raw)
         elif event is not None:
             # Non-message events: relay as-is
@@ -125,7 +135,8 @@ async def run_recorder(config_path: str | None = None) -> None:
     muted_ctxs: set[int] = set()
 
     downloader = MediaDownloader(cfg.recorder.media_dir)
-    store = Store(ctx_mgr=ctx_mgr, downloader=downloader)
+    forward_resolver = ForwardResolver(cfg.recorder.napcat_http)
+    store = Store(ctx_mgr=ctx_mgr, downloader=downloader, forward_resolver=forward_resolver)
     relay = RelayServer()
     napcat_ws = NapCatWSServer(
         store=store, relay=relay, muted_ctxs=muted_ctxs, entries=cfg.bot.entries,
@@ -162,5 +173,6 @@ async def run_recorder(config_path: str | None = None) -> None:
         await napcat_ws.stop()
         await relay.stop()
         await downloader.close()
+        await forward_resolver.close()
         await close_db()
         logger.info("Recorder stopped.")

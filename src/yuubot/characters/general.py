@@ -1,6 +1,6 @@
 """通用助手 — general-purpose system agent (master only)."""
 
-from yuubot.prompt import AgentSpec, Character
+from yuubot.prompt import AgentSpec, CapVisibility, Character
 from yuubot.characters import (
     SLEEP_MECHANISM,
     bootstrap_section,
@@ -11,7 +11,7 @@ from yuubot.characters import (
 
 _spec = AgentSpec(
     tools=[
-        "execute_bash", "execute_addon_cli",
+        "execute_bash", "call_cap_cli",
         "write_file", "edit_file", "read_file",
         "sleep", "delegate",
         "check_running_tool", "cancel_running_tool",
@@ -22,8 +22,11 @@ _spec = AgentSpec(
         SLEEP_MECHANISM,
         bootstrap_section("/home/yuu/bootstrap.md"),
     ],
-    addons=["*"],
-    expand_addons=["im"],
+    caps=["*"],
+    expand_caps=["im"],
+    cap_visibility={
+        "mem": CapVisibility(mode="include", actions=("save", "recall", "show", "config")),
+    },
     subagents=["coder", "researcher"],
     soft_timeout=60,
     silence_timeout=120,

@@ -1,12 +1,10 @@
 """Built-in commands: /bot, /help, /llm, /new, /cost, /ping."""
 
-import json
 import re
 import sqlite3
 import time
 from pathlib import Path
 
-import httpx
 
 from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import Command, RootCommand
@@ -290,7 +288,7 @@ async def _exec_hhsh(remaining: str, event: dict, deps: dict) -> str | None:
     text = remaining.strip()
     if not text:
         return "用法: /hhsh <缩写>，例如: /hhsh yyds"
-    from yuubot.skills.hhsh.cli import guess
+    from yuubot.capabilities.hhsh import guess
 
     try:
         result = await guess(text)
@@ -314,42 +312,37 @@ async def _exec_close(remaining: str, event: dict, deps: dict) -> str | None:
 def _sanitize_agent_name(raw: str) -> str:
     """Strip ctx_id / hex suffix from agent names for clean aggregation.
 
-    ``yuubot-{agent_name}-{ctx_id}`` → ``yuubot ({agent_name})``,
-    ``yuubot-cron-{agent_name}-{ctx_id}`` → ``yuubot-cron ({agent_name})``,
-    ``agent-{name}-{hex8}`` / ``delegate-{name}-{hex8}`` → strip hex suffix.
-    Legacy format (no agent_name): ``yuubot-3`` → ``yuubot``.
+    ``yuubot-{name}-{ctx_id}`` → ``yuubot ({name})``,
+    ``yuubot-cron-{name}-{ctx_id}`` → ``yuubot-cron ({name})``,
+    ``agent-{name}-{ctx_id|hex8}`` / ``delegate-{name}-{...}`` → ``{prefix}-{name}``.
+    Legacy: ``yuubot-{ctx_id}`` → ``yuubot``.
     """
     if not raw:
         return "unknown"
-    # yuubot-cron-{agent_name}-{ctx_id}
+
+    def _strip_suffix(name: str) -> str:
+        """Strip trailing -<digits> or -<hex8> suffix."""
+        parts = name.rsplit("-", 1)
+        if len(parts) == 2:
+            suf = parts[1]
+            if suf.isdigit() or (len(suf) == 8 and all(c in "0123456789abcdefABCDEF" for c in suf)):
+                return parts[0]
+        return name
+
     if raw.startswith("yuubot-cron-"):
         rest = raw[len("yuubot-cron-"):]
-        # new format: rest = "{agent_name}-{ctx_id}"
-        parts = rest.rsplit("-", 1)
-        if len(parts) == 2 and parts[1].isdigit():
-            return f"yuubot-cron ({parts[0]})"
-        # legacy: rest = "{ctx_id}"
-        return "yuubot-cron"
-    # yuubot-{agent_name}-{ctx_id}
+        return f"yuubot-cron ({_strip_suffix(rest)})"
     if raw.startswith("yuubot-"):
         rest = raw[len("yuubot-"):]
-        # new format: rest = "{agent_name}-{ctx_id}"
-        parts = rest.rsplit("-", 1)
-        if len(parts) == 2 and parts[1].isdigit():
-            return f"yuubot ({parts[0]})"
-        # legacy: rest = "{ctx_id}" (just a number)
+        stripped = _strip_suffix(rest)
+        if stripped != rest:
+            return f"yuubot ({stripped})"
+        # legacy: rest = "{ctx_id}" with no agent name part
         if rest.isdigit():
             return "yuubot"
-        return "yuubot"
-    # agent-{name}-{hex8} or delegate-{name}-{hex8} → strip hex suffix
+        return f"yuubot ({rest})"
     if raw.startswith(("agent-", "delegate-")):
-        parts = raw.rsplit("-", 1)
-        if len(parts) == 2 and len(parts[1]) == 8:
-            try:
-                int(parts[1], 16)
-                return parts[0]
-            except ValueError:
-                pass
+        return _strip_suffix(raw)
     return raw
 
 
@@ -443,17 +436,29 @@ async def _exec_cost(remaining: str, event: dict, deps: dict) -> str | None:
     if not rows:
         return f"近 {days} 天没有开销记录"
 
-    header = f"📊 近 {days} 天开销" + (" (全局)" if show_all else "") + ":"
-    lines = [header]
-    total = 0.0
+    # Re-aggregate by sanitized agent name (collapse model variants)
+    from collections import defaultdict
+
+    agent_costs: dict[str, float] = defaultdict(float)
+    agent_counts: dict[str, int] = defaultdict(int)
     for row in rows:
         agent = _sanitize_agent_name(row["agent"])
-        model = row["llm_model"] or "unknown"
-        cost = row["total_cost"] or 0.0
-        count = row["task_count"] or 0
-        total += cost
-        lines.append(f"  {agent} ({model}): ${cost:.4f} / {count} 次")
+        agent_costs[agent] += row["total_cost"] or 0.0
+        agent_counts[agent] += row["task_count"] or 0
+
+    sorted_agents = sorted(agent_costs.items(), key=lambda x: -x[1])
+    total = sum(agent_costs.values())
+
+    header = f"近 {days} 天开销" + (" (全局)" if show_all else "") + ":"
+    lines = [header]
+    top_n = 3
+    for agent, cost in sorted_agents[:top_n]:
+        count = agent_counts[agent]
+        lines.append(f"  {agent}: ${cost:.4f} / {count} 次")
+    rest = sorted_agents[top_n:]
+    if rest:
+        other_cost = sum(c for _, c in rest)
+        lines.append(f"  Other ({len(rest)} 项): ${other_cost:.4f}")
     lines.append("  ──────────")
     lines.append(f"  合计: ${total:.4f}")
     return "\n".join(lines)
-

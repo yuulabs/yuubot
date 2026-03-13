@@ -2,7 +2,10 @@
 
 from typing import Any
 
+import yuutools as yt
 from loguru import logger
+from yuuagents import Agent, AgentContext, start_agent
+from yuuagents.agent import AgentConfig, SimplePromptBuilder
 
 _SYSTEM_PROMPT = (
     "你是一个对话摘要助手。根据提供的对话历史，生成一份简洁的工作交接摘要，"
@@ -22,6 +25,26 @@ def extract_original_task(history: list[Any]) -> str:
             texts = [item for item in items if isinstance(item, str)]
             return "".join(texts)[:600]
     return ""
+
+
+def compact_original_task(history: list[Any]) -> str:
+    """Return a compact original request suitable for handoff-first rendering."""
+    original = extract_original_task(history).strip()
+    return original[:1200]
+
+
+def build_summary_prompt(task: str, summary: str, *, should_continue: bool) -> str:
+    """Build the first user message for a post-rollover session."""
+    status_line = (
+        "请继续未完成的工作。"
+        if should_continue
+        else "前述任务已完成。若用户有新消息，再基于以上上下文继续处理。"
+    )
+    return (
+        f"<原任务>\n{task.strip()}\n</原任务>\n\n"
+        f"<压缩摘要>\n{summary.strip()}\n</压缩摘要>\n\n"
+        f"{status_line}"
+    )
 
 
 def render_recent(history: list[Any], n: int = 8) -> str:
@@ -124,78 +147,56 @@ def render_for_curator(history: list[Any]) -> str:
     return "\n\n".join(parts) if parts else "（无记录）"
 
 
+async def _run_summarizer(llm: Any, user_content: str, agent_id: str) -> str:
+    """Run a temporary single-step agent to generate a summary.
+
+    Delegates trace ownership entirely to yuuagents — no manual ytrace calls.
+    """
+    from uuid import uuid4
+
+    task_id = str(uuid4())
+    builder = SimplePromptBuilder()
+    builder.add_section(_SYSTEM_PROMPT)
+
+    agent = Agent(
+        config=AgentConfig(
+            task_id=task_id,
+            agent_id=f"{agent_id}-{task_id[:8]}",
+            persona=_SYSTEM_PROMPT,
+            tools=yt.ToolManager(),
+            llm=llm,
+            prompt_builder=builder,
+            max_steps=1,
+        )
+    )
+    ctx = AgentContext(
+        task_id=task_id,
+        agent_id=agent.agent_id,
+        workdir="",
+        docker_container="",
+    )
+    await start_agent(agent, user_content, ctx)
+
+    for msg in reversed(agent.history):
+        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "assistant":
+            text = "".join(item for item in msg[1] if isinstance(item, str)).strip()
+            if text:
+                return text
+    return ""
+
+
 async def compress_summary(history_slice: list[Any], llm: Any, steps_span: int = 8) -> str:
     """Summarize a history slice for mid-step compression.
 
     steps_span controls how many recent messages to render for context.
     """
     narrative = render_recent(history_slice, n=steps_span)
-    # Build a minimal "history" so summarize() can process it
-    # We use the narrative as if it were the original task + recent conversation
-    import yuullm
-    import yuutrace as ytrace
-    from uuid import uuid4
-
     user_content = (
         f"对话记录：\n{narrative}\n\n"
         "请生成工作交接摘要。"
     )
-    messages = [
-        yuullm.system(_SYSTEM_PROMPT),
-        yuullm.user(user_content),
-    ]
-
-    model = getattr(llm, "default_model", "unknown")
-
-    async def _call() -> str:
-        from yuullm import Response
-        stream, store = await llm.stream(messages)
-        text_parts: list[str] = []
-        async for item in stream:
-            if isinstance(item, Response) and isinstance(item.item, str):
-                text_parts.append(item.item)
-
-        usage = store.get("usage")
-        if usage is not None:
-            ytrace.record_llm_usage(
-                ytrace.LlmUsageDelta(
-                    provider=usage.provider,
-                    model=usage.model,
-                    request_id=usage.request_id,
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    cache_read_tokens=usage.cache_read_tokens,
-                    cache_write_tokens=usage.cache_write_tokens,
-                    total_tokens=usage.total_tokens,
-                )
-            )
-        cost = store.get("cost")
-        if cost is not None:
-            ytrace.record_cost(
-                category="llm",
-                currency="USD",
-                amount=cost.total_cost,
-                source=cost.source,
-                llm_provider=usage.provider if usage else "",
-                llm_model=usage.model if usage else "",
-                llm_request_id=usage.request_id if usage else None,
-            )
-        return "".join(text_parts).strip()
-
     try:
-        with ytrace.conversation(id=uuid4(), agent="compressor", model=model) as chat:
-            chat.system(_SYSTEM_PROMPT)
-            chat.user(user_content)
-            with chat.llm_gen() as gen:
-                result = await _call()
-                gen.log([{"type": "text", "text": result}])
-                return result
-    except ytrace.TracingNotInitializedError:
-        try:
-            return await _call()
-        except Exception:
-            logger.exception("Compress summary LLM call failed")
-            return render_recent(history_slice, n=4)
+        return await _run_summarizer(llm, user_content, "compressor")
     except Exception:
         logger.exception("Compress summary LLM call failed")
         return render_recent(history_slice, n=4)
@@ -203,76 +204,15 @@ async def compress_summary(history_slice: list[Any], llm: Any, steps_span: int =
 
 async def summarize(history: list[Any], llm: Any) -> str:
     """Call the LLM to produce a compact handoff note from session history."""
-    import yuullm
-    import yuutrace as ytrace
-    from uuid import uuid4
-
     original_task = extract_original_task(history)
     recent_narrative = render_recent(history, n=4)
-
     user_content = (
         f"原始任务：\n{original_task}\n\n"
         f"最近对话（最后4条消息）：\n{recent_narrative}\n\n"
         "请生成工作交接摘要。"
     )
-
-    messages = [
-        yuullm.system(_SYSTEM_PROMPT),
-        yuullm.user(user_content),
-    ]
-
-    model = getattr(llm, "default_model", "unknown")
-
-    async def _call() -> str:
-        from yuullm import Response
-        stream, store = await llm.stream(messages)
-        text_parts: list[str] = []
-        async for item in stream:
-            if isinstance(item, Response) and isinstance(item.item, str):
-                text_parts.append(item.item)
-
-        usage = store.get("usage")
-        if usage is not None:
-            ytrace.record_llm_usage(
-                ytrace.LlmUsageDelta(
-                    provider=usage.provider,
-                    model=usage.model,
-                    request_id=usage.request_id,
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    cache_read_tokens=usage.cache_read_tokens,
-                    cache_write_tokens=usage.cache_write_tokens,
-                    total_tokens=usage.total_tokens,
-                )
-            )
-        cost = store.get("cost")
-        if cost is not None:
-            ytrace.record_cost(
-                category="llm",
-                currency="USD",
-                amount=cost.total_cost,
-                source=cost.source,
-                llm_provider=usage.provider if usage else "",
-                llm_model=usage.model if usage else "",
-                llm_request_id=usage.request_id if usage else None,
-            )
-
-        return "".join(text_parts).strip()
-
     try:
-        with ytrace.conversation(id=uuid4(), agent="summarizer", model=model) as chat:
-            chat.system(_SYSTEM_PROMPT)
-            chat.user(user_content)
-            with chat.llm_gen() as gen:
-                result = await _call()
-                gen.log([{"type": "text", "text": result}])
-                return result
-    except ytrace.TracingNotInitializedError:
-        try:
-            return await _call()
-        except Exception:
-            logger.exception("Summary LLM call failed, using fallback excerpt")
-            return f"（原任务摘要：{original_task[:200]}）"
+        return await _run_summarizer(llm, user_content, "summarizer")
     except Exception:
         logger.exception("Summary LLM call failed, using fallback excerpt")
         return f"（原任务摘要：{original_task[:200]}）"

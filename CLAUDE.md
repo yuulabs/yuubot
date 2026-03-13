@@ -2,147 +2,175 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
-
-yuubot is a QQ bot framework built on yuuagents, providing IM/Web/Memory skills as CLI tools that agents invoke via subprocess. It receives QQ messages through NapCat (OneBot V11), parses commands, and triggers agents to respond.
-
 ## Commands
 
 ```bash
-# Setup & dependencies
-uv sync                          # Install dependencies (uses .venv/)
-source .venv/bin/activate        # Activate virtual environment
-ybot setup                       # First-time setup (NapCat install, config generation)
+# Run all tests
+uv run pytest
 
-# Run
-ybot launch                      # Start NapCat + Recorder in background screen sessions
-ybot up                          # Start Daemon (foreground)
-ybot down                        # Stop Daemon
-ybot shutdown                    # Stop Recorder + NapCat
+# Run a single test file
+uv run pytest tests/flows/test_llm_session.py -v
 
-# Test
-pytest tests/                    # Run all tests
-pytest tests/test_models.py      # Run a single test file
-pytest tests/ -m live            # Run live integration tests (require real services)
-pytest tests/ -k "test_name"     # Run specific test by name
+# Run tests matching a pattern
+uv run pytest -k "test_soft_timeout" -v
+
+# Lint
+uv run ruff check src/
+
+# Type check
+uv run ty check
+
+# Run the bot
+uv run ybot daemon --config config.yaml
+
+# Run the recorder (NapCat bridge)
+uv run ybot recorder --config config.yaml
 ```
 
 ## Architecture
 
-Three-process design, each with independent lifecycle:
+yuubot is a QQ bot daemon that bridges NapCat/OneBot events to LLM agents. Five stable concepts define the entire system:
+
+1. **Message** (`core/types.py`) — `InboundMessage` is the typed business-layer message converted from raw OneBot events. Never pass raw `event` dicts past the ingress layer.
+2. **Route** (`core/types.py`, `daemon/routing.py`) — Pure function `resolve_route()` returns either `CommandRoute` or `ConversationRoute`. No routing logic lives outside this module.
+3. **Conversation** (`daemon/conversation.py`) — `ConversationManager` owns all session state (replaces the old session/flow/ping/auto-mode scatter). States: `idle → running → closed`. Pending messages accumulate in `pending_messages`; rendering happens only when a turn actually fires.
+4. **Capability** (`capabilities/`) — Typed contracts for bot-native capabilities (im, mem, web, img, schedule). Each capability has a YAML contract in `capabilities/contracts/`. LLM calls capabilities via `call_cap_cli` tool using raw CLI syntax: `im send --ctx 12 -- [...]`.
+5. **RenderPolicy** (`daemon/render.py`) — `RenderPolicy` is a frozen msgspec.Struct that centrally declares how messages become LLM input (format, name resolution, image handling, etc.).
+
+### Request flow
 
 ```
-NapCat (QQ login) → [反向WS] → Recorder (落盘+转发) → [内部WS] → Daemon (Agent驱动)
-                                     ↕                              ↓ subprocess
-                                   SQLite                      ybot CLI (Skills)
+NapCat WS → recorder/relay.py
+    → daemon/ws_client.py
+        → daemon/dispatcher.py   (parse event → InboundMessage → Route)
+            → CommandRoute → commands/tree.py (click command tree)
+            → ConversationRoute → daemon/agent_runner.py
+                → daemon/render.py       (build LLM input via RenderPolicy)
+                → yuuagents runtime      (LLM loop)
+                    → call_cap_cli → capabilities/ (im/mem/web/img/schedule)
 ```
 
-- **NapCat**: Maintains QQ login state. Independent process, survives bot restarts.
-- **Recorder** (`src/yuubot/recorder/`): Receives NapCat events via reverse WS, persists messages to SQLite, relays to Daemon via internal WS, exposes HTTP API for sending messages back through NapCat.
-- **Daemon** (`src/yuubot/daemon/`): Receives relayed events, parses commands (tree matching + role permissions), triggers agents via yuuagents SDK. Agents call skills through `ybot <skill> <command>` subprocess invocations.
+### Key module locations
 
-Key reason for separation: Recorder stays up while Daemon restarts during development, so messages are never lost and NapCat doesn't need re-login.
+| Concept | Files |
+|---------|-------|
+| Domain types | `core/types.py`, `core/models.py` |
+| Routing | `daemon/routing.py` |
+| Conversation state | `daemon/conversation.py` |
+| Agent execution | `daemon/agent_runner.py`, `daemon/builder.py`, `daemon/runtime.py` |
+| Rendering | `daemon/render.py`, `rendering.py` |
+| Capability contracts | `capabilities/contract.py`, `capabilities/contracts/*.yaml` |
+| Capability implementations | `capabilities/im.py`, `capabilities/mem.py`, etc. |
+| Characters/agents | `characters/*.py` — registered via `characters.register(Character(...))` |
+| Commands (admin/user) | `commands/builtin.py`, `commands/ychar.py` |
+| Config | `config.py` — `load_config()` merges `config.yaml` + `yuuagents.config.yaml` |
+| DB | `core/db.py` (Tortoise ORM + SQLite with optional libsimple FTS5) |
+| Errors | `core/errors.py` — `YuubotError`, `ConfigurationError`, `CapabilityError`, `MessageSendError` |
 
-## Key Concepts
+### Characters
 
-- **ctx_id**: Auto-incrementing integer mapping to (type, target_id) pairs (private/group + user_id/group_id). Assigned on first message from a chat. Avoids exposing raw QQ numbers to LLM. Hot-loaded from DB on startup.
-- **Addons**: Built-in capabilities (im, web, mem, etc.) that run in-process in the daemon. Agent calls them via `execute_addon_cli("addon subcommand --flags -- json_data")`. Docs in `addons/docs/`. See `design/addons.md`.
-- **Skills**: Third-party CLI tools under `ybot im|web|mem`. Agent calls them via `execute_skill_cli` subprocess. Each skill has a SKILL.md injected into agent prompt. Legacy — addons are preferred for built-in capabilities.
-- **Command Tree** (`commands/tree.py`): Hierarchical longest-prefix-first matching. Entry prefixes (`/y`, `/yuu`) are stripped before matching.
-- **Roles**: Master > Mod > Folk > Deny. Per-agent `min_role` in config controls access.
-- **Message format**: JSON array of segments: `[{"type":"text","text":"hello"}, {"type":"image","url":"..."}, {"type":"at","qq":"123456"}]`
+Characters are registered in `characters/*.py` using `register(Character(...))`. Each defines:
+- `name` — agent identifier used in routing and CLI commands
+- `spec` — `AgentSpec` with tools, prompt sections, capabilities, `max_steps`
+- `min_role` — minimum user role required (`"folk"`, `"mod"`, `"master"`)
 
-## Module Map
+The `main` character is the default QQ bot agent (夕雨/Yuu). Other characters: `general`, `researcher`, `curator`.
 
-| Module | Responsibility |
-|--------|---------------|
-| `cli.py` | Click CLI entry point (`ybot`), registers all subcommands |
-| `config.py` | Loads `config.yaml`, validates, provides typed config |
-| `core/models.py` | Data models (msgspec.Struct for segments, Tortoise ORM for DB) |
-| `core/onebot.py` | OneBot V11 protocol parsing/construction (CQ codes ↔ internal models) |
-| `core/context.py` | ctx_id ↔ (type, target_id) bidirectional mapping |
-| `core/db.py` | SQLite connection management (Tortoise ORM, WAL mode, FTS5) |
-| `core/audit.py` | Audit logging |
-| `recorder/server.py` | Reverse WS server receiving NapCat events |
-| `recorder/store.py` | Message persistence to SQLite |
-| `recorder/relay.py` | Internal WS relay to Daemon |
-| `recorder/api.py` | HTTP API proxying NapCat (used by skills to send messages) |
-| `daemon/app.py` | FastAPI app + lifecycle (connects recorder, inits agent, starts scheduler) |
-| `daemon/dispatcher.py` | Message dispatch: command parse → permission check → agent trigger |
-| `daemon/agent_runner.py` | yuuagents SDK wrapper for creating/running agents + SessionRegistry bridge |
-| `daemon/guard.py` | Rate limiting & safety guards |
-| `daemon/session.py` | Multi-turn conversation state with TTL extension for active agent sessions |
-| `daemon/scheduler.py` | APScheduler for cron-based proactive mode |
-| `prompt.py` | Prompt data structures (FileRef, Section, AgentSpec, Character, PromptSpec) + build functions |
-| `characters/` | Character registry package — one file per character, shared sections in `__init__.py` |
-| `commands/tree.py` | Tree-based command matching |
-| `commands/roles.py` | Role permission system |
-| `commands/builtin.py` | Built-in commands (/bot, /help, /char) |
-| `commands/ychar.py` | Character inspection and runtime config mutation (/char show, /char config) |
-| `skills/im/` | IM skill: send, search, browse, list |
-| `skills/web/` | Web skill: search (Tavily), read (Playwright+Trafilatura), download |
-| `skills/mem/` | Memory skill: save, recall, delete, show, auto-forget |
-| `addons/` | In-process addon framework: registry, execute_addon_cli tool, addon docs |
-| `addons/im.py` | IM addon: send, search, browse, list (calls skills/im/ internals) |
-| `addons/mem.py` | Memory addon: save, recall, delete, show, config |
-| `addons/web.py` | Web addon: search, read, download |
-| `addons/img.py` | Image addon: save, search, delete, list |
-| `addons/schedule.py` | Schedule addon: create, list, update, delete |
-| `addons/hhsh.py` | hhsh addon: guess abbreviations |
-| `addons/tools.py` | execute_addon_cli + read_addon_doc yuutools Tool definitions |
+### Config files
 
-## Configuration
+- `config.yaml` — main config (bot QQ, recorder ports, LLM, DB path, etc.)
+- `yuuagents.config.yaml` — agent-specific config (deep-merged into `config.yuuagents`)
+- `.env` — env vars, loaded alongside config; supports `${VAR}` substitution in YAML
 
-- `config.yaml` — Main bot config (QQ number, ports, DB path, permissions)
-- `yuuagents.config.yaml` — Agent definitions (providers, personas, tools, skills)
-- `.env` — Environment variables (API keys)
-- `config.example.yaml` — Template for config.yaml
+### capabilities/
 
-## Dependencies & Tooling
+`capabilities/` is the single built-in capability layer. It contains runtime implementations, shared helper modules, CLI wrappers, contracts, and user-facing docs.
 
-- Python 3.14+, managed with `uv`
-- `yuuagents` is a sibling package (`../yuuagents`, editable install)
-- Key deps: Click, FastAPI, Tortoise ORM, websockets, httpx, msgspec, attrs, Playwright, Trafilatura, APScheduler 4.x
-- pytest with `pytest-asyncio` (asyncio_mode = "auto")
-- Live tests marked with `@pytest.mark.live`
+## Debugging / DevOps
 
-## Design Documents
+### Log files
 
-Detailed design docs live in `design/`. Read these before making architectural changes:
-- `architecture.md` — System overview, process design, message flow
-- `design.md` — Core design principles, message format, skill list
-- `daemon.md` / `recorder.md` — Per-process detailed design
-- `commands.md` — Command tree, roles, built-in commands
-- `skills.md` — Skill specifications (im, web, mem)
-- `addons.md` — Addon architecture (in-process capabilities, two-layer model)
-- `database.md` — SQLite schema, FTS5, concurrent access
-- `config.md` — Configuration format & loading logic
-- `sessions.md` — Async agent sessions, background CLI, coder agent
-- `ops.md` — **Operations: process management, log查询, fault diagnosis**
+Logs are written by loguru via `src/yuubot/log.py`. The `setup(log_dir)` call happens once at daemon/recorder startup.
 
-## API References
+| Sink | Level | Location |
+|------|-------|----------|
+| Console (stderr) | INFO+ | colored, compact |
+| File | DEBUG+ | `~/.yuubot/logs/yuubot.log` (rotated at 20 MB, 5 gz archives kept) |
 
-External SDK docs live in `apis/`:
-- `yuuagents.md` — yuuagents SDK reference
-- `yuullm.md` — LLM provider reference
-- `yuutools.md` — Tool framework reference
+All stdlib logging (uvicorn, tortoise-orm, websockets) is intercepted and routed through loguru automatically.
 
-## Known Issues
+**Common log queries:**
 
-### Docker 镜像构建需要代理
-
-构建 `yuuagents-runtime` 镜像时需传入代理（bun/opencode/uv 从 GitHub 下载）：
 ```bash
-cd ../yuuagents
-docker build --no-cache \
-  --build-arg http_proxy="$http_proxy" --build-arg https_proxy="$https_proxy" \
-  -f src/yuuagents/daemon/runtime.Dockerfile -t yuuagents-runtime:latest .
+# All events for a specific conversation context
+grep "ctx=5" ~/.yuubot/logs/yuubot.log
+
+# Trace a specific agent run by task_id prefix
+grep "task_id=abc123" ~/.yuubot/logs/yuubot.log
+
+# See what the dispatcher accepted/rejected
+grep "should_respond\|Command accepted\|Permission denied" ~/.yuubot/logs/yuubot.log
+
+# Watch live (daemon running)
+tail -f ~/.yuubot/logs/yuubot.log
+
+# Agent failures only
+grep "agent failed\|exception" ~/.yuubot/logs/yuubot.log -i
 ```
 
-运行时代理由 `DockerManager` 自动从宿主机环境继承，无需手动配置。
+**Log anatomy:** Each line is `YYYY-MM-DD HH:mm:ss.SSS L module:line | message`. Key structured fields emitted by the daemon:
 
-### Tests must NOT call `yuutrace.init()`
+- `event: type=group user=... group=... ctx=...` — every incoming message (DEBUG, dispatcher)
+- `should_respond: user=... group=... type=... result=...` — routing decision (INFO)
+- `Command accepted: user=... cmd=...` — command dispatched (INFO)
+- `agent failed: ctx=... agent=... task_id=...` — agent crash (ERROR + traceback)
+- `Flow cancelled for ctx=...` — user or timeout cancel (INFO)
 
-`tests/conftest.py` sets up a no-op `TracerProvider` (no exporter) instead of calling `yuutrace.init()`. This is intentional — `yuutrace.init()` connects to the OTLP endpoint (`localhost:4318`), and if a `ytrace server` is running, test traces leak into the production `~/.yagents/traces.db`. The no-op provider satisfies `yuutrace.require_initialized()` without exporting anything. The same rule applies to sibling packages (yuuagents, etc.).
+### Conversation traces
 
-agent 以宿主机 UID/GID 运行（非 root），需要的工具应预装在镜像中。
+Conversation traces live in `~/.yagents/traces.db`. Use `scripts/conv.py` to inspect them:
+
+```bash
+# List recent conversations (short IDs, local time)
+python scripts/conv.py
+
+# Show the latest conversation in full
+python scripts/conv.py -l
+
+# Show a conversation by ID prefix (no need to copy full UUID)
+python scripts/conv.py abc12345
+
+# Compact view — collapses tool calls into a count, no tool output
+python scripts/conv.py -l -n
+
+# Filter list by agent
+python scripts/conv.py --agent main --limit 10
+```
+
+Compact mode (`-n`) is the go-to for quick reads: it shows USER/ASSISTANT turns and collapses all tool calls into `(N tool calls)`. Full mode shows each `TOOL:` span with output (truncated at 600 chars).
+
+### Health / operational endpoints
+
+The daemon exposes a minimal HTTP API (default port 8780):
+
+```bash
+# Check if daemon is up and how many per-ctx workers are active
+curl http://127.0.0.1:8780/health
+
+# Graceful shutdown
+curl -X POST http://127.0.0.1:8780/shutdown
+
+# Reload cron schedules from DB without restarting
+curl -X POST http://127.0.0.1:8780/schedule/reload
+```
+
+## Testing
+
+Tests are end-to-end only (no unit tests). Run against a test SQLite DB; live external services are skipped via `@pytest.mark.live`.
+
+Key fixtures in `tests/conftest.py`:
+- `test_characters` — registers lightweight test Characters, auto-used
+- `db` — async fixture that inits/closes a temp SQLite DB
+- `dispatcher` — fully wired Dispatcher with mocked AgentRunner
+
+Known issues tracked in `design/issues.md`. When fixing bugs, confirm the test fails first, then passes after the fix.

@@ -1,9 +1,7 @@
 """Character inspection and runtime config mutation: /ychar."""
 
 
-from yuubot.core.models import Role
 
-from loguru import logger
 
 
 async def exec_char_show_prompt(remaining: str, event: dict, deps: dict) -> str | None:
@@ -47,7 +45,8 @@ async def exec_char_show_config(remaining: str, event: dict, deps: dict) -> str 
         f"Model: {char.model or '(from YAML)'}",
         "",
         f"Tools: {', '.join(spec.tools) or '(none)'}",
-        f"Skills: {', '.join(spec.skills) or '(none)'}",
+        f"Capabilities: {', '.join(spec.caps) or '(none)'}",
+        f"External skills: {', '.join(spec.ext_skills) or '(none)'}",
         f"Subagents: {', '.join(spec.subagents) or '(none)'}",
         f"Max steps: {spec.max_steps}",
     ]

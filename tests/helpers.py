@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 
 
 def build_im_send_argv(
@@ -20,7 +21,7 @@ def build_im_send_argv(
         parts.extend(["--uid", str(uid)])
     if gid is not None:
         parts.extend(["--gid", str(gid)])
-    command = " ".join(parts) + " << 'EOF'\n" + message + "\nEOF"
+    command = " ".join(parts) + " -- " + shlex.quote(message)
     return json.dumps({"command": command}, ensure_ascii=False)
 
 

@@ -5,7 +5,7 @@ Each submodule defines one Character and calls register() at import time.
 
 from __future__ import annotations
 
-from yuubot.prompt import AgentSpec, Character, FileRef, Section
+from yuubot.prompt import AgentSpec as AgentSpec, Character, FileRef as FileRef, Section
 
 
 # ── Registry ─────────────────────────────────────────────────────

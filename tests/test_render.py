@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
+from typing import Literal
 
-from yuubot.core.models import AtSegment, TextSegment
+
+from yuubot.core.models import AtSegment, ForwardSegment, TextSegment
 from yuubot.core.types import InboundMessage, Sender
 from yuubot.daemon.render import (
     RenderContext,
@@ -26,7 +27,7 @@ def _make_msg(
     at_bot: bool = False,
     user_id: int = 20001,
     ctx_id: int = 1,
-    chat_type: str = "group",
+    chat_type: Literal["private", "group"] = "group",
     nickname: str = "Alice",
     group_id: int = 1000,
 ) -> InboundMessage:
@@ -75,6 +76,7 @@ def test_replace_command_prefix_yllm():
 def test_replace_command_prefix_with_agent_suffix():
     segs = [TextSegment(text="/y#general do something")]
     result = replace_command_prefix(segs, "Bot")
+    assert isinstance(result[0], TextSegment)
     assert result[0].text == "@Bot do something"
 
 
@@ -160,3 +162,33 @@ async def test_render_ping_payload(db):
     result = await render_ping_payload(msg, policy, ctx)
     assert "<msg" in result
     assert "ping消息" in result
+
+
+async def test_render_task_forward_msg_xml(db):
+    event = {
+        "post_type": "message",
+        "message_type": "group",
+        "message_id": 88,
+        "user_id": 20001,
+        "group_id": 1000,
+        "message": [],
+        "raw_message": "",
+        "time": 1700000000,
+        "self_id": BOT_QQ,
+        "sender": {"nickname": "Alice", "card": ""},
+        "ctx_id": 1,
+    }
+    msg = InboundMessage(
+        message_id=88,
+        ctx_id=1,
+        chat_type="group",
+        sender=Sender(user_id=20001, nickname="Alice"),
+        segments=[ForwardSegment(id="fw-1", summary="第一段 第二段 第三段")],
+        timestamp=1700000000,
+        raw_event=event,
+    )
+    policy = RenderPolicy()
+    ctx = RenderContext(bot_qq=str(BOT_QQ), bot_name="Bot")
+
+    result = await render_task(msg, policy, ctx)
+    assert '<forward_msg id="fw-1" summary="第一段 第二段 第三段"/>' in result

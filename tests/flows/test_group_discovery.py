@@ -1,10 +1,8 @@
 """Flow: basic group commands — /yhelp, /yhhsh, permission checks."""
 
-import pytest
 
 from tests.conftest import (
-    MASTER_QQ, FOLK_QQ, GROUP_ID,
-    make_group_event, send,
+    MASTER_QQ, FOLK_QQ, make_group_event, send,
 )
 from tests.mocks import mock_recorder_api, mock_hhsh_api
 

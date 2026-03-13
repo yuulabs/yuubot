@@ -5,8 +5,8 @@ from yuubot.characters import register
 
 _spec = AgentSpec(
     tools=["call_cap_cli"],
-    addons=["mem"],
-    expand_addons=["mem_curator"],  # Use curator-specific doc with delete/restore
+    caps=["mem"],
+    expand_caps=["mem"],
     max_steps=8,
 )
 

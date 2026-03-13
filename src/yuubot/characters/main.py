@@ -1,11 +1,11 @@
 """夕雨 (Yuu) — main QQ bot agent."""
 
-from yuubot.prompt import AgentSpec, Character, FileRef, Section
+from yuubot.prompt import AgentSpec, CapVisibility, Character, FileRef, Section
 from yuubot.characters import register
 
 _spec = AgentSpec(
     tools=[
-        "execute_addon_cli", "read_addon_doc",
+        "call_cap_cli", "read_cap_doc",
         "check_running_tool", "cancel_running_tool",
     ],
     sections=[
@@ -13,9 +13,12 @@ _spec = AgentSpec(
         Section("messaging", FileRef("prompts/main/messaging.md")),
         Section("memes", FileRef("prompts/main/memes.md")),
     ],
-    addons=["*"],
-    expand_addons=["im"],
-    max_steps=16,
+    caps=["*"],
+    expand_caps=["im"],
+    cap_visibility={
+        "mem": CapVisibility(mode="include", actions=("save", "recall", "show", "config")),
+    },
+    max_steps=16, 
     silence_timeout=120,
 )
 

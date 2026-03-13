@@ -7,11 +7,13 @@ build_system_prompt(), eliminating scattered ad-hoc construction.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import attrs
-
 from loguru import logger
+from yuuagents.agent import SimplePromptBuilder
 
 
 @attrs.define
@@ -40,7 +42,7 @@ class Section:
         if isinstance(self.content, FileRef):
             return self.content.resolve()
         if callable(self.content):
-            return self.content()
+            return cast(Callable[[], str], self.content)()
         return self.content
 
 
@@ -50,12 +52,14 @@ class AgentSpec:
 
     tools: list[str] = attrs.Factory(list)
     sections: list[Section] = attrs.Factory(list)
-    # Addons: built-in capabilities (im, mem, web, etc.) — in-process execution
-    addons: list[str] = attrs.Factory(list)
-    expand_addons: list[str] = attrs.Factory(list)
-    # Skills: third-party capabilities — subprocess execution
-    skills: list[str] = attrs.Factory(list)
-    expand_skills: list[str] = attrs.Factory(list)
+    # Caps: built-in capabilities (im, mem, web, etc.) — in-process execution
+    caps: list[str] = attrs.Factory(list)
+    expand_caps: list[str] = attrs.Factory(list)
+    cap_visibility: dict[str, "CapVisibility"] = attrs.Factory(dict)
+    cap_actions: dict[str, list[str]] = attrs.Factory(dict)
+    # External skills: third-party capabilities — subprocess execution
+    ext_skills: list[str] = attrs.Factory(list)
+    expand_ext_skills: list[str] = attrs.Factory(list)
     subagents: list[str] = attrs.Factory(list)  # allowed delegate targets
     max_steps: int = 16
     soft_timeout: float | None = None
@@ -69,6 +73,14 @@ class RuntimeInfo:
     provider: str
     model: str
     supports_vision: bool = False
+
+
+@attrs.define(frozen=True)
+class CapVisibility:
+    """Action visibility for one capability."""
+
+    mode: str = "all"  # "all" | "include" | "exclude"
+    actions: tuple[str, ...] = ()
 
 
 @attrs.define
@@ -102,56 +114,63 @@ class PromptSpec:
     tools: list[str]
 
 
-def _render_addons_summary(addon_names: list[str]) -> str:
-    """Render compact addon summary for on-demand addons."""
-    if not addon_names:
+def _render_caps_summary(
+    cap_names: list[str],
+    cap_visibility: dict[str, CapVisibility],
+) -> str:
+    """Render compact capability summary for on-demand capabilities."""
+    if not cap_names:
         return ""
-    from yuubot.addons import addon_summary
+    from yuubot.capabilities import capability_summary
 
-    lines = ["<addons>"]
+    lines = ["<caps>"]
     lines.append(
-        "Addon 是你的增强插件，每个 addon 提供一组子命令。"
-        "你通过 execute_addon_cli('addon_name subcommand --flags ...') 调用它们。"
+        "Capability 是你的内置能力，每个 capability 提供一组子命令。"
+        "你通过 call_cap_cli('cap_name subcommand --flags ...') 调用它们。"
     )
     lines.append(
-        "⚠️ 重要：每个 addon 的参数格式各不相同，你无法猜到正确的参数。"
-        "首次使用某个 addon 前，必须先调用 read_addon_doc('<name>') 阅读文档。"
+        "⚠️ 重要：每个 capability 的参数格式各不相同，你无法猜到正确的参数。"
+        "首次使用某个 capability 前，必须先调用 read_cap_doc('<name>') 阅读文档。"
         "传错参数会直接报错。"
     )
     lines.append("")
-    lines.append("可用 addon 列表：")
-    for name in addon_names:
-        desc = addon_summary(name)
+    lines.append("可用 capability 列表：")
+    for name in cap_names:
+        visibility = cap_visibility.get(name)
+        desc = capability_summary(name)
         if desc:
             lines.append(f"<{name}>{desc}</{name}>")
         else:
             lines.append(f"<{name}>(no description)</{name}>")
-    lines.append("</addons>")
+        if visibility and visibility.mode != "all":
+            label = "allowed_actions" if visibility.mode == "include" else "blocked_actions"
+            lines.append(f"<{name}_{label}>{', '.join(visibility.actions)}</{name}_{label}>")
+    lines.append("</caps>")
     return "\n".join(lines)
 
 
-def _load_addon_docs(
-    addons: list[str],
-    expand_addons: list[str],
+def _load_cap_docs(
+    caps: list[str],
+    expand_caps: list[str],
+    cap_visibility: dict[str, CapVisibility],
 ) -> list[tuple[str, str]]:
-    """Load addon docs and return (name, content) section pairs.
+    """Load capability docs and return (name, content) section pairs.
 
-    Expanded addons get full doc inlined. Others get a summary.
+    Expanded capabilities get full doc inlined. Others get a summary.
     """
-    from yuubot.addons import load_addon_doc, registered_addons
+    from yuubot.capabilities import load_capability_doc, registered_capabilities
 
-    available = set(registered_addons())
-    expand_names = set(expand_addons)
+    available = set(registered_capabilities())
+    expand_names = set(expand_caps)
 
-    # Resolve addon list
-    if "*" in addons:
-        addon_list = sorted(available)
+    if "*" in caps:
+        cap_list = sorted(available)
     else:
-        addon_list = [a for a in addons if a in available]
+        cap_list = [a for a in caps if a in available]
 
     expanded = []
     remaining = []
-    for name in addon_list:
+    for name in cap_list:
         if name in expand_names:
             expanded.append(name)
         else:
@@ -159,25 +178,26 @@ def _load_addon_docs(
 
     result: list[tuple[str, str]] = []
 
-    # Summary for on-demand addons
+    # Summary for on-demand capabilities
     if remaining:
-        summary = _render_addons_summary(remaining)
+        summary = _render_caps_summary(remaining, cap_visibility)
         if summary:
-            result.append(("addons_summary", summary))
+            result.append(("caps_summary", summary))
 
-    # Full doc for expanded addons
+    # Full doc for expanded capabilities
     for name in expanded:
         try:
-            content = load_addon_doc(name)
+            visibility = cap_visibility.get(name)
+            content = load_capability_doc(name, action_filter=visibility)
             result.append((
-                f"expanded_addon:{name}",
-                f'<addon_doc name="{name}">\n{content}\n</addon_doc>',
+                f"expanded_cap:{name}",
+                f'<cap_doc name="{name}">\n{content}\n</cap_doc>',
             ))
         except FileNotFoundError:
-            logger.warning("No documentation for addon {}", name)
-            remaining_fallback = _render_addons_summary([name])
+            logger.warning("No documentation for capability {}", name)
+            remaining_fallback = _render_caps_summary([name], cap_visibility)
             if remaining_fallback:
-                result.append(("addons_summary", remaining_fallback))
+                result.append(("caps_summary", remaining_fallback))
 
     return result
 
@@ -200,8 +220,8 @@ def _render_skills_summary(skills) -> str:
 
 def _load_skills_docs(
     skill_paths: list[str],
-    skills: list[str],
-    expand_skills: list[str],
+    ext_skills: list[str],
+    expand_ext_skills: list[str],
 ) -> list[tuple[str, str]]:
     """Load skill docs and return (name, content) section pairs.
 
@@ -217,9 +237,9 @@ def _load_skills_docs(
         return []
 
     # Filter to agent's allowed skills
-    expand_names = set(expand_skills)
-    if "*" not in skills:
-        allowed = set(skills)
+    expand_names = set(expand_ext_skills)
+    if "*" not in ext_skills:
+        allowed = set(ext_skills)
         all_skills = [s for s in all_skills if s.name in allowed]
 
     expanded = []
@@ -261,6 +281,7 @@ def build_prompt_spec(
 ) -> PromptSpec:
     """Character × Runtime → PromptSpec. Deterministic derivation."""
     spec = char.spec
+    cap_visibility = resolve_cap_visibility(spec)
 
     sections: list[tuple[str, str]] = []
 
@@ -274,14 +295,18 @@ def build_prompt_spec(
         if content:
             sections.append((s.name, content))
 
-    # [N+1..] addons
-    if spec.addons or spec.expand_addons:
-        addon_sections = _load_addon_docs(spec.addons, spec.expand_addons)
-        sections.extend(addon_sections)
+    # [N+1..] capabilities
+    if spec.caps or spec.expand_caps:
+        cap_sections = _load_cap_docs(spec.caps, spec.expand_caps, cap_visibility)
+        sections.extend(cap_sections)
 
-    # [N+M..] skills (third-party)
-    if skill_paths and (spec.skills or spec.expand_skills):
-        skill_sections = _load_skills_docs(skill_paths, spec.skills, spec.expand_skills)
+    # [N+M..] external skills (third-party)
+    if skill_paths and (spec.ext_skills or spec.expand_ext_skills):
+        skill_sections = _load_skills_docs(
+            skill_paths,
+            spec.ext_skills,
+            spec.expand_ext_skills,
+        )
         sections.extend(skill_sections)
 
     # Resolve tool list (add view_image if vision-capable)
@@ -298,10 +323,19 @@ def build_prompt_spec(
     )
 
 
+def resolve_cap_visibility(spec: AgentSpec) -> dict[str, CapVisibility]:
+    """Normalize capability action visibility, keeping legacy cap_actions working."""
+    result = dict(getattr(spec, "cap_visibility", {}))
+    for name, actions in getattr(spec, "cap_actions", {}).items():
+        result.setdefault(
+            name,
+            CapVisibility(mode="include", actions=tuple(actions)),
+        )
+    return result
+
+
 def build_system_prompt(spec: PromptSpec):
     """PromptSpec → yuuagents SimplePromptBuilder."""
-    from yuuagents.agent import SimplePromptBuilder
-
     builder = SimplePromptBuilder()
     for _name, content in spec.resolved_sections:
         builder.add_section(content)

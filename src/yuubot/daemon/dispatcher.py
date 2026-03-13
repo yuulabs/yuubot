@@ -10,9 +10,9 @@ import httpx
 from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import RootCommand, MatchResult
 from yuubot.config import Config
-from yuubot.core.models import Role, ReplySegment, AtSegment, segments_to_plain
+from yuubot.core.models import ReplySegment, AtSegment, segments_to_plain
 from yuubot.core.onebot import parse_segments, build_send_msg, to_inbound_message
-from yuubot.core.types import CommandRoute, ConversationRoute
+from yuubot.core.types import ConversationRoute
 from yuubot.daemon.routing import resolve_route
 from yuubot.daemon.conversation import ConversationManager, conversation_worth_curating
 
@@ -159,6 +159,8 @@ class Dispatcher:
         # Convert route back to MatchResult for existing executor flow (transition)
         if isinstance(route, ConversationRoute):
             llm_cmd = self.root.find(["llm"])
+            if llm_cmd is None:
+                return
             cmd_match = MatchResult(
                 command=llm_cmd,
                 remaining=route.text,
@@ -202,6 +204,8 @@ class Dispatcher:
             await self._enqueue_or_pending(cmd_match, event)
         else:
             try:
+                if cmd_match.command.executor is None:
+                    return
                 reply = await cmd_match.command.executor(cmd_match.remaining, event, self.deps)
                 if reply:
                     await self._send_reply(event, reply)
@@ -222,47 +226,13 @@ class Dispatcher:
         ctx_id = event.get("ctx_id", 0)
         conv = self.conv_mgr.get(ctx_id)
         if conv is not None and conv.state == "running":
-            payload = await self._build_pending_payload(event)
-            self.conv_mgr.enqueue_pending(ctx_id, payload)
+            self.conv_mgr.enqueue_pending(ctx_id, to_inbound_message(event))
             conv_obj = self.conv_mgr.get(ctx_id)
             if conv_obj:
                 self.conv_mgr.touch(conv_obj)
             logger.info("Enqueued pending message for running conv ctx={}", ctx_id)
             return
         self._enqueue(match, event)
-
-    async def _build_pending_payload(self, event: dict) -> str:
-        """Build XML payload for a pending message."""
-        from datetime import datetime, timezone
-        from yuubot.core.models import AtSegment as _AtSeg, segments_to_json
-        from yuubot.skills.im.formatter import format_message_to_xml, get_user_alias
-
-        ctx_id = event.get("ctx_id", "?")
-        segments = parse_segments(event.get("message", []))
-        bot_qq = str(self.config.bot.qq)
-        segments = [s for s in segments if not (isinstance(s, _AtSeg) and s.qq == bot_qq)]
-
-        bot_name = await self.agent_runner._get_bot_name()
-        segments = self.agent_runner._replace_command_prefix(segments, bot_name)
-
-        user_id = event.get("user_id", "?")
-        nickname = event.get("sender", {}).get("nickname", "")
-        alias = await get_user_alias(user_id, ctx_id)
-        display_name = event.get("sender", {}).get("card", "")
-        ts = datetime.fromtimestamp(event.get("time", 0), tz=timezone.utc)
-        raw_json = segments_to_json(segments)
-
-        return await format_message_to_xml(
-            msg_id=event.get("message_id", 0),
-            user_id=user_id,
-            nickname=nickname,
-            display_name=display_name,
-            alias=alias,
-            timestamp=ts,
-            raw_message=raw_json,
-            media_files=event.get("media_files", []),
-            ctx_id=int(ctx_id) if ctx_id != "?" else None,
-        )
 
     async def _handle(self, match: MatchResult | None, event: dict) -> None:
         """Execute a queued command. Always called from within a _CtxWorker."""
@@ -274,8 +244,8 @@ class Dispatcher:
 
     async def _send_reply(self, event: dict, text: str) -> None:
         """Send a text reply back to the source context."""
-        from yuubot.core.models import TextSegment
-        segments = [TextSegment(text=text)]
+        from yuubot.core.models import Message, TextSegment
+        segments: Message = [TextSegment(text=text)]
         msg_type = event.get("message_type", "private")
         target_id = event.get("group_id", 0) if msg_type == "group" else event.get("user_id", 0)
         body = build_send_msg(msg_type, target_id, segments)

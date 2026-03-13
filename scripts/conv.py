@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Inspect a yuuagents conversation by ID.
+"""Inspect yuuagents conversation traces.
 
 Usage:
-    python scripts/conv.py                        # list recent conversations
-    python scripts/conv.py <conversation_id>      # show full conversation
-    python scripts/conv.py <conversation_id> -n   # compact (no tool output)
-    python scripts/conv.py --db /path/to/traces.db <conversation_id>
+    python scripts/conv.py                   # list recent conversations
+    python scripts/conv.py -l                # show the latest conversation
+    python scripts/conv.py <id-or-prefix>    # show full conversation
+    python scripts/conv.py <id> -n           # compact: collapse tool calls
+    python scripts/conv.py --agent main      # filter list by agent
+    python scripts/conv.py --limit 10        # show last N conversations
 
 Reads from ~/.yagents/traces.db (yuuagents tracing DB).
 """
@@ -14,11 +16,16 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from typing import Protocol, cast
 
 TRACES_DB = Path("~/.yagents/traces.db").expanduser()
 TOOL_OUTPUT_LIMIT = 600
+
+
+class _SupportsReconfigure(Protocol):
+    def reconfigure(self, *, encoding: str) -> None: ...
 
 
 def open_db(path: Path) -> sqlite3.Connection:
@@ -30,12 +37,15 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def ns_to_dt(ns: int) -> str:
+    return datetime.fromtimestamp(ns / 1e9).strftime("%m-%d %H:%M")
+
+
 def ns_to_time(ns: int) -> str:
-    return datetime.fromtimestamp(ns / 1e9, tz=timezone.utc).strftime("%H:%M:%S")
+    return datetime.fromtimestamp(ns / 1e9).strftime("%H:%M:%S")
 
 
 def decode_tool_output(raw: str) -> str:
-    """Tool output is stored as a JSON-encoded string (double-encoded)."""
     try:
         v = json.loads(raw)
         return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
@@ -55,8 +65,32 @@ def fmt_tool_args(raw: str) -> str:
         return raw[:120]
 
 
-def list_conversations(conn: sqlite3.Connection) -> None:
-    rows = conn.execute("""
+def resolve_id(conn: sqlite3.Connection, prefix: str) -> str:
+    """Resolve a full or partial conversation ID."""
+    rows = conn.execute(
+        "SELECT DISTINCT conversation_id FROM spans "
+        "WHERE conversation_id LIKE ? LIMIT 2",
+        (f"{prefix}%",),
+    ).fetchall()
+    if not rows:
+        sys.exit(f"ERROR: no conversation matching prefix: {prefix!r}")
+    if len(rows) > 1:
+        sys.exit(f"ERROR: prefix {prefix!r} is ambiguous — {[r[0] for r in rows]}")
+    return rows[0][0]
+
+
+def latest_id(conn: sqlite3.Connection) -> str:
+    row = conn.execute(
+        "SELECT conversation_id FROM spans WHERE conversation_id IS NOT NULL "
+        "ORDER BY start_time_unix_nano DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        sys.exit("ERROR: no conversations found")
+    return row[0]
+
+
+def list_conversations(conn: sqlite3.Connection, agent: str | None, limit: int) -> None:
+    query = """
         SELECT conversation_id,
                agent,
                model,
@@ -65,42 +99,48 @@ def list_conversations(conn: sqlite3.Connection) -> None:
                COUNT(CASE WHEN name LIKE 'tool:%' THEN 1 END) AS tool_calls
         FROM spans
         WHERE conversation_id IS NOT NULL
+        {agent_filter}
         GROUP BY conversation_id
         ORDER BY first_ts DESC
-        LIMIT 30
-    """).fetchall()
+        LIMIT ?
+    """
+    if agent:
+        rows = conn.execute(
+            query.format(agent_filter="AND agent = ?"), (agent, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(query.format(agent_filter=""), (limit,)).fetchall()
 
-    print(f"{'conversation_id':<38}  {'agent':<20}  {'model':<18}  {'time':>8}  turns  tools")
-    print("-" * 110)
+    print(f"{'id':>8}  {'agent':<16}  {'model':<18}  {'time':<13}  turns  tools")
+    print("-" * 72)
     for r in rows:
-        t = ns_to_time(r["first_ts"])
-        print(f"{r['conversation_id']:<38}  {(r['agent'] or '?'):<20}  {(r['model'] or '?'):<18}  {t:>8}  {r['turns']:>5}  {r['tool_calls']:>5}")
+        short = (r["conversation_id"] or "")[:8]
+        dt = ns_to_dt(r["first_ts"])
+        agent_s = (r["agent"] or "?")[:16]
+        model_s = (r["model"] or "?")[:18]
+        print(f"{short}  {agent_s:<16}  {model_s:<18}  {dt:<13}  {r['turns']:>5}  {r['tool_calls']:>5}")
 
 
-def show_conversation(conn: sqlite3.Connection, conv_id: str, show_tool_output: bool) -> None:
-    spans = conn.execute("""
-        SELECT span_id, parent_span_id, name, start_time_unix_nano, attributes_json
-        FROM spans
-        WHERE conversation_id = ?
-        ORDER BY start_time_unix_nano
-    """, (conv_id,)).fetchall()
+def show_conversation(conn: sqlite3.Connection, conv_id: str, compact: bool) -> None:
+    spans = conn.execute(
+        "SELECT span_id, parent_span_id, name, start_time_unix_nano, attributes_json "
+        "FROM spans WHERE conversation_id = ? ORDER BY start_time_unix_nano",
+        (conv_id,),
+    ).fetchall()
 
     if not spans:
         sys.exit(f"ERROR: conversation not found: {conv_id}")
 
-    # Fetch user events from conversation spans to interleave in timeline
     conv_span_ids = [r["span_id"] for r in spans if r["name"] == "conversation"]
     user_events: list[sqlite3.Row] = []
     if conv_span_ids:
         placeholders = ",".join("?" * len(conv_span_ids))
         user_events = conn.execute(
             f"SELECT span_id, name, time_unix_nano, attributes_json FROM events "
-            f"WHERE span_id IN ({placeholders}) AND name = 'user' "
-            f"ORDER BY time_unix_nano",
+            f"WHERE span_id IN ({placeholders}) AND name = 'user' ORDER BY time_unix_nano",
             conv_span_ids,
         ).fetchall()
 
-    # Build merged timeline of spans and user events, sorted by timestamp
     timeline: list[tuple[int, str, sqlite3.Row]] = [
         (r["start_time_unix_nano"], "span", r) for r in spans
     ] + [
@@ -125,12 +165,11 @@ def show_conversation(conn: sqlite3.Connection, conv_id: str, show_tool_output: 
 
         if name == "conversation":
             if not meta_printed:
-                print(f"conversation: {conv_id}")
-                print(f"agent:  {attrs.get('yuu.agent', '?')}")
-                print(f"model:  {attrs.get('yuu.conversation.model', '?')}")
+                short = conv_id[:8]
+                print(f"conversation: {short}  ({conv_id})")
+                print(f"agent: {attrs.get('yuu.agent', '?')}  model: {attrs.get('yuu.conversation.model', '?')}")
                 print()
                 meta_printed = True
-            # user messages are now shown as events; skip this span's body
 
         elif name == "llm_gen":
             raw_items = attrs.get("yuu.llm_gen.items")
@@ -138,6 +177,7 @@ def show_conversation(conn: sqlite3.Connection, conv_id: str, show_tool_output: 
                 continue
             items = json.loads(raw_items)
             has_output = False
+            tool_call_count = 0
             for item in items:
                 if item.get("type") == "text" and item.get("text", "").strip():
                     if not has_output:
@@ -148,14 +188,19 @@ def show_conversation(conn: sqlite3.Connection, conv_id: str, show_tool_output: 
                     if not has_output:
                         print(f"[{ts}] ASSISTANT")
                         has_output = True
-                    for tc in item.get("tool_calls", []):
-                        fn = tc.get("function", "?")
-                        args = fmt_tool_args(json.dumps(tc.get("arguments", {})))
-                        print(f"  → {fn}({args})")
+                    if not compact:
+                        for tc in item.get("tool_calls", []):
+                            fn = tc.get("function", "?")
+                            args = fmt_tool_args(json.dumps(tc.get("arguments", {})))
+                            print(f"  → {fn}({args})")
+                    else:
+                        tool_call_count += len(item.get("tool_calls", []))
+            if compact and tool_call_count:
+                print(f"  ({tool_call_count} tool call{'s' if tool_call_count > 1 else ''})")
             if has_output:
                 print()
 
-        elif name.startswith("tool:"):
+        elif name.startswith("tool:") and not compact:
             tool_name = attrs.get("yuu.tool.name", name[5:])
             raw_input = attrs.get("yuu.tool.input", "{}")
             raw_output = attrs.get("yuu.tool.output", "")
@@ -164,33 +209,34 @@ def show_conversation(conn: sqlite3.Connection, conv_id: str, show_tool_output: 
             tool_output = decode_tool_output(raw_output)
 
             print(f"[{ts}] TOOL: {tool_name}({tool_input})")
-            if show_tool_output and tool_output:
+            if tool_output:
                 if len(tool_output) > TOOL_OUTPUT_LIMIT:
                     tool_output = tool_output[:TOOL_OUTPUT_LIMIT] + f"... [{len(tool_output)} chars]"
                 for line in tool_output.splitlines():
                     print(f"  {line}")
             print()
 
-        # 'tools' grouping span and others: skip
-
 
 def main() -> None:
-    # Ensure UTF-8 output (important for CJK text)
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        cast(_SupportsReconfigure, sys.stdout).reconfigure(encoding="utf-8")
 
     parser = argparse.ArgumentParser(description="Inspect yuuagents conversation traces")
-    parser.add_argument("conv_id", nargs="?", help="conversation UUID to inspect")
-    parser.add_argument("-n", "--no-output", action="store_true", help="hide tool output (compact view)")
+    parser.add_argument("conv_id", nargs="?", help="conversation ID or prefix")
+    parser.add_argument("-l", "--last", action="store_true", help="show most recent conversation")
+    parser.add_argument("-n", "--compact", action="store_true", help="collapse tool calls (no tool output)")
+    parser.add_argument("--agent", help="filter list by agent name")
+    parser.add_argument("--limit", type=int, default=20, help="max conversations to list (default 20)")
     parser.add_argument("--db", default=str(TRACES_DB), help="path to traces.db")
     args = parser.parse_args()
 
     conn = open_db(Path(args.db))
 
-    if args.conv_id is None:
-        list_conversations(conn)
+    if args.last or args.conv_id:
+        conv_id = latest_id(conn) if args.last else resolve_id(conn, args.conv_id)
+        show_conversation(conn, conv_id, compact=args.compact)
     else:
-        show_conversation(conn, args.conv_id, show_tool_output=not args.no_output)
+        list_conversations(conn, agent=args.agent, limit=args.limit)
 
 
 if __name__ == "__main__":

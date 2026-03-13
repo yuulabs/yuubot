@@ -54,7 +54,29 @@ markers = [
     "live: tests that require real external services/credentials",
 ]
 
+[tool.ty.environment]
+python = ".venv"
+extra-paths = [
+    "../yuuagents/src",
+    "../yuullm/src",
+    "../yuutrace/src",
+    "../yuutools/src",
+]
+
+[tool.ty.src]
+include = ["src"]
+
+[tool.ty.rules]
+unresolved-attribute = "warn"
+invalid-argument-type = "warn"
+invalid-assignment = "warn"
+call-non-callable = "warn"
+no-matching-overload = "warn"
+call-top-callable = "warn"
+
 [dependency-groups]
 dev = [
     "respx>=0.22.0",
+    "ruff>=0.15.5",
+    "ty>=0.0.21",
 ]

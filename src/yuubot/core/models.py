@@ -33,7 +33,12 @@ class ReplySegment(msgspec.Struct, tag="reply"):
     id: str
 
 
-Segment = TextSegment | ImageSegment | AtSegment | ReplySegment
+class ForwardSegment(msgspec.Struct, tag="forward"):
+    id: str
+    summary: str = ""
+
+
+Segment = TextSegment | ImageSegment | AtSegment | ReplySegment | ForwardSegment
 
 Message = list[Segment]
 
@@ -50,6 +55,9 @@ def segments_to_plain(segments: Message) -> str:
             parts.append("[图片]")
         elif isinstance(seg, ReplySegment):
             parts.append(f"[回复:{seg.id}]")
+        elif isinstance(seg, ForwardSegment):
+            summary = f":{seg.summary}" if seg.summary else ""
+            parts.append(f"[合并转发:{seg.id}{summary}]")
     return "".join(parts)
 
 
@@ -161,6 +169,20 @@ class MessageRecord(Model):
 
     class Meta:
         table = "messages"
+
+
+class ForwardRecord(Model):
+    id = fields.IntField(primary_key=True)
+    forward_id = fields.CharField(max_length=128, unique=True)
+    summary = fields.CharField(max_length=256, default="")
+    raw_nodes = fields.TextField()
+    source_message_id = fields.BigIntField(null=True)
+    source_ctx_id = fields.IntField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "forwards"
 
 
 class Memory(Model):

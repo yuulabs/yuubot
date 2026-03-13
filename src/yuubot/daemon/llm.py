@@ -6,15 +6,20 @@ callable that owns session selection, agent dispatch, and turn management.
 
 import asyncio
 import re
+from typing import TYPE_CHECKING
 
 import attrs
 import httpx
 from loguru import logger
 
+if TYPE_CHECKING:
+    from yuubot.daemon.agent_runner import AgentRunner
+
 from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import Command, MatchResult
 from yuubot.config import Config
 from yuubot.daemon.conversation import Conversation, ConversationManager, conversation_worth_curating
+from yuubot.daemon.summarizer import build_summary_prompt, compact_original_task
 
 _AGENT_TAG_RE = re.compile(r"^#(\w+)\s*")
 
@@ -27,12 +32,33 @@ def _parse_agent_tag(text: str) -> tuple[str, str]:
     return "main", text
 
 
+def _has_final_response(history: list) -> bool:
+    """True when the turn already produced user-visible assistant text."""
+    for msg in reversed(history):
+        if not (isinstance(msg, tuple) and len(msg) == 2):
+            continue
+        role, items = msg
+        if role != "assistant" or not isinstance(items, list):
+            continue
+        text = "".join(item for item in items if isinstance(item, str)).strip()
+        if text:
+            return True
+    return False
+
+
+def _should_auto_continue_rollover(event: dict, history: list) -> bool:
+    """Allow at most one automatic rollover continuation without a final reply."""
+    if _has_final_response(history):
+        return False
+    return int(event.get("_rollover_auto_count", 0) or 0) < 1
+
+
 async def _send_reply(event: dict, text: str, config: Config) -> None:
     """Send a text reply back to the source context."""
-    from yuubot.core.models import TextSegment
+    from yuubot.core.models import Message, TextSegment
     from yuubot.core.onebot import build_send_msg
 
-    segments = [TextSegment(text=text)]
+    segments: Message = [TextSegment(text=text)]
     msg_type = event.get("message_type", "private")
     target_id = event.get("group_id", 0) if msg_type == "group" else event.get("user_id", 0)
     body = build_send_msg(msg_type, target_id, segments)
@@ -56,7 +82,7 @@ class LLMExecutor:
     """
 
     conv_mgr: ConversationManager
-    agent_runner: object  # AgentRunner (avoid circular import with type annotation)
+    agent_runner: AgentRunner
     config: Config
     role_mgr: RoleManager
 
@@ -129,12 +155,16 @@ class LLMExecutor:
         )
 
         # 7. Run agent
+        handoff_text = session.summary_prompt if session is not None and not session.history else ""
         history, tokens, task_id = await self.agent_runner.run(
             synth_match, event,
             agent_name=agent_name,
             user_role=role.name,
             session=session,
+            handoff_text=handoff_text,
         )
+        if session is not None and handoff_text:
+            session.summary_prompt = ""
         session.task_id = task_id
 
         # 8. Update session and handle rollover
@@ -148,8 +178,11 @@ class LLMExecutor:
         self, conv: Conversation, history: list, tokens: int, event: dict
     ) -> None:
         """Update conversation history and handle token-limit rollover."""
+        pending_messages = self.conv_mgr.drain_pending(conv.ctx_id)
         rolled = self.conv_mgr.update_history(conv, history, tokens)
         if not rolled:
+            if pending_messages:
+                await self._continue_with_pending(conv, event, pending_messages)
             return
 
         ctx_id = conv.ctx_id
@@ -157,43 +190,80 @@ class LLMExecutor:
         user_id = conv.started_by
         worth_curating = conversation_worth_curating(conv)
 
-        await _send_reply(event, "（上下文已满，正在压缩摘要，稍后继续...）", self.config)
-
         try:
             note = await self.agent_runner.summarize(history, agent_name)
         except Exception:
             logger.exception("Failed to summarize session for ctx={}", ctx_id)
             note = ""
 
+        should_continue = not event.get("_is_auto_continuation")
+        task = compact_original_task(history)
+        summary_prompt = build_summary_prompt(task, note, should_continue=should_continue)
+
         new_session = self.conv_mgr.create(ctx_id, agent_name, user_id=user_id)
-        new_session.handoff_note = note
+        new_session.summary_prompt = summary_prompt
         logger.info("Session rolled over: ctx={} agent={} note_len={}", ctx_id, agent_name, len(note))
 
         if worth_curating:
             asyncio.create_task(self._run_curator(history, ctx_id, user_id))
 
-        if not event.get("_is_auto_continuation"):
-            await _send_reply(event, "（已压缩上下文，自动继续...）", self.config)
+        if _should_auto_continue_rollover(event, history):
             scope = str(event.get("group_id", "global"))
             role = await self.role_mgr.get(event["user_id"], scope)
             synth_match = MatchResult(
                 command=Command(prefix="llm", executor=self, interactive=True),
-                remaining="请继续之前未完成的工作。",
-                entry="",
+                remaining="",
+                entry="rollover",
             )
             cont_event = dict(event)
             cont_event["_is_auto_continuation"] = True
+            cont_event["_rollover_auto_count"] = int(event.get("_rollover_auto_count", 0) or 0) + 1
             h2, t2, tid2 = await self.agent_runner.run(
                 synth_match, cont_event,
                 agent_name=agent_name,
                 user_role=role.name,
-                session=new_session,
+                session=None,
+                pending_messages=pending_messages,
+                handoff_text=summary_prompt,
             )
             new_session.task_id = tid2
+            new_session.summary_prompt = ""
+            await _send_reply(event, "（已压缩上下文，继续处理中...）", self.config)
             await self._finish_turn(new_session, h2, t2, cont_event)
         else:
             if note:
                 await _send_reply(event, "（已压缩上下文，新会话已就绪，可继续对话）", self.config)
+
+    async def _continue_with_pending(
+        self,
+        conv: Conversation,
+        event: dict,
+        pending_messages: list,
+    ) -> None:
+        """Run another turn with all messages that arrived while the agent was busy."""
+        next_event = dict(pending_messages[0].raw_event)
+        scope = str(next_event.get("group_id", "global"))
+        role = await self.role_mgr.get(next_event["user_id"], scope)
+        synth_match = MatchResult(
+            command=Command(prefix="llm", executor=self, interactive=True),
+            remaining="",
+            entry="pending",
+        )
+        if len(pending_messages) > 1:
+            next_event["_extra_events"] = [msg.raw_event for msg in pending_messages[1:]]
+        history, tokens, task_id = await self.agent_runner.run(
+            synth_match,
+            next_event,
+            agent_name=conv.agent_name,
+            user_role=role.name,
+            session=conv,
+            pending_messages=pending_messages[1:],
+            handoff_text=conv.summary_prompt if not conv.history else "",
+        )
+        if conv.summary_prompt and history:
+            conv.summary_prompt = ""
+        conv.task_id = task_id
+        await self._finish_turn(conv, history, tokens, next_event)
 
     async def _run_curator(self, history: list, ctx_id: int, user_id: int) -> None:
         try:

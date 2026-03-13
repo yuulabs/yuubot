@@ -1,9 +1,12 @@
 """YAML config loading with env-var substitution and path expansion."""
 
+from __future__ import annotations
+
 import os
 import re
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 import msgspec
 import yaml
@@ -103,7 +106,7 @@ class Config(msgspec.Struct):
     daemon: DaemonConfig = msgspec.field(default_factory=DaemonConfig)
     database: DatabaseConfig = msgspec.field(default_factory=DatabaseConfig)
     log_dir: str = "~/.yuubot/logs"
-    yuuagents: dict[str, object] = msgspec.field(default_factory=dict)
+    yuuagents: dict[str, Any] = msgspec.field(default_factory=dict)
     llm: LLMConfig = msgspec.field(default_factory=LLMConfig)
     api_keys: dict[str, str] = msgspec.field(default_factory=dict)
     cron_jobs: list[CronJob] = msgspec.field(default_factory=list)
@@ -113,7 +116,7 @@ class Config(msgspec.Struct):
     schedule: ScheduleConfig = msgspec.field(default_factory=ScheduleConfig)
     session: SessionConfig = msgspec.field(default_factory=SessionConfig)
 
-    def agent_min_role(self, agent_name: str) -> "Role":
+    def agent_min_role(self, agent_name: str):
         """Return the minimum Role required to invoke the given agent."""
         from yuubot.core.models import Role
 
@@ -162,8 +165,10 @@ class Config(msgspec.Struct):
 
     @property
     def skill_paths(self) -> list[str]:
-        skills = self.yuuagents.get("skills", {})
-        paths = skills.get("paths", ["~/.yagents/skills"])
+        skills_obj = self.yuuagents.get("skills")
+        skills: dict[str, Any] = skills_obj if isinstance(skills_obj, dict) else {}
+        paths_obj = skills.get("paths")
+        paths = paths_obj if isinstance(paths_obj, list) else ["~/.yagents/skills"]
         return [str(Path(p).expanduser()) for p in paths]
 
 
@@ -181,7 +186,7 @@ def _resolve_env(value: str) -> str:
     return _ENV_RE.sub(_sub, value)
 
 
-def _walk_resolve(obj):
+def _walk_resolve(obj: Any) -> Any:
     """Recursively resolve env vars in a nested dict/list."""
     if isinstance(obj, str):
         return _resolve_env(obj)
@@ -196,7 +201,7 @@ def _expand_path(p: str) -> str:
     return str(Path(p).expanduser())
 
 
-def _walk_expand_paths(obj, path_keys: set[str] | None = None):
+def _walk_expand_paths(obj: Any, path_keys: set[str] | None = None) -> Any:
     """Expand ~ in known path fields."""
     _path_keys = path_keys or {"path", "browser_profile", "download_dir", "media_dir", "log_dir"}
     if isinstance(obj, dict):

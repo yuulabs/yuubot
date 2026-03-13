@@ -1,4 +1,4 @@
-"""Capability tools — cap_call_cli and read_capability_doc for yuuagents.
+"""Capability tools — call_cap_cli and read_cap_doc for yuuagents.
 
 These are yuutools Tool objects that get registered into the ToolManager
 alongside builtin tools. They use dependency injection to access the
@@ -25,25 +25,23 @@ from loguru import logger
         "(im, mem, web, img, schedule, hhsh). Returns multimodal content (text, images, etc.)."
     ),
 )
-async def cap_call_cli(
+async def call_cap_cli(
     command: str,
     addon_context=yt.depends(lambda ctx: ctx.addon_context),
 ) -> str | list[dict]:
     """Execute a capability command and return the result."""
     from yuubot.capabilities import execute, CapabilityContext
 
-    # Bridge: addon_context may be an AddonContext or CapabilityContext
-    if not isinstance(addon_context, CapabilityContext):
-        cap_ctx = CapabilityContext(
-            config=addon_context.config,
-            ctx_id=addon_context.ctx_id,
-            user_id=addon_context.user_id,
-            user_role=addon_context.user_role,
-            agent_name=addon_context.agent_name,
-            task_id=addon_context.task_id,
-        )
-    else:
-        cap_ctx = addon_context
+    cap_ctx = addon_context if isinstance(addon_context, CapabilityContext) else CapabilityContext(
+        config=addon_context.config,
+        ctx_id=addon_context.ctx_id,
+        user_id=addon_context.user_id,
+        user_role=addon_context.user_role,
+        agent_name=addon_context.agent_name,
+        task_id=addon_context.task_id,
+        allowed_caps=getattr(addon_context, "allowed_caps", None),
+        action_filters=getattr(addon_context, "action_filters", None),
+    )
 
     try:
         result = await execute(command, context=cap_ctx)
@@ -72,11 +70,19 @@ async def cap_call_cli(
         "Call this before using a capability for the first time to understand its commands and parameters."
     ),
 )
-async def read_capability_doc(name: str) -> str:
+async def read_cap_doc(
+    name: str,
+    addon_context=yt.depends(lambda ctx: ctx.addon_context),
+) -> str:
     """Read capability documentation."""
-    from yuubot.capabilities import load_capability_doc
+    from yuubot.capabilities import CapabilityContext, load_capability_doc
+
+    cap_ctx = addon_context if isinstance(addon_context, CapabilityContext) else None
+    action_filter = None
+    if cap_ctx is not None and cap_ctx.action_filters is not None:
+        action_filter = cap_ctx.action_filters.get(name)
 
     try:
-        return load_capability_doc(name)
+        return load_capability_doc(name, action_filter=action_filter)
     except FileNotFoundError:
         return f"[ERROR] no documentation for capability {name!r}"

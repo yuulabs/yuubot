@@ -5,7 +5,7 @@ from __future__ import annotations
 from yuubot.capabilities import CapabilityContext, ContentBlock, execute
 
 
-async def cap_call_cli(
+async def call_cap_cli(
     command: str,
     *,
     context: CapabilityContext | None = None,

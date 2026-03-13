@@ -157,8 +157,6 @@ def mock_llm(responses: list[list] | None = None):
 
     call_idx = 0
 
-    original_stream = yuullm.providers.OpenAIChatCompletionProvider.stream
-
     async def _fake_stream(self, messages, *, model, tools=None, **kw):
         nonlocal call_idx
         idx = min(call_idx, len(responses) - 1)

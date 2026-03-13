@@ -1,0 +1,44 @@
+name: im
+summary: 真实 QQ 对话的收发、搜索与浏览
+actions:
+  - name: send
+    summary: 把一条或多条消息真实发送到指定 QQ 会话
+    usage: |
+      `im send` 不是写草稿，而是把消息真实发到 QQ。
+      发出去后，对方会立刻看到；这些消息也会进入后续对话历史。
+      所以继续对话时，要把已经发送的内容当成双方都看过的上下文。
+
+      # 单条消息
+      im send --ctx <ctx_id> -- [{"type":"text","data":{"text":"..."}}]
+
+      # 多条消息（推荐）：用 gap 模拟人打字/思考的停顿，让消息更有节奏感
+      im send --ctx <ctx_id> -- [
+        {"msg": [{"type":"text","data":{"text":"第一段"}}], "gap": 0},
+        {"msg": [{"type":"text","data":{"text":"第二段"}}], "gap": 1.5},
+        {"msg": [{"type":"text","data":{"text":"第三段"}}], "gap": 2.0}
+      ]
+      # gap 单位为秒，表示发这条消息前等待的时间。
+      # 超出群聊限额时会自动等待后重试，不会失败。
+      # 返回发完时的剩余额度。
+    payload_rule: "JSON array: segments (single) or [{msg, gap}, ...] (multi)"
+    return_shape: text
+  - name: search
+    summary: 关键词全文搜索消息
+    usage: im search "<keywords>" --ctx <ctx_id> --limit 20 --days 7
+    payload_rule: none
+    return_shape: text
+  - name: browse
+    summary: 按 msg_id 或时间范围浏览消息上下文
+    usage: im browse --msg <msg_id> --before 10 --after 10
+    payload_rule: none
+    return_shape: text
+  - name: read
+    summary: 读取 QQ 卡片内容；当前支持合并转发
+    usage: im read --forward-msg <forward_id>
+    payload_rule: none
+    return_shape: text
+  - name: list
+    summary: 列出好友/群/成员/ctx
+    usage: im list friends|groups|members|contexts [--gid <group_id>]
+    payload_rule: none
+    return_shape: text

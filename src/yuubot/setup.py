@@ -201,7 +201,7 @@ def _step_configure_yuuagents(config_dir: Path) -> None:
 
     click.echo()
     click.echo("你可以后续直接编辑该文件以调整 yuuagents 行为。")
-    click.echo("例如设置 providers / agents / docker / skills 等。")
+    click.echo("例如设置 providers / agents / docker / external skills 等。")
     click.echo("API Key 建议通过环境变量提供，例如 OPENAI_API_KEY / TAVILY_API_KEY。")
 
 
@@ -329,13 +329,6 @@ def run_setup(config_path: str | None = None) -> None:
     napcat.write_webui_port(cfg.recorder.napcat_webui_port)
 
     _step_start_and_login()
-
-    # Install all built-in skills
-    from yuubot.skills.install import install_skill
-
-    click.echo()
-    click.echo("安装内置 Skills...")
-    install_skill(None, str(cfg_path))
 
     click.echo()
     click.echo("=" * 60)

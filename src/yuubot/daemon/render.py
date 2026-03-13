@@ -22,9 +22,9 @@ from yuubot.core.models import (
 )
 from yuubot.core.onebot import parse_segments
 from yuubot.core.types import InboundMessage
-from yuubot.skills.im.formatter import (
+from yuubot.rendering import ConversationRender
+from yuubot.capabilities.im.formatter import (
     format_message_to_xml,
-    format_segments,
     get_user_alias,
 )
 
@@ -92,13 +92,13 @@ def _strip_bot_at(segments: list[Segment], bot_qq: str) -> list[Segment]:
 
 
 def _build_location(msg: InboundMessage, group_name: str, include_name: bool) -> str:
-    """Build human-readable location string."""
-    if msg.chat_type == "group":
-        group_id = msg.raw_event.get("group_id", "?")
-        if include_name and group_name:
-            return f"群聊「{group_name}」(group_id={group_id}, ctx={msg.ctx_id})"
-        return f"群聊 (group_id={group_id}, ctx={msg.ctx_id})"
-    return f"私聊 (ctx={msg.ctx_id})"
+    return ConversationRender.location(
+        chat_type=msg.chat_type,
+        group_id=msg.raw_event.get("group_id", "?"),
+        group_name=group_name,
+        ctx_id=msg.ctx_id,
+        include_name=include_name,
+    )
 
 
 # ── Core render functions ────────────────────────────────────────
@@ -172,17 +172,19 @@ async def render_task(
 
     # Assemble final text
     if is_continuation:
-        total_msgs = 1 + len(extra_events)
-        count_hint = f"你收到了{total_msgs}条新消息:\n" if total_msgs > 1 else ""
-        return f"""{count_hint}{msg_xml}
-{memory_hints}"""
+        return ConversationRender.user_continuation(
+            total_msgs=1 + len(extra_events),
+            msg_xml=msg_xml,
+            memory_hints=memory_hints,
+        )
 
     location = _build_location(msg, context.group_name, policy.include_group_name)
-    return f"""你收到了来自{location}的消息。
-{msg_xml}
-{memory_hints}
-回复时使用 im send 命令发送到 ctx {ctx_id}。遇到奇怪的问题时可使用im工具查看上下文。你自己生成的回复不会被看到，简单输出结束即可。
-"""
+    return ConversationRender.user_new(
+        location=location,
+        msg_xml=msg_xml,
+        memory_hints=memory_hints,
+        ctx_id=ctx_id,
+    )
 
 
 async def render_ping_payload(
@@ -211,15 +213,12 @@ async def render_memory_hints(text: str, ctx_id: int | None = None) -> str:
     Best-effort: returns empty string on any failure.
     """
     try:
-        from yuubot.skills.mem.store import probe_text
+        from yuubot.capabilities.mem.store import probe_text
 
         hits = await probe_text(text, ctx_id=ctx_id)
         if not hits:
             return ""
-        return (
-            f"\n记忆关键词命中: {', '.join(hits)}\n"
-            f'（可用 mem recall "<关键词>" 查看详情）\n'
-        )
+        return ConversationRender.memory_hint(hits=hits)
     except Exception:
         logger.opt(exception=True).debug("Memory hints probe failed")
         return ""

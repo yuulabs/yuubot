@@ -5,8 +5,8 @@ inside the daemon process. They look like CLI commands to the LLM but execute
 as direct function calls.
 
 Tool interface for LLM:
-    cap_call_cli("im send --ctx 5 -- [{...}]")
-    read_capability_doc("mem")
+    call_cap_cli("im send --ctx 5 -- [{...}]")
+    read_cap_doc("mem")
 
 The `--` separator splits CLI args from structured JSON data.
 Left side: shlex-parsed arguments. Right side: raw JSON (no escaping needed).
@@ -18,11 +18,12 @@ import inspect
 import json
 import shlex
 from contextvars import ContextVar
-from pathlib import Path
 from typing import Any
 
 import attrs
 from loguru import logger
+
+from yuubot.capabilities.contract import ActionFilter
 
 # ContentBlock: reuse yuullm's dict-based content items.
 ContentBlock = dict[str, Any]
@@ -67,6 +68,9 @@ class CapabilityContext:
     user_role: str = ""
     agent_name: str = ""
     task_id: str = ""
+    bot_name: str = ""
+    allowed_caps: frozenset[str] | None = None  # None = all caps allowed
+    action_filters: dict[str, ActionFilter] | None = None
 
 
 _ctx_var: ContextVar[CapabilityContext | None] = ContextVar(
@@ -208,6 +212,28 @@ async def execute(
     cap_name, subcommand, args, data = _parse_command(command)
     parsed = _parse_args(args)
 
+    if context is not None and context.allowed_caps is not None and cap_name not in context.allowed_caps:
+        raise ValueError(
+            f"capability {cap_name!r} is not available to this agent "
+            f"(allowed: {', '.join(sorted(context.allowed_caps))})"
+        )
+    if (
+        context is not None
+        and context.action_filters is not None
+        and cap_name in context.action_filters
+    ):
+        action_filter = context.action_filters[cap_name]
+        if action_filter.mode == "include" and subcommand not in action_filter.actions:
+            raise ValueError(
+                f"capability {cap_name!r} command {subcommand!r} is not available to this agent. "
+                f"Call read_cap_doc('{cap_name}') to see allowed commands."
+            )
+        if action_filter.mode == "exclude" and subcommand in action_filter.actions:
+            raise ValueError(
+                f"capability {cap_name!r} command {subcommand!r} is not available to this agent. "
+                f"Call read_cap_doc('{cap_name}') to see allowed commands."
+            )
+
     logger.debug("Capability execute: {} {} (ctx_id={}, agent={})",
                  cap_name, subcommand,
                  context.ctx_id if context else None,
@@ -243,7 +269,7 @@ async def execute(
             raise ValueError(
                 f"capability {cap_name!r} command {subcommand!r} got unknown arguments: "
                 f"{', '.join(sorted(unknown))}. "
-                f"Call read_capability_doc('{cap_name}') to see correct usage."
+                f"Call read_cap_doc('{cap_name}') to see correct usage."
             )
 
     # Set context via ContextVar for the duration of the call
@@ -254,7 +280,7 @@ async def execute(
     except TypeError as e:
         raise ValueError(
             f"{e}. "
-            f"Call read_capability_doc('{cap_name}') to see correct usage."
+            f"Call read_cap_doc('{cap_name}') to see correct usage."
         ) from e
     except Exception as e:
         logger.error("Capability failed: {} {} - {}", cap_name, subcommand, e)
@@ -274,53 +300,33 @@ async def execute(
 
 # ── Doc loading ──────────────────────────────────────────────────
 
-# Docs still live in addons/docs/ — we read from there for now
-_DOC_DIR = Path(__file__).parent.parent / "addons" / "docs"
+def load_capability_doc(
+    name: str,
+    *,
+    action_filter: ActionFilter | None = None,
+) -> str:
+    """Render capability documentation from the YAML contract."""
+    from yuubot.capabilities.contract import (
+        filter_contract_actions,
+        load_all_contracts,
+        render_contract_doc,
+    )
 
+    contracts = load_all_contracts()
+    contract = contracts.get(name)
+    if contract is None:
+        raise FileNotFoundError(f"no documentation for capability {name!r}")
 
-def load_capability_doc(name: str) -> str:
-    """Load capability documentation markdown."""
-    doc_path = _DOC_DIR / f"{name}.md"
-    if doc_path.is_file():
-        return doc_path.read_text(encoding="utf-8")
-    raise FileNotFoundError(f"no documentation for capability {name!r}")
+    return render_contract_doc(filter_contract_actions(contract, action_filter))
 
 
 def capability_summary(name: str) -> str:
-    """One-line description from contract or doc frontmatter."""
+    """One-line description from the contract."""
     from yuubot.capabilities.contract import load_all_contracts
     contracts = load_all_contracts()
     if name in contracts:
         return contracts[name].summary
-    # Fallback to doc frontmatter
-    doc_path = _DOC_DIR / f"{name}.md"
-    if not doc_path.is_file():
-        return ""
-    lines = doc_path.read_text(encoding="utf-8").splitlines()
-    in_frontmatter = False
-    desc_lines: list[str] = []
-    collecting_desc = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "---":
-            if in_frontmatter:
-                break
-            in_frontmatter = True
-            continue
-        if not in_frontmatter:
-            continue
-        if stripped.startswith("description:"):
-            rest = stripped.split(":", 1)[1].strip()
-            if rest.startswith(">"):
-                collecting_desc = True
-            elif rest:
-                return rest
-        elif collecting_desc:
-            if stripped and not stripped.startswith(("name:", "---")):
-                desc_lines.append(stripped)
-            else:
-                break
-    return " ".join(desc_lines).strip()
+    return ""
 
 
 # ── Import capability modules to trigger registration ────────────

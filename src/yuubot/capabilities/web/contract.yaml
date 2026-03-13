@@ -1,0 +1,21 @@
+name: web
+summary: 网页搜索、阅读与下载
+usage_guidelines: |
+  搜索限制: 每个任务最多3次搜索。谨慎使用，避免重复搜索相似内容。
+  如果搜索无果，不要反复尝试不同关键词，考虑信息可能不在网上。
+actions:
+  - name: search
+    summary: Tavily 搜索引擎查询
+    usage: web search "<query>" --limit 5
+    payload_rule: none
+    return_shape: text
+  - name: read
+    summary: 提取网页正文内容
+    usage: web read "<url>" --summary
+    payload_rule: none
+    return_shape: text
+  - name: download
+    summary: 下载文件到本地
+    usage: web download "<url1>" "<url2>" <folder>
+    payload_rule: none
+    return_shape: text

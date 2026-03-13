@@ -1,7 +1,6 @@
 """Shared fixtures for end-to-end flow tests."""
 
 import asyncio
-import os
 from pathlib import Path
 import socket
 
@@ -15,15 +14,15 @@ from opentelemetry import trace as _otel_trace
 from opentelemetry.sdk.trace import TracerProvider as _TracerProvider
 _otel_trace.set_tracer_provider(_TracerProvider())
 
-from yuubot.commands.builtin import build_command_tree
-from yuubot.commands.entry import EntryManager
-from yuubot.commands.roles import RoleManager
-from yuubot.config import Config, BotConfig, DaemonConfig, DatabaseConfig, ResponseConfig, SessionConfig
-from yuubot.core.db import init_db, close_db
-from yuubot.daemon.agent_runner import AgentRunner
-from yuubot.daemon.dispatcher import Dispatcher
-from yuubot.daemon.llm import LLMExecutor
-from yuubot.daemon.conversation import ConversationManager
+from yuubot.commands.builtin import build_command_tree  # noqa: E402
+from yuubot.commands.entry import EntryManager  # noqa: E402
+from yuubot.commands.roles import RoleManager  # noqa: E402
+from yuubot.config import Config, BotConfig, DaemonConfig, DatabaseConfig, ResponseConfig, SessionConfig  # noqa: E402
+from yuubot.core.db import init_db, close_db  # noqa: E402
+from yuubot.daemon.agent_runner import AgentRunner  # noqa: E402
+from yuubot.daemon.dispatcher import Dispatcher  # noqa: E402
+from yuubot.daemon.llm import LLMExecutor  # noqa: E402
+from yuubot.daemon.conversation import ConversationManager  # noqa: E402
 
 # ── Constants ────────────────────────────────────────────────────
 
@@ -52,7 +51,7 @@ def test_characters():
         persona="你是测试机器人。",
         spec=AgentSpec(
             tools=["execute_skill_cli"],
-            skills=["*"],
+            ext_skills=["*"],
             max_steps=4,
         ),
         provider="test",
@@ -67,7 +66,7 @@ def test_characters():
         persona="通用助手。",
         spec=AgentSpec(
             tools=["execute_bash"],
-            skills=["*"],
+            ext_skills=["*"],
             max_steps=4,
         ),
         provider="test",
@@ -166,7 +165,7 @@ def session_mgr() -> ConversationManager:
 
 async def _lightweight_init(runner: AgentRunner) -> None:
     """Initialize yuuagents without starting daemon or touching ~/.yagents."""
-    if runner._initialized:
+    if runner.runtime.initialized:
         return
     import json
     import msgspec
@@ -183,7 +182,7 @@ async def _lightweight_init(runner: AgentRunner) -> None:
     await persistence.start()
     await persistence.stop()
 
-    runner._initialized = True
+    runner.runtime.initialized = True
 
 
 @pytest.fixture

@@ -1,6 +1,5 @@
 """Internal WS relay — broadcast events to connected daemons."""
 
-import asyncio
 import json
 
 import websockets
