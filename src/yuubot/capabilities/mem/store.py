@@ -17,6 +17,19 @@ _JIEBA_TERM_RE = re.compile(r'"([^"]+)"')
 _JIEBA_ASCII_RE = re.compile(r'\b([a-zA-Z0-9_]{2,})\*')
 
 
+def parse_ids(parts: list[str] | None) -> list[int]:
+    """Parse memory IDs from positional args, allowing comma/space mixing."""
+    if not parts:
+        return []
+    ids: list[int] = []
+    for part in parts:
+        for token in part.split(","):
+            token = token.strip()
+            if token:
+                ids.append(int(token))
+    return ids
+
+
 async def _build_fts_query(words: list[str]) -> str:
     """Build an FTS5 MATCH expression from a list of words.
 
@@ -102,6 +115,7 @@ async def recall(
     """
     q = Q()
 
+    words = [w for w in words if w.strip()]
     if words:
         fts_expr = await _build_fts_query(words)
         conn = connections.get("default")
@@ -225,6 +239,40 @@ async def restore(ids: list[int]) -> int:
         return 0
     count = await Memory.filter(id__in=ids, trashed_at__isnull=False).update(trashed_at=None)
     return count
+
+
+async def list_memories(
+    ctx_id: int | None,
+    *,
+    show_all: bool = False,
+    trash: bool = False,
+    limit: int = 100,
+) -> list[dict]:
+    """List memories visible to ctx_id, optionally from trash."""
+    q = Q(trashed_at__isnull=not trash)
+    if not show_all:
+        if ctx_id is not None:
+            q &= (Q(ctx_id=ctx_id, scope="private") | Q(scope="public"))
+        else:
+            q &= Q(scope="public")
+
+    memories = await Memory.filter(q).order_by("-last_accessed", "-id").limit(limit)
+    results = []
+    for m in memories:
+        mem_tags: list[str] = list(
+            await MemoryTag.filter(memory_id=m.id).values_list("tag", flat=True)
+        )  # type: ignore[arg-type]
+        results.append({
+            "id": m.id,
+            "content": m.content,
+            "ctx_id": m.ctx_id,  # type: ignore[attr-defined]
+            "scope": m.scope,
+            "created_at": m.created_at.isoformat() if m.created_at else "",
+            "last_accessed": m.last_accessed.isoformat() if m.last_accessed else "",
+            "trashed_at": m.trashed_at.isoformat() if m.trashed_at else "",
+            "tags": ", ".join(mem_tags) if mem_tags else "",
+        })
+    return results
 
 
 async def hard_delete(ids: list[int]) -> int:

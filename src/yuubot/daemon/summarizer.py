@@ -4,8 +4,8 @@ from typing import Any
 
 import yuutools as yt
 from loguru import logger
-from yuuagents import Agent, AgentContext, start_agent
-from yuuagents.agent import AgentConfig, SimplePromptBuilder
+from yuuagents import AgentContext, Session
+from yuuagents.agent import AgentConfig
 
 _SYSTEM_PROMPT = (
     "你是一个对话摘要助手。根据提供的对话历史，生成一份简洁的工作交接摘要，"
@@ -155,29 +155,27 @@ async def _run_summarizer(llm: Any, user_content: str, agent_id: str) -> str:
     from uuid import uuid4
 
     task_id = str(uuid4())
-    builder = SimplePromptBuilder()
-    builder.add_section(_SYSTEM_PROMPT)
+    runtime_id = f"{agent_id}-{task_id[:8]}"
 
-    agent = Agent(
+    session = Session(
         config=AgentConfig(
-            task_id=task_id,
-            agent_id=f"{agent_id}-{task_id[:8]}",
-            persona=_SYSTEM_PROMPT,
+            agent_id=runtime_id,
+            system=_SYSTEM_PROMPT,
             tools=yt.ToolManager(),
             llm=llm,
-            prompt_builder=builder,
             max_steps=1,
-        )
+        ),
+        context=AgentContext(
+            task_id=task_id,
+            agent_id=runtime_id,
+            workdir="",
+            docker_container="",
+        ),
     )
-    ctx = AgentContext(
-        task_id=task_id,
-        agent_id=agent.agent_id,
-        workdir="",
-        docker_container="",
-    )
-    await start_agent(agent, user_content, ctx)
+    session.start(user_content)
+    await session.wait()
 
-    for msg in reversed(agent.history):
+    for msg in reversed(session.history):
         if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "assistant":
             text = "".join(item for item in msg[1] if isinstance(item, str)).strip()
             if text:

@@ -42,11 +42,15 @@ def resolve_route(
     ]
     plain = segments_to_plain(others + replies).strip()
 
+    # For command matching, strip ALL @ mentions (non-bot @ can precede commands)
+    cmd_segs = [s for s in others if not isinstance(s, AtSegment)]
+    cmd_text = segments_to_plain(cmd_segs + replies).strip()
+
     # 1. Try command tree match
-    cmd_match = root.match_message(plain)
+    cmd_match = root.match_message(cmd_text)
     if cmd_match is not None:
         return CommandRoute(
-            command=cmd_match.command.prefix,
+            command_path=cmd_match.command_path,
             remaining=cmd_match.remaining,
             entry=cmd_match.entry,
         )

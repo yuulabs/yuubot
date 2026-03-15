@@ -88,11 +88,9 @@ class MemCapability:
         if _is_bot() and actx.agent_name != "mem_curator":
             raise PermissionError(f"Agent '{actx.agent_name}' 无权调用 mem delete。仅 mem_curator 可删除记忆。")
 
-        ids_str = ",".join(_positional) if _positional else ""
-        if not ids_str:
+        ids = mem_store.parse_ids(_positional)
+        if not ids:
             return [text_block("错误: 请提供记忆 ID")]
-
-        ids = [int(x.strip()) for x in ids_str.split(",") if x.strip()]
         count = await mem_store.trash(ids)
         return [text_block(f"已移入垃圾桶 {count} 条记忆 (ID: {', '.join(str(i) for i in ids)})。可用 mem restore 回滚。")]
 
@@ -107,11 +105,9 @@ class MemCapability:
         if _is_bot() and actx.agent_name != "mem_curator":
             raise PermissionError(f"Agent '{actx.agent_name}' 无权调用 mem restore。仅 mem_curator 可回滚记忆。")
 
-        ids_str = ",".join(_positional) if _positional else ""
-        if not ids_str:
+        ids = mem_store.parse_ids(_positional)
+        if not ids:
             return [text_block("错误: 请提供记忆 ID")]
-
-        ids = [int(x.strip()) for x in ids_str.split(",") if x.strip()]
         count = await mem_store.restore(ids)
         return [text_block(f"已恢复 {count} 条记忆 (ID: {', '.join(str(i) for i in ids)})")]
 

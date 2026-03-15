@@ -1,15 +1,14 @@
 """Character inspection and runtime config mutation: /ychar."""
 
+from yuubot.commands.tree import CommandRequest
 
 
-
-
-async def exec_char_show_prompt(remaining: str, event: dict, deps: dict) -> str | None:
+async def exec_char_show_prompt(request: CommandRequest) -> str | None:
     """Show system prompt sections with sizes for a character."""
     from yuubot.characters import CHARACTER_REGISTRY, get_character
     from yuubot.prompt import build_prompt_spec, RuntimeInfo
 
-    name = remaining.strip() or "main"
+    name = request.remaining.strip() or "main"
     if name not in CHARACTER_REGISTRY:
         return f"未知 Character: {name}\n可用: {', '.join(CHARACTER_REGISTRY)}"
 
@@ -26,11 +25,11 @@ async def exec_char_show_prompt(remaining: str, event: dict, deps: dict) -> str 
     return format_prompt_spec(spec)
 
 
-async def exec_char_show_config(remaining: str, event: dict, deps: dict) -> str | None:
+async def exec_char_show_config(request: CommandRequest) -> str | None:
     """Show character config (provider, model, tools, etc.)."""
     from yuubot.characters import CHARACTER_REGISTRY, get_character
 
-    name = remaining.strip() or "main"
+    name = request.remaining.strip() or "main"
     if name not in CHARACTER_REGISTRY:
         return f"未知 Character: {name}\n可用: {', '.join(CHARACTER_REGISTRY)}"
 
@@ -58,11 +57,11 @@ async def exec_char_show_config(remaining: str, event: dict, deps: dict) -> str 
     return "\n".join(lines)
 
 
-async def exec_char_config(remaining: str, event: dict, deps: dict) -> str | None:
+async def exec_char_config(request: CommandRequest) -> str | None:
     """Hot-swap provider/model at runtime: /ychar config <name> key=value ..."""
     from yuubot.characters import CHARACTER_REGISTRY, get_character
 
-    parts = remaining.strip().split()
+    parts = request.remaining.strip().split()
     if not parts:
         return "用法: /char config <name> provider=x model=y"
 
@@ -91,8 +90,9 @@ async def exec_char_config(remaining: str, event: dict, deps: dict) -> str | Non
     return f"已更新 {name}: {', '.join(changes)}"
 
 
-async def exec_char_list(remaining: str, event: dict, deps: dict) -> str | None:
+async def exec_char_list(request: CommandRequest) -> str | None:
     """List all registered characters."""
+    del request
     from yuubot.characters import CHARACTER_REGISTRY
 
     lines = []

@@ -13,7 +13,6 @@ from typing import cast
 
 import attrs
 from loguru import logger
-from yuuagents.agent import SimplePromptBuilder
 
 
 @attrs.define
@@ -112,6 +111,42 @@ class PromptSpec:
     runtime: RuntimeInfo
     resolved_sections: list[tuple[str, str]]  # [(name, content)]
     tools: list[str]
+
+
+_CONTROL_TOOLS = frozenset({
+    "sleep",
+    "inspect_background",
+    "cancel_background",
+    "input_background",
+    "defer_background",
+    "wait_background",
+})
+
+
+def _render_control_tools_section(tools: list[str]) -> str:
+    present = _CONTROL_TOOLS & set(tools)
+    if not present:
+        return ""
+
+    lines = [
+        "<control_tools>",
+        "你拥有一组用于管理长时间运行任务的控制工具。",
+        "当工具因为 defer 被移到后台后，不要盲目等待；先检查，再决定是继续等待、发送输入、催促 delegate，还是取消。",
+        "工作流建议：",
+        "1. 需要了解后台进展时，调用 inspect_background。优先检查，而不是猜测。",
+        "2. 需要最终结果时，调用 wait_background 等待一个或多个后台 run 完成。",
+        "3. 交互式 bash 在后台等待输入时，调用 input_background 发送输入；这相当于写 stdin。",
+        "4. 后台 run 是 delegate 时，input_background 相当于给该 agent 发送一条新消息。",
+        "5. 后台 delegate 长时间卡住时，先 inspect_background；必要时再用 defer_background 催它先停止前台等待并汇报进展。",
+        "6. sleep 和 wait_background 本身也是长工具，外部仍可能再次 defer 它们；这不是错误。",
+        "</control_tools>",
+    ]
+    if "delegate" in tools:
+        lines.insert(
+            -1,
+            "7. 如果你把 delegate defer 到后台，后续应把它当作普通后台 run 管理：inspect / input / defer / wait 都可以配合使用。",
+        )
+    return "\n".join(lines)
 
 
 def _render_caps_summary(
@@ -314,6 +349,10 @@ def build_prompt_spec(
     if runtime.supports_vision and "view_image" not in tools:
         tools.append("view_image")
 
+    control_section = _render_control_tools_section(tools)
+    if control_section:
+        sections.append(("control_tools", control_section))
+
     return PromptSpec(
         character_name=char.name,
         agent_spec=spec,
@@ -334,12 +373,9 @@ def resolve_cap_visibility(spec: AgentSpec) -> dict[str, CapVisibility]:
     return result
 
 
-def build_system_prompt(spec: PromptSpec):
-    """PromptSpec → yuuagents SimplePromptBuilder."""
-    builder = SimplePromptBuilder()
-    for _name, content in spec.resolved_sections:
-        builder.add_section(content)
-    return builder
+def build_system_prompt(spec: PromptSpec) -> str:
+    """PromptSpec → plain system prompt string."""
+    return "\n\n".join(content for _name, content in spec.resolved_sections)
 
 
 def format_prompt_spec(spec: PromptSpec) -> str:

@@ -1,20 +1,17 @@
 """Conversation manager — unified multi-turn conversation state per (ctx, agent).
 
 Replaces the scattered session/flow/ping/auto-mode state with a single model.
-A Conversation tracks state (idle/running/closed), pending messages received
-while the agent is running, and all the session metadata previously in Session.
+A Conversation tracks state (idle/running/closed) and all the session metadata
+previously in Session.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from typing import Literal
 
 import attrs
 from loguru import logger
-
-from yuubot.core.types import InboundMessage
 
 ConversationState = Literal["idle", "running", "closed"]
 
@@ -35,24 +32,29 @@ class Conversation:
     agent_name: str
     mode: str = "normal"  # "normal" | "auto"
     state: ConversationState = "idle"
-    history: list = attrs.field(factory=list)
-    pending_messages: list[InboundMessage] = attrs.field(factory=list)
     started_by: int = 0  # user_id who started it
     last_active_at: float = attrs.field(factory=time.monotonic)
-    task_id: str = ""
     total_tokens: int = 0
     created_at: float = attrs.field(factory=time.monotonic)
     summary_prompt: str = ""
-
-    # Aliases for backward compatibility with Session field names
-    @property
-    def user_id(self) -> int:
-        return self.started_by
+    session: object | None = None
+    _history_snapshot: list = attrs.field(factory=list)
 
     @property
-    def last_active(self) -> float:
-        return self.last_active_at
+    def history(self) -> list:
+        if self.session is None:
+            return list(self._history_snapshot)
+        return list(getattr(self.session, "history", []))
 
+    @history.setter
+    def history(self, value: list) -> None:
+        self._history_snapshot = list(value)
+
+    @property
+    def task_id(self) -> str:
+        if self.session is None:
+            return ""
+        return str(getattr(self.session, "task_id", ""))
 
 @attrs.define
 class ConversationManager:
@@ -71,7 +73,6 @@ class ConversationManager:
     auto_ttl: float = 1800.0
     max_tokens: int = 60000
     _conversations: dict[tuple[int, str], Conversation] = attrs.field(factory=dict)
-    _is_ctx_active: Callable[[int], bool] | None = None  # set by daemon
     _auto_ctxs: set[int] = attrs.field(factory=set)
     _current_agent: dict[int, str] = attrs.field(factory=dict)  # ctx_id → agent_name
 
@@ -207,19 +208,29 @@ class ConversationManager:
                 expired.append(conv)
         return expired
 
-    def update_history(self, conv: Conversation, history: list, tokens: int) -> bool:
-        """Update conversation history and token count after agent run.
+    def update_session(self, conv: Conversation, session: object) -> bool:
+        """Update conversation state after one runtime session step.
 
-        *tokens* is the cumulative total from the agent. We compute the
-        last-turn usage (delta) and compare against *max_tokens* so that
-        conversations are only closed when a single LLM call becomes too large
-        (i.e. the context window is filling up), not merely because the
-        user has chatted for a while.
+        Rollover keys off the latest API call's reported context size estimate:
+        input tokens (cached + non-cached) plus output tokens. We fall back to the
+        legacy cumulative ``total_tokens`` delta only when structured usage is not
+        available yet.
 
         Returns True if the conversation was closed due to reaching the token limit.
         """
-        last_turn = tokens - conv.total_tokens
-        conv.history = history
+        tokens = int(getattr(session, "total_tokens", 0))
+        last_usage = getattr(session, "last_usage", None)
+        if last_usage is not None:
+            last_turn = (
+                int(getattr(last_usage, "input_tokens", 0) or 0)
+                + int(getattr(last_usage, "cache_read_tokens", 0) or 0)
+                + int(getattr(last_usage, "cache_write_tokens", 0) or 0)
+                + int(getattr(last_usage, "output_tokens", 0) or 0)
+            )
+        else:
+            last_turn = tokens - conv.total_tokens
+        conv.session = session
+        conv._history_snapshot = list(getattr(session, "history", []))
         conv.total_tokens = tokens
         self.touch(conv)
         if last_turn >= self.max_tokens:
@@ -231,23 +242,6 @@ class ConversationManager:
             )
             return True
         return False
-
-    # ── Pending message support (replaces Ping mechanism) ──────────────────────
-
-    def enqueue_pending(self, ctx_id: int, message: InboundMessage) -> None:
-        """Add a message to pending while conversation is running."""
-        conv = self.get(ctx_id)
-        if conv and conv.state == "running":
-            conv.pending_messages.append(message)
-
-    def drain_pending(self, ctx_id: int) -> list[InboundMessage]:
-        """Take all pending messages after agent turn ends."""
-        conv = self.get(ctx_id)
-        if conv:
-            msgs = conv.pending_messages
-            conv.pending_messages = []
-            return msgs
-        return []
 
     def set_running(self, ctx_id: int, agent_name: str | None = None) -> None:
         """Mark conversation as running (bypasses expiry check)."""
@@ -282,13 +276,4 @@ class ConversationManager:
             return False
         elapsed = time.monotonic() - conv.last_active_at
         effective_ttl = self.auto_ttl if conv.ctx_id in self._auto_ctxs else self.ttl
-        if elapsed <= effective_ttl:
-            return False
-        # Extend TTL if this ctx has a running agent flow (legacy check)
-        if self._is_ctx_active is not None:
-            try:
-                if self._is_ctx_active(conv.ctx_id):
-                    return False
-            except Exception:
-                pass
-        return True
+        return elapsed > effective_ttl

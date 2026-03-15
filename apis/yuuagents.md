@@ -357,9 +357,11 @@ async def execute_skill_cli(
 读取 Docker 容器中的文件。
 
 ```python
-@yt.tool(params={"path": "..."})
+@yt.tool(params={"path": "...", "start_line": "...", "end_line": "..."})
 async def read_file(
     path: str,
+    start_line: int = 1,
+    end_line: int | None = None,
     container: str = yt.depends(lambda ctx: ctx.docker_container),
     docker: DockerExecutor = yt.depends(lambda ctx: ctx.docker),
 ) -> str
@@ -368,13 +370,15 @@ async def read_file(
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `path` | `str` | 绝对文件路径 |
+| `start_line` | `int` | 起始行号，1-based，默认 `1` |
+| `end_line` | `int \| None` | 结束行号，1-based 且包含该行，默认读到 EOF |
 
 | 依赖注入 | 来源 |
 |----------|------|
 | `container` | `ctx.docker_container` |
 | `docker` | `ctx.docker` |
 
-**行为：** 在容器中执行 `cat <path>`，超时 30 秒。
+**行为：** 在容器中读取文本文件，默认最大返回 `8KB`。返回文本前会附带当前返回行范围和 `total_lines`。超限错误也会包含总行数，便于调用方分页继续读取。
 
 ### write_file
 

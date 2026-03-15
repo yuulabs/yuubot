@@ -3,6 +3,7 @@ import os
 
 from yuubot.capabilities import CapabilityContext, execute, load_capability_doc
 from yuubot.capabilities.contract import ActionFilter, load_all_contracts
+from yuubot.capabilities.tools import call_cap_cli
 
 
 def test_load_capability_doc_renders_from_contract():
@@ -76,3 +77,27 @@ def test_load_all_contracts_caches_until_mtime_changes(tmp_path, monkeypatch):
     os.utime(contract_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
     cached = load_all_contracts()
     assert cached["demo"].summary == "second"
+
+
+async def test_call_cap_cli_preserves_media_path_context(monkeypatch):
+    captured: dict[str, CapabilityContext] = {}
+
+    async def fake_execute(command: str, *, context: CapabilityContext | None = None):
+        captured["context"] = context
+        return [{"type": "text", "text": "ok"}]
+
+    monkeypatch.setattr("yuubot.capabilities.tools.execute", fake_execute, raising=False)
+    monkeypatch.setattr("yuubot.capabilities.execute", fake_execute)
+
+    addon_context = CapabilityContext(
+        agent_name="main",
+        docker_host_mount="/mnt/host",
+        docker_home_host_dir="/home/tester",
+        docker_home_dir="/root",
+    )
+    result = await call_cap_cli.fn("im send --ctx 1 -- []", addon_context=addon_context)
+
+    assert result == "ok"
+    assert captured["context"].docker_host_mount == "/mnt/host"
+    assert captured["context"].docker_home_host_dir == "/home/tester"
+    assert captured["context"].docker_home_dir == "/root"

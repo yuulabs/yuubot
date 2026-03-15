@@ -6,20 +6,17 @@ actions:
     usage: |
       `im send` 不是写草稿，而是把消息真实发到 QQ。
       发出去后，对方会立刻看到；这些消息也会进入后续对话历史。
-      所以继续对话时，要把已经发送的内容当成双方都看过的上下文。
 
       # 单条消息
       im send --ctx <ctx_id> -- [{"type":"text","data":{"text":"..."}}]
 
-      # 多条消息（推荐）：用 gap 模拟人打字/思考的停顿，让消息更有节奏感
+      # 多条消息：用 gap 模拟人打字/思考的停顿，让消息更有节奏感
       im send --ctx <ctx_id> -- [
         {"msg": [{"type":"text","data":{"text":"第一段"}}], "gap": 0},
-        {"msg": [{"type":"text","data":{"text":"第二段"}}], "gap": 1.5},
-        {"msg": [{"type":"text","data":{"text":"第三段"}}], "gap": 2.0}
+        {"msg": [{"type":"text","data":{"text":"第三段"}}], "gap": 5.0}
       ]
       # gap 单位为秒，表示发这条消息前等待的时间。
-      # 超出群聊限额时会自动等待后重试，不会失败。
-      # 返回发完时的剩余额度。
+      # 返回发完时的剩余额度。每分钟至多5条，不要spam消息。
     payload_rule: "JSON array: segments (single) or [{msg, gap}, ...] (multi)"
     return_shape: text
   - name: search

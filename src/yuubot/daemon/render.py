@@ -14,17 +14,18 @@ import attrs
 import msgspec
 from loguru import logger
 
+from yuubot.core.media_paths import MediaPathContext
 from yuubot.core.models import (
     AtSegment,
     Segment,
     TextSegment,
     segments_to_json,
 )
-from yuubot.core.onebot import parse_segments
 from yuubot.core.types import InboundMessage
 from yuubot.rendering import ConversationRender
 from yuubot.capabilities.im.formatter import (
     format_message_to_xml,
+    format_segments,
     get_user_alias,
 )
 
@@ -56,6 +57,7 @@ class RenderContext:
     bot_name: str = ""
     has_vision: bool = False
     bot_qq: str = ""
+    docker_host_mount: str = ""
 
 
 # ── Pure helpers ─────────────────────────────────────────────────
@@ -94,7 +96,7 @@ def _strip_bot_at(segments: list[Segment], bot_qq: str) -> list[Segment]:
 def _build_location(msg: InboundMessage, group_name: str, include_name: bool) -> str:
     return ConversationRender.location(
         chat_type=msg.chat_type,
-        group_id=msg.raw_event.get("group_id", "?"),
+        group_id=msg.group_id or "?",
         group_name=group_name,
         ctx_id=msg.ctx_id,
         include_name=include_name,
@@ -105,28 +107,29 @@ def _build_location(msg: InboundMessage, group_name: str, include_name: bool) ->
 
 
 async def _render_single_msg_xml(
-    event: dict,
+    msg: InboundMessage,
     segments: list[Segment],
-    ctx_id: int,
+    media_path_ctx: MediaPathContext | None = None,
 ) -> str:
     """Render one event's segments to XML <msg> tag."""
-    user_id = event.get("user_id", "?")
-    nickname = event.get("sender", {}).get("nickname", "")
-    display_name = event.get("sender", {}).get("card", "")
-    alias = await get_user_alias(user_id, ctx_id)
-    ts = datetime.fromtimestamp(event.get("time", 0), tz=timezone.utc)
+    user_id = msg.sender.user_id
+    nickname = msg.sender.nickname
+    display_name = msg.sender.card
+    alias = await get_user_alias(user_id, msg.ctx_id)
+    ts = datetime.fromtimestamp(msg.timestamp, tz=timezone.utc)
     raw_json = segments_to_json(segments)
 
     return await format_message_to_xml(
-        msg_id=event.get("message_id", 0),
+        msg_id=msg.message_id,
         user_id=user_id,
         nickname=nickname,
         display_name=display_name,
         alias=alias,
         timestamp=ts,
         raw_message=raw_json,
-        media_files=event.get("media_files", []),
-        ctx_id=ctx_id,
+        media_files=msg.raw_event.get("media_files", []),
+        ctx_id=msg.ctx_id,
+        media_path_ctx=media_path_ctx,
     )
 
 
@@ -143,7 +146,6 @@ async def render_task(
     Absorbs agent_runner._build_task() rendering logic (text part only).
     Vision/multimodal wrapping is left to the caller.
     """
-    event = msg.raw_event
     segments = list(msg.segments)
 
     # Strip @bot
@@ -154,26 +156,29 @@ async def render_task(
     if policy.replace_prefix_with_bot_name and context.bot_name:
         segments = replace_command_prefix(segments, context.bot_name)
 
-    ctx_id = msg.ctx_id
-
     # Render main message XML
-    msg_xml = await _render_single_msg_xml(event, segments, ctx_id)
+    media_path_ctx = MediaPathContext(
+        docker_host_mount=context.docker_host_mount,
+        host_home_dir="",
+        container_home_dir="",
+    )
+    msg_xml = await _render_single_msg_xml(msg, segments, media_path_ctx)
 
-    # Render extra (debounced) events
-    extra_events = event.get("_extra_events", [])
-    for extra in extra_events[: policy.max_batch_size - 1]:
-        extra_segments = parse_segments(extra.get("message", []))
+    # Render extra (debounced) typed messages
+    extra_messages = msg.extra_messages[: policy.max_batch_size - 1]
+    for extra in extra_messages:
+        extra_segments = list(extra.segments)
         if policy.strip_bot_at and context.bot_qq:
             extra_segments = _strip_bot_at(extra_segments, context.bot_qq)
         if policy.replace_prefix_with_bot_name and context.bot_name:
             extra_segments = replace_command_prefix(extra_segments, context.bot_name)
-        extra_xml = await _render_single_msg_xml(extra, extra_segments, ctx_id)
+        extra_xml = await _render_single_msg_xml(extra, extra_segments, media_path_ctx)
         msg_xml += "\n" + extra_xml
 
     # Assemble final text
     if is_continuation:
         return ConversationRender.user_continuation(
-            total_msgs=1 + len(extra_events),
+            total_msgs=1 + len(extra_messages),
             msg_xml=msg_xml,
             memory_hints=memory_hints,
         )
@@ -183,7 +188,7 @@ async def render_task(
         location=location,
         msg_xml=msg_xml,
         memory_hints=memory_hints,
-        ctx_id=ctx_id,
+        ctx_id=msg.ctx_id,
     )
 
 
@@ -203,7 +208,37 @@ async def render_ping_payload(
     if policy.replace_prefix_with_bot_name and context.bot_name:
         segments = replace_command_prefix(segments, context.bot_name)
 
-    return await _render_single_msg_xml(msg.raw_event, segments, msg.ctx_id)
+    return await _render_single_msg_xml(msg, segments)
+
+
+async def render_signal(
+    msg: InboundMessage,
+    policy: RenderPolicy,
+    context: RenderContext,
+) -> str:
+    """Render an incoming message as a signal for a running agent.
+
+    Uses the user_continuation template since this is a new message
+    arriving in an already-active conversation.
+    """
+    segments = list(msg.segments)
+
+    if policy.strip_bot_at and context.bot_qq:
+        segments = _strip_bot_at(segments, context.bot_qq)
+    if policy.replace_prefix_with_bot_name and context.bot_name:
+        segments = replace_command_prefix(segments, context.bot_name)
+
+    media_path_ctx = MediaPathContext(
+        docker_host_mount=context.docker_host_mount,
+        host_home_dir="",
+        container_home_dir="",
+    )
+    msg_xml = await _render_single_msg_xml(msg, segments, media_path_ctx)
+
+    probe_text = await format_segments(msg.segments)
+    memory_hints = await render_memory_hints(probe_text, msg.ctx_id or None)
+
+    return f"你收到了新消息:\n{msg_xml}\n{memory_hints}"
 
 
 async def render_memory_hints(text: str, ctx_id: int | None = None) -> str:

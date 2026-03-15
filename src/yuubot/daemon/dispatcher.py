@@ -1,30 +1,49 @@
-"""Message dispatcher — thin router: parse → permission → execute or queue."""
+"""Message dispatcher — thin router: ingress → route → execute."""
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 
 import httpx
 
 from yuubot.commands.roles import RoleManager
-from yuubot.commands.tree import RootCommand, MatchResult
+from yuubot.commands.tree import Command, CommandRequest, RootCommand
 from yuubot.config import Config
-from yuubot.core.models import ReplySegment, AtSegment, segments_to_plain
-from yuubot.core.onebot import parse_segments, build_send_msg, to_inbound_message
-from yuubot.core.types import ConversationRoute
+from yuubot.core.models import AtSegment
+from yuubot.core.onebot import build_send_msg, to_inbound_message
+from yuubot.core.types import ConversationRoute, InboundMessage, Route
 from yuubot.daemon.routing import resolve_route
 from yuubot.daemon.conversation import ConversationManager, conversation_worth_curating
 
 from loguru import logger
 
 
-def _ctx_key(event: dict) -> str:
-    """Derive a context key from an event for per-ctx queuing."""
-    msg_type = event.get("message_type", "private")
-    if msg_type == "group":
-        return f"group:{event.get('group_id', 0)}"
-    return f"private:{event.get('user_id', 0)}"
+def _ctx_key(message: InboundMessage) -> str:
+    """Derive a context key from an inbound message for per-ctx queuing."""
+    if message.chat_type == "group":
+        return f"group:{message.group_id}"
+    return f"private:{message.sender.user_id}"
+
+
+class RoutedCommand:
+    def __init__(
+        self,
+        *,
+        route: Route,
+        message: InboundMessage,
+        command: Command,
+        execute: Callable[[], Awaitable[str | None]],
+    ) -> None:
+        self.route = route
+        self.message = message
+        self.command = command
+        self.execute = execute
+
+
+def _mentions_bot(message: InboundMessage, bot_qq: int) -> bool:
+    return any(isinstance(seg, AtSegment) and seg.qq == str(bot_qq) for seg in message.segments)
 
 
 class _CtxWorker:
@@ -50,7 +69,7 @@ class _CtxWorker:
     async def _loop(self) -> None:
         while True:
             try:
-                first = await self.queue.get()
+                first: RoutedCommand = await self.queue.get()
                 # Drain queued items to debounce consecutive continuations
                 batch = [first]
                 while not self.queue.empty():
@@ -58,11 +77,11 @@ class _CtxWorker:
 
                 groups = _group_batch(batch)
                 for group in groups:
-                    match, event = group[0]
-                    if len(group) > 1:
-                        event["_extra_events"] = [e for _, e in group[1:]]
+                    item = group[0]
+                    if isinstance(item.route, ConversationRoute) and len(group) > 1:
+                        item.message.extra_messages.extend(peer.message for peer in group[1:])
                     try:
-                        await self.dispatcher._handle(match, event)
+                        await self.dispatcher._handle(item)
                     except Exception:
                         logger.exception("Error handling command in ctx={}", self.key)
 
@@ -74,14 +93,17 @@ class _CtxWorker:
                 logger.exception("Worker loop error in ctx={}", self.key)
 
 
-def _group_batch(batch: list) -> list[list]:
+def _group_batch(batch: list[RoutedCommand]) -> list[list[RoutedCommand]]:
     """Group consecutive items with the same match prefix for debouncing."""
-    groups: list[list] = []
+    groups: list[list[RoutedCommand]] = []
     current = [batch[0]]
     for item in batch[1:]:
-        match, _ = item
-        prev_match, _ = current[0]
-        if match is None and prev_match is None:
+        prev = current[0]
+        if (
+            isinstance(item.route, ConversationRoute)
+            and isinstance(prev.route, ConversationRoute)
+            and item.command.prefix == prev.command.prefix
+        ):
             current.append(item)
         else:
             groups.append(current)
@@ -130,7 +152,7 @@ class Dispatcher:
         for expired in self.conv_mgr.collect_expired():
             if conversation_worth_curating(expired):
                 asyncio.create_task(
-                    self.agent_runner.curate(expired.history, expired.ctx_id, expired.user_id)
+                    self.agent_runner.curate(expired.history, expired.ctx_id, expired.started_by)
                 )
 
         user_id = event.get("user_id", 0)
@@ -156,32 +178,11 @@ class Dispatcher:
         if route is None:
             return
 
-        # Convert route back to MatchResult for existing executor flow (transition)
-        if isinstance(route, ConversationRoute):
-            llm_cmd = self.root.find(["llm"])
-            if llm_cmd is None:
-                return
-            cmd_match = MatchResult(
-                command=llm_cmd,
-                remaining=route.text,
-                entry="@" if not self.conv_mgr.is_auto(ctx_id) else "auto",
-            )
-        else:
-            # CommandRoute → re-match to get the Command object (transition shim)
-            segments = parse_segments(event.get("message", []))
-            bot_qq_str = str(self.config.bot.qq)
-            filtered = [
-                s for s in segments
-                if not isinstance(s, ReplySegment)
-                and not (isinstance(s, AtSegment) and s.qq == bot_qq_str)
-            ]
-            replies = [s for s in segments if isinstance(s, ReplySegment)]
-            plain = segments_to_plain(filtered + replies).strip()
-            cmd_match = self.root.match_message(plain)
-            if cmd_match is None:
-                return
+        routed = self._build_routed_command(route, inbound)
+        if routed is None:
+            return
 
-        should_respond = await self._should_respond(event)
+        should_respond = await self._should_respond(inbound)
         logger.info(
             "should_respond: user={} group={} type={} result={}",
             user_id, group_id, msg_type, should_respond,
@@ -189,84 +190,111 @@ class Dispatcher:
         if not should_respond:
             return
 
-        scope = str(event.get("group_id", "global"))
-        role = await self.role_mgr.get(event["user_id"], scope)
-        if not cmd_match.command.check_permission(role):
+        scope = str(inbound.group_id or "global")
+        role = await self.role_mgr.get(inbound.sender.user_id, scope)
+        if not routed.command.check_permission(role):
             logger.info(
                 "Permission denied: user={} role={} cmd={}",
-                user_id, role, cmd_match.command.prefix,
+                user_id, role, routed.command.prefix,
             )
             return
 
-        logger.info("Command accepted: user={} cmd={}", user_id, cmd_match.command.prefix)
+        logger.info("Command accepted: user={} cmd={}", user_id, routed.command.prefix)
 
-        if cmd_match.command.interactive:
-            await self._enqueue_or_pending(cmd_match, event)
+        if routed.command.interactive:
+            await self._enqueue_or_pending(routed)
         else:
             try:
-                if cmd_match.command.executor is None:
-                    return
-                reply = await cmd_match.command.executor(cmd_match.remaining, event, self.deps)
+                reply = await routed.execute()
                 if reply:
-                    await self._send_reply(event, reply)
+                    await self._send_reply(inbound, reply)
             except Exception:
-                logger.exception("Error executing command: {}", cmd_match.command.prefix)
+                logger.exception("Error executing command: {}", routed.command.prefix)
 
-    def _enqueue(self, match, event: dict) -> None:
-        """Put a (match, event) pair into the per-ctx worker queue."""
-        key = _ctx_key(event)
+    def _build_routed_command(self, route: Route, message: InboundMessage) -> RoutedCommand | None:
+        if isinstance(route, ConversationRoute):
+            command = self.root.find(["llm"])
+            if command is None or command.executor is None:
+                return None
+            return RoutedCommand(
+                route=route,
+                message=message,
+                command=command,
+                execute=lambda: command.executor(
+                    CommandRequest(
+                        remaining=route.text,
+                        message=message,
+                        deps=self.deps,
+                        command_path=("llm",),
+                        entry="@"
+                    )
+                ),
+            )
+
+        command = self.root.find(list(route.command_path))
+        if command is None or command.executor is None:
+            return None
+        return RoutedCommand(
+            route=route,
+            message=message,
+            command=command,
+            execute=lambda: command.executor(
+                CommandRequest(
+                    remaining=route.remaining,
+                    message=message,
+                    deps=self.deps,
+                    command_path=route.command_path,
+                    entry=route.entry,
+                )
+            ),
+        )
+
+    def _enqueue(self, routed: RoutedCommand) -> None:
+        """Put a routed command into the per-ctx worker queue."""
+        key = _ctx_key(routed.message)
         if key not in self._workers:
             w = _CtxWorker(key, self)
             self._workers[key] = w
             w.start()
-        self._workers[key].queue.put_nowait((match, event))
+        self._workers[key].queue.put_nowait(routed)
 
-    async def _enqueue_or_pending(self, match: MatchResult, event: dict) -> None:
-        """If conversation is running, enqueue as pending; otherwise enqueue for worker."""
-        ctx_id = event.get("ctx_id", 0)
+    async def _enqueue_or_pending(self, routed: RoutedCommand) -> None:
+        """If conversation is running, enqueue as signal; otherwise enqueue for worker."""
+        ctx_id = routed.message.ctx_id
         conv = self.conv_mgr.get(ctx_id)
         if conv is not None and conv.state == "running":
-            self.conv_mgr.enqueue_pending(ctx_id, to_inbound_message(event))
-            conv_obj = self.conv_mgr.get(ctx_id)
-            if conv_obj:
-                self.conv_mgr.touch(conv_obj)
-            logger.info("Enqueued pending message for running conv ctx={}", ctx_id)
+            active = self.agent_runner.get_active_run(ctx_id)
+            if active is not None:
+                rendered = await self.agent_runner.render_signal(routed.message)
+                if rendered:
+                    self.agent_runner.enqueue_signal(active.runtime_id, rendered)
+            self.conv_mgr.touch(conv)
+            logger.info("Enqueued signal for running conv ctx={}", ctx_id)
             return
-        self._enqueue(match, event)
+        self._enqueue(routed)
 
-    async def _handle(self, match: MatchResult | None, event: dict) -> None:
+    async def _handle(self, routed: RoutedCommand) -> None:
         """Execute a queued command. Always called from within a _CtxWorker."""
-        if match is None or match.command.executor is None:
-            return
-        reply = await match.command.executor(match.remaining, event, self.deps)
+        reply = await routed.execute()
         if reply:
-            await self._send_reply(event, reply)
+            await self._send_reply(routed.message, reply)
 
-    async def _send_reply(self, event: dict, text: str) -> None:
+    async def _send_reply(self, message: InboundMessage, text: str) -> None:
         """Send a text reply back to the source context."""
         from yuubot.core.models import Message, TextSegment
         segments: Message = [TextSegment(text=text)]
-        msg_type = event.get("message_type", "private")
-        target_id = event.get("group_id", 0) if msg_type == "group" else event.get("user_id", 0)
-        body = build_send_msg(msg_type, target_id, segments)
+        target_id = message.group_id if message.chat_type == "group" else message.sender.user_id
+        body = build_send_msg(message.chat_type, target_id, segments)
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 await client.post(f"{self.config.daemon.recorder_api}/send_msg", json=body)
         except Exception:
             logger.exception("Failed to send reply")
 
-    def _is_at_bot(self, event: dict) -> bool:
-        """Check if the message contains an @bot segment."""
-        bot_qq = str(self.config.bot.qq)
-        for seg in event.get("message", []):
-            if seg.get("type") == "at" and str(seg.get("data", {}).get("qq")) == bot_qq:
-                return True
-        return False
-
-    async def _should_respond(self, event: dict) -> bool:
+    async def _should_respond(self, message: InboundMessage) -> bool:
         """Check response mode (at/free) and DM whitelist."""
-        msg_type = event.get("message_type")
-        user_id = event.get("user_id", 0)
+        msg_type = message.chat_type
+        user_id = message.sender.user_id
 
         if user_id == self.config.bot.qq:
             return False
@@ -274,21 +302,17 @@ class Dispatcher:
             return True
 
         # Active session: respond to continue it
-        ctx_id = event.get("ctx_id", 0)
+        ctx_id = message.ctx_id
         if ctx_id and self.conv_mgr.get(ctx_id) is not None:
             if msg_type == "private":
                 return True
-            if msg_type == "group":
-                bot_qq = str(self.config.bot.qq)
-                for seg in event.get("message", []):
-                    if seg.get("type") == "at" and str(seg.get("data", {}).get("qq")) == bot_qq:
-                        return True
+            # Fall through to normal group logic below (handles bot_enabled + free mode)
 
         if msg_type == "private":
             return user_id in self.config.response.dm_whitelist
 
         if msg_type == "group":
-            gid = event.get("group_id", 0)
+            gid = message.group_id
             setting = await self._get_group_setting(gid)
             if setting:
                 if not setting.bot_enabled:
@@ -296,11 +320,7 @@ class Dispatcher:
                 if setting.response_mode == "free":
                     return True
 
-            bot_qq = str(self.config.bot.qq)
-            for seg in event.get("message", []):
-                if seg.get("type") == "at" and str(seg.get("data", {}).get("qq")) == bot_qq:
-                    return True
-            return False
+            return _mentions_bot(message, self.config.bot.qq)
 
         return False
 

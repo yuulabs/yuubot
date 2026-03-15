@@ -261,6 +261,18 @@ class ImageEntry(Model):
         table = "images"
 
 
+class VisionCache(Model):
+    """Persistent cache for vision describe results."""
+
+    id = fields.IntField(primary_key=True)
+    host_path = fields.CharField(max_length=512, unique=True)
+    description = fields.TextField()
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "vision_cache"
+
+
 class ScheduledTask(Model):
     id = fields.IntField(primary_key=True)
     cron = fields.CharField(max_length=128)

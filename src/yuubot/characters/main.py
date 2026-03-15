@@ -6,7 +6,6 @@ from yuubot.characters import register
 _spec = AgentSpec(
     tools=[
         "call_cap_cli", "read_cap_doc",
-        "check_running_tool", "cancel_running_tool",
     ],
     sections=[
         Section("safety", FileRef("prompts/main/safety.md")),
@@ -16,7 +15,7 @@ _spec = AgentSpec(
     caps=["*"],
     expand_caps=["im"],
     cap_visibility={
-        "mem": CapVisibility(mode="include", actions=("save", "recall", "show", "config")),
+        "mem": CapVisibility(mode="include", actions=("recall", "show", "config")),
     },
     max_steps=16, 
     silence_timeout=120,

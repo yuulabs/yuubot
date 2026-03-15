@@ -8,17 +8,20 @@ from pathlib import Path
 
 import yuutools as yt
 from loguru import logger
-from yuuagents import Agent, AgentContext, start_agent
-from yuuagents.agent import AgentConfig, SimplePromptBuilder
+from yuuagents import AgentContext
+from yuuagents.agent import AgentConfig
 
-from yuubot.capabilities import ContentBlock, capability, text_block, uri_to_path
+from yuubot.capabilities import ContentBlock, capability, get_context, text_block, uri_to_path
+from yuubot.core.media_paths import MediaPathContext, MediaPathError, input_to_host
 
 _SYSTEM_PROMPT = (
-    "你是一个图片描述助手。请用中文简洁地描述图片内容。\n"
+    "你是一个图片描述助手。请用中文描述图片内容。\n"
     "要求：\n"
     "- 纯文本，不要使用markdown格式、编号、标题\n"
-    "- 描述画面内容、情绪氛围、适用场景、是否适合用作表情包\n"
-    "- 简洁但信息完整，让人能通过描述搜索到这张图\n"
+    "- 按顺序描述：画面中有什么角色/物体、他们在做什么、表情/动作/姿态、"
+    "画面构图与色调、文字内容（如有）、整体情绪氛围\n"
+    "- 如果是表情包/梗图，描述其传达的情绪和适用场景\n"
+    "- 信息完整，让人能通过描述准确还原画面并搜索到这张图\n"
     "- 直接描述，不要以'这张图片'开头"
 )
 
@@ -44,6 +47,22 @@ def _make_vision_llm():
     )
 
 
+async def _get_cached(host_path: str) -> str | None:
+    from yuubot.core.models import VisionCache
+
+    entry = await VisionCache.filter(host_path=host_path).first()
+    return entry.description if entry else None
+
+
+async def _set_cached(host_path: str, description: str) -> None:
+    from yuubot.core.models import VisionCache
+
+    await VisionCache.update_or_create(
+        host_path=host_path,
+        defaults={"description": description},
+    )
+
+
 async def _describe_image(image_path: str) -> str:
     from uuid import uuid4
 
@@ -64,34 +83,41 @@ async def _describe_image(image_path: str) -> str:
 
     client = _make_vision_llm()
     task_id = str(uuid4())
-    builder = SimplePromptBuilder()
-    builder.add_section(_SYSTEM_PROMPT)
+    agent_id = f"vision-{task_id[:8]}"
 
-    agent = Agent(
-        config=AgentConfig(
-            task_id=task_id,
-            agent_id=f"vision-{task_id[:8]}",
-            persona=_SYSTEM_PROMPT,
-            tools=yt.ToolManager(),
-            llm=client,
-            prompt_builder=builder,
-            max_steps=1,
-        )
+    import yuullm
+    from yuuagents.core.flow import Agent as FlowAgent
+
+    config = AgentConfig(
+        agent_id=agent_id,
+        system=_SYSTEM_PROMPT,
+        tools=yt.ToolManager(),
+        llm=client,
+        max_steps=1,
     )
     ctx = AgentContext(
         task_id=task_id,
-        agent_id=agent.agent_id,
+        agent_id=agent_id,
         workdir="",
         docker_container="",
     )
-    await start_agent(
-        agent,
-        "请描述这张图片：",
-        ctx,
-        extra_items=[{"type": "image_url", "image_url": {"url": data_uri}}],
+    agent = FlowAgent(
+        client=config.llm,
+        manager=config.tools,
+        ctx=ctx,
+        system=config.system,
+        model=config.llm.default_model,
+        agent_name=agent_id,
     )
+    agent.start()
+    agent.send(yuullm.user(
+        "请描述这张图片：",
+        {"type": "image_url", "image_url": {"url": data_uri}},
+    ))
+    await agent.wait()
+    history = agent.messages
 
-    for msg in reversed(agent.history):
+    for msg in reversed(history):
         if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "assistant":
             text = "".join(item for item in msg[1] if isinstance(item, str)).strip()
             if text:
@@ -107,6 +133,7 @@ class VisionCapability:
         self,
         *,
         _positional: list[str] | None = None,
+        refresh: bool = False,
         **_kw,
     ) -> list[ContentBlock]:
         if not _positional:
@@ -114,9 +141,26 @@ class VisionCapability:
 
         image_path = uri_to_path(_positional[0])
         try:
+            actx = get_context()
+            media_ctx = MediaPathContext.from_values(
+                docker_host_mount=actx.docker_host_mount,
+                host_home_dir=actx.docker_home_host_dir,
+                container_home_dir=actx.docker_home_dir,
+            )
+            image_path = input_to_host(image_path, ctx=media_ctx)
+
+            if not refresh:
+                cached = await _get_cached(image_path)
+                if cached is not None:
+                    logger.debug("Vision cache hit for {}", image_path)
+                    return [text_block(cached)]
+
             description = await _describe_image(image_path)
+            await _set_cached(image_path, description)
             return [text_block(description)]
         except FileNotFoundError as e:
+            return [text_block(f"错误: {e}")]
+        except MediaPathError as e:
             return [text_block(f"错误: {e}")]
         except ValueError as e:
             return [text_block(f"错误: {e}")]

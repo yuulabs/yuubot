@@ -7,7 +7,7 @@ import attrs
 from yuubot.core.onebot import to_inbound_message
 from yuubot.core.types import InboundMessage
 from yuubot.daemon.bot_info import BotInfo
-from yuubot.daemon.builder import AgentRunBuilder
+from yuubot.daemon.builder import AgentRunBuilder, SessionLaunch
 from yuubot.prompt import CapVisibility
 
 
@@ -38,7 +38,7 @@ def _make_builder(config) -> AgentRunBuilder:
         bot_info=bot_info,
         build_prompt=lambda agent_name: (None, None),
         build_tool_manager=lambda tool_names: tool_names,
-        build_subprocess_env=lambda **kwargs: {key: str(value) for key, value in kwargs.items()},
+        build_agent_env=lambda **kwargs: {key: str(value) for key, value in kwargs.items()},
         build_capability_context=lambda **kwargs: kwargs,
         resolve_docker=_resolve_docker,
         docker_home_info=_docker_home_info,
@@ -56,11 +56,10 @@ async def _docker_home_info(container_id: str) -> tuple[str, str, str]:
     return "/mnt/host", "/home/tester", "/root"
 
 
-async def test_build_task_bundle_merges_pending_messages(yuubot_config, monkeypatch):
-    """Pending messages stay structured until render_task."""
+async def test_build_task_bundle_renders_single_message(yuubot_config, monkeypatch):
+    """A single message is rendered through the full pipeline."""
     builder = _make_builder(yuubot_config)
     primary = _make_inbound("/yllm first")
-    pending = _make_inbound("second")
     captured: dict[str, object] = {}
 
     async def fake_render_memory_hints(text: str, ctx_id: int | None = None) -> str:
@@ -68,7 +67,6 @@ async def test_build_task_bundle_merges_pending_messages(yuubot_config, monkeypa
         return ""
 
     async def fake_render_task(msg, policy, context, **kwargs) -> str:
-        captured["extra_events"] = msg.raw_event.get("_extra_events", [])
         captured["bot_name"] = context.bot_name
         return "rendered task"
 
@@ -76,23 +74,18 @@ async def test_build_task_bundle_merges_pending_messages(yuubot_config, monkeypa
     monkeypatch.setattr("yuubot.daemon.builder.render_task", fake_render_task)
 
     turn = await builder.build_turn_context(
-        event=primary.raw_event,
+        message=primary,
         agent_name="main",
         text_override="",
         is_continuation=False,
-        pending_messages=[pending],
         task_id="task-1",
     )
     bundle = await builder.build_task_bundle(turn)
 
-    extra_events = captured["extra_events"]
     memory_text = captured["memory_text"]
-    assert isinstance(extra_events, list)
     assert isinstance(memory_text, str)
-    assert len(extra_events) == 1
     assert captured["bot_name"] == "Bot"
     assert "first" in memory_text
-    assert "second" in memory_text
     assert bundle.user_items == [bundle.task_text]
 
 
@@ -107,26 +100,26 @@ async def test_build_task_bundle_prepends_handoff_message(yuubot_config, monkeyp
         return ""
 
     async def fake_render_task(msg, policy, context, **kwargs) -> str:
-        captured["first_text"] = msg.raw_event["message"][0]["data"]["text"]
-        captured["extra_events"] = msg.raw_event.get("_extra_events", [])
+        captured["first_text"] = msg.raw_message
+        captured["extra_messages"] = msg.extra_messages
         return "rendered task"
 
     monkeypatch.setattr("yuubot.daemon.builder.render_memory_hints", fake_render_memory_hints)
     monkeypatch.setattr("yuubot.daemon.builder.render_task", fake_render_task)
 
     turn = await builder.build_turn_context(
-        event=primary.raw_event,
+        message=primary,
         agent_name="main",
         task_id="task-handoff",
         handoff_text="这是上一轮的压缩摘要",
     )
     await builder.build_task_bundle(turn)
 
-    extra_events = captured["extra_events"]
+    extra_messages = captured["extra_messages"]
     assert captured["first_text"] == "这是上一轮的压缩摘要"
-    assert isinstance(extra_events, list)
-    assert len(extra_events) == 1
-    assert extra_events[0]["raw_message"] == "最新补充"
+    assert isinstance(extra_messages, list)
+    assert len(extra_messages) == 1
+    assert extra_messages[0].raw_message == "最新补充"
     assert "这是上一轮的压缩摘要" in str(captured["memory_text"])
     assert "最新补充" in str(captured["memory_text"])
 
@@ -156,7 +149,7 @@ async def test_build_run_context_collects_runtime_values(yuubot_config):
     builder.build_prompt = lambda agent_name: (prompt_spec, object())
 
     turn = await builder.build_turn_context(
-        event=_make_inbound("hello").raw_event,
+        message=_make_inbound("hello"),
         agent_name="main",
         user_role="MASTER",
         task_id="task-2",
@@ -170,9 +163,9 @@ async def test_build_run_context_collects_runtime_values(yuubot_config):
     assert run_ctx.runtime_id == "runtime-1"
     assert run_ctx.persona == "测试人格"
     assert run_ctx.docker_binding.workdir == "/work"
-    assert run_ctx.subprocess_env.values["ctx_id"] == "1"
-    assert run_ctx.subprocess_env.values["user_id"] == "100"
-    assert run_ctx.subprocess_env.values["docker_mount"] == "/mnt/host"
+    assert run_ctx.agent_env.values["ctx_id"] == "1"
+    assert run_ctx.agent_env.values["user_id"] == "100"
+    assert run_ctx.agent_env.values["docker_mount"] == "/mnt/host"
 
 
 async def test_build_run_context_includes_action_filters(yuubot_config):
@@ -203,7 +196,7 @@ async def test_build_run_context_includes_action_filters(yuubot_config):
     builder.build_prompt = lambda agent_name: (prompt_spec, object())
 
     turn = await builder.build_turn_context(
-        event=_make_inbound("hello").raw_event,
+        message=_make_inbound("hello"),
         agent_name="main",
         task_id="task-3",
     )
@@ -216,3 +209,52 @@ async def test_build_run_context_includes_action_filters(yuubot_config):
     assert run_ctx.addon_context["action_filters"] == {
         "mem": CapVisibility(mode="include", actions=("save", "recall"))
     }
+
+
+async def test_session_launch_collects_agent_config_and_context(yuubot_config):
+    """Session launch details come from RunContext instead of AgentRunner field-by-field glue."""
+    prompt_spec = attrs.make_class(
+        "PromptSpec",
+        {
+            "tools": attrs.field(default=[]),
+            "resolved_sections": attrs.field(default=[("persona", "测试人格")]),
+            "agent_spec": attrs.field(
+                default=attrs.make_class(
+                    "AgentSpec",
+                    {
+                        "caps": attrs.field(default=[]),
+                        "cap_actions": attrs.field(default={}),
+                        "max_steps": attrs.field(default=4),
+                        "soft_timeout": attrs.field(default=30),
+                        "silence_timeout": attrs.field(default=12),
+                    },
+                )()
+            ),
+        },
+    )()
+    builder = _make_builder(yuubot_config)
+    builder.build_prompt = lambda agent_name: (prompt_spec, "测试人格")
+
+    turn = await builder.build_turn_context(
+        message=_make_inbound("hello"),
+        agent_name="main",
+        user_role="MASTER",
+        task_id="task-4",
+    )
+    run_ctx = await builder.build_run_context(
+        turn=turn,
+        task_id="task-4",
+        runtime_id="runtime-4",
+    )
+
+    launch = SessionLaunch.from_run_context(
+        run_ctx,
+        llm=object(),
+        manager=object(),
+    )
+
+    assert launch.config.agent_id == "runtime-4"
+    assert launch.config.system == "测试人格"
+    assert launch.context.agent_id == "runtime-4"
+    assert launch.context.subprocess_env["ctx_id"] == "1"
+

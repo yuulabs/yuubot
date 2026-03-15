@@ -34,7 +34,7 @@ yuubot is a QQ bot daemon that bridges NapCat/OneBot events to LLM agents. Five 
 1. **Message** (`core/types.py`) — `InboundMessage` is the typed business-layer message converted from raw OneBot events. Never pass raw `event` dicts past the ingress layer.
 2. **Route** (`core/types.py`, `daemon/routing.py`) — Pure function `resolve_route()` returns either `CommandRoute` or `ConversationRoute`. No routing logic lives outside this module.
 3. **Conversation** (`daemon/conversation.py`) — `ConversationManager` owns all session state (replaces the old session/flow/ping/auto-mode scatter). States: `idle → running → closed`. Pending messages accumulate in `pending_messages`; rendering happens only when a turn actually fires.
-4. **Capability** (`capabilities/`) — Typed contracts for bot-native skills (im, mem, web, img, schedule). Each capability has a YAML contract in `capabilities/contracts/`. LLM calls capabilities via `call_cap_cli` tool using raw CLI syntax: `im send --ctx 12 -- [...]`.
+4. **Capability** (`capabilities/`) — Typed contracts for bot-native capabilities (im, mem, web, img, schedule). Each capability has a YAML contract in `capabilities/contracts/`. LLM calls capabilities via `call_cap_cli` tool using raw CLI syntax: `im send --ctx 12 -- [...]`.
 5. **RenderPolicy** (`daemon/render.py`) — `RenderPolicy` is a frozen msgspec.Struct that centrally declares how messages become LLM input (format, name resolution, image handling, etc.).
 
 ### Request flow
@@ -84,7 +84,7 @@ The `main` character is the default QQ bot agent (夕雨/Yuu). Other characters:
 
 ### capabilities/
 
-`capabilities/` is the single built-in capability layer. It contains runtime implementations, shared helper modules, CLI wrappers, docs, and SKILL.md files for installation into yuuagents.
+`capabilities/` is the single built-in capability layer. It contains runtime implementations, shared helper modules, CLI wrappers, contracts, and user-facing docs.
 
 ## Debugging / DevOps
 

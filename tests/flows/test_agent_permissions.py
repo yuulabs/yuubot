@@ -48,7 +48,7 @@ def test_folk_parent_with_master_child_rejected(tmp_path):
             min_role="folk",
             persona="folk parent",
             spec=AgentSpec(
-                tools=["execute_skill_cli"],
+                tools=[],
                 subagents=["dangerous_child"],
             ),
         ))
@@ -86,7 +86,7 @@ def test_master_parent_with_folk_child_ok(tmp_path):
             description="folk child",
             min_role="folk",
             persona="folk child",
-            spec=AgentSpec(tools=["execute_skill_cli"]),
+            spec=AgentSpec(tools=[]),
         ))
         cfg = _make_config(tmp_path)
         cfg.validate_agent_permissions()  # should not raise

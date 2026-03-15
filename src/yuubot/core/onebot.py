@@ -97,9 +97,13 @@ def to_inbound_message(event: dict) -> InboundMessage:
         message_id=event.get("message_id", 0),
         ctx_id=ctx_id,
         chat_type=msg_type,
+        group_id=event.get("group_id", 0),
+        self_id=event.get("self_id", 0),
         sender=sender,
         segments=segments,
         timestamp=event.get("time", 0),
+        raw_message=event.get("raw_message", ""),
+        extra_messages=[to_inbound_message(extra) for extra in event.get("_extra_events", [])],
         raw_event=event,
     )
 

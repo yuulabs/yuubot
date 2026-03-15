@@ -1,24 +1,23 @@
-"""Agent runner — orchestrate builder, runtime, and active runs."""
+"""Agent runner — host-driven step loop with signal support."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-import yuullm
 from loguru import logger
-from yuuagents import Agent, resume_agent, start_agent
-from yuuagents.agent import AgentConfig, AgentStatus
-from yuuagents.context import AgentContext, DelegateDepthExceededError
-from yuuagents.flow import FlowKind, FlowManager, FlowStatus
+from yuuagents import Session
+from yuuagents.context import DelegateDepthExceededError
+from yuuagents.types import AgentStatus
 
 from yuubot.characters import CHARACTER_REGISTRY
-from yuubot.commands.tree import MatchResult
 from yuubot.config import Config
 from yuubot.core import env
 from yuubot.core.types import InboundMessage
 from yuubot.daemon.bot_info import BotInfo
-from yuubot.daemon.builder import ActiveRun, AgentRunBuilder, SubprocessEnv, TaskBundle, TurnContext
-from yuubot.daemon.llm_factory import make_compressor, make_summary_llm
+from yuubot.daemon.builder import ActiveRun, AgentEnv, AgentRunBuilder, SessionLaunch, TurnContext
+from yuubot.daemon.render import RenderContext, RenderPolicy, render_signal as _render_signal
+from yuubot.daemon.llm_factory import make_summary_llm
 from yuubot.daemon.runtime import AgentRuntime
 
 
@@ -31,6 +30,9 @@ class AgentRunner:
         self.bot_info = BotInfo(config=config)
         self._active_runs_by_runtime: dict[str, ActiveRun] = {}
         self._active_runs_by_ctx: dict[int, ActiveRun] = {}
+        self._signal_queues: dict[str, asyncio.Queue[str]] = {}
+        self._silence_watchers: dict[str, asyncio.Task[None]] = {}
+        self._delegate_sessions_by_run_id: dict[str, Session] = {}
 
     @property
     def _builder(self) -> AgentRunBuilder:
@@ -39,7 +41,7 @@ class AgentRunner:
             bot_info=self.bot_info,
             build_prompt=self.runtime.build_prompt,
             build_tool_manager=self.runtime.build_tool_manager,
-            build_subprocess_env=self.runtime.build_subprocess_env,
+            build_agent_env=self.runtime.build_agent_env,
             build_capability_context=self.runtime.build_capability_context,
             resolve_docker=self.runtime.resolve_docker,
             docker_home_info=self.runtime.docker_home_info,
@@ -58,20 +60,39 @@ class AgentRunner:
         """Compatibility shim for tests and older call sites."""
         return self.runtime.make_llm(agent_name)
 
-    def get_active_flow(self, ctx_id: int) -> object | None:
-        active = self._active_runs_by_ctx.get(ctx_id)
-        return None if active is None else active.flow
+    def get_active_run(self, ctx_id: int) -> ActiveRun | None:
+        return self._active_runs_by_ctx.get(ctx_id)
 
     def cancel_ctx(self, ctx_id: int) -> bool:
         active = self._active_runs_by_ctx.pop(ctx_id, None)
-        if active is None or active.flow is None:
+        if active is None:
             return False
         self._active_runs_by_runtime.pop(active.runtime_id, None)
-        if active.flow.task is not None and not active.flow.task.done():
-            active.flow.task.cancel()
-        active.flow.status = FlowStatus.CANCELLED
-        logger.info("Flow cancelled for ctx={}", ctx_id)
+        logger.info("Run cancelled for ctx={}", ctx_id)
         return True
+
+    # -- Signal support --
+
+    def enqueue_signal(self, runtime_id: str, text: str) -> None:
+        """Enqueue a signal message for a running agent."""
+        q = self._signal_queues.get(runtime_id)
+        if q is not None:
+            q.put_nowait(text)
+
+    async def render_signal(self, msg: InboundMessage) -> str:
+        """Render a message through the full pipeline for use as a signal."""
+        bot_name = await self.bot_info.bot_name()
+        group_name = ""
+        if msg.chat_type == "group" and msg.group_id:
+            group_name = await self.bot_info.group_name(msg.group_id)
+        context = RenderContext(
+            group_name=group_name,
+            bot_name=bot_name,
+            bot_qq=str(self.config.bot.qq),
+        )
+        return await _render_signal(msg, RenderPolicy(), context)
+
+    # -- Summarize / curate --
 
     async def summarize(self, history: list, agent_name: str = "main") -> str:
         from yuubot.daemon.summarizer import summarize as summarize_history
@@ -95,8 +116,8 @@ class AgentRunner:
             f"对话内容：\n{render_for_curator(history)}\n\n"
             f"ctx_id: {ctx_id}\n"
         )
-        base_env = SubprocessEnv(
-            self.runtime.build_subprocess_env(
+        base_env = AgentEnv(
+            self.runtime.build_agent_env(
                 task_id="",
                 ctx_id=ctx_id,
                 user_id=user_id,
@@ -114,8 +135,8 @@ class AgentRunner:
             logger.exception("mem_curator failed for ctx={}", ctx_id)
 
     @staticmethod
-    def _last_assistant_text(agent: Any) -> str:
-        for msg in reversed(agent.history):
+    def _last_assistant_text(session: Session) -> str:
+        for msg in reversed(session.history):
             role: str | None = None
             items: list[Any] | None = None
             if isinstance(msg, tuple) and len(msg) == 2:
@@ -128,60 +149,100 @@ class AgentRunner:
         return ""
 
     @staticmethod
-    def _build_continuation(session_history: list, bundle: TaskBundle) -> tuple[list, str]:
-        """Merge or append new user message into session history.
-
-        Returns (new_history, trigger) where trigger is what gets logged to the trace.
-        Merges into the last user message when both sides are plain text (avoids
-        consecutive user turns that confuse some LLMs).
-        """
-        history = list(session_history)
-        if (
-            history
-            and isinstance(history[-1], tuple)
-            and history[-1][0] == "user"
-            and len(history[-1]) == 2
-            and isinstance(history[-1][1], list)
-            and not bundle.is_multimodal
-            and len(bundle.user_items) == 1
-            and isinstance(bundle.user_items[0], str)
-            and history[-1][1]
-            and isinstance(history[-1][1][0], str)
-        ):
-            merged = f"{history[-1][1][0]}\n\n{bundle.user_items[0]}"
-            history[-1] = ("user", [merged])
-            return history, merged
-        else:
-            history.append(("user", bundle.user_items))
-            trigger = bundle.user_items[0] if bundle.user_items and isinstance(bundle.user_items[0], str) else bundle.task_text
-            return history, trigger
+    def _truncate_text(text: str, max_chars: int) -> str:
+        if max_chars <= 0 or len(text) <= max_chars:
+            return text
+        if max_chars <= 32:
+            return text[:max_chars]
+        return text[: max_chars - 15].rstrip() + "\n...[truncated]"
 
     def _register_active_run(
         self,
         *,
         runtime_id: str,
         agent_name: str,
-        subprocess_env: SubprocessEnv,
-        flow: object | None,
+        agent_env: AgentEnv,
         ctx_id: int | None,
     ) -> None:
         active = ActiveRun(
             runtime_id=runtime_id,
             agent_name=agent_name,
-            subprocess_env=subprocess_env,
-            flow=flow,
+            agent_env=agent_env,
         )
         self._active_runs_by_runtime[runtime_id] = active
+        self._signal_queues[runtime_id] = asyncio.Queue()
         if ctx_id is not None:
             self._active_runs_by_ctx[ctx_id] = active
 
     def _unregister_active_run(self, runtime_id: str, ctx_id: int | None) -> None:
         self._active_runs_by_runtime.pop(runtime_id, None)
+        self._signal_queues.pop(runtime_id, None)
+        watcher = self._silence_watchers.pop(runtime_id, None)
+        if watcher is not None:
+            watcher.cancel()
         if ctx_id is None:
             return
         active = self._active_runs_by_ctx.get(ctx_id)
         if active is not None and active.runtime_id == runtime_id:
             self._active_runs_by_ctx.pop(ctx_id, None)
+
+    @staticmethod
+    def _history_has_im_send(session: Session) -> bool:
+        agent = getattr(session, "_agent", None)
+        flow = getattr(agent, "flow", None)
+        stem = getattr(flow, "stem", None)
+        if not isinstance(stem, list):
+            return False
+
+        for event in stem:
+            name = getattr(event, "name", None)
+            if name != "call_cap_cli":
+                continue
+            arguments = getattr(event, "arguments", "") or ""
+            if "im send" in arguments:
+                return True
+        return False
+
+    async def _watch_silence_timeout(
+        self,
+        *,
+        runtime_id: str,
+        agent_name: str,
+        session: Session,
+        ctx_id: int | None,
+    ) -> None:
+        timeout = session.config.silence_timeout
+        if timeout is None or timeout <= 0:
+            return
+
+        try:
+            await asyncio.sleep(timeout)
+            active = self._active_runs_by_runtime.get(runtime_id)
+            if active is None:
+                return
+            if self._history_has_im_send(session):
+                return
+
+            agent = getattr(session, "_agent", None)
+            if agent is None:
+                return
+
+            logger.info(
+                "Silence timeout reached: ctx={} agent={} runtime_id={}",
+                ctx_id,
+                agent_name,
+                runtime_id,
+            )
+            agent.send(
+                (
+                    "你已经长时间没有使用 im send 向用户同步进展。"
+                    "请立即停止等待中的前台工具结果，先用 im send 简短说明你正在做什么、"
+                    "为什么还需要一些时间，以及下一步会怎么继续。"
+                ),
+                defer_tools=True,
+            )
+        except asyncio.CancelledError:
+            pass
 
     async def _launch(
         self,
@@ -191,10 +252,10 @@ class AgentRunner:
         runtime_id: str,
         tool_names: list[str] | None = None,
         session_history: list | None = None,
+        session: Session | None = None,
         delegate_depth: int = 0,
-        output_buffer: object | None = None,
         track_ctx: bool = False,
-    ) -> Any:
+    ) -> Session:
         bundle = await self._builder.build_task_bundle(turn)
         run_ctx = await self._builder.build_run_context(
             turn=turn,
@@ -202,76 +263,62 @@ class AgentRunner:
             runtime_id=runtime_id,
             tool_names=tool_names,
             delegate_depth=delegate_depth,
-            output_buffer=output_buffer,
         )
-        agent = Agent(
-            config=AgentConfig(
-                task_id=task_id,
-                agent_id=runtime_id,
-                persona=run_ctx.persona,
-                tools=run_ctx.tool_manager,
-                llm=self._make_llm(turn.agent_name),
-                prompt_builder=run_ctx.prompt_builder,
-                max_steps=run_ctx.prompt_spec.agent_spec.max_steps,
-                soft_timeout=run_ctx.prompt_spec.agent_spec.soft_timeout,
-                silence_timeout=run_ctx.prompt_spec.agent_spec.silence_timeout,
-                compressor=make_compressor(turn.agent_name, self.config),
-            )
-        )
-        context = AgentContext(
-            task_id=task_id,
-            agent_id=runtime_id,
-            workdir=run_ctx.docker_binding.workdir,
-            docker_container=run_ctx.docker_binding.container_id,
-            delegate_depth=delegate_depth,
+        launch = SessionLaunch.from_run_context(
+            run_ctx,
+            llm=self._make_llm(turn.agent_name),
             manager=self,
-            docker=run_ctx.docker,
-            skill_paths=self.config.skill_paths,
-            subprocess_env=run_ctx.subprocess_env.values,
-            current_output_buffer=output_buffer,
-            output_buffer=output_buffer,
-            addon_context=run_ctx.addon_context,
         )
-        flow_manager = None
-        root_flow = None
+        working_session = launch.open()
         ctx_id = turn.message.ctx_id if track_ctx else None
-        if track_ctx:
-            flow_manager = FlowManager()
-            root_flow = flow_manager.create(FlowKind.AGENT, name=runtime_id)
+
         self._register_active_run(
             runtime_id=runtime_id,
             agent_name=turn.agent_name,
-            subprocess_env=run_ctx.subprocess_env,
-            flow=root_flow,
+            agent_env=run_ctx.agent_env,
             ctx_id=ctx_id,
         )
-        run_kwargs: dict[str, Any] = {"ctx": context}
-        if flow_manager is not None and root_flow is not None:
-            run_kwargs["flow_manager"] = flow_manager
-            run_kwargs["root_flow"] = root_flow
+        self._silence_watchers[runtime_id] = asyncio.create_task(
+            self._watch_silence_timeout(
+                runtime_id=runtime_id,
+                agent_name=turn.agent_name,
+                session=working_session,
+                ctx_id=ctx_id,
+            )
+        )
+
+        # Start or resume the session
+        if session is not None and hasattr(session, "history") and session.history:
+            working_session.resume(
+                bundle.task_text,
+                history=session.history,
+                conversation_id=getattr(session, "conversation_id", None),
+            )
+        else:
+            working_session.start(bundle.task_text)
+
+        # Background task: drain signal queue → send to running agent
+        signal_task = asyncio.create_task(
+            self._signal_drainer(working_session, runtime_id)
+        )
         try:
-            if turn.is_continuation and session_history is not None:
-                # Continuation: merge or append new message, then resume from
-                # the computed history. Caller owns all history content.
-                history, trigger = self._build_continuation(session_history, bundle)
-                agent.state.history = history
-                agent.state.task = bundle.task_text
-                agent.state.status = AgentStatus.RUNNING
-                await resume_agent(agent, trigger, **run_kwargs)
-            elif bundle.is_multimodal:
-                # Fresh multimodal start: build history with image items directly.
-                agent.state.history = [
-                    yuullm.system(agent.full_system_prompt),
-                    ("user", bundle.user_items),
-                ]
-                agent.state.task = bundle.task_text
-                agent.state.status = AgentStatus.RUNNING
-                await resume_agent(agent, bundle.task_text, **run_kwargs)
-            else:
-                await start_agent(agent, bundle.task_text, **run_kwargs)
+            await working_session.wait()
         finally:
+            signal_task.cancel()
             self._unregister_active_run(runtime_id, ctx_id)
-        return agent
+        return working_session
+
+    async def _signal_drainer(self, session: Session, runtime_id: str) -> None:
+        """Continuously drain signals and forward them to the running session."""
+        try:
+            q = self._signal_queues.get(runtime_id)
+            if q is None:
+                return
+            while True:
+                msg = await q.get()
+                session.send(msg)
+        except asyncio.CancelledError:
+            pass
 
     async def _run_simple_turn(
         self,
@@ -279,121 +326,300 @@ class AgentRunner:
         *,
         tool_names: list[str] | None = None,
         delegate_depth: int = 0,
-        output_buffer: object | None = None,
     ) -> str:
         task_id = turn.task_id or self.runtime.new_task_id()
         ctx_id = turn.message.ctx_id
         runtime_id = f"agent-{turn.agent_name}-{ctx_id}" if ctx_id else f"agent-{turn.agent_name}-{task_id[:8]}"
-        agent = await self._launch(
+        session = await self._launch(
             turn=turn,
             task_id=task_id,
             runtime_id=runtime_id,
             tool_names=tool_names,
             delegate_depth=delegate_depth,
-            output_buffer=output_buffer,
         )
-        return self._last_assistant_text(agent)
+        return self._last_assistant_text(session)
 
     async def _run_agent(
         self,
         agent_name: str,
         task: str,
         *,
-        subprocess_env: dict[str, str],
+        agent_env: dict[str, str],
         tool_names: list[str] | None = None,
         delegate_depth: int = 0,
-        output_buffer: object | None = None,
     ) -> str:
         if agent_name not in CHARACTER_REGISTRY:
             raise ValueError(f"Unknown agent {agent_name!r}")
-        run_env = dict(subprocess_env)
+        run_env = dict(agent_env)
         run_env[env.AGENT_NAME] = agent_name
         turn = self._builder.build_delegated_turn(
             agent_name=agent_name,
             first_user_message=task,
-            parent_env=SubprocessEnv(run_env),
+            parent_env=AgentEnv(run_env),
         )
         return await self._run_simple_turn(
             turn,
             tool_names=tool_names,
             delegate_depth=delegate_depth,
-            output_buffer=output_buffer,
         )
 
-    async def delegate(
+    async def start_delegate(
         self,
         *,
-        caller_agent: str,
+        parent: object,
+        parent_run_id: str,
         agent: str,
         first_user_message: str,
         tools: list[str] | None,
         delegate_depth: int,
-        output_buffer: object | None = None,
-    ) -> str:
+    ) -> Session:
         if delegate_depth > 3:
             raise DelegateDepthExceededError(
                 max_depth=3,
                 current_depth=delegate_depth,
                 target_agent=agent,
             )
-        parent = self._active_runs_by_runtime.get(caller_agent)
-        caller_name = caller_agent if parent is None else parent.agent_name
+        parent_session = parent if isinstance(parent, Session) else None
+        if parent_session is None:
+            raise ValueError("delegate requires a parent session")
+        active_parent = self._active_runs_by_runtime.get(parent_session.agent_id)
+        caller_name = parent_session.agent_id if active_parent is None else active_parent.agent_name
         allowed = set()
         caller_char = CHARACTER_REGISTRY.get(caller_name)
         if caller_char is not None:
             allowed.update(caller_char.spec.subagents)
         if agent not in allowed:
             raise ValueError(f"Agent {caller_name!r} is not allowed to delegate to {agent!r}")
-        parent_env = {} if parent is None else dict(parent.subprocess_env.values)
-        return await self._run_agent(
-            agent,
-            first_user_message,
-            subprocess_env=parent_env,
+        parent_env = {} if active_parent is None else dict(active_parent.agent_env.values)
+        task_id = self.runtime.new_task_id()
+        runtime_id = f"delegate-{agent}-{task_id[:8]}"
+        turn = self._builder.build_delegated_turn(
+            agent_name=agent,
+            first_user_message=first_user_message,
+            parent_env=AgentEnv(parent_env),
+        )
+        bundle = await self._builder.build_task_bundle(turn)
+        run_ctx = await self._builder.build_run_context(
+            turn=turn,
+            task_id=task_id,
+            runtime_id=runtime_id,
             tool_names=tools,
             delegate_depth=delegate_depth,
-            output_buffer=output_buffer,
+        )
+        launch = SessionLaunch.from_run_context(
+            run_ctx,
+            llm=self._make_llm(agent),
+            manager=self,
+        )
+        session = launch.open()
+        self._register_active_run(
+            runtime_id=runtime_id,
+            agent_name=agent,
+            agent_env=run_ctx.agent_env,
+            ctx_id=None,
+        )
+        session.start(bundle.task_text)
+        parent_agent = getattr(parent_session, "_agent", None)
+        child_agent = getattr(session, "_agent", None)
+        if (
+            parent_agent is not None
+            and child_agent is not None
+            and child_agent.flow not in parent_agent.flow.children
+        ):
+            parent_flow = parent_agent.flow.find(parent_run_id)
+            if parent_flow is not None and child_agent.flow not in parent_flow.children:
+                parent_flow.children.append(child_agent.flow)
+        self._delegate_sessions_by_run_id[parent_run_id] = session
+        asyncio.create_task(
+            self._wait_delegate_session(session, runtime_id),
+            name=f"delegate-wait-{runtime_id}",
+        )
+        return session
+
+    async def _wait_delegate_session(self, session: Session, runtime_id: str) -> None:
+        try:
+            await session.wait()
+        finally:
+            self._delegate_sessions_by_run_id = {
+                run_id: child
+                for run_id, child in self._delegate_sessions_by_run_id.items()
+                if child is not session
+            }
+            self._unregister_active_run(runtime_id, None)
+
+    def inspect_run(
+        self,
+        *,
+        parent: object,
+        run_id: str,
+        limit: int = 200,
+        max_chars: int = 4000,
+    ) -> str:
+        parent_session = parent if isinstance(parent, Session) else None
+        if parent_session is None:
+            return f"[ERROR] invalid parent session for run {run_id}"
+        agent = getattr(parent_session, "_agent", None)
+        if agent is None:
+            return f"[ERROR] parent session not started for run {run_id}"
+        flow = agent.flow.find(run_id)
+        if flow is None:
+            return f"[ERROR] unknown run id {run_id!r}"
+        lines = [f"run_id: {flow.id}", f"kind: {flow.kind}"]
+        tool_name = flow.info.get("tool_name")
+        if isinstance(tool_name, str) and tool_name:
+            lines.append(f"tool_name: {tool_name}")
+        delegate = self._delegate_sessions_by_run_id.get(run_id)
+        if delegate is not None:
+            lines.append(f"delegate_status: {delegate.status.value}")
+            delegate_agent = getattr(delegate, "_agent", None)
+            if delegate_agent is not None:
+                lines.append("delegate_stem:")
+                lines.append(delegate_agent.render(limit=limit) or "<empty>")
+        lines.append("stem:")
+        lines.append(flow.render(str, limit=limit) or "<empty>")
+        return self._truncate_text("\n".join(lines), max_chars)
+
+    def cancel_run(
+        self,
+        *,
+        parent: object,
+        run_id: str,
+    ) -> str:
+        parent_session = parent if isinstance(parent, Session) else None
+        if parent_session is None:
+            return f"[ERROR] invalid parent session for run {run_id}"
+        agent = getattr(parent_session, "_agent", None)
+        if agent is None:
+            return f"[ERROR] parent session not started for run {run_id}"
+        flow = agent.flow.find(run_id)
+        if flow is None:
+            return f"[ERROR] unknown run id {run_id!r}"
+        flow.cancel()
+        delegate = self._delegate_sessions_by_run_id.get(run_id)
+        if delegate is not None:
+            delegate.status = AgentStatus.CANCELLED
+        return f"Cancelled run {run_id}"
+
+    def defer_run(
+        self,
+        *,
+        parent: object,
+        run_id: str,
+        message: str,
+    ) -> str:
+        _ = parent
+        delegate = self._delegate_sessions_by_run_id.get(run_id)
+        if delegate is None:
+            return f"[ERROR] run {run_id!r} is not a delegated agent"
+        prompt = (
+            message.strip()
+            or "请立即停止等待中的前台工具，把当前工作移到后台，并先汇报简短进展。"
+        )
+        delegate.send(prompt, defer_tools=True)
+        return f"Sent defer signal to delegated run {run_id}"
+
+    async def input_run(
+        self,
+        *,
+        parent: object,
+        run_id: str,
+        data: str,
+        append_newline: bool = True,
+    ) -> str:
+        parent_session = parent if isinstance(parent, Session) else None
+        if parent_session is None:
+            return f"[ERROR] invalid parent session for run {run_id}"
+        delegate = self._delegate_sessions_by_run_id.get(run_id)
+        if delegate is not None:
+            delegate.send(data)
+            return f"Input sent to delegated run {run_id}"
+        agent = getattr(parent_session, "_agent", None)
+        if agent is None:
+            return f"[ERROR] parent session not started for run {run_id}"
+        flow = agent.flow.find(run_id)
+        if flow is None:
+            return f"[ERROR] unknown run id {run_id!r}"
+        tool_name = flow.info.get("tool_name")
+        if tool_name != "execute_bash":
+            return f"[ERROR] run {run_id!r} does not accept input"
+        docker = parent_session.context.docker
+        container = parent_session.context.docker_container
+        if docker is None or not container:
+            return f"[ERROR] docker terminal unavailable for run {run_id!r}"
+        return await docker.write_terminal(
+            container,
+            run_id,
+            data,
+            append_newline=append_newline,
         )
 
-    async def run(
+    async def wait_runs(
         self,
-        match: MatchResult,
-        event: dict,
+        *,
+        parent: object,
+        run_ids: list[str],
+    ) -> str:
+        parent_session = parent if isinstance(parent, Session) else None
+        if parent_session is None:
+            return "[ERROR] invalid parent session for wait"
+        agent = getattr(parent_session, "_agent", None)
+        if agent is None:
+            return "[ERROR] parent session not started for wait"
+        if not run_ids:
+            return "[ERROR] run_ids must not be empty"
+
+        waits: list[Any] = []
+        for run_id in run_ids:
+            delegate = self._delegate_sessions_by_run_id.get(run_id)
+            if delegate is not None:
+                child_agent = getattr(delegate, "_agent", None)
+                if child_agent is None:
+                    return f"[ERROR] delegated run {run_id!r} not started"
+                waits.append(child_agent.wait())
+                continue
+            flow = agent.flow.find(run_id)
+            if flow is None:
+                return f"[ERROR] unknown run id {run_id!r}"
+            waits.append(flow.wait())
+
+        await asyncio.gather(*waits)
+        return f"Wait finished for runs: {', '.join(run_ids)}"
+
+    async def run_conversation(
+        self,
+        message: InboundMessage,
         *,
         agent_name: str = "main",
         user_role: str = "",
         session: object | None = None,
-        pending_messages: list[InboundMessage] | None = None,
         handoff_text: str = "",
-    ) -> tuple[list, int, str]:
+        text_override: str = "",
+    ) -> Session | None:
         await self._ensure_init()
-        session_history = getattr(session, "history", None)
-        task_id = (
-            getattr(session, "task_id", "")
-            if session_history and getattr(session, "task_id", "")
-            else self.runtime.new_task_id()
-        )
+        current_session = getattr(session, "session", None)
+        task_id = getattr(current_session, "task_id", "") or self.runtime.new_task_id()
         turn = await self._builder.build_turn_context(
-            event=event,
+            message=message,
             agent_name=agent_name,
             user_role=user_role,
-            text_override=match.remaining,
+            text_override=text_override,
             handoff_text=handoff_text,
-            is_continuation=bool(session_history),
-            pending_messages=pending_messages,
+            is_continuation=current_session is not None,
             task_id=task_id,
         )
+        runtime_id = f"yuubot-{agent_name}-{turn.message.ctx_id}"
         try:
-            agent = await self._launch(
+            runtime_session = await self._launch(
                 turn=turn,
                 task_id=task_id,
-                runtime_id=f"yuubot-{agent_name}-{turn.message.ctx_id}",
-                session_history=list(session_history) if session_history else None,
+                runtime_id=runtime_id,
+                session=current_session,
                 track_ctx=True,
             )
         except BaseException:
             logger.exception("agent failed: ctx={} agent={} task_id={}", turn.message.ctx_id, agent_name, task_id)
-            return [], 0, task_id
-        return list(agent.history), agent.total_tokens, task_id
+            return None
+        return runtime_session
 
     async def run_scheduled(
         self,
@@ -411,8 +637,8 @@ class AgentRunner:
             f"目标: {ctx_str}\n\n"
             "如需发送消息，使用 im send 命令发送到对应 ctx。\n"
         )
-        base_env = SubprocessEnv(
-            self.runtime.build_subprocess_env(
+        base_env = AgentEnv(
+            self.runtime.build_agent_env(
                 task_id=task_id,
                 ctx_id=ctx_id or "",
                 agent_name=agent_name,

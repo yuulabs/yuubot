@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from yuubot.commands.builtin import build_command_tree
-from yuubot.commands.tree import Command
+from yuubot.commands.tree import Command, CommandRequest
 
 
-async def _noop_llm_executor(remaining: str, event: dict, deps: dict) -> None:
-    del remaining, event, deps
+async def _noop_llm_executor(request: CommandRequest) -> None:
+    del request
     return None
 
 
@@ -28,4 +28,3 @@ def iter_leaf_commands(root: Command) -> Iterator[tuple[tuple[str, ...], Command
             yield from _walk(sub, current)
 
     yield from _walk(root, ())
-

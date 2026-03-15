@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from yuubot.capabilities import capability, text_block, ContentBlock, uri_to_path
+from yuubot.core.media_paths import MediaPathError
 from . import store as img_store
 
 type ContentBlocks = list[ContentBlock]
@@ -26,7 +27,10 @@ class ImgCapability:
             return [text_block("错误: 请提供图片路径")]
 
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
-        img_id = await img_store.save(path, description=desc, tags=tag_list)
+        try:
+            img_id = await img_store.save(path, description=desc, tags=tag_list)
+        except MediaPathError as e:
+            return [text_block(f"错误: {e}")]
         return [text_block(f"已保存 [img {img_id}]")]
 
     async def search(

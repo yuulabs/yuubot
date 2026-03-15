@@ -4,7 +4,7 @@ from yuubot.prompt import AgentSpec, Character
 from yuubot.characters import register
 
 _spec = AgentSpec(
-    tools=["read_file", "write_file", "edit_file", "call_cap_cli", "read_cap_doc"],
+    tools=["read_file", "edit_file", "call_cap_cli", "read_cap_doc"],
     caps=["web"],
     expand_caps=["web"],
     max_steps=16, 

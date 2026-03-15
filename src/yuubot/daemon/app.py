@@ -45,7 +45,6 @@ async def run_daemon(config_path: str | None = None) -> None:
         max_tokens=cfg.session.max_tokens,
     )
     await conv_mgr.load_auto()
-    conv_mgr._is_ctx_active = lambda ctx_id: agent_runner.get_active_flow(ctx_id) is not None
 
     llm_exec = LLMExecutor(
         conv_mgr=conv_mgr,

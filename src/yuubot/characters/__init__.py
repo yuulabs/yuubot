@@ -49,11 +49,7 @@ sleep 的 mode 参数：
 - `all`（默认）：等到所有后台任务完成或超时
 - `any`：收到任意一个通知就醒来
 
-只在以下情况使用 check_running_tool：
-- 用户主动询问进度
-- 你需要查看 tail output 来判断是否卡死
-
-只有确认任务失败（tail 中出现 error/failed/exception），或用户要求中止时，才调用 cancel_running_tool。""",
+如果需要查看后台任务进度，可通过 sleep 返回的通知摘要获取。""",
 )
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 from yuubot.commands.roles import RoleManager
-from yuubot.commands.tree import Command, RootCommand
+from yuubot.commands.tree import Command, CommandRequest, RootCommand
 from yuubot.core.models import Role
 
 from loguru import logger
@@ -91,7 +91,7 @@ def build_command_tree(entries: list[str], llm_executor=None) -> RootCommand:
         prefix="ping",
         executor=_exec_ping,
         min_role=Role.FOLK,
-        help_text="测试 bot 是否存活: /ping → pong",
+        help_text="查看 bot/会话状态: 无会话→pong，运行中→session pong，就绪→session ready",
     )
 
     # /char — character inspection and runtime config
@@ -147,22 +147,22 @@ def build_command_tree(entries: list[str], llm_executor=None) -> RootCommand:
 
 
 # ── Executor implementations ─────────────────────────────────────
-# Each executor receives (remaining: str, event: dict, deps: dict)
+# Each executor receives CommandRequest
 # and returns a reply string (or None for no reply).
 
 _AT_RE = re.compile(r"@(\d+)")
 
 
-async def _exec_grand(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_grand(request: CommandRequest) -> str | None:
     """Grant role: /bot grand @user <role> [--unlimited]"""
-    role_mgr: RoleManager = deps["role_mgr"]
-    caller_role = await role_mgr.get(event["user_id"], str(event.get("group_id", "global")))
+    role_mgr: RoleManager = request.deps["role_mgr"]
+    caller_role = await role_mgr.get(request.message.sender.user_id, str(request.message.group_id or "global"))
 
-    m = _AT_RE.search(remaining)
+    m = _AT_RE.search(request.remaining)
     if not m:
         return "用法: /bot grand @user <role>"
     target_uid = int(m.group(1))
-    rest = remaining[m.end():].strip()
+    rest = request.remaining[m.end():].strip()
 
     parts = rest.split()
     role_name = parts[0].lower() if parts else ""
@@ -177,57 +177,57 @@ async def _exec_grand(remaining: str, event: dict, deps: dict) -> str | None:
     if caller_role == Role.MOD and target_role > Role.FOLK:
         return "Mod 只能授权 folk 或 deny"
 
-    scope = "global" if unlimited else str(event.get("group_id", "global"))
+    scope = "global" if unlimited else str(request.message.group_id or "global")
     await role_mgr.set(target_uid, target_role, scope)
     return f"已将 {target_uid} 设为 {target_role.name} (scope: {scope})"
 
 
-async def _exec_on(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_on(request: CommandRequest) -> str | None:
     """Enable bot in group, or enable auto mode in private chat (MOD+)."""
-    if "--auto" in remaining:
-        if event.get("message_type") != "private":
+    if "--auto" in request.remaining:
+        if request.message.chat_type != "private":
             return "auto 模式仅限私聊使用"
-        ctx_id = event.get("ctx_id", 0)
-        session_mgr = deps.get("session_mgr")
+        ctx_id = request.message.ctx_id
+        session_mgr = request.deps.get("session_mgr")
         if session_mgr:
             await session_mgr.enable_auto(ctx_id)
         return "已开启 auto 模式（每条消息自动响应，TTL 30min）"
 
     from yuubot.core.models import GroupSetting
 
-    gid = event.get("group_id", 0)
+    gid = request.message.group_id
     if not gid:
         return "此命令仅限群聊使用"
-    mode = "free" if "--free" in remaining else "at"
+    mode = "free" if "--free" in request.remaining else "at"
     await GroupSetting.update_or_create(
         defaults={"bot_enabled": True, "response_mode": mode},
         group_id=gid,
     )
-    dispatcher = deps.get("dispatcher")
+    dispatcher = request.deps.get("dispatcher")
     if dispatcher and hasattr(dispatcher, "invalidate_group_settings_cache"):
         dispatcher.invalidate_group_settings_cache()
     return f"Bot 已开启 (模式: {mode})"
 
 
-async def _exec_off(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_off(request: CommandRequest) -> str | None:
     """Disable bot in group, or disable auto mode in private chat (MOD+).
 
     Emergency brake: recorder already muted this ctx on seeing /bot off.
     Daemon side cancels running flows, stops workers, and closes sessions.
     """
-    ctx_id = event.get("ctx_id", 0)
+    ctx_id = request.message.ctx_id
 
     # ── Daemon-side cleanup ──
-    agent_runner = deps.get("agent_runner")
+    agent_runner = request.deps.get("agent_runner")
     if agent_runner:
         agent_runner.cancel_ctx(ctx_id)
 
-    session_mgr = deps.get("session_mgr")
+    session_mgr = request.deps.get("session_mgr")
     if session_mgr:
         session_mgr.close(ctx_id)
 
     # ── Original logic ──
-    if event.get("message_type") == "private":
+    if request.message.chat_type == "private":
         if session_mgr and session_mgr.is_auto(ctx_id):
             await session_mgr.disable_auto(ctx_id)
             return "已关闭 auto 模式（紧急制动已执行）"
@@ -235,57 +235,57 @@ async def _exec_off(remaining: str, event: dict, deps: dict) -> str | None:
 
     from yuubot.core.models import GroupSetting
 
-    gid = event.get("group_id", 0)
+    gid = request.message.group_id
     if not gid:
         return "此命令仅限群聊使用"
     await GroupSetting.update_or_create(
         defaults={"bot_enabled": False, "response_mode": "at"},
         group_id=gid,
     )
-    dispatcher = deps.get("dispatcher")
+    dispatcher = request.deps.get("dispatcher")
     if dispatcher and hasattr(dispatcher, "invalidate_group_settings_cache"):
         dispatcher.invalidate_group_settings_cache()
     return "Bot 已关闭（紧急制动已执行）"
 
 
-async def _exec_set(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_set(request: CommandRequest) -> str | None:
     """Set entry mapping."""
-    entry_mgr = deps["entry_mgr"]
-    parts = remaining.split()
+    entry_mgr = request.deps["entry_mgr"]
+    parts = request.remaining.split()
     if len(parts) < 2:
         return "用法: /bot set <entry> <route>"
     entry, route = parts[0], parts[1]
-    unlimited = "--unlimited" in remaining
-    scope = "global" if unlimited else str(event.get("group_id", "global"))
+    unlimited = "--unlimited" in request.remaining
+    scope = "global" if unlimited else str(request.message.group_id or "global")
     await entry_mgr.set(entry, route, scope)
     return f"入口 {entry} → {route} (scope: {scope})"
 
 
-async def _exec_allow_dm(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_allow_dm(request: CommandRequest) -> str | None:
     """Allow DM from user."""
-    m = _AT_RE.search(remaining)
+    m = _AT_RE.search(request.remaining)
     if not m:
         return "用法: /bot allow-dm @user"
     target_uid = int(m.group(1))
-    dm_whitelist: list[int] = deps.get("dm_whitelist", [])
+    dm_whitelist: list[int] = request.deps.get("dm_whitelist", [])
     if target_uid not in dm_whitelist:
         dm_whitelist.append(target_uid)
     return f"已允许 {target_uid} 私聊"
 
 
-async def _exec_help(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_help(request: CommandRequest) -> str | None:
     """Show help for a specific command route, or root if none given."""
-    root: RootCommand = deps["root"]
-    route = remaining.split() if remaining.strip() else []
+    root: RootCommand = request.deps["root"]
+    route = request.remaining.split() if request.remaining.strip() else []
     target = root.find(route)
     if target is None:
         return f"未知命令: {' '.join(route)}"
     return target.help()
 
 
-async def _exec_hhsh(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_hhsh(request: CommandRequest) -> str | None:
     """Translate abbreviation: /hhsh <text>"""
-    text = remaining.strip()
+    text = request.remaining.strip()
     if not text:
         return "用法: /hhsh <缩写>，例如: /hhsh yyds"
     from yuubot.capabilities.hhsh import guess
@@ -298,13 +298,13 @@ async def _exec_hhsh(remaining: str, event: dict, deps: dict) -> str | None:
 
 
 
-async def _exec_close(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_close(request: CommandRequest) -> str | None:
     """Close current session."""
-    session_mgr = deps.get("session_mgr")
+    session_mgr = request.deps.get("session_mgr")
     if session_mgr is None:
         return "Session 功能未启用"
-    ctx_id = event.get("ctx_id", 0)
-    if event.get("_session_closed") or session_mgr.close(ctx_id):
+    ctx_id = request.message.ctx_id
+    if request.message.raw_event.get("_session_closed") or session_mgr.close(ctx_id):
         return "会话已重置 ✨"
     return "当前没有活跃的会话"
 
@@ -346,15 +346,24 @@ def _sanitize_agent_name(raw: str) -> str:
     return raw
 
 
-async def _exec_ping(remaining: str, event: dict, deps: dict) -> str | None:
-    """Return pong — used to check bot liveness."""
-    return "pong"
+async def _exec_ping(request: CommandRequest) -> str | None:
+    """Report bot liveness plus current conversation readiness."""
+    session_mgr = request.deps.get("session_mgr")
+    if session_mgr is None:
+        return "pong"
+
+    conv = session_mgr.get(request.message.ctx_id)
+    if conv is None:
+        return "pong"
+    if conv.state == "running":
+        return "session pong"
+    return "session ready"
 
 
-async def _exec_cost(remaining: str, event: dict, deps: dict) -> str | None:
+async def _exec_cost(request: CommandRequest) -> str | None:
     """Show recent agent cost summary from traces.db."""
     # Parse --days N and --all
-    parts = remaining.strip().split()
+    parts = request.remaining.strip().split()
     days = 7
     show_all = "--all" in parts
     for i, p in enumerate(parts):
@@ -366,16 +375,16 @@ async def _exec_cost(remaining: str, event: dict, deps: dict) -> str | None:
 
     # --all requires Master role
     if show_all:
-        role_mgr: RoleManager = deps["role_mgr"]
-        scope = str(event.get("group_id", "global"))
-        caller_role = await role_mgr.get(event["user_id"], scope)
+        role_mgr: RoleManager = request.deps["role_mgr"]
+        scope = str(request.message.group_id or "global")
+        caller_role = await role_mgr.get(request.message.sender.user_id, scope)
         if caller_role < Role.MASTER:
             return "--all 仅限 Master 使用"
 
-    ctx_id = event.get("ctx_id", 0)
+    ctx_id = request.message.ctx_id
 
     # Find traces.db
-    config = deps.get("config")
+    config = request.deps.get("config")
     db_path = ""
     if config is not None:
         yuutrace_cfg = config.yuuagents.get("yuutrace", {})
@@ -383,14 +392,16 @@ async def _exec_cost(remaining: str, event: dict, deps: dict) -> str | None:
     if not db_path:
         db_path = str(Path.home() / ".yagents" / "traces.db")
     else:
-        db_path = str(Path(db_path).expanduser())
+        if not db_path.startswith("file:") and db_path != ":memory:":
+            db_path = str(Path(db_path).expanduser())
 
-    if not Path(db_path).exists():
+    is_sqlite_uri = db_path.startswith("file:")
+    if not is_sqlite_uri and db_path != ":memory:" and not Path(db_path).exists():
         return "traces.db 不存在，无法查询开销"
 
     try:
         cutoff_ns = int((time.time() - days * 86400) * 1_000_000_000)
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, uri=is_sqlite_uri)
         conn.row_factory = sqlite3.Row
 
         if show_all:

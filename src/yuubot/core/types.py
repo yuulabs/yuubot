@@ -45,7 +45,11 @@ class InboundMessage(msgspec.Struct):
     sender: Sender
     segments: list[Segment]
     timestamp: int
-    raw_event: dict  # original OneBot dict, for transition
+    raw_event: dict = msgspec.field(default_factory=dict)  # original OneBot dict, for transition
+    group_id: int = 0
+    self_id: int = 0
+    raw_message: str = ""
+    extra_messages: list["InboundMessage"] = msgspec.field(default_factory=list)
 
 
 # ── Route ────────────────────────────────────────────────────────
@@ -54,7 +58,7 @@ class InboundMessage(msgspec.Struct):
 class CommandRoute(msgspec.Struct, frozen=True):
     """A message matched a command-tree node."""
 
-    command: str  # matched command prefix, e.g. "bot", "help"
+    command_path: tuple[str, ...]  # matched command path, e.g. ("bot", "on")
     remaining: str  # text after command
     entry: str  # which entry prefix was used
 

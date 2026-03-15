@@ -41,6 +41,9 @@ async def call_cap_cli(
         task_id=addon_context.task_id,
         allowed_caps=getattr(addon_context, "allowed_caps", None),
         action_filters=getattr(addon_context, "action_filters", None),
+        docker_host_mount=getattr(addon_context, "docker_host_mount", ""),
+        docker_home_host_dir=getattr(addon_context, "docker_home_host_dir", ""),
+        docker_home_dir=getattr(addon_context, "docker_home_dir", ""),
     )
 
     try:

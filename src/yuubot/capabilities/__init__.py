@@ -68,9 +68,13 @@ class CapabilityContext:
     user_role: str = ""
     agent_name: str = ""
     task_id: str = ""
+    runtime_id: str = ""
     bot_name: str = ""
     allowed_caps: frozenset[str] | None = None  # None = all caps allowed
     action_filters: dict[str, ActionFilter] | None = None
+    docker_host_mount: str = ""
+    docker_home_host_dir: str = ""
+    docker_home_dir: str = ""
 
 
 _ctx_var: ContextVar[CapabilityContext | None] = ContextVar(

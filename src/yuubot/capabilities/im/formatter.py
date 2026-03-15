@@ -6,10 +6,10 @@ Example:
 
 import html
 import json
-import os
 from datetime import datetime, timezone
 from typing import Literal, overload
 
+from yuubot.core.media_paths import MediaPathContext, host_to_runtime, to_file_uri
 
 from yuubot.core.models import (
     AtSegment,
@@ -30,14 +30,6 @@ _alias_cache: dict[tuple[int, str], str | None] = {}
 def clear_alias_cache() -> None:
     """Clear the alias cache. Call this when aliases are updated."""
     _alias_cache.clear()
-
-
-def _docker_host_path(path: str) -> str:
-    """Prefix a host path with the Docker mount point when running inside Docker."""
-    mount = os.environ.get("YUU_DOCKER_HOST_MOUNT", "")
-    if mount and not path.startswith(mount):
-        return f"{mount}{path}"
-    return path
 
 
 async def get_user_alias(user_id: int, ctx_id: int | None = None) -> str | None:
@@ -114,6 +106,7 @@ async def format_segments(
     ctx_id: int | None = None,
     *,
     extract_replies: bool = False,
+    media_path_ctx: MediaPathContext | None = None,
 ) -> str | tuple[str, list[str]]:
     """Format segments to LLM-readable inline content.
 
@@ -133,9 +126,9 @@ async def format_segments(
             parts.append(html.escape(seg.text))
         elif isinstance(seg, ImageSegment):
             if seg.local_path:
-                url = f"file://{_docker_host_path(seg.local_path)}"
+                url = to_file_uri(host_to_runtime(seg.local_path, ctx=media_path_ctx))
             elif media_idx < len(media_files):
-                url = f"file://{_docker_host_path(media_files[media_idx])}"
+                url = to_file_uri(host_to_runtime(media_files[media_idx], ctx=media_path_ctx))
                 media_idx += 1
             elif seg.url:
                 url = seg.url
@@ -185,11 +178,12 @@ async def format_message_to_xml(
     raw_message: str,
     media_files: list[str],
     ctx_id: int | None = None,
+    media_path_ctx: MediaPathContext | None = None,
 ) -> str:
     """Format a single message to LLM-readable XML."""
     segments = segments_from_json(raw_message)
     content, reply_tags = await format_segments(
-        segments, media_files, ctx_id=ctx_id, extract_replies=True,
+        segments, media_files, ctx_id=ctx_id, extract_replies=True, media_path_ctx=media_path_ctx,
     )
 
     name = _best_name(nickname, display_name, alias)

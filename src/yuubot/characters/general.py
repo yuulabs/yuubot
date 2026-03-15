@@ -12,9 +12,10 @@ from yuubot.characters import (
 _spec = AgentSpec(
     tools=[
         "execute_bash", "call_cap_cli",
-        "write_file", "edit_file", "read_file",
+        "edit_file", "read_file",
         "sleep", "delegate",
-        "check_running_tool", "cancel_running_tool",
+        "inspect_background", "cancel_background",
+        "input_background", "defer_background", "wait_background",
     ],
     sections=[
         subagents_section("coder", "researcher"),

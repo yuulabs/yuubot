@@ -2,7 +2,7 @@ name: vision
 summary: 图片视觉识别与描述
 actions:
   - name: describe
-    summary: 分析图片内容，返回中文描述
-    usage: vision describe <path>
+    summary: 分析图片内容，返回中文描述（自动缓存；若需彻底重读请传递refresh，注意这会带来额外开销）
+    usage: vision describe <path> [--refresh]
     payload_rule: none
     return_shape: text

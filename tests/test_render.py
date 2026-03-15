@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 
-from yuubot.core.models import AtSegment, ForwardSegment, TextSegment
+from yuubot.core.models import AtSegment, ForwardSegment, ImageSegment, TextSegment
 from yuubot.core.types import InboundMessage, Sender
 from yuubot.daemon.render import (
     RenderContext,
@@ -192,3 +192,34 @@ async def test_render_task_forward_msg_xml(db):
 
     result = await render_task(msg, policy, ctx)
     assert '<forward_msg id="fw-1" summary="第一段 第二段 第三段"/>' in result
+
+
+async def test_render_task_projects_image_path_for_docker_agent(db):
+    event = {
+        "post_type": "message",
+        "message_type": "group",
+        "message_id": 99,
+        "user_id": 20001,
+        "group_id": 1000,
+        "message": [],
+        "raw_message": "",
+        "time": 1700000000,
+        "self_id": BOT_QQ,
+        "sender": {"nickname": "Alice", "card": ""},
+        "ctx_id": 1,
+        "media_files": ["/home/tester/.yuubot/media/demo.gif"],
+    }
+    msg = InboundMessage(
+        message_id=99,
+        ctx_id=1,
+        chat_type="group",
+        sender=Sender(user_id=20001, nickname="Alice"),
+        segments=[ImageSegment(local_path="/home/tester/.yuubot/media/demo.gif")],
+        timestamp=1700000000,
+        raw_event=event,
+    )
+    policy = RenderPolicy()
+    ctx = RenderContext(bot_qq=str(BOT_QQ), bot_name="Bot", docker_host_mount="/mnt/host")
+
+    result = await render_task(msg, policy, ctx)
+    assert 'file:///mnt/host/home/tester/.yuubot/media/demo.gif' in result

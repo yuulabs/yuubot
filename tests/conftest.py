@@ -2,7 +2,9 @@
 
 import asyncio
 from pathlib import Path
+import sqlite3
 import socket
+from urllib.parse import quote
 
 import msgspec
 import pytest
@@ -50,8 +52,7 @@ def test_characters():
         min_role="folk",
         persona="你是测试机器人。",
         spec=AgentSpec(
-            tools=["execute_skill_cli"],
-            ext_skills=["*"],
+            tools=[],
             max_steps=4,
         ),
         provider="test",
@@ -103,8 +104,37 @@ def recorder_api_port() -> int:
 
 
 @pytest.fixture
-def yuubot_config(tmp_path, recorder_api_port) -> Config:
+def traces_db(tmp_path):
+    """Shared-memory SQLite DB used by /ycost integration tests."""
+    uri = f"file:{quote(str(tmp_path / 'traces.db'))}?mode=memory&cache=shared"
+    conn = sqlite3.connect(uri, uri=True)
+    conn.executescript(
+        """
+        CREATE TABLE spans (
+            span_id TEXT PRIMARY KEY,
+            parent_span_id TEXT,
+            start_time_unix_nano INTEGER,
+            agent TEXT,
+            trace_id TEXT
+        );
+        CREATE TABLE events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            span_id TEXT,
+            name TEXT,
+            attributes_json TEXT
+        );
+        """
+    )
+    try:
+        yield conn, uri
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def yuubot_config(tmp_path, recorder_api_port, traces_db) -> Config:
     """Build a programmatic Config with test values."""
+    _, traces_db_uri = traces_db
     return Config(
         bot=BotConfig(qq=BOT_QQ, master=MASTER_QQ, entries=["/y", "/yuu"]),
         daemon=DaemonConfig(recorder_api=f"http://127.0.0.1:{recorder_api_port}"),
@@ -115,7 +145,7 @@ def yuubot_config(tmp_path, recorder_api_port) -> Config:
             "providers": {
                 "test": {
                     "api_type": "openai-chat-completion",
-                    "api_key_env": "",
+                    "api_key_env": "YUUBOT_TEST_LLM_KEY",
                     "default_model": "test-model",
                     "base_url": "https://api.openai.com/v1",
                 },
@@ -134,6 +164,7 @@ def yuubot_config(tmp_path, recorder_api_port) -> Config:
             },
             "daemon": {"socket": str(tmp_path / "yagents.sock")},
             "db": {"url": f"sqlite+aiosqlite:///{tmp_path / 'yagents.db'}"},
+            "yuutrace": {"db_path": traces_db_uri},
             "skills": {"paths": [str(tmp_path / "skills")]},
             "docker": {"image": "yuuagents-runtime:latest"},
         },
@@ -156,6 +187,7 @@ def config_path(tmp_path, yuubot_config) -> str:
 def recorder_api_env(yuubot_config, config_path, monkeypatch):
     monkeypatch.setenv("YUUBOT_TEST_RECORDER_API", yuubot_config.daemon.recorder_api)
     monkeypatch.setenv("YUUBOT_CONFIG", config_path)
+    monkeypatch.setenv("YUUBOT_TEST_LLM_KEY", "sk-test-dummy-key-not-real")
 
 
 @pytest.fixture

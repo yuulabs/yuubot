@@ -2,6 +2,8 @@
 
 import asyncio
 
+import yuullm
+
 from tests.conftest import MASTER_QQ, FOLK_QQ, make_group_event
 from tests.helpers import history_text, sent_texts
 from tests.mocks import (
@@ -34,10 +36,24 @@ async def test_llm_creates_session_with_assistant_reply(dispatcher, session_mgr)
 
 async def test_llm_tool_call_creates_session(dispatcher, session_mgr):
     """LLM 返回 tool_call 时，agent 应正常执行完毕并建立 session。"""
+    from yuubot.characters import register
+    from yuubot.prompt import AgentSpec, Character
+    register(Character(
+        name="main",
+        description="Test main agent",
+        min_role="folk",
+        persona="你是测试机器人。",
+        spec=AgentSpec(
+            tools=["sleep"],
+            max_steps=4,
+        ),
+        provider="test",
+        model="test-model",
+    ))
     responses = [
         make_tool_call_response(
-            "execute_skill_cli",
-            '{"command": "echo ok"}',
+            "sleep",
+            '{"seconds": 0}',
             "call_001",
         ),
         make_text_response("Done!"),
@@ -114,15 +130,30 @@ async def test_general_agent_requires_master(dispatcher):
 
 async def test_rollover_stashes_summary_after_final_response(dispatcher, session_mgr, monkeypatch):
     """Rollover should pause only after this turn already produced a final response."""
-    session_mgr.max_tokens = 1
+    session_mgr.max_tokens = 50
     monkeypatch.setattr(
         dispatcher.agent_runner,
         "summarize",
         lambda history, agent_name="main": asyncio.sleep(0, result="已完成数据库 WAL 的背景解释"),
     )
+    large_usage = yuullm.Usage(
+        provider="test",
+        model="test-model",
+        input_tokens=60,
+        output_tokens=10,
+        total_tokens=70,
+    )
+    normal_usage = yuullm.Usage(
+        provider="test",
+        model="test-model",
+        input_tokens=10,
+        output_tokens=10,
+        total_tokens=20,
+    )
 
     with mock_recorder_api() as sent, mock_llm(
-        [make_text_response("第一轮回复"), make_text_response("第二轮回复")]
+        [make_text_response("第一轮回复"), make_text_response("第二轮回复")],
+        usages=[large_usage, normal_usage],
     ):
         await dispatcher.dispatch(make_group_event("/yllm 解释 WAL", user_id=MASTER_QQ))
         await _wait_worker(dispatcher, "group:1000")
@@ -143,3 +174,34 @@ async def test_rollover_stashes_summary_after_final_response(dispatcher, session
     assert session is not None
     assert session.summary_prompt == ""
     assert "第二轮回复" in history_text(session.history)
+
+
+async def test_large_output_tokens_trigger_rollover(dispatcher, session_mgr, monkeypatch):
+    """Rollover should use the latest API call's input+output token estimate."""
+    session_mgr.max_tokens = 50
+    summarize_calls: list[list] = []
+    monkeypatch.setattr(
+        dispatcher.agent_runner,
+        "summarize",
+        lambda history, agent_name="main": summarize_calls.append(history) or asyncio.sleep(0, result="应当触发"),
+    )
+    output_heavy_usage = yuullm.Usage(
+        provider="test",
+        model="test-model",
+        input_tokens=20,
+        output_tokens=120,
+        total_tokens=140,
+    )
+
+    with mock_recorder_api() as sent, mock_llm(
+        [make_text_response("长回复但不该 rollover")],
+        usages=[output_heavy_usage],
+    ):
+        await dispatcher.dispatch(make_group_event("/yllm 展开说说", user_id=MASTER_QQ))
+        await _wait_worker(dispatcher, "group:1000")
+
+    session = session_mgr.get(1)
+    assert session is not None
+    assert session.history == []
+    assert "压缩摘要" in session.summary_prompt
+    assert len(summarize_calls) == 1

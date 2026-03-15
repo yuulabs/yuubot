@@ -13,6 +13,7 @@ import httpx
 
 from yuubot.capabilities import capability, get_context, text_block, ContentBlock
 from yuubot.config import load_config
+from yuubot.core.media_paths import MediaPathContext, MediaPathError, input_to_host, to_file_uri
 from .query import browse_messages, search_messages
 from .formatter import format_forward_nodes_to_xml, format_messages_to_xml
 from yuubot.core.models import ForwardRecord
@@ -40,6 +41,17 @@ def _get_optional_context():
         return None
 
 
+def _media_path_ctx() -> MediaPathContext:
+    actx = _get_optional_context()
+    if actx is None:
+        return MediaPathContext.from_env()
+    return MediaPathContext.from_values(
+        docker_host_mount=actx.docker_host_mount,
+        host_home_dir=actx.docker_home_host_dir,
+        container_home_dir=actx.docker_home_dir,
+    )
+
+
 def _enforce_bot_ctx(ctx_id: int | None) -> int | None:
     actx = get_context()
     if actx.ctx_id is not None:
@@ -62,8 +74,26 @@ def _normalize_segment(seg: dict) -> dict:
     return {"type": seg_type, "data": data}
 
 
+def _normalize_image_file_refs(segments: list[dict]) -> list[dict]:
+    media_ctx = _media_path_ctx()
+    normalized: list[dict] = []
+    for seg in segments:
+        if seg.get("type") != "image":
+            normalized.append(seg)
+            continue
+        data = dict(seg.get("data", {}))
+        for key in ("file", "url"):
+            val = data.get(key, "")
+            if isinstance(val, str) and val.startswith("file://"):
+                host_path = input_to_host(val, ctx=media_ctx)
+                data[key] = to_file_uri(host_path)
+        normalized.append({"type": seg["type"], "data": data})
+    return normalized
+
+
 def _validate_segments(segments: list[dict]) -> str | None:
     """Return error string if segments are invalid, else None."""
+    media_ctx = _media_path_ctx()
     if not segments:
         return "消息内容为空"
     if all(
@@ -77,7 +107,10 @@ def _validate_segments(segments: list[dict]) -> str | None:
         for key in ("file", "url"):
             val = seg.get("data", {}).get(key, "")
             if val and val.startswith("file://"):
-                fpath = val[len("file://"):]
+                try:
+                    fpath = input_to_host(val, ctx=media_ctx)
+                except MediaPathError as e:
+                    return str(e)
                 if not os.path.isfile(fpath):
                     return f"图片文件不存在: {fpath}"
     return None
@@ -149,7 +182,11 @@ class ImCapability:
                 if gap > 0:
                     await asyncio.sleep(gap)
 
-                segments = [_normalize_segment(s) for s in cast(Sequence[dict[str, Any]], env["msg"])]
+                try:
+                    segments = [_normalize_segment(s) for s in cast(Sequence[dict[str, Any]], env["msg"])]
+                    segments = _normalize_image_file_refs(segments)
+                except MediaPathError as e:
+                    return [text_block(f"错误: {e}")]
                 err = _validate_segments(segments)
                 if err:
                     return [text_block(f"错误: {err}")]

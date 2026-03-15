@@ -4,7 +4,9 @@ from pathlib import Path
 
 from tortoise import connections
 
+from yuubot.capabilities import get_context
 from yuubot.core.db import has_simple
+from yuubot.core.media_paths import MediaPathContext, host_to_runtime, input_to_host
 from yuubot.core.models import ImageEntry
 
 
@@ -21,11 +23,18 @@ async def _build_fts_query(words: list[str]) -> str:
     return " OR ".join(parts)
 
 
+def _media_path_ctx() -> MediaPathContext:
+    actx = get_context()
+    return MediaPathContext.from_values(
+        docker_host_mount=actx.docker_host_mount,
+        host_home_dir=actx.docker_home_host_dir,
+        container_home_dir=actx.docker_home_dir,
+    )
+
+
 def normalize_path(path: str) -> str:
-    """Strip file:// prefix to ensure consistent plain filesystem paths."""
-    if path.startswith("file://"):
-        return path[len("file://"):]
-    return path
+    """Normalize capability input to a host filesystem path."""
+    return input_to_host(path, ctx=_media_path_ctx())
 
 
 async def save(
@@ -94,7 +103,7 @@ async def search(
     return [
         {
             "id": e.id,
-            "local_path": e.local_path,
+            "local_path": host_to_runtime(e.local_path, ctx=_media_path_ctx()),
             "description": e.description,
             "tags": e.tags,
             "created_at": e.created_at.isoformat() if e.created_at else "",

@@ -5,8 +5,10 @@ from yuubot.characters import SLEEP_MECHANISM, docker_section, register
 
 _spec = AgentSpec(
     tools=[
-        "execute_bash", "read_file", "write_file", "edit_file",
-        "sleep", "check_running_tool", "cancel_running_tool",
+        "execute_bash", "read_file", "edit_file",
+        "sleep",
+        "inspect_background", "cancel_background",
+        "input_background", "wait_background",
     ],
     sections=[
         docker_section(),

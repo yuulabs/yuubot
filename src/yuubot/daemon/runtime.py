@@ -39,7 +39,7 @@ def get_capability_tools() -> dict[str, Any]:
     }
 
 
-DOCKER_TOOLS = {"execute_bash", "read_file", "write_file", "edit_file", "delete_file"}
+DOCKER_TOOLS = {"execute_bash", "read_file", "edit_file", "delete_file"}
 
 
 class AgentRuntime:
@@ -74,6 +74,9 @@ class AgentRuntime:
         bot_name: str = "",
         allowed_caps: frozenset[str] | None = None,
         action_filters: dict[str, ActionFilter] | None = None,
+        docker_host_mount: str = "",
+        docker_home_host_dir: str = "",
+        docker_home_dir: str = "",
     ) -> Any:
         from yuubot.capabilities import CapabilityContext
 
@@ -87,13 +90,16 @@ class AgentRuntime:
             bot_name=bot_name,
             allowed_caps=allowed_caps,
             action_filters=action_filters,
+            docker_host_mount=docker_host_mount,
+            docker_home_host_dir=docker_home_host_dir,
+            docker_home_dir=docker_home_dir,
         )
 
     @staticmethod
     def new_task_id() -> str:
         return uuid.uuid4().hex
 
-    def build_subprocess_env(
+    def build_agent_env(
         self,
         *,
         task_id: str,
@@ -209,8 +215,8 @@ class AgentRuntime:
         char = get_character(agent_name)
         runtime = self.get_runtime(agent_name)
         prompt_spec = build_prompt_spec(char, runtime, self.config.skill_paths)
-        prompt_builder = build_system_prompt(prompt_spec)
-        return prompt_spec, prompt_builder
+        system_prompt = build_system_prompt(prompt_spec)
+        return prompt_spec, system_prompt
 
     @staticmethod
     def needs_docker(tools: list[str]) -> bool:

@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from yuubot.daemon.agent_runner import AgentRunner
 
 from yuubot.commands.roles import RoleManager
-from yuubot.commands.tree import Command, MatchResult
+from yuubot.commands.tree import CommandRequest
+from yuubot.core.types import InboundMessage
 from yuubot.config import Config
 from yuubot.daemon.conversation import Conversation, ConversationManager, conversation_worth_curating
 from yuubot.daemon.summarizer import build_summary_prompt, compact_original_task
@@ -46,22 +47,21 @@ def _has_final_response(history: list) -> bool:
     return False
 
 
-def _should_auto_continue_rollover(event: dict, history: list) -> bool:
+def _should_auto_continue_rollover(message: InboundMessage, history: list) -> bool:
     """Allow at most one automatic rollover continuation without a final reply."""
     if _has_final_response(history):
         return False
-    return int(event.get("_rollover_auto_count", 0) or 0) < 1
+    return int(message.raw_event.get("_rollover_auto_count", 0) or 0) < 1
 
 
-async def _send_reply(event: dict, text: str, config: Config) -> None:
+async def _send_reply(message: InboundMessage, text: str, config: Config) -> None:
     """Send a text reply back to the source context."""
     from yuubot.core.models import Message, TextSegment
     from yuubot.core.onebot import build_send_msg
 
     segments: Message = [TextSegment(text=text)]
-    msg_type = event.get("message_type", "private")
-    target_id = event.get("group_id", 0) if msg_type == "group" else event.get("user_id", 0)
-    body = build_send_msg(msg_type, target_id, segments)
+    target_id = message.group_id if message.chat_type == "group" else message.sender.user_id
+    body = build_send_msg(message.chat_type, target_id, segments)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(f"{config.daemon.recorder_api}/send_msg", json=body)
@@ -77,7 +77,7 @@ class LLMExecutor:
     - Parsing ``continue`` prefix and ``#agent_name`` tag from remaining text
     - Session selection (continue, switch, or new)
     - Agent-level permission check
-    - Delegating to agent_runner.run()
+    - Delegating to agent_runner.run_conversation()
     - Post-turn history update and rollover (_finish_turn)
     """
 
@@ -86,21 +86,23 @@ class LLMExecutor:
     config: Config
     role_mgr: RoleManager
 
-    async def __call__(self, remaining: str, event: dict, deps: object) -> None:
+    async def __call__(self, request: CommandRequest) -> str | None:
         # 1. Parse remaining text
         is_continue = False
-        text = remaining
-        if remaining.startswith("continue"):
-            after = remaining[len("continue"):]
+        implicit_auto_resume = request.entry == "@"
+        text = request.remaining
+        if request.remaining.startswith("continue"):
+            after = request.remaining[len("continue"):]
             if not after or after[0] in (" ", "\t", "\n"):
                 is_continue = True
                 text = after.lstrip()
 
         agent_name, text = _parse_agent_tag(text)
 
-        ctx_id = event.get("ctx_id", 0)
-        user_id = event.get("user_id", 0)
-        msg_type = event.get("message_type", "private")
+        message = request.message
+        ctx_id = message.ctx_id
+        user_id = message.sender.user_id
+        msg_type = message.chat_type
 
         # 2. Get current session
         session = self.conv_mgr.get(ctx_id)
@@ -114,75 +116,68 @@ class LLMExecutor:
             else:
                 # Different agent requested
                 if msg_type == "group":
-                    await _send_reply(event, "请先使用 /close 关闭当前会话再切换 Agent", self.config)
-                    return
+                    return "请先使用 /close 关闭当前会话再切换 Agent"
                 # Private: close old session and switch
                 self.conv_mgr.close(ctx_id)
-                await _send_reply(event, f"已切换到 Agent: {agent_name}", self.config)
+                await _send_reply(message, f"已切换到 Agent: {agent_name}", self.config)
                 session = None
         elif self.conv_mgr.is_auto(ctx_id):
-            # Auto mode, no active session — auto-resume or honour explicit agent
+            # Auto mode, no active session:
+            # - implicit bare-text/@bot continuation resumes current agent
+            # - explicit /yllm or /yllm#agent honours the requested agent
             cur_agent = self.conv_mgr.current_agent(ctx_id)
-            if cur_agent and (is_continue or agent_name == "main"):
+            if cur_agent and (implicit_auto_resume or is_continue):
                 agent_name = cur_agent
 
         # 4. Validate agent
         if not self._agent_exists(agent_name):
-            await _send_reply(event, f"未知 Agent: {agent_name}", self.config)
-            return
+            return f"未知 Agent: {agent_name}"
 
         # 5. Agent-level permission check
-        scope = str(event.get("group_id", "global"))
+        scope = str(message.group_id or "global")
         role = await self.role_mgr.get(user_id, scope)
         required_role = self.config.agent_min_role(agent_name)
         if role < required_role:
-            await _send_reply(
-                event,
-                f"权限不足: Agent {agent_name!r} 需要 {required_role.name} 权限",
-                self.config,
-            )
-            return
+            return f"权限不足: Agent {agent_name!r} 需要 {required_role.name} 权限"
 
         # Create a new session if needed (no active session, or switched agent)
         if session is None or session.agent_name != agent_name:
             session = self.conv_mgr.create(ctx_id, agent_name, user_id=user_id)
 
-        # 6. Build synthetic MatchResult for agent_runner (carries remaining text)
-        synth_match = MatchResult(
-            command=Command(prefix="llm", executor=self, interactive=True),
-            remaining=text,
-            entry="",
-        )
+        self.conv_mgr.set_running(ctx_id, agent_name)
+        try:
+            # 7. Run agent
+            handoff_text = session.summary_prompt if session is not None and not session.history else ""
+            runtime_session = await self.agent_runner.run_conversation(
+                message,
+                agent_name=agent_name,
+                user_role=role.name,
+                session=session,
+                handoff_text=handoff_text,
+                text_override=text,
+            )
+            if runtime_session is None:
+                return None
+            if session is not None and handoff_text:
+                session.summary_prompt = ""
 
-        # 7. Run agent
-        handoff_text = session.summary_prompt if session is not None and not session.history else ""
-        history, tokens, task_id = await self.agent_runner.run(
-            synth_match, event,
-            agent_name=agent_name,
-            user_role=role.name,
-            session=session,
-            handoff_text=handoff_text,
-        )
-        if session is not None and handoff_text:
-            session.summary_prompt = ""
-        session.task_id = task_id
-
-        # 8. Update session and handle rollover
-        await self._finish_turn(session, history, tokens, event)
+            # 8. Update session and handle rollover
+            await self._finish_turn(session, runtime_session, message)
+            return None
+        finally:
+            self.conv_mgr.set_idle(ctx_id, agent_name)
 
     def _agent_exists(self, name: str) -> bool:
         from yuubot.characters import CHARACTER_REGISTRY
         return name in CHARACTER_REGISTRY
 
     async def _finish_turn(
-        self, conv: Conversation, history: list, tokens: int, event: dict
+        self, conv: Conversation, runtime_session: object, message: InboundMessage
     ) -> None:
         """Update conversation history and handle token-limit rollover."""
-        pending_messages = self.conv_mgr.drain_pending(conv.ctx_id)
-        rolled = self.conv_mgr.update_history(conv, history, tokens)
+        history = list(getattr(runtime_session, "history", []))
+        rolled = self.conv_mgr.update_session(conv, runtime_session)
         if not rolled:
-            if pending_messages:
-                await self._continue_with_pending(conv, event, pending_messages)
             return
 
         ctx_id = conv.ctx_id
@@ -196,7 +191,7 @@ class LLMExecutor:
             logger.exception("Failed to summarize session for ctx={}", ctx_id)
             note = ""
 
-        should_continue = not event.get("_is_auto_continuation")
+        should_continue = not message.raw_event.get("_is_auto_continuation")
         task = compact_original_task(history)
         summary_prompt = build_summary_prompt(task, note, should_continue=should_continue)
 
@@ -207,63 +202,32 @@ class LLMExecutor:
         if worth_curating:
             asyncio.create_task(self._run_curator(history, ctx_id, user_id))
 
-        if _should_auto_continue_rollover(event, history):
-            scope = str(event.get("group_id", "global"))
-            role = await self.role_mgr.get(event["user_id"], scope)
-            synth_match = MatchResult(
-                command=Command(prefix="llm", executor=self, interactive=True),
-                remaining="",
-                entry="rollover",
+        if _should_auto_continue_rollover(message, history):
+            scope = str(message.group_id or "global")
+            role = await self.role_mgr.get(message.sender.user_id, scope)
+            cont_message = attrs.evolve(
+                message,
+                raw_event={
+                    **message.raw_event,
+                    "_is_auto_continuation": True,
+                    "_rollover_auto_count": int(message.raw_event.get("_rollover_auto_count", 0) or 0) + 1,
+                },
             )
-            cont_event = dict(event)
-            cont_event["_is_auto_continuation"] = True
-            cont_event["_rollover_auto_count"] = int(event.get("_rollover_auto_count", 0) or 0) + 1
-            h2, t2, tid2 = await self.agent_runner.run(
-                synth_match, cont_event,
+            next_session = await self.agent_runner.run_conversation(
+                cont_message,
                 agent_name=agent_name,
                 user_role=role.name,
                 session=None,
-                pending_messages=pending_messages,
                 handoff_text=summary_prompt,
             )
-            new_session.task_id = tid2
+            if next_session is None:
+                return
             new_session.summary_prompt = ""
-            await _send_reply(event, "（已压缩上下文，继续处理中...）", self.config)
-            await self._finish_turn(new_session, h2, t2, cont_event)
+            await _send_reply(message, "（已压缩上下文，继续处理中...）", self.config)
+            await self._finish_turn(new_session, next_session, cont_message)
         else:
             if note:
-                await _send_reply(event, "（已压缩上下文，新会话已就绪，可继续对话）", self.config)
-
-    async def _continue_with_pending(
-        self,
-        conv: Conversation,
-        event: dict,
-        pending_messages: list,
-    ) -> None:
-        """Run another turn with all messages that arrived while the agent was busy."""
-        next_event = dict(pending_messages[0].raw_event)
-        scope = str(next_event.get("group_id", "global"))
-        role = await self.role_mgr.get(next_event["user_id"], scope)
-        synth_match = MatchResult(
-            command=Command(prefix="llm", executor=self, interactive=True),
-            remaining="",
-            entry="pending",
-        )
-        if len(pending_messages) > 1:
-            next_event["_extra_events"] = [msg.raw_event for msg in pending_messages[1:]]
-        history, tokens, task_id = await self.agent_runner.run(
-            synth_match,
-            next_event,
-            agent_name=conv.agent_name,
-            user_role=role.name,
-            session=conv,
-            pending_messages=pending_messages[1:],
-            handoff_text=conv.summary_prompt if not conv.history else "",
-        )
-        if conv.summary_prompt and history:
-            conv.summary_prompt = ""
-        conv.task_id = task_id
-        await self._finish_turn(conv, history, tokens, next_event)
+                await _send_reply(message, "（已压缩上下文，新会话已就绪，可继续对话）", self.config)
 
     async def _run_curator(self, history: list, ctx_id: int, user_id: int) -> None:
         try:

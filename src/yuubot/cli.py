@@ -111,6 +111,60 @@ def _make_cap_action_command(cap_name: str, action_name: str, help_text: str) ->
     return _command
 
 
+async def _run_mem_list(config_path: str | None, *, show_trash: bool) -> str:
+    from yuubot.capabilities.mem import store as mem_store
+    from yuubot.config import load_config
+    from yuubot.core.db import close_db, init_db
+
+    cfg = load_config(config_path)
+    await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
+    try:
+        memories = await mem_store.list_memories(
+            None,
+            show_all=True,
+            trash=show_trash,
+        )
+    finally:
+        await close_db()
+
+    if not memories:
+        return "垃圾桶为空" if show_trash else "暂无可 touch 的记忆"
+
+    header = "Trash memories:" if show_trash else "Touchable memories:"
+    lines = [header, ""]
+    for item in memories:
+        state_at = item["trashed_at"] if show_trash else item["last_accessed"]
+        state_key = "trashed_at" if show_trash else "last_accessed"
+        tags = item["tags"] or "-"
+        ctx_id = item["ctx_id"] if item["ctx_id"] is not None else "-"
+        lines.append(
+            f"[mem {item['id']}] scope={item['scope']} ctx={ctx_id} "
+            f"tags={tags} created_at={item['created_at']} {state_key}={state_at}"
+        )
+        lines.append(f"  {item['content']}")
+        lines.append("")
+    lines.append(f"共 {len(memories)} 条")
+    return "\n".join(lines)
+
+
+async def _run_mem_restore(config_path: str | None, ids_raw: tuple[str, ...]) -> str:
+    from yuubot.capabilities.mem import store as mem_store
+    from yuubot.config import load_config
+    from yuubot.core.db import close_db, init_db
+
+    ids = mem_store.parse_ids(list(ids_raw))
+    if not ids:
+        raise click.ClickException("请提供至少一个记忆 ID")
+
+    cfg = load_config(config_path)
+    await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
+    try:
+        count = await mem_store.restore(ids)
+    finally:
+        await close_db()
+    return f"已恢复 {count} 条记忆 (ID: {', '.join(str(i) for i in ids)})"
+
+
 def _register_capability_commands(group: click.Group, cap_name: str) -> None:
     from yuubot.capabilities.contract import load_all_contracts
 
@@ -337,9 +391,27 @@ def im_login(ctx: click.Context, im_name: str) -> None:
 # ── Phase 6: Memory Capability ───────────────────────────────────
 
 
-@cli.group()
+@cli.group(cls=BotAwareGroup, hidden_in_bot={"list"})
 def mem() -> None:
     """Memory capability: save, recall, delete, show."""
+
+
+@mem.command("list")
+@click.option("--trash", "show_trash", is_flag=True, default=False, help="展示垃圾桶中的记忆")
+@click.pass_context
+def mem_list(ctx: click.Context, show_trash: bool) -> None:
+    """List memories in a pager for ops usage."""
+    text = asyncio.run(_run_mem_list(ctx.obj["config_path"], show_trash=show_trash))
+    os.environ.setdefault("LESS", "FRX")
+    click.echo_via_pager(text)
+
+
+@mem.command("restore")
+@click.argument("ids", nargs=-1)
+@click.pass_context
+def mem_restore(ctx: click.Context, ids: tuple[str, ...]) -> None:
+    """Restore one or more trashed memories."""
+    click.echo(asyncio.run(_run_mem_restore(ctx.obj["config_path"], ids)))
 
 
 # ── Phase 6b: Image Capability ─────────────────────────────────

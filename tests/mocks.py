@@ -146,7 +146,12 @@ _FAKE_USAGE = yuullm.Usage(
 
 
 @contextmanager
-def mock_llm(responses: list[list] | None = None):
+def mock_llm(
+    responses: list[list] | None = None,
+    *,
+    usages: list[yuullm.Usage] | None = None,
+    costs: list[yuullm.Cost | None] | None = None,
+):
     """Patch OpenAIChatCompletionProvider.stream to return fake stream items.
 
     *responses* is a list of item-lists. Each LLM call consumes one entry.
@@ -167,7 +172,9 @@ def mock_llm(responses: list[list] | None = None):
             for item in items:
                 yield item
 
-        store = {"usage": _FAKE_USAGE, "cost": None}
+        usage = _FAKE_USAGE if usages is None else usages[min(idx, len(usages) - 1)]
+        cost = None if costs is None else costs[min(idx, len(costs) - 1)]
+        store = {"usage": usage, "cost": cost}
         return _iter(), store
 
     with patch.object(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from yuubot.commands.builtin import build_command_tree
+from yuubot.commands.tree import CommandRequest
 from yuubot.core.models import AtSegment, TextSegment
 from yuubot.core.types import (
     CommandRoute,
@@ -16,7 +17,8 @@ from yuubot.daemon.routing import resolve_route
 BOT_QQ = 12345
 
 
-async def _noop_llm(remaining, event, deps):
+async def _noop_llm(request: CommandRequest):
+    del request
     return None
 
 
@@ -58,7 +60,7 @@ async def test_yllm_command_route():
     msg = _make_msg([TextSegment(text="/yllm hello")])
     route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
     assert isinstance(route, CommandRoute)
-    assert route.command == "llm"
+    assert route.command_path == ("llm",)
     assert route.remaining == "hello"
 
 
@@ -67,7 +69,7 @@ async def test_ybot_on_command_route():
     msg = _make_msg([TextSegment(text="/ybot on")])
     route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
     assert isinstance(route, CommandRoute)
-    assert route.command == "on"
+    assert route.command_path == ("bot", "on")
 
 
 async def test_auto_mode_bare_text():
@@ -83,6 +85,19 @@ async def test_auto_mode_group_ignored():
     msg = _make_msg([TextSegment(text="just chatting")], chat_type="group")
     route = resolve_route(msg, root, lambda _: False, lambda _: True, BOT_QQ)
     assert route is None
+
+
+async def test_command_with_non_bot_at_prefix():
+    """Command should match even when preceded by non-bot @ mentions."""
+    root = _make_tree()
+    msg = _make_msg([
+        AtSegment(qq="git@latex.ustc.edu.cn"),
+        TextSegment(text=" /yllm fact check"),
+    ])
+    route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
+    assert isinstance(route, CommandRoute)
+    assert route.command_path == ("llm",)
+    assert route.remaining == "fact check"
 
 
 async def test_unmatched_text_returns_none():
