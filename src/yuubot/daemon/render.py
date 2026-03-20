@@ -7,7 +7,6 @@ into a composable, testable module.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 
 import attrs
@@ -18,7 +17,6 @@ from yuubot.core.media_paths import MediaPathContext
 from yuubot.core.models import (
     AtSegment,
     Segment,
-    TextSegment,
     segments_to_json,
 )
 from yuubot.core.types import InboundMessage
@@ -27,6 +25,7 @@ from yuubot.capabilities.im.formatter import (
     format_message_to_xml,
     format_segments,
     get_user_alias,
+    replace_command_prefix,
 )
 
 
@@ -63,31 +62,6 @@ class RenderContext:
 # ── Pure helpers ─────────────────────────────────────────────────
 
 
-_CMD_PREFIX_RE = re.compile(r"^(/yllm|/yuu|/y)(?:#\w+)?\s*")
-
-
-def replace_command_prefix(segments: list[Segment], bot_name: str) -> list[Segment]:
-    """Replace /yllm command prefix with @bot_name in the first text segment.
-
-    Handles: /yllm, /y, /yuu with optional #agent_name suffix.
-    Skips leading non-text segments (e.g. ReplySegment) to find the command.
-    Returns a new list with modified segments.
-    """
-    for i, seg in enumerate(segments):
-        if not isinstance(seg, TextSegment):
-            continue
-        text = seg.text.strip()
-        match = _CMD_PREFIX_RE.match(text)
-        if match:
-            new_text = f"@{bot_name} " + text[match.end() :]
-            new_segments = list(segments)
-            new_segments[i] = TextSegment(text=new_text)
-            return new_segments
-        break
-
-    return segments
-
-
 def _strip_bot_at(segments: list[Segment], bot_qq: str) -> list[Segment]:
     """Remove @bot AtSegments — redundant noise for the LLM."""
     return [s for s in segments if not (isinstance(s, AtSegment) and s.qq == bot_qq)]
@@ -96,7 +70,7 @@ def _strip_bot_at(segments: list[Segment], bot_qq: str) -> list[Segment]:
 def _build_location(msg: InboundMessage, group_name: str, include_name: bool) -> str:
     return ConversationRender.location(
         chat_type=msg.chat_type,
-        group_id=msg.group_id or "?",
+        group_id=msg.group_id or 0,
         group_name=group_name,
         ctx_id=msg.ctx_id,
         include_name=include_name,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from loguru import logger
@@ -33,6 +34,7 @@ class AgentRunner:
         self._signal_queues: dict[str, asyncio.Queue[str]] = {}
         self._silence_watchers: dict[str, asyncio.Task[None]] = {}
         self._delegate_sessions_by_run_id: dict[str, Session] = {}
+        self._running_sessions: dict[str, Session] = {}
 
     @property
     def _builder(self) -> AgentRunBuilder:
@@ -68,8 +70,17 @@ class AgentRunner:
         if active is None:
             return False
         self._active_runs_by_runtime.pop(active.runtime_id, None)
+        session = self._running_sessions.get(active.runtime_id)
+        if session is not None:
+            session.cancel()
         logger.info("Run cancelled for ctx={}", ctx_id)
         return True
+
+    def _cancel_session_step_loop(self, runtime_id: str) -> None:
+        """Cancel the step-loop task driving a session, if any."""
+        session = self._running_sessions.get(runtime_id)
+        if session is not None:
+            session.cancel()
 
     # -- Signal support --
 
@@ -177,6 +188,7 @@ class AgentRunner:
     def _unregister_active_run(self, runtime_id: str, ctx_id: int | None) -> None:
         self._active_runs_by_runtime.pop(runtime_id, None)
         self._signal_queues.pop(runtime_id, None)
+        self._running_sessions.pop(runtime_id, None)
         watcher = self._silence_watchers.pop(runtime_id, None)
         if watcher is not None:
             watcher.cancel()
@@ -297,15 +309,61 @@ class AgentRunner:
         else:
             working_session.start(bundle.task_text)
 
+        self._running_sessions[runtime_id] = working_session
+
         # Background task: drain signal queue → send to running agent
         signal_task = asyncio.create_task(
             self._signal_drainer(working_session, runtime_id)
         )
+
+        # Host-driven step loop with budget checks
+        timeout = self.config.daemon.agent_timeout
+        agent_spec = run_ctx.prompt_spec.agent_spec
+        max_steps = agent_spec.max_steps
+        stop_reason = "natural"
+        step_count = 0
+
+        logger.info(
+            "Step loop started: ctx={} runtime_id={} agent={} timeout={}s max_steps={}",
+            ctx_id, runtime_id, turn.agent_name, timeout, max_steps,
+        )
+        t0 = asyncio.get_running_loop().time()
+
         try:
-            await working_session.wait()
+            timeout_ctx = asyncio.timeout(timeout) if timeout else contextlib.nullcontext()
+            async with timeout_ctx:
+                async with contextlib.aclosing(working_session.step_iter()) as gen:
+                    async for step in gen:
+                        step_count += 1
+                        if step.done:
+                            logger.debug(
+                                "Step loop done (natural): ctx={} runtime_id={} steps={}",
+                                ctx_id, runtime_id, step_count,
+                            )
+                            break
+                        if max_steps and step.rounds >= max_steps:
+                            stop_reason = "max_steps"
+                            logger.info(
+                                "Step loop done (max_steps): ctx={} runtime_id={} steps={}",
+                                ctx_id, runtime_id, step_count,
+                            )
+                            break
+        except TimeoutError:
+            stop_reason = "timeout"
+            logger.warning(
+                "Agent run timed out after {}s: ctx={} runtime_id={} steps={}",
+                timeout, ctx_id, runtime_id, step_count,
+            )
         finally:
+            elapsed = asyncio.get_running_loop().time() - t0
+            logger.info(
+                "Step loop ended: ctx={} runtime_id={} reason={} steps={} elapsed={:.1f}s",
+                ctx_id, runtime_id, stop_reason, step_count, elapsed,
+            )
             signal_task.cancel()
             self._unregister_active_run(runtime_id, ctx_id)
+
+        working_session.stop_reason = stop_reason
         return working_session
 
     async def _signal_drainer(self, session: Session, runtime_id: str) -> None:
@@ -438,7 +496,8 @@ class AgentRunner:
 
     async def _wait_delegate_session(self, session: Session, runtime_id: str) -> None:
         try:
-            await session.wait()
+            async for _step in session.step_iter():
+                pass
         finally:
             self._delegate_sessions_by_run_id = {
                 run_id: child

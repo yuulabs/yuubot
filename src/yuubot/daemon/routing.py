@@ -8,13 +8,12 @@ from loguru import logger
 
 from yuubot.commands.tree import RootCommand
 from yuubot.core.models import AtSegment, ReplySegment, segments_to_plain
-from yuubot.core.types import CommandRoute, ConversationRoute, InboundMessage, Route
+from yuubot.core.types import CommandRoute, InboundMessage, Route
 
 
 def resolve_route(
     msg: InboundMessage,
     root: RootCommand,
-    has_active_conversation: Callable[[int], bool],
     is_auto: Callable[[int], bool],
     bot_qq: int,
 ) -> Route | None:
@@ -22,7 +21,8 @@ def resolve_route(
 
     Pure function: no IO, no side effects. Returns:
     - CommandRoute if a command-tree node matched
-    - ConversationRoute if @bot or auto mode should trigger the LLM
+    - CommandRoute(command_path=("llm",), remaining="continue <text>", entry="@")
+      if @bot or auto mode should trigger the LLM
     - None if the message should be ignored
     """
     bot_qq_str = str(bot_qq)
@@ -44,7 +44,7 @@ def resolve_route(
 
     # For command matching, strip ALL @ mentions (non-bot @ can precede commands)
     cmd_segs = [s for s in others if not isinstance(s, AtSegment)]
-    cmd_text = segments_to_plain(cmd_segs + replies).strip()
+    cmd_text = segments_to_plain(cmd_segs + replies).strip()  # type: ignore[invalid-argument-type]
 
     # 1. Try command tree match
     cmd_match = root.match_message(cmd_text)
@@ -55,26 +55,24 @@ def resolve_route(
             entry=cmd_match.entry,
         )
 
-    # 2. @bot with no command → conversation
+    # 2. @bot with no command → llm continue
     if at_bot:
         llm_cmd = root.find(["llm"])
         if llm_cmd and llm_cmd.executor is not None:
-            return ConversationRoute(
-                ctx_id=msg.ctx_id,
-                agent_name="main",
-                is_continuation=has_active_conversation(msg.ctx_id),
-                text="continue " + plain,
+            return CommandRoute(
+                command_path=("llm",),
+                remaining="continue " + plain,
+                entry="@",
             )
 
-    # 3. Auto mode (private only) bare text → conversation
+    # 3. Auto mode (private only) bare text → llm continue
     if msg.chat_type == "private" and is_auto(msg.ctx_id):
         llm_cmd = root.find(["llm"])
         if llm_cmd and llm_cmd.executor is not None:
-            return ConversationRoute(
-                ctx_id=msg.ctx_id,
-                agent_name="main",
-                is_continuation=has_active_conversation(msg.ctx_id),
-                text="continue " + plain,
+            return CommandRoute(
+                command_path=("llm",),
+                remaining="continue " + plain,
+                entry="@",
             )
 
     logger.info("No command match: {}", plain)

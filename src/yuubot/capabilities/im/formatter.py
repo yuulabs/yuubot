@@ -6,6 +6,7 @@ Example:
 
 import html
 import json
+import re
 from datetime import datetime, timezone
 from typing import Literal, overload
 
@@ -22,6 +23,30 @@ from yuubot.core.models import (
     segments_from_json,
     UserAlias,
 )
+
+_CMD_PREFIX_RE = re.compile(r"^(/yllm|/yuu|/y)(?:#\w+)?\s*")
+
+
+def replace_command_prefix(segments: list, bot_name: str) -> list:
+    """Replace /yllm command prefix with @bot_name in the first text segment.
+
+    Handles: /yllm, /y, /yuu with optional #agent_name suffix.
+    Skips leading non-text segments (e.g. ReplySegment) to find the command.
+    Returns a new list with modified segments.
+    """
+    for i, seg in enumerate(segments):
+        if not isinstance(seg, TextSegment):
+            continue
+        text = seg.text.strip()
+        match = _CMD_PREFIX_RE.match(text)
+        if match:
+            new_text = f"@{bot_name} " + text[match.end():]
+            new_segments = list(segments)
+            new_segments[i] = TextSegment(text=new_text)
+            return new_segments
+        break
+    return segments
+
 
 # Cache for user aliases to avoid N+1 queries
 _alias_cache: dict[tuple[int, str], str | None] = {}
@@ -89,6 +114,7 @@ async def format_segments(
     ctx_id: int | None = ...,
     *,
     extract_replies: Literal[False] = ...,
+    media_path_ctx: MediaPathContext | None = ...,
 ) -> str: ...
 
 @overload
@@ -98,6 +124,7 @@ async def format_segments(
     ctx_id: int | None = ...,
     *,
     extract_replies: Literal[True],
+    media_path_ctx: MediaPathContext | None = ...,
 ) -> tuple[str, list[str]]: ...
 
 async def format_segments(
@@ -179,9 +206,12 @@ async def format_message_to_xml(
     media_files: list[str],
     ctx_id: int | None = None,
     media_path_ctx: MediaPathContext | None = None,
+    bot_name: str | None = None,
 ) -> str:
     """Format a single message to LLM-readable XML."""
     segments = segments_from_json(raw_message)
+    if bot_name:
+        segments = replace_command_prefix(segments, bot_name)
     content, reply_tags = await format_segments(
         segments, media_files, ctx_id=ctx_id, extract_replies=True, media_path_ctx=media_path_ctx,
     )
@@ -269,6 +299,7 @@ async def format_messages_to_xml(
             raw_message=msg['raw_message'],
             media_files=msg.get('media_files', []),
             ctx_id=ctx_id,
+            bot_name=bot_name,
         )
         xml_parts.append(xml)
 

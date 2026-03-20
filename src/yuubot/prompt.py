@@ -63,6 +63,7 @@ class AgentSpec:
     max_steps: int = 16
     soft_timeout: float | None = None
     silence_timeout: float | None = None
+    tool_batch_timeout: float = 120.0
 
 
 @attrs.define
@@ -194,6 +195,7 @@ def _load_cap_docs(
     Expanded capabilities get full doc inlined. Others get a summary.
     """
     from yuubot.capabilities import load_capability_doc, registered_capabilities
+    from yuubot.capabilities.contract import ActionFilter
 
     available = set(registered_capabilities())
     expand_names = set(expand_caps)
@@ -223,7 +225,8 @@ def _load_cap_docs(
     for name in expanded:
         try:
             visibility = cap_visibility.get(name)
-            content = load_capability_doc(name, action_filter=visibility)
+            af = ActionFilter(mode=visibility.mode, actions=frozenset(visibility.actions)) if visibility else None
+            content = load_capability_doc(name, action_filter=af)
             result.append((
                 f"expanded_cap:{name}",
                 f'<cap_doc name="{name}">\n{content}\n</cap_doc>',
@@ -263,7 +266,7 @@ def _load_skills_docs(
     Returns up to two sections: skills_summary and expanded skill docs.
     """
     try:
-        from yuuagents.skills import scan
+        from yuuagents.skills import scan  # type: ignore[unresolved-import]
     except ImportError:
         return []
 

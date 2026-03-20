@@ -247,13 +247,17 @@ class ConversationManager:
         """Mark conversation as running (bypasses expiry check)."""
         conv = self._get_raw(ctx_id, agent_name)
         if conv:
+            prev = conv.state
             conv.state = "running"
+            logger.debug("Conversation state: ctx={} agent={} {} → running", ctx_id, agent_name or conv.agent_name, prev)
 
     def set_idle(self, ctx_id: int, agent_name: str | None = None) -> None:
         """Mark conversation as idle after agent turn."""
         conv = self._get_raw(ctx_id, agent_name)
         if conv:
+            prev = conv.state
             conv.state = "idle"
+            logger.debug("Conversation state: ctx={} agent={} {} → idle", ctx_id, agent_name or conv.agent_name, prev)
 
     def _get_raw(self, ctx_id: int, agent_name: str | None = None) -> Conversation | None:
         """Get conversation without expiry check."""

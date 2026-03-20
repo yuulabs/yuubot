@@ -42,8 +42,12 @@ async def _build_fts_query(words: list[str]) -> str:
     parts: list[str] = []
     for w in words:
         rows = await conn.execute_query_dict("SELECT simple_query(?) AS q", [w])
-        sq = rows[0]["q"] if rows else w
+        sq = (rows[0]["q"] if rows else w).strip()
+        if not sq:
+            continue
         parts.append(f"({sq})")
+    if not parts:
+        return " OR ".join(words)
     return " OR ".join(parts)
 
 

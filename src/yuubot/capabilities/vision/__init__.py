@@ -8,8 +8,9 @@ from pathlib import Path
 
 import yuutools as yt
 from loguru import logger
-from yuuagents import AgentContext
 from yuuagents.agent import AgentConfig
+from yuuagents.context import AgentContext
+from yuuagents.core.flow import Agent as FlowAgent
 
 from yuubot.capabilities import ContentBlock, capability, get_context, text_block, uri_to_path
 from yuubot.core.media_paths import MediaPathContext, MediaPathError, input_to_host
@@ -86,7 +87,6 @@ async def _describe_image(image_path: str) -> str:
     agent_id = f"vision-{task_id[:8]}"
 
     import yuullm
-    from yuuagents.core.flow import Agent as FlowAgent
 
     config = AgentConfig(
         agent_id=agent_id,
@@ -101,20 +101,14 @@ async def _describe_image(image_path: str) -> str:
         workdir="",
         docker_container="",
     )
-    agent = FlowAgent(
-        client=config.llm,
-        manager=config.tools,
-        ctx=ctx,
-        system=config.system,
-        model=config.llm.default_model,
-        agent_name=agent_id,
-    )
+    agent = FlowAgent(config=config, ctx=ctx)
     agent.start()
     agent.send(yuullm.user(
         "请描述这张图片：",
         {"type": "image_url", "image_url": {"url": data_uri}},
     ))
-    await agent.wait()
+    async for _step in agent.steps():
+        pass
     history = agent.messages
 
     for msg in reversed(history):

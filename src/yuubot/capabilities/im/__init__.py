@@ -7,7 +7,7 @@ import json
 import os
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, TypedDict, cast
+from typing import Any, TypedDict
 
 import httpx
 
@@ -16,6 +16,7 @@ from yuubot.config import load_config
 from yuubot.core.media_paths import MediaPathContext, MediaPathError, input_to_host, to_file_uri
 from .query import browse_messages, search_messages
 from .formatter import format_forward_nodes_to_xml, format_messages_to_xml
+from .political_filter import check_political_content
 from yuubot.core.models import ForwardRecord
 
 type ContentBlocks = list[ContentBlock]
@@ -163,12 +164,13 @@ class ImCapability:
 
         # Detect multi-message envelope format: [{"msg": [...], "gap": 1.5}, ...]
         # vs single-message format: [{"type": "text", ...}, ...]
+        envelopes: list[MessageEnvelope]
         if isinstance(data[0], dict) and "msg" in data[0]:
             envelopes = []
             for env in data:
                 envelopes.append({
-                    "msg": cast(Sequence[dict[str, Any]], cast(dict[str, Any], env)["msg"]),
-                    "gap": float(cast(dict[str, Any], env).get("gap", 0)),
+                    "msg": env["msg"],
+                    "gap": float(env.get("gap", 0)),
                 })
         else:
             envelopes = [{"msg": list(data), "gap": float(delay)}]
@@ -183,13 +185,23 @@ class ImCapability:
                     await asyncio.sleep(gap)
 
                 try:
-                    segments = [_normalize_segment(s) for s in cast(Sequence[dict[str, Any]], env["msg"])]
+                    segments = [_normalize_segment(s) for s in env["msg"]]
                     segments = _normalize_image_file_refs(segments)
                 except MediaPathError as e:
                     return [text_block(f"错误: {e}")]
                 err = _validate_segments(segments)
                 if err:
                     return [text_block(f"错误: {err}")]
+
+                # Political content filter
+                all_text = "".join(
+                    s.get("data", {}).get("text", "")
+                    for s in segments
+                    if s.get("type") == "text"
+                )
+                hit = check_political_content(all_text)
+                if hit:
+                    return [text_block("安全策略: 消息包含敏感内容，已拦截")]
 
                 body: dict[str, Any] = {"message_type": msg_type, "message": segments}
                 if msg_type == "group":

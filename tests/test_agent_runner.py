@@ -47,7 +47,8 @@ async def test_session_start_and_wait():
     session = _make_session("first reply")
 
     session.start("first input")
-    await session.wait()
+    async for _step in session.step_iter():
+        pass
 
     # system + user + assistant
     assert len(session.history) == 3
@@ -59,13 +60,15 @@ async def test_session_start_and_wait():
 async def test_session_resume_preserves_history():
     session = _make_session("reply")
     session.start("first input")
-    await session.wait()
+    async for _step in session.step_iter():
+        pass
 
     old_history = list(session.history)
 
     session2 = _make_session("continued reply")
     session2.resume("followup", history=old_history)
-    await session2.wait()
+    async for _step in session2.step_iter():
+        pass
 
     # old_history (3 msgs) + new user + new assistant
     assert len(session2.history) == 5
@@ -77,7 +80,8 @@ async def test_session_resume_preserves_history():
 async def test_session_resume_can_reuse_conversation_id():
     session = _make_session("reply")
     session.start("first input")
-    await session.wait()
+    async for _step in session.step_iter():
+        pass
 
     original_conversation_id = session.conversation_id
     assert isinstance(original_conversation_id, UUID)
@@ -88,7 +92,8 @@ async def test_session_resume_can_reuse_conversation_id():
         history=list(session.history),
         conversation_id=original_conversation_id,
     )
-    await session2.wait()
+    async for _step in session2.step_iter():
+        pass
 
     assert session2.conversation_id == original_conversation_id
 
@@ -97,6 +102,7 @@ async def test_session_send_injects_message():
     session = _make_session("reply")
     session.start("first input")
     # send is fire-and-forget; the agent will pick it up from mailbox
-    await session.wait()
+    async for _step in session.step_iter():
+        pass
 
     assert session.history[1] == ("user", ["first input"])

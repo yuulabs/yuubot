@@ -174,9 +174,15 @@ class LLMExecutor:
     async def _finish_turn(
         self, conv: Conversation, runtime_session: object, message: InboundMessage
     ) -> None:
-        """Update conversation history and handle token-limit rollover."""
+        """Update conversation history and handle token-limit / budget rollover."""
         history = list(getattr(runtime_session, "history", []))
         rolled = self.conv_mgr.update_session(conv, runtime_session)
+
+        # Budget-triggered rollover (timeout/max_steps hit but token limit not)
+        stop_reason = getattr(runtime_session, "stop_reason", "natural")
+        if not rolled and stop_reason in ("token_limit", "max_steps"):
+            rolled = True
+
         if not rolled:
             return
 

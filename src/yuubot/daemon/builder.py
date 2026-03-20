@@ -104,6 +104,7 @@ class RunContext:
             max_steps=self.prompt_spec.agent_spec.max_steps,
             soft_timeout=self.prompt_spec.agent_spec.soft_timeout,
             silence_timeout=self.prompt_spec.agent_spec.silence_timeout,
+            tool_batch_timeout=self.prompt_spec.agent_spec.tool_batch_timeout,
         )
 
 

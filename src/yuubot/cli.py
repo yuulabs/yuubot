@@ -239,7 +239,12 @@ def launch(ctx: click.Context) -> None:
     if not napcat.is_running():
         click.echo("启动 NapCat...")
         napcat.start()
-        if not napcat.wait_ready():
+        qr = napcat.capture_qrcode(timeout=30)
+        if qr:
+            click.echo()
+            click.echo(qr)
+            click.echo()
+        elif not napcat.is_running():
             click.echo("NapCat 启动失败，请检查 screen -r napcat 查看日志。")
             raise SystemExit(1)
         click.echo("NapCat 已启动。")

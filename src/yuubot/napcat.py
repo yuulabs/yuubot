@@ -1,6 +1,7 @@
 """NapCat lifecycle management — detect, start, stop."""
 
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -13,6 +14,7 @@ NAPCAT_CONFIG_DIR = (
     NAPCAT_HOME / "opt" / "QQ" / "resources" / "app" / "app_launcher" / "napcat" / "config"
 )
 SCREEN_SESSION = "napcat"
+NAPCAT_BOOT_LOG = Path("/tmp/napcat_boot.log")
 
 INSTALLER_CMD = (
     "curl -o napcat.sh "
@@ -35,13 +37,16 @@ def is_running() -> bool:
 
 
 def start() -> None:
-    """Start napcat in a detached screen session."""
+    """Start napcat in a detached screen session with boot log capture."""
     if is_running():
         logger.info("NapCat already running in screen session '{}'", SCREEN_SESSION)
         return
     if not is_installed():
         raise RuntimeError("NapCat is not installed. Run `ybot setup` first.")
-    cmd = f"xvfb-run -a {NAPCAT_QQ_BIN} --no-sandbox"
+    NAPCAT_BOOT_LOG.unlink(missing_ok=True)
+    inner = f"xvfb-run -a {NAPCAT_QQ_BIN} --no-sandbox"
+    # Wrap with script -qf to capture output in real-time for QR code detection
+    cmd = f"script -qfc '{inner}' {NAPCAT_BOOT_LOG}"
     subprocess.run(
         ["screen", "-dmS", SCREEN_SESSION, "bash", "-c", cmd],
         check=True,
@@ -113,6 +118,68 @@ def write_webui_port(port: int) -> None:
 def webui_token() -> str | None:
     """Read webui.json and return the login token, or None if unavailable."""
     return _read_webui_json().get("token") or None
+
+
+def capture_qrcode(timeout: int = 30) -> str | None:
+    """Poll NapCat boot log for QR code output.
+
+    Returns the QR code block (with URL) if found, None if login
+    succeeded without QR or timeout reached.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if NAPCAT_BOOT_LOG.exists():
+            try:
+                content = _strip_ansi(NAPCAT_BOOT_LOG.read_text(errors="replace"))
+            except OSError:
+                time.sleep(1)
+                continue
+            if "二维码解码URL" in content:
+                return _extract_qr_block(content)
+            # Quick-login or already logged in — no QR needed
+            if "登录成功" in content or "Bot已登录" in content:
+                return None
+        if not is_running():
+            return None
+        time.sleep(1)
+    return None
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences and carriage returns."""
+    return re.sub(r'\x1b[\[\(][0-9;]*[a-zA-Z]|\r', '', text)
+
+
+def _extract_qr_block(content: str) -> str:
+    """Extract QR code block and decode URL from NapCat log output."""
+    lines = content.splitlines()
+    start_idx = None
+    end_idx = None
+
+    for i, line in enumerate(lines):
+        if "请扫描下面的二维码" in line and start_idx is None:
+            start_idx = i
+        if start_idx is not None and "如果控制台二维码无法扫码" in line:
+            end_idx = i + 1
+            break
+
+    if start_idx is None:
+        return ""
+    if end_idx is None:
+        # Fallback: capture through URL line
+        for i in range(start_idx, len(lines)):
+            if "二维码解码URL" in lines[i]:
+                end_idx = i + 1
+                break
+    if end_idx is None:
+        end_idx = len(lines)
+
+    result = []
+    for line in lines[start_idx:end_idx]:
+        # Strip NapCat timestamp prefix: "MM-DD HH:MM:SS [level] "
+        cleaned = re.sub(r'^\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[\w+\]\s*', '', line)
+        result.append(cleaned)
+    return "\n".join(result)
 
 
 def onebot_config_path(qq: int) -> Path:

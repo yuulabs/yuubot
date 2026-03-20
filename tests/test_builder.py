@@ -227,6 +227,7 @@ async def test_session_launch_collects_agent_config_and_context(yuubot_config):
                         "max_steps": attrs.field(default=4),
                         "soft_timeout": attrs.field(default=30),
                         "silence_timeout": attrs.field(default=12),
+                        "tool_batch_timeout": attrs.field(default=120.0),
                     },
                 )()
             ),

@@ -300,10 +300,13 @@ async def _exec_hhsh(request: CommandRequest) -> str | None:
 
 async def _exec_close(request: CommandRequest) -> str | None:
     """Close current session."""
+    ctx_id = request.message.ctx_id
+    agent_runner = request.deps.get("agent_runner")
+    if agent_runner:
+        agent_runner.cancel_ctx(ctx_id)
     session_mgr = request.deps.get("session_mgr")
     if session_mgr is None:
         return "Session 功能未启用"
-    ctx_id = request.message.ctx_id
     if request.message.raw_event.get("_session_closed") or session_mgr.close(ctx_id):
         return "会话已重置 ✨"
     return "当前没有活跃的会话"

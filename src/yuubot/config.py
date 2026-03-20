@@ -52,6 +52,7 @@ class DaemonConfig(msgspec.Struct):
     recorder_ws: str = "ws://127.0.0.1:8766"
     recorder_api: str = "http://127.0.0.1:8767"
     api: DaemonApiConfig = msgspec.field(default_factory=DaemonApiConfig)
+    agent_timeout: float = 300.0
 
 
 class DatabaseConfig(msgspec.Struct):

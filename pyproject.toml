@@ -56,7 +56,7 @@ markers = [
 ]
 
 [tool.ty.environment]
-python = ".venv"
+python = "../.venv"
 extra-paths = [
     "../yuuagents/src",
     "../yuullm/src",

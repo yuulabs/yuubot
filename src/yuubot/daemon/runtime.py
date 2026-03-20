@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from yuuagents.context import DockerExecutor
+    from yuuagents.daemon.docker import DockerManager
 
 import yuutools as yt
 from loguru import logger
@@ -48,7 +49,12 @@ class AgentRuntime:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.initialized = False
-        self.docker: DockerExecutor | None = None
+        self.docker: DockerManager | None = None
+
+    @property
+    def docker_executor(self) -> DockerExecutor | None:
+        """Return docker as DockerExecutor protocol for AgentContext injection."""
+        return self.docker
 
     def build_tool_manager(self, tool_names: list[str]) -> Any:
         cap_tools = get_capability_tools()

@@ -173,7 +173,8 @@ async def _run_summarizer(llm: Any, user_content: str, agent_id: str) -> str:
         ),
     )
     session.start(user_content)
-    await session.wait()
+    async for _step in session.step_iter():
+        pass
 
     for msg in reversed(session.history):
         if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "assistant":

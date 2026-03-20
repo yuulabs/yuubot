@@ -13,7 +13,7 @@ from yuubot.commands.tree import Command, CommandRequest, RootCommand
 from yuubot.config import Config
 from yuubot.core.models import AtSegment
 from yuubot.core.onebot import build_send_msg, to_inbound_message
-from yuubot.core.types import ConversationRoute, InboundMessage, Route
+from yuubot.core.types import InboundMessage, Route
 from yuubot.daemon.routing import resolve_route
 from yuubot.daemon.conversation import ConversationManager, conversation_worth_curating
 
@@ -78,7 +78,7 @@ class _CtxWorker:
                 groups = _group_batch(batch)
                 for group in groups:
                     item = group[0]
-                    if isinstance(item.route, ConversationRoute) and len(group) > 1:
+                    if item.command.interactive and len(group) > 1:
                         item.message.extra_messages.extend(peer.message for peer in group[1:])
                     try:
                         await self.dispatcher._handle(item)
@@ -100,8 +100,8 @@ def _group_batch(batch: list[RoutedCommand]) -> list[list[RoutedCommand]]:
     for item in batch[1:]:
         prev = current[0]
         if (
-            isinstance(item.route, ConversationRoute)
-            and isinstance(prev.route, ConversationRoute)
+            item.command.interactive
+            and prev.command.interactive
             and item.command.prefix == prev.command.prefix
         ):
             current.append(item)
@@ -170,7 +170,6 @@ class Dispatcher:
         route = resolve_route(
             inbound,
             self.root,
-            has_active_conversation=lambda cid: self.conv_mgr.get(cid) is not None,
             is_auto=self.conv_mgr.is_auto,
             bot_qq=self.config.bot.qq,
         )
@@ -212,25 +211,6 @@ class Dispatcher:
                 logger.exception("Error executing command: {}", routed.command.prefix)
 
     def _build_routed_command(self, route: Route, message: InboundMessage) -> RoutedCommand | None:
-        if isinstance(route, ConversationRoute):
-            command = self.root.find(["llm"])
-            if command is None or command.executor is None:
-                return None
-            return RoutedCommand(
-                route=route,
-                message=message,
-                command=command,
-                execute=lambda: command.executor(
-                    CommandRequest(
-                        remaining=route.text,
-                        message=message,
-                        deps=self.deps,
-                        command_path=("llm",),
-                        entry="@"
-                    )
-                ),
-            )
-
         command = self.root.find(list(route.command_path))
         if command is None or command.executor is None:
             return None
@@ -269,7 +249,14 @@ class Dispatcher:
                 if rendered:
                     self.agent_runner.enqueue_signal(active.runtime_id, rendered)
             self.conv_mgr.touch(conv)
-            logger.info("Enqueued signal for running conv ctx={}", ctx_id)
+            running_since = time.monotonic() - conv.created_at
+            logger.info(
+                "Enqueued signal for running conv ctx={} agent={} runtime_id={} running_for={:.0f}s",
+                ctx_id,
+                conv.agent_name,
+                active.runtime_id if active else "?",
+                running_since,
+            )
             return
         self._enqueue(routed)
 

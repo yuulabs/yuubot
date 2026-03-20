@@ -3,7 +3,7 @@
 These typed models replace raw dicts at module boundaries:
 - Sender replaces event["sender"] dict
 - InboundMessage replaces raw event dict for business logic
-- CommandRoute / ConversationRoute replace ad-hoc routing decisions
+- CommandRoute is the single routing result (@bot and auto mode resolve to llm command)
 - ContentBlock tagged union for structured LLM output blocks
 """
 
@@ -56,23 +56,18 @@ class InboundMessage(msgspec.Struct):
 
 
 class CommandRoute(msgspec.Struct, frozen=True):
-    """A message matched a command-tree node."""
+    """A message matched a command-tree node.
+
+    @bot and auto-mode messages resolve to CommandRoute(command_path=("llm",),
+    remaining="continue <text>", entry="@") — no separate ConversationRoute type.
+    """
 
     command_path: tuple[str, ...]  # matched command path, e.g. ("bot", "on")
     remaining: str  # text after command
-    entry: str  # which entry prefix was used
+    entry: str  # which entry prefix was used; "@" for @bot / auto-mode
 
 
-class ConversationRoute(msgspec.Struct, frozen=True):
-    """A message should enter the conversation/LLM system."""
-
-    ctx_id: int
-    agent_name: str
-    is_continuation: bool  # True if continuing an existing conversation
-    text: str  # user text to send to LLM
-
-
-Route = CommandRoute | ConversationRoute
+Route = CommandRoute
 
 
 # ── ContentBlock (tagged union for structured LLM output) ────────

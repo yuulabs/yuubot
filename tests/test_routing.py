@@ -7,7 +7,6 @@ from yuubot.commands.tree import CommandRequest
 from yuubot.core.models import AtSegment, TextSegment
 from yuubot.core.types import (
     CommandRoute,
-    ConversationRoute,
     InboundMessage,
     Sender,
 )
@@ -38,27 +37,20 @@ def _make_msg(segments, ctx_id=1, chat_type="private"):
     )
 
 
-async def test_at_bot_yields_conversation_route():
+async def test_at_bot_yields_llm_command_route():
     root = _make_tree()
     msg = _make_msg([AtSegment(qq=str(BOT_QQ)), TextSegment(text="hello")])
-    route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
-    assert isinstance(route, ConversationRoute)
-    assert route.text == "continue hello"
-    assert route.is_continuation is False
-
-
-async def test_at_bot_with_active_session():
-    root = _make_tree()
-    msg = _make_msg([AtSegment(qq=str(BOT_QQ)), TextSegment(text="hello")])
-    route = resolve_route(msg, root, lambda _: True, lambda _: False, BOT_QQ)
-    assert isinstance(route, ConversationRoute)
-    assert route.is_continuation is True
+    route = resolve_route(msg, root, lambda _: False, BOT_QQ)
+    assert isinstance(route, CommandRoute)
+    assert route.command_path == ("llm",)
+    assert route.remaining == "continue hello"
+    assert route.entry == "@"
 
 
 async def test_yllm_command_route():
     root = _make_tree()
     msg = _make_msg([TextSegment(text="/yllm hello")])
-    route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
+    route = resolve_route(msg, root, lambda _: False, BOT_QQ)
     assert isinstance(route, CommandRoute)
     assert route.command_path == ("llm",)
     assert route.remaining == "hello"
@@ -67,7 +59,7 @@ async def test_yllm_command_route():
 async def test_ybot_on_command_route():
     root = _make_tree()
     msg = _make_msg([TextSegment(text="/ybot on")])
-    route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
+    route = resolve_route(msg, root, lambda _: False, BOT_QQ)
     assert isinstance(route, CommandRoute)
     assert route.command_path == ("bot", "on")
 
@@ -75,15 +67,17 @@ async def test_ybot_on_command_route():
 async def test_auto_mode_bare_text():
     root = _make_tree()
     msg = _make_msg([TextSegment(text="just chatting")], chat_type="private")
-    route = resolve_route(msg, root, lambda _: False, lambda _: True, BOT_QQ)
-    assert isinstance(route, ConversationRoute)
-    assert route.text == "continue just chatting"
+    route = resolve_route(msg, root, lambda _: True, BOT_QQ)
+    assert isinstance(route, CommandRoute)
+    assert route.command_path == ("llm",)
+    assert route.remaining == "continue just chatting"
+    assert route.entry == "@"
 
 
 async def test_auto_mode_group_ignored():
     root = _make_tree()
     msg = _make_msg([TextSegment(text="just chatting")], chat_type="group")
-    route = resolve_route(msg, root, lambda _: False, lambda _: True, BOT_QQ)
+    route = resolve_route(msg, root, lambda _: True, BOT_QQ)
     assert route is None
 
 
@@ -94,7 +88,7 @@ async def test_command_with_non_bot_at_prefix():
         AtSegment(qq="git@latex.ustc.edu.cn"),
         TextSegment(text=" /yllm fact check"),
     ])
-    route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
+    route = resolve_route(msg, root, lambda _: False, BOT_QQ)
     assert isinstance(route, CommandRoute)
     assert route.command_path == ("llm",)
     assert route.remaining == "fact check"
@@ -103,5 +97,5 @@ async def test_command_with_non_bot_at_prefix():
 async def test_unmatched_text_returns_none():
     root = _make_tree()
     msg = _make_msg([TextSegment(text="random stuff")])
-    route = resolve_route(msg, root, lambda _: False, lambda _: False, BOT_QQ)
+    route = resolve_route(msg, root, lambda _: False, BOT_QQ)
     assert route is None
