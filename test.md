@@ -24,9 +24,8 @@ uv run pytest tests/flows
 
 以下内容不应放在 yuubot 的 flow 测试里：
 
-- yuuagents 的 `OutputBuffer`
-- `RunningToolRegistry`
-- `ToolsContext.gather()` 的内部 soft-timeout 语义
+- yuuagents 的 Flow/Agent 内部行为
+- 工具执行的内部并发语义
 
 这些属于上游库实现细节，应由对应仓库负责。
 
