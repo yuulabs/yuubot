@@ -174,7 +174,7 @@ def mock_llm(
 
         usage = _FAKE_USAGE if usages is None else usages[min(idx, len(usages) - 1)]
         cost = None if costs is None else costs[min(idx, len(costs) - 1)]
-        store = {"usage": usage, "cost": cost}
+        store = yuullm.Store(usage=usage, cost=cost)
         return _iter(), store
 
     with patch.object(
