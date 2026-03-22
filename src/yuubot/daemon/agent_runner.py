@@ -204,20 +204,7 @@ class AgentRunner:
 
     @staticmethod
     def _history_has_im_send(session: Session) -> bool:
-        agent = getattr(session, "_agent", None)
-        flow = getattr(agent, "flow", None)
-        stem = getattr(flow, "stem", None)
-        if not isinstance(stem, list):
-            return False
-
-        for event in stem:
-            name = getattr(event, "name", None)
-            if name != "call_cap_cli":
-                continue
-            arguments = getattr(event, "arguments", "") or ""
-            if "im send" in arguments:
-                return True
-        return False
+        return session.has_tool_call("call_cap_cli", argument_contains="im send")
 
     async def _watch_silence_timeout(
         self,
@@ -239,8 +226,7 @@ class AgentRunner:
             if self._history_has_im_send(session):
                 return
 
-            agent = getattr(session, "_agent", None)
-            if agent is None:
+            if session.agent is None:
                 return
 
             logger.info(
@@ -249,12 +235,10 @@ class AgentRunner:
                 agent_name,
                 runtime_id,
             )
-            agent.send(
-                (
-                    "你已经长时间没有使用 im send 向用户同步进展。"
-                    "请立即停止等待中的前台工具结果，先用 im send 简短说明你正在做什么、"
-                    "为什么还需要一些时间，以及下一步会怎么继续。"
-                ),
+            session.send(
+                "你已经长时间没有使用 im send 向用户同步进展。"
+                "请立即停止等待中的前台工具结果，先用 im send 简短说明你正在做什么、"
+                "为什么还需要一些时间，以及下一步会怎么继续。",
                 defer_tools=True,
             )
         except asyncio.CancelledError:
@@ -481,16 +465,9 @@ class AgentRunner:
             ctx_id=None,
         )
         session.start(bundle.task_text)
-        parent_agent = getattr(parent_session, "_agent", None)
-        child_agent = getattr(session, "_agent", None)
-        if (
-            parent_agent is not None
-            and child_agent is not None
-            and child_agent.flow not in parent_agent.flow.children
-        ):
-            parent_flow = parent_agent.flow.find(parent_run_id)
-            if parent_flow is not None and child_agent.flow not in parent_flow.children:
-                parent_flow.children.append(child_agent.flow)
+        child_flow = session.flow
+        if child_flow is not None:
+            parent_session.attach_child_flow(parent_run_id, child_flow)
         self._delegate_sessions_by_run_id[parent_run_id] = session
         asyncio.create_task(
             self._wait_delegate_session(session, runtime_id),
@@ -521,11 +498,10 @@ class AgentRunner:
         parent_session = parent if isinstance(parent, Session) else None
         if parent_session is None:
             return f"[ERROR] invalid parent session for run {run_id}"
-        agent = getattr(parent_session, "_agent", None)
-        if agent is None:
-            return f"[ERROR] parent session not started for run {run_id}"
-        flow = agent.flow.find(run_id)
+        flow = parent_session.find_flow(run_id)
         if flow is None:
+            if parent_session.agent is None:
+                return f"[ERROR] parent session not started for run {run_id}"
             return f"[ERROR] unknown run id {run_id!r}"
         lines = [f"run_id: {flow.id}", f"kind: {flow.kind}"]
         tool_name = flow.info.get("tool_name")
@@ -534,10 +510,12 @@ class AgentRunner:
         delegate = self._delegate_sessions_by_run_id.get(run_id)
         if delegate is not None:
             lines.append(f"delegate_status: {delegate.status.value}")
-            delegate_agent = getattr(delegate, "_agent", None)
-            if delegate_agent is not None:
+            delegate_flow = delegate.flow
+            if delegate_flow is not None:
+                from yuuagents.core.flow import render_agent_event
+
                 lines.append("delegate_stem:")
-                lines.append(delegate_agent.render(limit=limit) or "<empty>")
+                lines.append(delegate_flow.render(render_agent_event, limit=limit) or "<empty>")
         lines.append("stem:")
         lines.append(flow.render(str, limit=limit) or "<empty>")
         return self._truncate_text("\n".join(lines), max_chars)
@@ -551,11 +529,10 @@ class AgentRunner:
         parent_session = parent if isinstance(parent, Session) else None
         if parent_session is None:
             return f"[ERROR] invalid parent session for run {run_id}"
-        agent = getattr(parent_session, "_agent", None)
-        if agent is None:
-            return f"[ERROR] parent session not started for run {run_id}"
-        flow = agent.flow.find(run_id)
+        flow = parent_session.find_flow(run_id)
         if flow is None:
+            if parent_session.agent is None:
+                return f"[ERROR] parent session not started for run {run_id}"
             return f"[ERROR] unknown run id {run_id!r}"
         flow.cancel()
         delegate = self._delegate_sessions_by_run_id.get(run_id)
@@ -596,11 +573,10 @@ class AgentRunner:
         if delegate is not None:
             delegate.send(data)
             return f"Input sent to delegated run {run_id}"
-        agent = getattr(parent_session, "_agent", None)
-        if agent is None:
-            return f"[ERROR] parent session not started for run {run_id}"
-        flow = agent.flow.find(run_id)
+        flow = parent_session.find_flow(run_id)
         if flow is None:
+            if parent_session.agent is None:
+                return f"[ERROR] parent session not started for run {run_id}"
             return f"[ERROR] unknown run id {run_id!r}"
         tool_name = flow.info.get("tool_name")
         if tool_name != "execute_bash":
@@ -625,8 +601,7 @@ class AgentRunner:
         parent_session = parent if isinstance(parent, Session) else None
         if parent_session is None:
             return "[ERROR] invalid parent session for wait"
-        agent = getattr(parent_session, "_agent", None)
-        if agent is None:
+        if parent_session.agent is None:
             return "[ERROR] parent session not started for wait"
         if not run_ids:
             return "[ERROR] run_ids must not be empty"
@@ -635,12 +610,11 @@ class AgentRunner:
         for run_id in run_ids:
             delegate = self._delegate_sessions_by_run_id.get(run_id)
             if delegate is not None:
-                child_agent = getattr(delegate, "_agent", None)
-                if child_agent is None:
+                if delegate.agent is None:
                     return f"[ERROR] delegated run {run_id!r} not started"
-                waits.append(child_agent.wait())
+                waits.append(delegate.wait())
                 continue
-            flow = agent.flow.find(run_id)
+            flow = parent_session.find_flow(run_id)
             if flow is None:
                 return f"[ERROR] unknown run id {run_id!r}"
             waits.append(flow.wait())

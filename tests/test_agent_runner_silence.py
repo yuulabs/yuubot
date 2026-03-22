@@ -2,6 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+import yuullm
 
 from yuubot.daemon.agent_runner import AgentRunner
 
@@ -21,6 +22,30 @@ class _FakeSession:
         self._agent = _FakeAgent()
         if stem is not None:
             self._agent.flow.stem = stem
+
+    @property
+    def agent(self):
+        return self._agent
+
+    def has_tool_call(self, tool_name: str, *, argument_contains: str = "") -> bool:
+        for event in self._agent.flow.stem:
+            if not isinstance(event, yuullm.ToolCall):
+                name = getattr(event, "name", None)
+                if name != tool_name:
+                    continue
+                arguments = getattr(event, "arguments", "") or ""
+                if argument_contains and argument_contains not in arguments:
+                    continue
+                return True
+            if event.name != tool_name:
+                continue
+            if argument_contains and argument_contains not in (event.arguments or ""):
+                continue
+            return True
+        return False
+
+    def send(self, content: str, *, defer_tools: bool = False) -> None:
+        self._agent.send(content, defer_tools=defer_tools)
 
 
 @pytest.mark.asyncio
