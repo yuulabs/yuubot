@@ -154,8 +154,8 @@ async def _call_vision_llm(image_path: str) -> str:
     stream, _ = await client.stream(messages)
     parts: list[str] = []
     async for item in stream:
-        if isinstance(item, yuullm.Response) and isinstance(item.item, str):
-            parts.append(item.item)
+        if isinstance(item, yuullm.Response) and item.item.get("type") == "text":
+            parts.append(item.item["text"])
     return "".join(parts).strip()
 
 

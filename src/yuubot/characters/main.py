@@ -10,6 +10,7 @@ _spec = AgentSpec(
     sections=[
         Section("safety", FileRef("prompts/main/safety.md")),
         Section("messaging", FileRef("prompts/main/messaging.md")),
+        Section("context_awareness", FileRef("prompts/main/context_awareness.md")),
         Section("memes", FileRef("prompts/main/memes.md")),
     ],
     caps=["*"],

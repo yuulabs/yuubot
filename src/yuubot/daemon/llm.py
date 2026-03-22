@@ -34,24 +34,32 @@ def _parse_agent_tag(text: str) -> tuple[str, str]:
 
 
 def _has_final_response(history: list) -> bool:
-    """True when the turn already produced user-visible assistant text."""
+    """True when the *last* assistant message is a final reply (not mid-tool-loop).
+
+    A final response means the last assistant turn contains text AND is not
+    followed by a tool result (i.e., the agent finished talking, not just
+    emitting intermediate "thinking" text before a tool call).
+    """
+    # Walk backwards: if the last non-system entry is an assistant turn with
+    # text and no tool_call items, that's a genuine final response.
     for msg in reversed(history):
         if not (isinstance(msg, tuple) and len(msg) == 2):
             continue
         role, items = msg
-        if role != "assistant" or not isinstance(items, list):
+        if role == "system":
             continue
-        text = "".join(item for item in items if isinstance(item, str)).strip()
-        if text:
-            return True
+        if role != "assistant":
+            # Last entry is user or tool — agent didn't get to reply
+            return False
+        if not isinstance(items, list):
+            return False
+        has_text = any(item.get("type") == "text" and item["text"].strip() for item in items)
+        has_tool_call = any(item.get("type") == "tool_call" for item in items)
+        # Text without tool calls = genuine final reply
+        # Text with tool calls = intermediate thinking (e.g., deepseek)
+        return has_text and not has_tool_call
     return False
 
-
-def _should_auto_continue_rollover(message: InboundMessage, history: list) -> bool:
-    """Allow at most one automatic rollover continuation without a final reply."""
-    if _has_final_response(history):
-        return False
-    return int(message.raw_event.get("_rollover_auto_count", 0) or 0) < 1
 
 
 async def _send_reply(message: InboundMessage, text: str, config: Config) -> None:
@@ -175,65 +183,69 @@ class LLMExecutor:
         self, conv: Conversation, runtime_session: object, message: InboundMessage
     ) -> None:
         """Update conversation history and handle token-limit / budget rollover."""
-        history = list(getattr(runtime_session, "history", []))
-        rolled = self.conv_mgr.update_session(conv, runtime_session)
+        auto_count = 0
 
-        # Budget-triggered rollover (timeout/max_steps hit but token limit not)
-        stop_reason = getattr(runtime_session, "stop_reason", "natural")
-        if not rolled and stop_reason in ("token_limit", "max_steps"):
-            rolled = True
+        while True:
+            history = list(getattr(runtime_session, "history", []))
+            rolled = self.conv_mgr.update_session(conv, runtime_session)
 
-        if not rolled:
-            return
+            # Budget-triggered rollover (timeout/max_steps hit but token limit not)
+            stop_reason = getattr(runtime_session, "stop_reason", "natural")
+            if not rolled and stop_reason in ("token_limit", "max_steps"):
+                rolled = True
 
-        ctx_id = conv.ctx_id
-        agent_name = conv.agent_name
-        user_id = conv.started_by
-        worth_curating = conversation_worth_curating(conv)
-
-        try:
-            note = await self.agent_runner.summarize(history, agent_name)
-        except Exception:
-            logger.exception("Failed to summarize session for ctx={}", ctx_id)
-            note = ""
-
-        should_continue = not message.raw_event.get("_is_auto_continuation")
-        task = compact_original_task(history)
-        summary_prompt = build_summary_prompt(task, note, should_continue=should_continue)
-
-        new_session = self.conv_mgr.create(ctx_id, agent_name, user_id=user_id)
-        new_session.summary_prompt = summary_prompt
-        logger.info("Session rolled over: ctx={} agent={} note_len={}", ctx_id, agent_name, len(note))
-
-        if worth_curating:
-            asyncio.create_task(self._run_curator(history, ctx_id, user_id))
-
-        if _should_auto_continue_rollover(message, history):
-            scope = str(message.group_id or "global")
-            role = await self.role_mgr.get(message.sender.user_id, scope)
-            cont_message = attrs.evolve(
-                message,
-                raw_event={
-                    **message.raw_event,
-                    "_is_auto_continuation": True,
-                    "_rollover_auto_count": int(message.raw_event.get("_rollover_auto_count", 0) or 0) + 1,
-                },
-            )
-            next_session = await self.agent_runner.run_conversation(
-                cont_message,
-                agent_name=agent_name,
-                user_role=role.name,
-                session=None,
-                handoff_text=summary_prompt,
-            )
-            if next_session is None:
+            if not rolled:
                 return
-            new_session.summary_prompt = ""
-            await _send_reply(message, "（已压缩上下文，继续处理中...）", self.config)
-            await self._finish_turn(new_session, next_session, cont_message)
-        else:
+
+            ctx_id = conv.ctx_id
+            agent_name = conv.agent_name
+            user_id = conv.started_by
+            worth_curating = conversation_worth_curating(conv)
+
+            try:
+                note = await self.agent_runner.summarize(history, agent_name)
+            except Exception:
+                logger.exception("Failed to summarize session for ctx={}", ctx_id)
+                note = ""
+
+            should_continue = auto_count == 0
+            # Reuse the stored original_task to prevent nested <原任务> wrapping;
+            # only extract from history for the very first rollover.
+            task = conv.original_task or compact_original_task(history)
+            summary_prompt = build_summary_prompt(task, note, should_continue=should_continue)
+
+            new_session = self.conv_mgr.create(ctx_id, agent_name, user_id=user_id)
+            new_session.summary_prompt = summary_prompt
+            new_session.original_task = task  # carry forward across future rollovers
+            logger.info("Session rolled over: ctx={} agent={} note_len={}", ctx_id, agent_name, len(note))
+
+            if worth_curating:
+                asyncio.create_task(self._run_curator(history, ctx_id, user_id))
+
+            # Auto-continue: at most once, and only if agent didn't finish replying
+            if auto_count < 1 and not _has_final_response(history):
+                scope = str(message.group_id or "global")
+                role = await self.role_mgr.get(message.sender.user_id, scope)
+                next_session = await self.agent_runner.run_conversation(
+                    message,
+                    agent_name=agent_name,
+                    user_role=role.name,
+                    session=None,
+                    handoff_text=summary_prompt,
+                )
+                if next_session is None:
+                    return
+                new_session.summary_prompt = ""
+                await _send_reply(message, "（已压缩上下文，继续处理中...）", self.config)
+                # Loop: check if the continuation itself needs rollover
+                conv = new_session
+                runtime_session = next_session
+                auto_count += 1
+                continue
+
             if note:
                 await _send_reply(message, "（已压缩上下文，新会话已就绪，可继续对话）", self.config)
+            return
 
     async def _run_curator(self, history: list, ctx_id: int, user_id: int) -> None:
         try:

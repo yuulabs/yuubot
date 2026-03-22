@@ -83,7 +83,7 @@ async def _run_capability_cli(
             context=CapabilityContext(config=cfg),
         )
         for block in result:
-            if isinstance(block, dict) and block.get("type") == "text":
+            if block.get("type") == "text":
                 click.echo(block.get("text", ""))
             else:
                 click.echo(str(block))

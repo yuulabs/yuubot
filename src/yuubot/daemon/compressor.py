@@ -84,7 +84,7 @@ def _extract_tool_stats(history: list) -> str:
         if role != "assistant" or not isinstance(items, list):
             continue
         for item in items:
-            if isinstance(item, dict) and item.get("type") == "tool_call":
+            if item.get("type") == "tool_call":
                 name = item.get("name", "unknown")
                 counts[name] = counts.get(name, 0) + 1
     if not counts:

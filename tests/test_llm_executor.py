@@ -6,30 +6,16 @@ from yuubot.commands.builtin import _exec_ping
 from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import CommandRequest
 from yuubot.core.onebot import to_inbound_message
-from yuubot.core.types import InboundMessage, Sender
-from yuubot.core.models import TextSegment
 from yuubot.daemon.conversation import ConversationManager
 from yuubot.daemon.llm import LLMExecutor
-from yuubot.daemon.llm import _has_final_response, _should_auto_continue_rollover
-
-
-def _make_message(auto_count: int = 0) -> InboundMessage:
-    return InboundMessage(
-        message_id=1,
-        ctx_id=1,
-        chat_type="private",
-        sender=Sender(user_id=1),
-        segments=[TextSegment(text="hi")],
-        timestamp=0,
-        raw_event={"_rollover_auto_count": auto_count},
-    )
+from yuubot.daemon.llm import _has_final_response
 
 
 def test_has_final_response_detects_text_reply():
     history = [
-        ("user", ["问题"]),
+        ("user", [{"type": "text", "text": "问题"}]),
         ("assistant", [{"type": "tool_call", "name": "web.read"}]),
-        ("assistant", ["最终回复"]),
+        ("assistant", [{"type": "text", "text": "最终回复"}]),
     ]
 
     assert _has_final_response(history) is True
@@ -37,21 +23,11 @@ def test_has_final_response_detects_text_reply():
 
 def test_has_final_response_ignores_tool_only_turn():
     history = [
-        ("user", ["问题"]),
+        ("user", [{"type": "text", "text": "问题"}]),
         ("assistant", [{"type": "tool_call", "name": "web.read"}]),
     ]
 
     assert _has_final_response(history) is False
-
-
-def test_rollover_auto_continue_only_once():
-    history = [
-        ("user", ["问题"]),
-        ("assistant", [{"type": "tool_call", "name": "web.read"}]),
-    ]
-
-    assert _should_auto_continue_rollover(_make_message(), history) is True
-    assert _should_auto_continue_rollover(_make_message(1), history) is False
 
 
 @pytest.mark.asyncio
@@ -70,7 +46,7 @@ async def test_ping_reports_running_while_llm_turn_is_in_flight(yuubot_config, m
                 (),
                 {
                     "task_id": "task-1",
-                    "history": [("assistant", ["done"])],
+                    "history": [("assistant", [{"type": "text", "text": "done"}])],
                     "total_tokens": 1,
                 },
             )()
@@ -173,7 +149,7 @@ async def test_explicit_yllm_in_auto_mode_respects_main(yuubot_config, monkeypat
                 (),
                 {
                     "task_id": "task-main",
-                    "history": [("assistant", ["done"])],
+                    "history": [("assistant", [{"type": "text", "text": "done"}])],
                     "total_tokens": 1,
                 },
             )()
@@ -236,7 +212,7 @@ async def test_explicit_yllm_main_in_auto_mode_respects_main(yuubot_config, monk
                 (),
                 {
                     "task_id": "task-main",
-                    "history": [("assistant", ["done"])],
+                    "history": [("assistant", [{"type": "text", "text": "done"}])],
                     "total_tokens": 1,
                 },
             )()

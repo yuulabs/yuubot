@@ -118,7 +118,7 @@ def mock_hhsh_api():
 
 def make_text_response(text: str) -> list:
     """Build a list of yuullm StreamItems for a plain text response."""
-    return [yuullm.Response(item=text)]
+    return [yuullm.Response(item={"type": "text", "text": text})]
 
 
 def make_tool_call_response(

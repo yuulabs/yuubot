@@ -7,6 +7,7 @@ from loguru import logger
 from yuuagents import AgentContext, Session
 from yuuagents.agent import AgentConfig
 
+
 _SYSTEM_PROMPT = (
     "你是一个对话摘要助手。根据提供的对话历史，生成一份简洁的工作交接摘要，"
     "让新会话能够无缝继续当前任务。\n"
@@ -18,12 +19,18 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _items_text(items: list[Any]) -> str:
+    """Extract concatenated text from a list of yuullm Items."""
+    return "".join(
+        item["text"] for item in items if item.get("type") == "text"
+    )
+
+
 def extract_original_task(history: list[Any]) -> str:
     """Return text of the first user message in history (the original task)."""
     for role, items in history:
         if role == "user":
-            texts = [item for item in items if isinstance(item, str)]
-            return "".join(texts)[:600]
+            return _items_text(items)[:600]
     return ""
 
 
@@ -58,9 +65,9 @@ def render_recent(history: list[Any], n: int = 8) -> str:
             texts: list[str] = []
             tool_names: list[str] = []
             for item in items:
-                if isinstance(item, str) and item.strip():
-                    texts.append(item)
-                elif isinstance(item, dict) and item.get("type") == "tool_call":
+                if item.get("type") == "text" and item["text"].strip():
+                    texts.append(item["text"])
+                elif item.get("type") == "tool_call":
                     name = item.get("name", "?")
                     args = item.get("arguments", "")
                     tool_names.append(f"{name}({str(args)[:200]})")
@@ -70,15 +77,14 @@ def render_recent(history: list[Any], n: int = 8) -> str:
                 parts.append(f"[调用工具]: {', '.join(tool_names)}")
 
         elif role == "user":
-            texts = [item for item in items if isinstance(item, str)]
-            joined = "".join(texts)[:400]
+            joined = _items_text(items)[:400]
             if joined.strip():
                 parts.append(f"[用户]: {joined}")
 
         elif role == "tool":
             snippets: list[str] = []
             for item in items:
-                if isinstance(item, dict) and item.get("type") == "tool_result":
+                if item.get("type") == "tool_result":
                     content = str(item.get("content", ""))[:200]
                     snippets.append(content)
             if snippets:
@@ -104,8 +110,7 @@ def render_for_curator(history: list[Any]) -> str:
             continue
 
         if role == "user":
-            texts = [item for item in items if isinstance(item, str)]
-            joined = "".join(texts).strip()
+            joined = _items_text(items).strip()
             if not joined:
                 continue
             # Extract content from <msg> XML if present
@@ -124,7 +129,7 @@ def render_for_curator(history: list[Any]) -> str:
                 continue
             # Extract im send calls
             for item in items:
-                if isinstance(item, dict) and item.get("type") == "tool_call":
+                if item.get("type") == "tool_call":
                     name = item.get("name", "")
                     args = item.get("arguments", "")
                     if "im" in name and "send" in name:
@@ -139,8 +144,7 @@ def render_for_curator(history: list[Any]) -> str:
                         except Exception:
                             pass
             # Last assistant text block
-            text_parts = [item for item in items if isinstance(item, str)]
-            text = "".join(text_parts).strip()
+            text = _items_text(items).strip()
             if text:
                 parts.append(f"[助手思考]: {text[:400]}")
 
@@ -177,10 +181,12 @@ async def _run_summarizer(llm: Any, user_content: str, agent_id: str) -> str:
         pass
 
     for msg in reversed(session.history):
-        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "assistant":
-            text = "".join(item for item in msg[1] if isinstance(item, str)).strip()
-            if text:
-                return text
+        role, items = msg
+        if role != "assistant":
+            continue
+        text = _items_text(items).strip()
+        if text:
+            return text
     return ""
 
 

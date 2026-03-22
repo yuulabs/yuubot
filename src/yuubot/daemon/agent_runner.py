@@ -96,10 +96,15 @@ class AgentRunner:
         group_name = ""
         if msg.chat_type == "group" and msg.group_id:
             group_name = await self.bot_info.group_name(msg.group_id)
+        docker_host_mount = ""
+        active = self._active_runs_by_ctx.get(msg.ctx_id)
+        if active is not None:
+            docker_host_mount = active.agent_env.values.get(env.DOCKER_HOST_MOUNT, "")
         context = RenderContext(
             group_name=group_name,
             bot_name=bot_name,
             bot_qq=str(self.config.bot.qq),
+            docker_host_mount=docker_host_mount,
         )
         return await _render_signal(msg, RenderPolicy(), context)
 
@@ -148,13 +153,12 @@ class AgentRunner:
     @staticmethod
     def _last_assistant_text(session: Session) -> str:
         for msg in reversed(session.history):
-            role: str | None = None
-            items: list[Any] | None = None
-            if isinstance(msg, tuple) and len(msg) == 2:
-                role, items = msg
-            if role != "assistant" or not isinstance(items, list):
+            role, items = msg
+            if role != "assistant":
                 continue
-            text = "".join(item for item in items if isinstance(item, str)).strip()
+            text = "".join(
+                item["text"] for item in items if item.get("type") == "text"
+            ).strip()
             if text:
                 return text
         return ""

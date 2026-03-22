@@ -19,7 +19,7 @@ class _FakeLLM:
         reply = self._replies.pop(0)
 
         async def _iter():
-            yield yuullm.Response(item=reply)
+            yield yuullm.Response(item={"type": "text", "text": reply})
 
         return _iter(), {}
 
@@ -53,8 +53,8 @@ async def test_session_start_and_wait():
     # system + user + assistant
     assert len(session.history) == 3
     assert session.history[0][0] == "system"
-    assert session.history[1] == ("user", ["first input"])
-    assert session.history[2] == ("assistant", ["first reply"])
+    assert session.history[1] == ("user", [{"type": "text", "text": "first input"}])
+    assert session.history[2] == ("assistant", [{"type": "text", "text": "first reply"}])
 
 
 async def test_session_resume_preserves_history():
@@ -73,8 +73,8 @@ async def test_session_resume_preserves_history():
     # old_history (3 msgs) + new user + new assistant
     assert len(session2.history) == 5
     assert session2.history[0][0] == "system"
-    assert session2.history[3] == ("user", ["followup"])
-    assert session2.history[4] == ("assistant", ["continued reply"])
+    assert session2.history[3] == ("user", [{"type": "text", "text": "followup"}])
+    assert session2.history[4] == ("assistant", [{"type": "text", "text": "continued reply"}])
 
 
 async def test_session_resume_can_reuse_conversation_id():
@@ -105,4 +105,4 @@ async def test_session_send_injects_message():
     async for _step in session.step_iter():
         pass
 
-    assert session.history[1] == ("user", ["first input"])
+    assert session.history[1] == ("user", [{"type": "text", "text": "first input"}])

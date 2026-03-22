@@ -37,6 +37,7 @@ class Conversation:
     total_tokens: int = 0
     created_at: float = attrs.field(factory=time.monotonic)
     summary_prompt: str = ""
+    original_task: str = ""  # persists the very first user request across rollovers
     session: object | None = None
     _history_snapshot: list = attrs.field(factory=list)
 
@@ -192,7 +193,8 @@ class ConversationManager:
         """Close all conversations for a ctx. Returns closed conversations."""
         keys = [k for k in self._conversations if k[0] == ctx_id]
         closed = [self._conversations.pop(key) for key in keys]
-        self._current_agent.pop(ctx_id, None)
+        if ctx_id not in self._auto_ctxs:
+            self._current_agent.pop(ctx_id, None)
         if keys:
             logger.info("Conversation closed: ctx={}", ctx_id)
         return closed

@@ -89,29 +89,17 @@ def create_api(
             and body.get("message_type") == "private"
             and body.get("user_id") == master_qq
         )
-        if not result.passed:
+        if not result.passed and not is_master_private:
             logger.warning("安全审查拦截: {} | match={} | body={}", result.category, result.match, body)
-            if is_master_private:
-                error_msg = (
-                    f"安全审查拦截: 消息包含{result.category}，"
-                    f"触发片段: {result.match!r}，请修改后重试"
-                )
-            else:
-                error_msg = f"安全审查拦截: 消息包含{result.category}，请勿泄露敏感信息"
+            error_msg = f"安全审查拦截: 消息包含{result.category}，请勿泄露敏感信息"
             return JSONResponse({"error": error_msg}, status_code=403)
 
-        # Soft audit — structured privacy data (bot mode only)
-        if request.headers.get("X-Bot-Mode") == "1":
+        # Soft audit — structured privacy data (bot mode only, skip master private)
+        if request.headers.get("X-Bot-Mode") == "1" and not is_master_private:
             soft_result = soft_audit_message(segments)
             if not soft_result.passed:
                 logger.warning("软审查拦截: {} | match={} | body={}", soft_result.category, soft_result.match, body)
-                if is_master_private:
-                    error_msg = (
-                        f"安全审查拦截: {soft_result.category}，"
-                        f"触发字段: {soft_result.match!r}，请修改后重试"
-                    )
-                else:
-                    error_msg = f"安全审查拦截: {soft_result.category}"
+                error_msg = f"安全审查拦截: {soft_result.category}"
                 return JSONResponse({"error": error_msg}, status_code=403)
 
         # Rate limit group messages

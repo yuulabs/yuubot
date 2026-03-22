@@ -112,11 +112,16 @@ async def _describe_image(image_path: str) -> str:
     history = agent.messages
 
     for msg in reversed(history):
-        if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "assistant":
-            text = "".join(item for item in msg[1] if isinstance(item, str)).strip()
-            if text:
-                logger.info("Vision described {}: {}...", image_path, text[:100])
-                return text
+        role, items = msg
+        if role != "assistant":
+            continue
+        text = "".join(
+            item["text"] for item in items if item.get("type") == "text"
+        ).strip()
+        if text:
+            logger.info("Vision described {}: {}...", image_path, text[:100])
+            return text
+    logger.warning("Vision describe returned empty for {}", image_path)
     return ""
 
 
@@ -150,6 +155,8 @@ class VisionCapability:
                     return [text_block(cached)]
 
             description = await _describe_image(image_path)
+            if not description:
+                return [text_block("错误: 图片描述为空，可能是模型未返回结果")]
             await _set_cached(image_path, description)
             return [text_block(description)]
         except FileNotFoundError as e:

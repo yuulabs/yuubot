@@ -27,6 +27,8 @@ def _build_provider(provider_name: str, providers: dict):
             base_url=base_url,
             provider_name=provider_name or "anthropic",
         )
+    if provider_name == "openrouter":
+        return yuullm.providers.OpenRouterProvider(api_key=api_key)
     return yuullm.providers.OpenAIChatCompletionProvider(
         api_key=api_key,
         base_url=base_url,
