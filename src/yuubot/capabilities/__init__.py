@@ -18,15 +18,21 @@ import inspect
 import json
 import shlex
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import attrs
 from loguru import logger
+from yuullm import ImageItem, TextItem
+
+if TYPE_CHECKING:
+    from yuubot.config import Config
 
 from yuubot.capabilities.contract import ActionFilter
 
-# ContentBlock: reuse yuullm's dict-based content items.
-ContentBlock = dict[str, Any]
+# ContentBlock covers the common content shapes capabilities return.
+# TextItem and ImageItem are TypedDicts from yuullm; dict[str, Any] is a
+# fallback for other structured shapes that may appear as capabilities evolve.
+ContentBlock = TextItem | ImageItem | dict[str, Any]
 
 
 def uri_to_path(s: str) -> str:
@@ -45,14 +51,14 @@ def path_to_uri(s: str) -> str:
     return f"file://{s}" if s.startswith("/") else s
 
 
-def text_block(text: str) -> ContentBlock:
+def text_block(text: str) -> TextItem:
     """Convenience: create a text content block."""
-    return {"type": "text", "text": text}
+    return TextItem(type="text", text=text)
 
 
-def image_block(url: str) -> ContentBlock:
+def image_block(url: str) -> ImageItem:
     """Convenience: create an image content block."""
-    return {"type": "image_url", "image_url": {"url": url}}
+    return ImageItem(type="image_url", image_url={"url": url})
 
 
 # ── Context ──────────────────────────────────────────────────────
@@ -62,7 +68,7 @@ def image_block(url: str) -> ContentBlock:
 class CapabilityContext:
     """Runtime context for capability execution."""
 
-    config: object = None
+    config: Config | None = None
     ctx_id: int | None = None
     user_id: int | None = None
     user_role: str = ""
