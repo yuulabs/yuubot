@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from loguru import logger
-
 from yuubot.commands.tree import RootCommand
 from yuubot.core.models import AtSegment, ReplySegment, segments_to_plain
 from yuubot.core.types import CommandRoute, InboundMessage, Route
@@ -75,5 +73,4 @@ def resolve_route(
                 entry="@",
             )
 
-    logger.info("No command match: {}", plain)
     return None

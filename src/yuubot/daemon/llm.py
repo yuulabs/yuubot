@@ -203,7 +203,7 @@ class LLMExecutor:
             worth_curating = conversation_worth_curating(conv)
 
             try:
-                note = await self.agent_runner.summarize(history, agent_name)
+                note = await self.agent_runner.summarize(runtime_session, history, agent_name)
             except Exception:
                 logger.exception("Failed to summarize session for ctx={}", ctx_id)
                 note = ""

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+from datetime import datetime, timezone
 
 import uvicorn
 import websockets
@@ -13,8 +14,8 @@ from loguru import logger
 from yuubot.config import load_config
 from yuubot.core.context import ContextManager
 from yuubot.core.db import init_db, close_db
-from yuubot.core.models import MessageEvent
-from yuubot.core.onebot import parse_event
+from yuubot.core.models import MessageEvent, MessageRecord, segments_to_json, segments_to_plain
+from yuubot.core.onebot import parse_event, parse_poke_notice
 from yuubot.recorder.api import create_api
 from yuubot.recorder.downloader import MediaDownloader
 from yuubot.recorder.forward import ForwardResolver, _render_forward_log_lines
@@ -120,14 +121,45 @@ class NapCatWSServer:
                     logger.info(line)
             await self.relay.broadcast(raw)
         elif event is not None:
+            # Store poke notices as synthetic messages for browse history
+            if raw.get("notice_type") == "notify" and raw.get("sub_type") == "poke":
+                await self._store_poke(raw)
             # Non-message events: relay as-is
             await self.relay.broadcast(raw)
+
+
+    async def _store_poke(self, raw: dict) -> None:
+        """Store a poke notice event as a synthetic MessageRecord."""
+        try:
+            poke = parse_poke_notice(raw)
+            if poke is None:
+                return
+            group_id = raw.get("group_id", 0)
+            if not group_id:
+                return
+            ctx_id = await self.store.ctx_mgr.get_or_create("group", group_id)
+            segments = [poke]
+            ts = datetime.fromtimestamp(raw.get("time", 0), tz=timezone.utc)
+            await MessageRecord.create(
+                message_id=None,
+                ctx_id=ctx_id,
+                user_id=int(poke.sender_qq),
+                nickname="",
+                display_name="",
+                content=segments_to_plain(segments),
+                raw_message=segments_to_json(segments),
+                timestamp=ts,
+                media_files=[],
+            )
+            logger.debug("Stored poke: {} → {} in ctx={}", poke.sender_qq, poke.target_qq, ctx_id)
+        except Exception:
+            logger.exception("Failed to store poke event")
 
 
 async def run_recorder(config_path: str | None = None) -> None:
     """Entry point: start recorder (WS server + relay + HTTP API)."""
     cfg = load_config(config_path)
-    setup_logging(cfg.log_dir)
+    setup_logging(cfg.log_dir, name="recorder")
     await init_db(cfg.database.path)
     ctx_mgr = ContextManager()
     await ctx_mgr.load()

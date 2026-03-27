@@ -68,6 +68,46 @@ async def test_llm_tool_call_creates_session(dispatcher, session_mgr):
     assert "Done!" in history_text(session.history)
 
 
+async def test_malformed_tool_arguments_do_not_crash_session(dispatcher, session_mgr):
+    """Truncated tool-call JSON should surface as tool error and allow recovery."""
+    from yuubot.characters import register
+    from yuubot.prompt import AgentSpec, Character
+
+    register(Character(
+        name="main",
+        description="Test main agent",
+        min_role="folk",
+        persona="你是测试机器人。",
+        spec=AgentSpec(
+            tools=["sleep"],
+            max_steps=4,
+        ),
+        provider="test",
+        model="test-model",
+    ))
+    responses = [
+        make_tool_call_response(
+            "sleep",
+            '{"seconds": 0',
+            "call_bad_json",
+        ),
+        make_text_response("Recovered after tool error."),
+    ]
+
+    with mock_recorder_api(), mock_llm(responses):
+        await dispatcher.dispatch(make_group_event("/yllm 继续", user_id=MASTER_QQ))
+        await _wait_worker(dispatcher, "group:1000")
+
+    session = session_mgr.get(1)
+    assert session is not None
+    assert "Recovered after tool error." in history_text(session.history)
+    assert any(
+        role == "tool"
+        and any("Invalid tool arguments JSON" in item.get("content", "") for item in items)
+        for role, items in session.history
+    )
+
+
 async def test_group_session_requires_at_for_continuation(dispatcher, session_mgr):
     """群聊里已有 session 时，不 @bot 的普通消息不应被并入会话。"""
     first = "first turn"
@@ -134,7 +174,7 @@ async def test_rollover_stashes_summary_after_final_response(dispatcher, session
     monkeypatch.setattr(
         dispatcher.agent_runner,
         "summarize",
-        lambda history, agent_name="main": asyncio.sleep(0, result="已完成数据库 WAL 的背景解释"),
+        lambda runtime_session, history, agent_name="main": asyncio.sleep(0, result="已完成数据库 WAL 的背景解释"),
     )
     large_usage = yuullm.Usage(
         provider="test",
@@ -183,7 +223,7 @@ async def test_large_output_tokens_trigger_rollover(dispatcher, session_mgr, mon
     monkeypatch.setattr(
         dispatcher.agent_runner,
         "summarize",
-        lambda history, agent_name="main": summarize_calls.append(history) or asyncio.sleep(0, result="应当触发"),
+        lambda runtime_session, history, agent_name="main": summarize_calls.append(history) or asyncio.sleep(0, result="应当触发"),
     )
     output_heavy_usage = yuullm.Usage(
         provider="test",

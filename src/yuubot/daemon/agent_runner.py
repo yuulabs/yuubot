@@ -110,8 +110,26 @@ class AgentRunner:
 
     # -- Summarize / curate --
 
-    async def summarize(self, history: list, agent_name: str = "main") -> str:
+    async def summarize(
+        self,
+        runtime_session: object,
+        history: list,
+        agent_name: str = "main",
+    ) -> str:
+        from yuuagents import Session as _Session
         from yuubot.daemon.summarizer import summarize as summarize_history
+        from yuubot.daemon.summarizer import summarize_via_fork
+
+        # Prefer fork-based summarization (cache-friendly, higher quality).
+        # Fall back to the external summarizer on failure.
+        if isinstance(runtime_session, _Session):
+            try:
+                result = await summarize_via_fork(runtime_session)
+                if result:
+                    return result
+                logger.warning("Fork summarizer returned empty, falling back")
+            except Exception:
+                logger.exception("Fork summarizer failed, falling back")
 
         llm = make_summary_llm(self.config)
         return await summarize_history(history, llm)

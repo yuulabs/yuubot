@@ -11,7 +11,7 @@ import httpx
 from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import Command, CommandRequest, RootCommand
 from yuubot.config import Config
-from yuubot.core.models import AtSegment
+from yuubot.core.models import AtSegment, segments_to_plain
 from yuubot.core.onebot import build_send_msg, to_inbound_message
 from yuubot.core.types import InboundMessage, Route
 from yuubot.daemon.routing import resolve_route
@@ -44,6 +44,16 @@ class RoutedCommand:
 
 def _mentions_bot(message: InboundMessage, bot_qq: int) -> bool:
     return any(isinstance(seg, AtSegment) and seg.qq == str(bot_qq) for seg in message.segments)
+
+
+def _message_preview(message: InboundMessage, max_chars: int = 160) -> str:
+    text = (message.raw_message or segments_to_plain(message.segments)).strip()
+    text = " ".join(text.split())
+    if not text:
+        return "<empty>"
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
 
 
 class _CtxWorker:
@@ -167,6 +177,15 @@ class Dispatcher:
 
         # Route the message using pure routing logic
         inbound = to_inbound_message(event)
+        preview = _message_preview(inbound)
+        logger.info(
+            "Received: type={} user={} group={} ctx={} text={}",
+            msg_type,
+            user_id,
+            group_id,
+            ctx_id,
+            preview,
+        )
         route = resolve_route(
             inbound,
             self.root,
@@ -182,23 +201,42 @@ class Dispatcher:
             return
 
         should_respond = await self._should_respond(inbound)
-        logger.info(
-            "should_respond: user={} group={} type={} result={}",
-            user_id, group_id, msg_type, should_respond,
-        )
         if not should_respond:
+            logger.info(
+                "Message ignored: user={} group={} type={} ctx={} reason=should_respond_false cmd={} text={}",
+                user_id,
+                group_id,
+                msg_type,
+                ctx_id,
+                routed.command.prefix,
+                preview,
+            )
             return
 
         scope = str(inbound.group_id or "global")
         role = await self.role_mgr.get(inbound.sender.user_id, scope)
         if not routed.command.check_permission(role):
             logger.info(
-                "Permission denied: user={} role={} cmd={}",
-                user_id, role, routed.command.prefix,
+                "Permission denied: user={} group={} type={} ctx={} role={} cmd={} text={}",
+                user_id,
+                group_id,
+                msg_type,
+                ctx_id,
+                role,
+                routed.command.prefix,
+                preview,
             )
             return
 
-        logger.info("Command accepted: user={} cmd={}", user_id, routed.command.prefix)
+        logger.info(
+            "Command accepted: user={} group={} type={} ctx={} cmd={} text={}",
+            user_id,
+            group_id,
+            msg_type,
+            ctx_id,
+            routed.command.prefix,
+            preview,
+        )
 
         if routed.command.interactive:
             await self._enqueue_or_pending(routed)

@@ -1,7 +1,10 @@
 """Context summarizer — compress session history into a handoff note on rollover."""
 
+from __future__ import annotations
+
 from typing import Any
 
+import attrs
 import yuutools as yt
 from loguru import logger
 from yuuagents import AgentContext, Session
@@ -181,6 +184,55 @@ async def _run_summarizer(llm: Any, user_content: str, agent_id: str) -> str:
         pass
 
     for msg in reversed(session.history):
+        role, items = msg
+        if role != "assistant":
+            continue
+        text = _items_text(items).strip()
+        if text:
+            return text
+    return ""
+
+
+_FORK_SUMMARY_INSTRUCTION = (
+    "你已达到步骤上限，会话即将交接给新的 agent 继续处理。"
+    "请直接用文字回复以下内容，不要调用任何工具。\n\n"
+    "为接手的 agent 生成工作交接摘要，目标是让它不需要重复你已经做过的事情：\n\n"
+    "1. **已读文件**：列出读过的文件路径和从中获取的关键信息\n"
+    "2. **已执行命令**：列出运行过的命令和结果\n"
+    "3. **已确认事实**：你已经弄清楚的结论\n"
+    "4. **未完成任务**：还需要做什么才能回复用户"
+)
+
+
+async def summarize_via_fork(runtime_session: Session) -> str:
+    """Fork the agent session to generate a structured handoff summary.
+
+    Reuses the agent's config (system prompt + tools + LLM) so all history
+    tokens hit the prompt cache at 0.1x rate.  The synthetic user message
+    instructs the model to produce text only; max_steps=1 is a safety net.
+    """
+    from uuid import uuid4
+
+    task_id = str(uuid4())
+    agent_id = f"summarizer-{runtime_session.config.agent_id}"
+
+    config = attrs.evolve(runtime_session.config, agent_id=agent_id, max_steps=1)
+    context = runtime_session.context.evolve(
+        task_id=task_id,
+        agent_id=agent_id,
+    )
+
+    fork = Session(config=config, context=context)
+    fork.resume(
+        task=_FORK_SUMMARY_INSTRUCTION,
+        history=list(runtime_session.history),
+        conversation_id=runtime_session.conversation_id,
+    )
+    async for _ in fork.step_iter():
+        pass
+
+    # Extract text from the last assistant message
+    for msg in reversed(fork.history):
         role, items = msg
         if role != "assistant":
             continue

@@ -65,7 +65,7 @@ class Scheduler:
         self, db_id: int, task: str, ctx_id: int | None, agent_name: str, once: bool,
     ) -> None:
         logger.info(
-            "DB trigger id=%d: %s (ctx=%s, agent=%s, once=%s)",
+            "DB trigger id={}: {} (ctx={}, agent={}, once={})",
             db_id, task, ctx_id, agent_name, once,
         )
         await self.agent_runner.run_scheduled(task, ctx_id, agent_name=agent_name)

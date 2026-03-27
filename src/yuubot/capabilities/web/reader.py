@@ -9,7 +9,8 @@ from urllib.parse import unquote, urlsplit
 import click
 import httpx
 import trafilatura
-from playwright.sync_api import Page, ProxySettings, sync_playwright
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Page, ProxySettings, TimeoutError as PlaywrightTimeoutError, sync_playwright
 from playwright_stealth import Stealth
 
 from yuubot.config import load_config
@@ -163,6 +164,10 @@ def _extract_content(page: Page, html: str) -> str:
     return (page.inner_text("body") or "").strip()
 
 
+def _render_read_failure(url: str, reason: str, *, title: str = "读取失败") -> str:
+    return f"# {title}\n- URL: {url}\n\n---\n\n[{reason}]"
+
+
 # ---------------------------------------------------------------------------
 # Path 1: lightweight httpx (no browser)
 # ---------------------------------------------------------------------------
@@ -220,8 +225,18 @@ def _try_playwright(profile: str, headless: bool, url: str) -> str:
         page = ctx.new_page()
         _stealth.apply_stealth_sync(page)
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-            _wait_for_stable(page)
+            navigation_timed_out = False
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+            except PlaywrightTimeoutError:
+                navigation_timed_out = True
+
+            try:
+                _wait_for_stable(page)
+            except PlaywrightError:
+                if navigation_timed_out:
+                    return _render_read_failure(url, "页面加载超时，且未拿到可用页面内容。")
+                raise
 
             title = (page.title() or "untitled").strip()
             body_preview = (page.inner_text("body") or "")[:500]
@@ -235,6 +250,8 @@ def _try_playwright(profile: str, headless: bool, url: str) -> str:
 
             html = page.content()
             text = _extract_content(page, html)
+            if navigation_timed_out and not text.strip():
+                return _render_read_failure(url, "页面加载超时，未能抽取正文。", title=title)
             return f"# {title}\n- URL: {url}\n\n---\n\n{text or '[未能抽取正文]'}"
         finally:
             ctx.close()
@@ -250,7 +267,12 @@ def _fetch_and_extract(profile: str, headless: bool, url: str) -> str:
     result = _try_httpx(url)
     if result:
         return result
-    return _try_playwright(profile, headless, url)
+    try:
+        return _try_playwright(profile, headless, url)
+    except PlaywrightTimeoutError:
+        return _render_read_failure(url, "页面加载超时。")
+    except Exception as exc:
+        return _render_read_failure(url, f"浏览器抓取失败: {type(exc).__name__}: {exc}")
 
 
 def run_login(config_path: str | None) -> None:

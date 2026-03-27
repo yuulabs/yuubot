@@ -34,7 +34,7 @@ async def run_daemon(config_path: str | None = None) -> None:
     _init_tracing()
 
     cfg = load_config(config_path)
-    setup_logging(cfg.log_dir)
+    setup_logging(cfg.log_dir, name="daemon")
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
 
     role_mgr = RoleManager(master_qq=cfg.bot.master)

@@ -60,7 +60,7 @@ NapCat WS → recorder/relay.py
 | Agent execution | `daemon/agent_runner.py`, `daemon/builder.py`, `daemon/runtime.py` |
 | Rendering | `daemon/render.py`, `rendering.py` |
 | Capability contracts | `capabilities/contract.py`, `capabilities/contracts/*.yaml` |
-| Capability implementations | `capabilities/im.py`, `capabilities/mem.py`, etc. |
+| Capability implementations | `capabilities/im/`, `capabilities/mem.py`, etc. |
 | Characters/agents | `characters/*.py` — registered via `characters.register(Character(...))` |
 | Commands (admin/user) | `commands/builtin.py`, `commands/ychar.py` |
 | Config | `config.py` — `load_config()` merges `config.yaml` + `yuuagents.config.yaml` |
@@ -90,12 +90,12 @@ The `main` character is the default QQ bot agent (夕雨/Yuu). Other characters:
 
 ### Log files
 
-Logs are written by loguru via `src/yuubot/log.py`. The `setup(log_dir)` call happens once at daemon/recorder startup.
+Logs are written by loguru via `src/yuubot/log.py`. The `setup(log_dir, name=...)` call happens once at daemon/recorder startup.
 
 | Sink | Level | Location |
 |------|-------|----------|
 | Console (stderr) | INFO+ | colored, compact |
-| File | DEBUG+ | `~/.yuubot/logs/yuubot.log` (rotated at 20 MB, 5 gz archives kept) |
+| File | DEBUG+ | `~/.yuubot/logs/daemon.log` and `~/.yuubot/logs/recorder.log` (each rotated at 20 MB, 5 gz archives kept) |
 
 All stdlib logging (uvicorn, tortoise-orm, websockets) is intercepted and routed through loguru automatically.
 
@@ -103,19 +103,19 @@ All stdlib logging (uvicorn, tortoise-orm, websockets) is intercepted and routed
 
 ```bash
 # All events for a specific conversation context
-grep "ctx=5" ~/.yuubot/logs/yuubot.log
+grep "ctx=5" ~/.yuubot/logs/daemon.log
 
 # Trace a specific agent run by task_id prefix
-grep "task_id=abc123" ~/.yuubot/logs/yuubot.log
+grep "task_id=abc123" ~/.yuubot/logs/daemon.log
 
 # See what the dispatcher accepted/rejected
-grep "should_respond\|Command accepted\|Permission denied" ~/.yuubot/logs/yuubot.log
+grep "should_respond\|Command accepted\|Permission denied" ~/.yuubot/logs/daemon.log
 
 # Watch live (daemon running)
-tail -f ~/.yuubot/logs/yuubot.log
+tail -f ~/.yuubot/logs/daemon.log
 
 # Agent failures only
-grep "agent failed\|exception" ~/.yuubot/logs/yuubot.log -i
+grep "agent failed\|exception" ~/.yuubot/logs/daemon.log -i
 ```
 
 **Log anatomy:** Each line is `YYYY-MM-DD HH:mm:ss.SSS L module:line | message`. Key structured fields emitted by the daemon:
@@ -128,7 +128,7 @@ grep "agent failed\|exception" ~/.yuubot/logs/yuubot.log -i
 
 ### Conversation traces
 
-Conversation traces live in `~/.yagents/traces.db`. Use `scripts/conv.py` to inspect them:
+Conversation traces live in `~/.yagents/traces.db` (span-based, no events). Use `scripts/conv.py` to inspect them:
 
 ```bash
 # List recent conversations (short IDs, local time)
@@ -145,9 +145,17 @@ python scripts/conv.py -l -n
 
 # Filter list by agent
 python scripts/conv.py --agent main --limit 10
+
+# Debug a specific tool — only show matching tool calls, full payload
+python scripts/conv.py abc12345 --tool "im send" --full
+
+# Search/highlight within a conversation
+python scripts/conv.py abc12345 --grep "错误"
 ```
 
-Compact mode (`-n`) is the go-to for quick reads: it shows USER/ASSISTANT turns and collapses all tool calls into `(N tool calls)`. Full mode shows each `TOOL:` span with output (truncated at 600 chars).
+Compact mode (`-n`) is the go-to for quick reads: it shows USER/ASSISTANT turns and collapses all tool calls into `(N tool calls)`. Full mode shows each `TOOL:` span with output (truncated at 600 chars by default, use `--full` to disable).
+
+**Trace DB schema:** `conversation` → `turn` (role=user/assistant, items in `yuu.turn.items`) → `tools` → `tool:*` (input/output in `yuu.tool.input`/`yuu.tool.output`). Events only contain `yuu.llm.usage` / `yuu.cost`.
 
 ### Health / operational endpoints
 
