@@ -68,6 +68,8 @@ async def browse_messages(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = 50,
+    qq_ids: list[int] | None = None,
+    name_pattern: str | None = None,
 ) -> list[dict]:
     """Browse messages around a specific message or within a time range.
 
@@ -160,7 +162,7 @@ async def browse_messages(
         if not has_time_range:
             all_rows = list(reversed(all_rows))
 
-    return [
+    results = [
         {
             "message_id": row[0],
             "timestamp": row[1],
@@ -174,3 +176,20 @@ async def browse_messages(
         }
         for row in all_rows
     ]
+
+    # Post-query filtering by QQ IDs or name (OR logic)
+    if qq_ids or name_pattern:
+        qq_set = set(qq_ids) if qq_ids else set()
+        pattern = name_pattern.lower() if name_pattern else ""
+        filtered = []
+        for msg in results:
+            if qq_set and msg["user_id"] in qq_set:
+                filtered.append(msg)
+                continue
+            if pattern:
+                names = f"{msg['nickname'] or ''} {msg['display_name'] or ''}".lower()
+                if pattern in names:
+                    filtered.append(msg)
+        results = filtered
+
+    return results

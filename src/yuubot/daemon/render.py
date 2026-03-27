@@ -216,18 +216,29 @@ async def render_signal(
 
 
 async def render_memory_hints(text: str, ctx_id: int | None = None) -> str:
-    """Probe message text against memory FTS5, return hint string.
+    """Probe message text against memory store, return hint string with snippets.
 
-    Absorbs agent_runner._build_memory_hints().
+    Combines FTS5 tokenized search and recall_term substring matching.
+    Also appends group topic if available.
     Best-effort: returns empty string on any failure.
     """
     try:
-        from yuubot.capabilities.mem.store import probe_text
+        from yuubot.capabilities.mem.store import get_group_topic, probe_with_snippets
 
-        hits = await probe_text(text, ctx_id=ctx_id)
-        if not hits:
-            return ""
-        return ConversationRender.memory_hint(hits=hits)
+        parts: list[str] = []
+
+        # Memory snippet hints
+        snippets = await probe_with_snippets(text, ctx_id=ctx_id, limit=5)
+        if snippets:
+            parts.append(ConversationRender.memory_hint(snippets=snippets))
+
+        # Group topic context
+        if ctx_id is not None:
+            topic = await get_group_topic(ctx_id)
+            if topic:
+                parts.append(ConversationRender.group_topic_hint(topic=topic))
+
+        return "\n".join(parts)
     except Exception:
         logger.opt(exception=True).debug("Memory hints probe failed")
         return ""

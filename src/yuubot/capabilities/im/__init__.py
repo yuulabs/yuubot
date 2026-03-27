@@ -62,6 +62,18 @@ def _enforce_bot_ctx(ctx_id: int | None) -> int | None:
     return ctx_id
 
 
+def _parse_qq_ids(qq: str | int | None) -> list[int] | None:
+    if qq is None:
+        return None
+    if isinstance(qq, bool):
+        raise ValueError
+    if isinstance(qq, int):
+        return [qq]
+    if isinstance(qq, str):
+        return [int(part.strip()) for part in qq.split(",") if part.strip()]
+    raise ValueError
+
+
 def _normalize_segment(seg: dict) -> dict:
     if "data" in seg:
         return seg
@@ -162,18 +174,24 @@ class ImCapability:
         if not data:
             return [text_block("错误: 消息内容为空 (需要 -- 后跟 JSON 数组)")]
 
-        # Detect multi-message envelope format: [{"msg": [...], "gap": 1.5}, ...]
-        # vs single-message format: [{"type": "text", ...}, ...]
-        envelopes: list[MessageEnvelope]
-        if isinstance(data[0], dict) and "msg" in data[0]:
-            envelopes = []
-            for env in data:
+        # Normalize to envelope format: [{"msg": [...], "gap": 1.5}, ...]
+        # Each element is either already an envelope (has "msg" key)
+        # or a bare segment (has "type" key) — wrap bare segments.
+        envelopes: list[MessageEnvelope] = []
+        pending_segments: list[dict] = []
+        for item in data:
+            if isinstance(item, dict) and "msg" in item:
+                if pending_segments:
+                    envelopes.append({"msg": pending_segments, "gap": float(delay)})
+                    pending_segments = []
                 envelopes.append({
-                    "msg": env["msg"],
-                    "gap": float(env.get("gap", 0)),
+                    "msg": item["msg"],
+                    "gap": float(item.get("gap", 0)),
                 })
-        else:
-            envelopes = [{"msg": list(data), "gap": float(delay)}]
+            else:
+                pending_segments.append(item)
+        if pending_segments:
+            envelopes.append({"msg": pending_segments, "gap": float(delay)})
 
         headers: dict[str, str] = {"X-Bot-Mode": "1"}
         remaining: int | None = None
@@ -189,21 +207,37 @@ class ImCapability:
                     segments = _normalize_image_file_refs(segments)
                 except MediaPathError as e:
                     return [text_block(f"错误: {e}")]
-                err = _validate_segments(segments)
+
+                # Extract poke segments — handle them via /group_poke API
+                poke_segs = [s for s in segments if s.get("type") == "poke"]
+                normal_segs = [s for s in segments if s.get("type") != "poke"]
+
+                for poke in poke_segs:
+                    poke_qq = poke.get("data", {}).get("qq", "")
+                    if poke_qq and msg_type == "group":
+                        poke_body = {"group_id": target_id, "user_id": int(poke_qq)}
+                        r = await client.post(f"{api}/group_poke", json=poke_body, timeout=10)
+                        if r.status_code != 200:
+                            return [text_block(f"戳一戳失败: {r.text}")]
+
+                if not normal_segs:
+                    continue  # All segments were poke, nothing left to send
+
+                err = _validate_segments(normal_segs)
                 if err:
                     return [text_block(f"错误: {err}")]
 
                 # Political content filter
                 all_text = "".join(
                     s.get("data", {}).get("text", "")
-                    for s in segments
+                    for s in normal_segs
                     if s.get("type") == "text"
                 )
                 hit = check_political_content(all_text)
                 if hit:
                     return [text_block("安全策略: 消息包含敏感内容，已拦截")]
 
-                body: dict[str, Any] = {"message_type": msg_type, "message": segments}
+                body: dict[str, Any] = {"message_type": msg_type, "message": normal_segs}
                 if msg_type == "group":
                     body["group_id"] = target_id
                 else:
@@ -254,11 +288,18 @@ class ImCapability:
         since: str | None = None,
         until: str | None = None,
         limit: int = 50,
+        qq: str | int | None = None,
+        name: str | None = None,
         **_kw,
     ) -> ContentBlocks:
         ctx_id = _enforce_bot_ctx(ctx)
         since_dt = datetime.fromisoformat(since) if since else None
         until_dt = datetime.fromisoformat(until) if until else None
+
+        try:
+            qq_ids = _parse_qq_ids(qq)
+        except ValueError:
+            return [text_block("错误: --qq 参数格式错误，应为逗号分隔的 QQ 号")]
 
         results = await browse_messages(
             msg_id=msg,
@@ -268,6 +309,8 @@ class ImCapability:
             since=since_dt,
             until=until_dt,
             limit=limit,
+            qq_ids=qq_ids,
+            name_pattern=name,
         )
         if not results:
             return [text_block("未找到消息")]
@@ -301,6 +344,45 @@ class ImCapability:
             bot_name=bot_name,
         )
         return [text_block(xml_output)]
+
+    # ── Emoji reaction ───────────────────────────────────────────
+
+    EMOJI_ALIASES: dict[str, str] = {
+        "thumbsup": "76",   "heart": "66",      "laugh": "178",
+        "cry": "5",         "cool": "16",       "doge": "179",
+        "cute": "21",       "ok": "124",        "rose": "63",
+        "fire": "128293",   "clap": "99",       "hug": "49",
+        "think": "32",      "salute": "282",    "respect": "318",
+        "celebrate": "320", "angry": "326",     "question": "10068",
+        "press_button": "424",                  "button": "424",
+    }
+
+    async def react(
+        self,
+        *,
+        msg: int | None = None,
+        emoji: str | None = None,
+        **_kw,
+    ) -> ContentBlocks:
+        if not msg:
+            return [text_block("错误: 需要 --msg 参数")]
+        if not emoji:
+            names = ", ".join(sorted(self.EMOJI_ALIASES))
+            return [text_block(f"错误: 需要 --emoji 参数。可用: {names}")]
+
+        emoji_id = self.EMOJI_ALIASES.get(emoji.lower())
+        if emoji_id is None:
+            names = ", ".join(sorted(self.EMOJI_ALIASES))
+            return [text_block(f"未知 emoji '{emoji}'。可用: {names}")]
+
+        cfg = _get_config()
+        api = cfg.daemon.recorder_api
+        body = {"message_id": msg, "emoji_id": emoji_id}
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(f"{api}/set_msg_emoji_like", json=body)
+            if r.status_code != 200:
+                return [text_block(f"表情回应失败: {r.text}")]
+        return [text_block(f"已对消息 {msg} 回应 {emoji}")]
 
     async def list(
         self,

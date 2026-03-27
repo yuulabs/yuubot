@@ -151,6 +151,18 @@ def create_api(
         r = await client.get("/get_group_member_list", params={"group_id": group_id})
         return JSONResponse(r.json())
 
+    @app.post("/group_poke")
+    async def group_poke(request: Request) -> JSONResponse:
+        body = await request.json()
+        r = await client.post("/group_poke", json=body)
+        return JSONResponse(r.json(), status_code=r.status_code)
+
+    @app.post("/set_msg_emoji_like")
+    async def set_msg_emoji_like(request: Request) -> JSONResponse:
+        body = await request.json()
+        r = await client.post("/set_msg_emoji_like", json=body)
+        return JSONResponse(r.json(), status_code=r.status_code)
+
     @app.get("/ctx/{ctx_id}")
     async def get_ctx(ctx_id: int) -> JSONResponse:
         info = ctx_mgr.resolve(ctx_id)

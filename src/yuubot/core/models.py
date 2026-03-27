@@ -7,6 +7,8 @@ Database models use tortoise.Model.
 from enum import IntEnum
 from typing import Literal
 
+import json as _json
+
 import msgspec
 from tortoise import fields
 from tortoise.models import Model
@@ -38,9 +40,42 @@ class ForwardSegment(msgspec.Struct, tag="forward"):
     summary: str = ""
 
 
-Segment = TextSegment | ImageSegment | AtSegment | ReplySegment | ForwardSegment
+class JsonSegment(msgspec.Struct, tag="json"):
+    data: str  # raw JSON string from QQ's json card
+
+
+class PokeSegment(msgspec.Struct, tag="poke"):
+    sender_qq: str       # who initiated the poke
+    target_qq: str       # who got poked
+    action: str = "戳了戳"  # customized verb (戳了戳, 踢了踢, etc.)
+    suffix: str = ""     # optional suffix text
+
+
+Segment = TextSegment | ImageSegment | AtSegment | ReplySegment | ForwardSegment | JsonSegment | PokeSegment
 
 Message = list[Segment]
+
+
+def _json_card_plain(data: str) -> str:
+    """Extract readable text from a QQ JSON card for FTS indexing."""
+    try:
+        obj = _json.loads(data)
+        meta = obj.get("meta", {})
+        # Try common card layouts
+        for key in meta:
+            block = meta[key]
+            if isinstance(block, dict):
+                title = block.get("title", "")
+                desc = block.get("desc", "")
+                if title:
+                    return f"[卡片:{title}]" if not desc else f"[卡片:{title} - {desc}]"
+        # Fallback: prompt field
+        prompt = obj.get("prompt", "")
+        if prompt:
+            return f"[卡片:{prompt}]"
+    except Exception:
+        pass
+    return "[卡片]"
 
 
 def segments_to_plain(segments: Message) -> str:
@@ -58,6 +93,11 @@ def segments_to_plain(segments: Message) -> str:
         elif isinstance(seg, ForwardSegment):
             summary = f":{seg.summary}" if seg.summary else ""
             parts.append(f"[合并转发:{seg.id}{summary}]")
+        elif isinstance(seg, JsonSegment):
+            parts.append(_json_card_plain(seg.data))
+        elif isinstance(seg, PokeSegment):
+            suffix = f" {seg.suffix}" if seg.suffix else ""
+            parts.append(f"[{seg.sender_qq} {seg.action} {seg.target_qq}{suffix}]")
     return "".join(parts)
 
 
@@ -207,6 +247,26 @@ class MemoryTag(Model):
     class Meta:
         table = "memory_tags"
         unique_together = (("memory", "tag"),)
+
+
+class MemoryRecallTerm(Model):
+    """Semantic recall trigger for a memory.
+
+    Recall terms are short strings (nicknames, meme fragments, jargon) that
+    should trigger a memory during probe even if jieba would filter them out.
+    Curator sets these based on "unexpectedness" — a common word with special
+    meaning in context has high information value.
+    """
+
+    id = fields.IntField(primary_key=True)
+    term = fields.CharField(max_length=50)
+    memory = fields.ForeignKeyField(
+        "models.Memory", related_name="recall_terms", on_delete=fields.CASCADE,
+    )
+
+    class Meta:
+        table = "memory_recall_terms"
+        unique_together = (("memory", "term"),)
 
 
 class RoleRecord(Model):

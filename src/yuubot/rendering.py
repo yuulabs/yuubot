@@ -34,9 +34,24 @@ class ConversationRender:
         return f"私聊 (ctx={ctx_id})"
 
     @staticmethod
-    def memory_hint(*, hits: list[str]) -> str:
-        keywords = ", ".join(hits)
-        return f'\n记忆关键词命中: {keywords}\n（可用 mem recall "<关键词>" 查看详情）\n'
+    def memory_hint(*, snippets: list[dict]) -> str:
+        """Format memory probe results as snippet hints.
+
+        Each snippet dict has {id, content, tags}.
+        """
+        lines = ["相关记忆命中:"]
+        for s in snippets:
+            content = s["content"]
+            if len(content) > 80:
+                content = content[:77] + "…"
+            tag_part = f" ({s['tags']})" if s.get("tags") else ""
+            lines.append(f"- [mem {s['id']}]{tag_part} {content}")
+        lines.append("（可用 mem recall 查看更多详情）")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def group_topic_hint(*, topic: str) -> str:
+        return f"当前群话题: {topic}\n"
 
     @staticmethod
     def user_new(*, location: str, msg_xml: str, memory_hints: str, ctx_id: int) -> str:

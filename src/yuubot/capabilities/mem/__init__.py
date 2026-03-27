@@ -32,6 +32,7 @@ class MemCapability:
         _positional: list[str] | None = None,
         tags: str = "",
         scope: str = "private",
+        recall_terms: str = "",
         **_kw,
     ) -> list[ContentBlock]:
         content = " ".join(_positional) if _positional else ""
@@ -44,14 +45,20 @@ class MemCapability:
 
         cfg = _get_config()
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        rt_list = [t.strip() for t in recall_terms.split(",") if t.strip()] if recall_terms else []
         source_user_id = actx.user_id
         mem_id = await mem_store.save(
             content, tag_list, _ctx_id(), cfg.memory.max_length,
             source_user_id=source_user_id,
             scope=scope,
+            recall_terms=rt_list,
         )
         tag_display = ", ".join(tag_list) if tag_list else "无"
-        return [text_block(f"已保存记忆 [mem_id: {mem_id}]，标签: {tag_display}，scope: {scope}")]
+        rt_display = ", ".join(rt_list) if rt_list else "无"
+        return [text_block(
+            f"已保存记忆 [mem_id: {mem_id}]，标签: {tag_display}，"
+            f"recall_terms: {rt_display}，scope: {scope}"
+        )]
 
     async def recall(
         self,

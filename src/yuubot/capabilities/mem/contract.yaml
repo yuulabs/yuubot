@@ -3,9 +3,16 @@ summary: 记忆存储、检索与自动遗忘
 actions:
   - name: save
     summary: 保存一条记忆
-    usage: mem save "<content>" --tags <tag1>,<tag2> --scope private|public
+    usage: mem save "<content>" --tags <tag1>,<tag2> --scope private|public --recall-terms <term1>,<term2>
     payload_rule: none
     return_shape: text
+    notes: |
+      recall-terms 是语义触发词，用于增强记忆召回。当消息文本中出现这些词时，
+      即使分词器会过滤它们，记忆也能被命中。适用于：
+      - 短词/缩写/昵称（如 "小n", "pn"）——会被分词器当 stop word 过滤
+      - 句式梗的触发片段（如 "常年" + "的人"）——单独出现时太常见，但组合有特殊含义
+      - 在特定群有特殊含义的常见词
+      只在"意外性"高的情况下使用，不要为普通记忆添加。
   - name: recall
     summary: 按关键词/标签检索记忆
     usage: mem recall "<words>" --tags "<tags>" --limit 10

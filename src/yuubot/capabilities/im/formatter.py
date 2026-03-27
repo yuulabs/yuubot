@@ -16,8 +16,10 @@ from yuubot.core.models import (
     AtSegment,
     ForwardSegment,
     ImageSegment,
+    JsonSegment,
     Message,
     MessageRecord,
+    PokeSegment,
     ReplySegment,
     TextSegment,
     segments_from_json,
@@ -25,6 +27,37 @@ from yuubot.core.models import (
 )
 
 _CMD_PREFIX_RE = re.compile(r"^(/yllm|/yuu|/y)(?:#\w+)?\s*")
+
+
+def _format_json_card(data: str) -> str:
+    """Render a QQ JSON card to LLM-readable XML."""
+    try:
+        obj = json.loads(data)
+        meta = obj.get("meta", {})
+        title = ""
+        desc = ""
+        url = ""
+        # Try common card layouts (detail_1, news, music, etc.)
+        for key in meta:
+            block = meta[key]
+            if not isinstance(block, dict):
+                continue
+            title = block.get("title", "")
+            desc = block.get("desc", block.get("description", ""))
+            url = block.get("qqdocurl", block.get("jumpUrl", block.get("url", "")))
+            if title:
+                break
+        if not title:
+            title = obj.get("prompt", "")
+        if not title:
+            return "<card>[json card]</card>"
+        attrs = [f'title="{html.escape(title)}"']
+        if url:
+            attrs.append(f'url="{html.escape(url)}"')
+        inner = html.escape(desc) if desc else ""
+        return f'<card {" ".join(attrs)}>{inner}</card>'
+    except Exception:
+        return "<card>[json card]</card>"
 
 
 def replace_command_prefix(segments: list, bot_name: str) -> list:
@@ -181,6 +214,13 @@ async def format_segments(
             if seg.summary:
                 attrs.append(f'summary="{html.escape(seg.summary)}"')
             parts.append(f"<forward_msg {' '.join(attrs)}/>")
+        elif isinstance(seg, JsonSegment):
+            parts.append(_format_json_card(seg.data))
+        elif isinstance(seg, PokeSegment):
+            sender = await _resolve_at_name(seg.sender_qq, ctx_id)
+            target = await _resolve_at_name(seg.target_qq, ctx_id)
+            suffix = f" {html.escape(seg.suffix)}" if seg.suffix else ""
+            parts.append(f"[{html.escape(sender)} {html.escape(seg.action)} {html.escape(target)}{suffix}]")
 
     content = ''.join(parts)
     if extract_replies:

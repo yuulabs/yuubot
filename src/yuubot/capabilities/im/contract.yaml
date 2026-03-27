@@ -1,5 +1,5 @@
 name: im
-summary: 真实 QQ 对话的收发、搜索与浏览
+summary: 真实 QQ 对话的收发、搜索、浏览与表情回应
 actions:
   - name: send
     summary: 把一条或多条消息真实发送到指定 QQ 会话
@@ -7,17 +7,21 @@ actions:
       `im send` 不是写草稿，而是把消息真实发到 QQ。
       发出去后，对方会立刻看到；这些消息也会进入后续对话历史。
 
-      # 单条消息
-      im send --ctx <ctx_id> -- [{"type":"text","data":{"text":"..."}}]
-
-      # 多条消息：用 gap 模拟人打字/思考的停顿，让消息更有节奏感
+      # 发消息（统一信封格式）
       im send --ctx <ctx_id> -- [
         {"msg": [{"type":"text","data":{"text":"第一段"}}], "gap": 0},
-        {"msg": [{"type":"text","data":{"text":"第三段"}}], "gap": 5.0}
+        {"msg": [{"type":"text","data":{"text":"第二段"}}], "gap": 2.0}
       ]
-      # gap 单位为秒，表示发这条消息前等待的时间。
+      # 每个 {"msg": [...], "gap": N} 是一条独立消息。
+      # gap 单位为秒，表示发这条消息前等待的时间，用来模拟打字节奏。
+      # 只发一条时也用这个格式，gap 设 0 即可。
       # 返回发完时的剩余额度。每分钟至多5条，不要spam消息。
-    payload_rule: "JSON array: segments (single) or [{msg, gap}, ...] (multi)"
+
+      # 戳一戳（poke）— 戳群里某个人
+      im send --ctx <ctx_id> -- [
+        {"msg": [{"type":"poke","data":{"qq":"目标QQ号"}}], "gap": 0}
+      ]
+    payload_rule: "JSON array: [{msg, gap}, ...]"
     return_shape: text
   - name: search
     summary: 关键词全文搜索消息
@@ -25,8 +29,27 @@ actions:
     payload_rule: none
     return_shape: text
   - name: browse
-    summary: 按 msg_id 或时间范围浏览消息上下文
-    usage: im browse --msg <msg_id> --before 10 --after 10
+    summary: 按 msg_id 或时间范围浏览消息上下文，支持按用户过滤
+    usage: |
+      im browse --msg <msg_id> --before 10 --after 10
+      im browse --ctx <ctx_id> --since 2024-01-01 --until 2024-01-02
+      im browse --ctx <ctx_id> --qq 123456,789012
+      im browse --ctx <ctx_id> --name "alice"
+      # --qq: 按 QQ 号过滤（逗号分隔多个）
+      # --name: 按昵称/群名片子串匹配
+      # 两个过滤条件为 OR 关系：满足任一即保留
+    payload_rule: none
+    return_shape: text
+  - name: react
+    summary: 对消息贴表情回应（emoji reaction）
+    usage: |
+      im react --msg <msg_id> --emoji <name>
+      # 可用表情: thumbsup, heart, laugh, cry, cool, doge, cute, ok,
+      #   rose, fire, clap, hug, think, salute, respect, celebrate,
+      #   angry, question, press_button
+      # question: 用于“神秘”“不知所云”“太怪了”，是带气氛感的问号，不是普通提问
+      # press_button: 动态“按按钮”，用于“太对了”“我要按这个”，也可用于极度难绷
+      # 兼容旧名: button
     payload_rule: none
     return_shape: text
   - name: read
