@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import httpx
+from loguru import logger
 
 from yuubot.capabilities import capability, get_context, text_block, ContentBlock
 from yuubot.config import load_config
@@ -56,12 +57,27 @@ def _check_agent_permission(cfg, target_agent: str) -> str | None:
     )
 
 
-def _notify_reload(cfg) -> None:
+def _check_role_guard(cfg, caller_agent: str, task_agent: str) -> str | None:
+    """Block if caller agent's min_role < task agent's min_role."""
+    if not caller_agent or not task_agent:
+        return None
+    caller_role = cfg.agent_min_role(caller_agent)
+    task_role = cfg.agent_min_role(task_agent)
+    if caller_role < task_role:
+        return (
+            f"错误: agent {caller_agent!r} (权限={caller_role.name}) "
+            f"无法操作 agent {task_agent!r} (权限={task_role.name}) 的定时任务。"
+        )
+    return None
+
+
+async def _notify_reload(cfg) -> None:
     try:
         api = f"http://{cfg.daemon.api.host}:{cfg.daemon.api.port}"
-        httpx.post(f"{api}/schedule/reload", timeout=5)
-    except httpx.ConnectError:
-        pass
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{api}/schedule/reload", timeout=5)
+    except Exception:
+        logger.debug("schedule reload notification failed (non-critical)")
 
 
 @capability("schedule")
@@ -87,6 +103,10 @@ class ScheduleCapability:
         resolved_agent = _resolve_agent(agent)
 
         err = _check_agent_permission(cfg, resolved_agent)
+        if err:
+            return [text_block(err)]
+
+        err = _check_role_guard(cfg, _caller_agent(), resolved_agent)
         if err:
             return [text_block(err)]
 
@@ -121,7 +141,12 @@ class ScheduleCapability:
             lines.append(f"  ctx: {ctx}")
         if once:
             lines.append("  once: yes (触发一次后自动禁用)")
-        _notify_reload(cfg)
+        caller = _caller_agent()
+        if caller and resolved_agent != caller:
+            lines.append(
+                f"⚠️ 注意: 当前 agent 为 {caller!r}，但任务将由 {resolved_agent!r} 执行。"
+            )
+        await _notify_reload(cfg)
         return [text_block("\n".join(lines))]
 
     async def list(
@@ -185,6 +210,10 @@ class ScheduleCapability:
         if ctx is not None and not _is_master() and obj.ctx_id != ctx:
             return [text_block(f"错误: 无权修改其他会话的定时任务 [{task_id}]")]
 
+        err = _check_role_guard(cfg, _caller_agent(), obj.agent)
+        if err:
+            return [text_block(err)]
+
         if cron is not None:
             validate_cron(cron)
             if not obj.once and is_long_cycle(cron):
@@ -201,12 +230,15 @@ class ScheduleCapability:
             err = _check_agent_permission(cfg, agent)
             if err:
                 return [text_block(err)]
+            err = _check_role_guard(cfg, _caller_agent(), agent)
+            if err:
+                return [text_block(err)]
             obj.agent = agent
         if enable_val is not None:
             obj.enabled = enable_val
 
         await obj.save()
-        _notify_reload(cfg)
+        await _notify_reload(cfg)
         return [text_block(f"已更新定时任务 [{task_id}]")]
 
     async def delete(
@@ -228,6 +260,10 @@ class ScheduleCapability:
         if ctx is not None and not _is_master() and obj.ctx_id != ctx:
             return [text_block(f"错误: 无权删除其他会话的定时任务 [{task_id}]")]
 
+        err = _check_role_guard(cfg, _caller_agent(), obj.agent)
+        if err:
+            return [text_block(err)]
+
         await obj.delete()
-        _notify_reload(cfg)
+        await _notify_reload(cfg)
         return [text_block(f"已删除定时任务 [{task_id}]")]

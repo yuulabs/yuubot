@@ -104,6 +104,7 @@ def bootstrap_section(path: str) -> Section:
 
 from yuubot.characters import main      # noqa: E402, F401
 from yuubot.characters import general   # noqa: E402, F401
+from yuubot.characters import ops       # noqa: E402, F401
 from yuubot.characters import researcher  # noqa: E402, F401
 from yuubot.characters import coder     # noqa: E402, F401
 from yuubot.characters import curator   # noqa: E402, F401

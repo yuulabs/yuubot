@@ -1,23 +1,73 @@
 name: schedule
-summary: 定时任务管理（cron）
+summary: 定时任务管理（cron）— 创建、查看、修改、删除基于 cron 表达式的定时任务
+usage_guidelines: |
+  定时任务到期时，系统会启动指定 agent 执行任务描述中的内容。
+  任务描述就是 agent 收到的 prompt，写清楚要做什么、结果发到哪里。
+
+  默认行为：不带 --recurring 创建的任务是一次性的（once），触发一次后自动禁用。
+  需要重复执行的任务必须加 --recurring。
+
+  权限：只能为自身或 subagents 列表中的 agent 创建/修改定时任务。
+  非 master 用户只能看到和修改自己 ctx 下的任务。
 actions:
   - name: create
     summary: 创建定时任务
-    usage: schedule create "<cron>" "<task>" --agent <name> --ctx <id> --recurring
+    usage: |
+      schedule create "<cron>" "<task_description>" --agent <name> --ctx <id> --recurring
+
+      # cron 是标准 5 字段格式：分 时 日 月 星期
+      # 例：每天早上 6:11 运行
+      schedule create "11 6 * * *" "生成早报并发送" --agent main --ctx 1 --recurring
+
+      # 一次性任务（不加 --recurring），触发后自动禁用
+      schedule create "0 18 25 12 *" "发送圣诞祝福" --agent main --ctx 2
+
+      # --agent 省略时默认为当前 agent
+      # --ctx 省略时任务不绑定特定会话
     payload_rule: none
     return_shape: text
+    notes: |
+      长周期任务（月份字段非 *）有数量上限。
+      task_description 就是 agent 执行时收到的 prompt，应包含完整指令。
   - name: list
     summary: 列出定时任务
-    usage: schedule list --all
+    usage: |
+      # 列出当前活跃的定时任务
+      schedule list
+
+      # 列出所有任务（包括已禁用的）
+      schedule list --all
     payload_rule: none
     return_shape: text
+    notes: 非 master 用户只能看到自己 ctx 下的任务
   - name: update
-    summary: 修改定时任务
-    usage: schedule update <id> --cron "..." --task "..." --enable --disable
+    summary: 修改定时任务的 cron、任务描述、agent 或启用/禁用状态
+    usage: |
+      schedule update <id> --cron "..." --task "..." --agent <name> --enable --disable
+
+      # 修改 cron 表达式
+      schedule update 31 --cron "0 7 * * *"
+
+      # 修改任务描述
+      schedule update 31 --task "生成早报并用纯文本格式发送到 ctx 1"
+
+      # 禁用任务（保留但不再触发）
+      schedule update 31 --disable
+
+      # 重新启用
+      schedule update 31 --enable
+
+      # 可同时修改多个字段
+      schedule update 31 --cron "30 6 * * *" --task "新的任务描述"
     payload_rule: none
     return_shape: text
+    notes: 所有字段都是可选的，只修改指定的字段。--enable 和 --disable 互斥。
   - name: delete
-    summary: 删除定时任务
-    usage: schedule delete <id>
+    summary: 永久删除定时任务
+    usage: |
+      schedule delete <id>
+
+      # 如果只是想暂停，用 update --disable 代替 delete
     payload_rule: none
     return_shape: text
+    notes: 删除不可撤销。如需暂停任务，建议用 schedule update <id> --disable。
