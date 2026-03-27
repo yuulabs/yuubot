@@ -33,10 +33,12 @@ def _set_or_pop(values: dict[str, str], key: str, value: str) -> None:
 def get_capability_tools() -> dict[str, Any]:
     """Load capability tools once."""
     from yuubot.capabilities.tools import call_cap_cli, read_cap_doc
+    from yuubot.sandbox.tool import sandbox_python
 
     return {
         "call_cap_cli": call_cap_cli,
         "read_cap_doc": read_cap_doc,
+        "sandbox_python": sandbox_python,
     }
 
 

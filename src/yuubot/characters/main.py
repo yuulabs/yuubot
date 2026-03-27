@@ -5,7 +5,7 @@ from yuubot.characters import register
 
 _spec = AgentSpec(
     tools=[
-        "call_cap_cli", "read_cap_doc",
+        "call_cap_cli", "read_cap_doc", "sandbox_python",
     ],
     sections=[
         Section("safety", FileRef("prompts/main/safety.md")),
