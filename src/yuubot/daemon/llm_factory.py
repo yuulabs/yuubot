@@ -21,18 +21,29 @@ def _build_provider(provider_name: str, providers: dict):
     api_key = os.environ.get(api_key_env) if api_key_env else None
     base_url = provider_cfg.get("base_url", "") or None
 
+    # Application identification headers
+    default_headers = {
+        "User-Agent": "yuubot/1.0",
+        "X-Application-Name": "yuubot",
+    }
+
     if api_type == "anthropic-messages":
         return yuullm.providers.AnthropicMessagesProvider(
             api_key=api_key,
             base_url=base_url,
             provider_name=provider_name or "anthropic",
+            default_headers=default_headers,
         )
     if provider_name == "openrouter":
-        return yuullm.providers.OpenRouterProvider(api_key=api_key)
+        return yuullm.providers.OpenRouterProvider(
+            api_key=api_key,
+            default_headers=default_headers,
+        )
     return yuullm.providers.OpenAIChatCompletionProvider(
         api_key=api_key,
         base_url=base_url,
         provider_name=provider_name or "openai",
+        default_headers=default_headers,
     )
 
 
