@@ -42,7 +42,14 @@ def mock_recorder_api(base_url: str | None = None):
             sent.append(json.loads(request.content))
             return httpx.Response(200, json=RECORDER_SEND_OK)
 
+        def _capture_guaranteed(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            sent.append(body)
+            # Guaranteed endpoint returns queued status
+            return httpx.Response(200, json={"queued": True, "group_id": body.get("group_id", 0), "queue_size": 1})
+
         router.post(f"{base_url}/send_msg").mock(side_effect=_capture_send)
+        router.post(f"{base_url}/send_msg_guaranteed").mock(side_effect=_capture_guaranteed)
         router.get(f"{base_url}/get_group_list").mock(
             return_value=httpx.Response(200, json={"data": GROUP_LIST}),
         )
@@ -83,13 +90,21 @@ def fake_recorder_api_server(host: str = "127.0.0.1", port: int | None = None):
             self._reply(404, {"error": "not found"})
 
         def do_POST(self) -> None:
-            if self.path != "/send_msg":
-                self._reply(404, {"error": "not found"})
+            if self.path == "/send_msg":
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length) if length else b"{}"
+                sent.append(json.loads(body))
+                self._reply(200, RECORDER_SEND_OK)
                 return
-            length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(length) if length else b"{}"
-            sent.append(json.loads(body))
-            self._reply(200, RECORDER_SEND_OK)
+            if self.path == "/send_msg_guaranteed":
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length) if length else b"{}"
+                data = json.loads(body)
+                sent.append(data)
+                # Guaranteed endpoint returns queued status
+                self._reply(200, {"queued": True, "group_id": data.get("group_id", 0), "queue_size": 1})
+                return
+            self._reply(404, {"error": "not found"})
 
     server = ThreadingHTTPServer((host, port), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

@@ -1,5 +1,6 @@
 """HTTP API proxy — sits between skills/daemon and NapCat HTTP API."""
 
+import asyncio
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -69,6 +70,17 @@ def create_api(
     GROUP_RATE_LIMIT = 5
     group_send_ts: dict[int, deque[float]] = defaultdict(deque)
 
+    def _check_rate_limit(gid: int) -> tuple[bool, int]:
+        """Check and update rate limit for group gid. Returns (allowed, remaining)."""
+        now = time.monotonic()
+        window = group_send_ts[gid]
+        while window and now - window[0] > GROUP_RATE_WINDOW:
+            window.popleft()
+        if len(window) >= GROUP_RATE_LIMIT:
+            return False, 0
+        window.append(now)
+        return True, GROUP_RATE_LIMIT - len(window)
+
     @app.post("/send_msg")
     async def send_msg(request: Request) -> JSONResponse:
         body = await request.json()
@@ -105,18 +117,12 @@ def create_api(
         # Rate limit group messages
         if body.get("message_type") == "group":
             gid = body.get("group_id", 0)
-            now = time.monotonic()
-            window = group_send_ts[gid]
-            # Evict expired timestamps
-            while window and now - window[0] > GROUP_RATE_WINDOW:
-                window.popleft()
-            if len(window) >= GROUP_RATE_LIMIT:
+            allowed, remaining = _check_rate_limit(gid)
+            if not allowed:
                 return JSONResponse(
                     {"error": "群聊限流: 每分钟最多5条", "remaining": 0},
                     status_code=429,
                 )
-            window.append(now)
-            remaining = GROUP_RATE_LIMIT - len(window)
 
             r = await client.post("/send_msg", json=body)
             data = r.json()
@@ -154,14 +160,39 @@ def create_api(
     @app.post("/group_poke")
     async def group_poke(request: Request) -> JSONResponse:
         body = await request.json()
+        # Rate limit group poke actions
+        gid = body.get("group_id", 0)
+        if gid:
+            allowed, remaining = _check_rate_limit(gid)
+            if not allowed:
+                return JSONResponse(
+                    {"error": "群聊限流: 每分钟最多5条", "remaining": 0},
+                    status_code=429,
+                )
         r = await client.post("/group_poke", json=body)
-        return JSONResponse(r.json(), status_code=r.status_code)
+        data = r.json()
+        data["remaining"] = remaining if gid else 0
+        return JSONResponse(data, status_code=r.status_code)
 
     @app.post("/set_msg_emoji_like")
     async def set_msg_emoji_like(request: Request) -> JSONResponse:
         body = await request.json()
+        # Rate limit emoji reactions in groups
+        # Caller should include group_id in body for rate limiting to apply
+        gid = body.get("group_id", 0)
+        remaining = 0
+        if gid:
+            allowed, remaining = _check_rate_limit(gid)
+            if not allowed:
+                return JSONResponse(
+                    {"error": "群聊限流: 每分钟最多5条", "remaining": 0},
+                    status_code=429,
+                )
         r = await client.post("/set_msg_emoji_like", json=body)
-        return JSONResponse(r.json(), status_code=r.status_code)
+        data = r.json()
+        if gid:
+            data["remaining"] = remaining
+        return JSONResponse(data, status_code=r.status_code)
 
     @app.get("/ctx/{ctx_id}")
     async def get_ctx(ctx_id: int) -> JSONResponse:
@@ -174,6 +205,109 @@ def create_api(
     async def list_ctx() -> JSONResponse:
         items = [{"ctx_id": c.ctx_id, "type": c.type, "target_id": c.target_id} for c in ctx_mgr.all()]
         return JSONResponse(items)
+
+    # ── Guaranteed delivery queue ────────────────────────────────────
+
+    guaranteed_queues: dict[int, asyncio.Queue] = {}
+    guaranteed_drain_tasks: dict[int, asyncio.Task] = {}
+
+    async def _drain_guaranteed_queue(gid: int) -> None:
+        """Background task that drains queue when rate limit allows."""
+        queue = guaranteed_queues.get(gid)
+        if queue is None:
+            return
+        try:
+            while True:
+                item = await queue.get()
+                try:
+                    # Wait for rate limit slot (polling approach)
+                    while True:
+                        allowed, remaining = _check_rate_limit(gid)
+                        if allowed:
+                            break
+                        await asyncio.sleep(1)
+                    # Send the message via internal send_msg logic (skip rate limit)
+                    body = item["body"]
+                    r = await client.post("/send_msg", json=body)
+                    data = r.json()
+                    data["remaining"] = remaining
+                    if r.status_code == 200:
+                        await _log_bot_msg(body, data, ctx_mgr, bot_qq)
+                    logger.debug("Guaranteed msg sent: gid={} remaining={}", gid, remaining)
+                except Exception:
+                    logger.exception("Failed to send guaranteed msg for gid={}", gid)
+                finally:
+                    queue.task_done()
+        except asyncio.CancelledError:
+            pass
+
+    def _ensure_drain_task(gid: int) -> None:
+        """Lazily start drain task for a group queue."""
+        if gid not in guaranteed_queues:
+            guaranteed_queues[gid] = asyncio.Queue()
+        if gid not in guaranteed_drain_tasks or guaranteed_drain_tasks[gid].done():
+            guaranteed_drain_tasks[gid] = asyncio.create_task(
+                _drain_guaranteed_queue(gid),
+                name=f"guaranteed-drain-{gid}",
+            )
+
+    @app.post("/send_msg_guaranteed")
+    async def send_msg_guaranteed(request: Request) -> JSONResponse:
+        """Queue message for guaranteed delivery. Returns immediately.
+
+        Group messages are queued and sent FIFO when rate limit allows.
+        Private messages are sent immediately (no rate limit).
+        No 429 responses — guaranteed eventual delivery.
+        """
+        body = await request.json()
+
+        # Mute check — still applies to guaranteed messages
+        msg_type = body.get("message_type", "private")
+        target_id = body.get("group_id") or body.get("user_id") or 0
+        mute_ctx = ctx_mgr.lookup(msg_type, int(target_id))
+        if mute_ctx is not None and mute_ctx in muted_ctxs:
+            logger.warning("send_msg_guaranteed blocked: ctx {} is muted", mute_ctx)
+            return JSONResponse({"error": f"ctx {mute_ctx} is muted"}, status_code=403)
+
+        # Content audit — still applies
+        segments = body.get("message", [])
+        result = audit_message(segments)
+        is_master_private = (
+            master_qq != 0
+            and body.get("message_type") == "private"
+            and body.get("user_id") == master_qq
+        )
+        if not result.passed and not is_master_private:
+            logger.warning("安全审查拦截: {} | match={} | body={}", result.category, result.match, body)
+            error_msg = f"安全审查拦截: 消息包含{result.category}，请勿泄露敏感信息"
+            return JSONResponse({"error": error_msg}, status_code=403)
+
+        # Soft audit
+        if request.headers.get("X-Bot-Mode") == "1" and not is_master_private:
+            soft_result = soft_audit_message(segments)
+            if not soft_result.passed:
+                logger.warning("软审查拦截: {} | match={} | body={}", soft_result.category, soft_result.match, body)
+                error_msg = f"安全审查拦截: {soft_result.category}"
+                return JSONResponse({"error": error_msg}, status_code=403)
+
+        # Private messages — send immediately, no queue
+        if body.get("message_type") != "group":
+            r = await client.post("/send_msg", json=body)
+            data = r.json()
+            if r.status_code == 200:
+                await _log_bot_msg(body, data, ctx_mgr, bot_qq)
+            return JSONResponse(data, status_code=r.status_code)
+
+        # Group messages — queue for guaranteed delivery
+        gid = body.get("group_id", 0)
+        if gid == 0:
+            return JSONResponse({"error": "group_id required for group messages"}, status_code=400)
+
+        _ensure_drain_task(gid)
+        queue_size = guaranteed_queues[gid].qsize()
+        guaranteed_queues[gid].put_nowait({"body": body})
+        logger.info("Guaranteed msg queued: gid={} queue_size={}", gid, queue_size + 1)
+        return JSONResponse({"queued": True, "group_id": gid, "queue_size": queue_size + 1})
 
     @app.post("/shutdown")
     async def do_shutdown() -> JSONResponse:

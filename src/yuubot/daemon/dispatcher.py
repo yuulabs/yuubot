@@ -305,14 +305,15 @@ class Dispatcher:
             await self._send_reply(routed.message, reply)
 
     async def _send_reply(self, message: InboundMessage, text: str) -> None:
-        """Send a text reply back to the source context."""
+        """Send a text reply back to the source context using guaranteed delivery."""
         from yuubot.core.models import Message, TextSegment
         segments: Message = [TextSegment(text=text)]
         target_id = message.group_id if message.chat_type == "group" else message.sender.user_id
         body = build_send_msg(message.chat_type, target_id, segments)
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(f"{self.config.daemon.recorder_api}/send_msg", json=body)
+                # Use guaranteed endpoint for operational commands — never returns 429
+                await client.post(f"{self.config.daemon.recorder_api}/send_msg_guaranteed", json=body)
         except Exception:
             logger.exception("Failed to send reply")
 
