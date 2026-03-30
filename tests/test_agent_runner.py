@@ -6,7 +6,7 @@ from uuid import uuid4
 import yuutools as yt
 import yuullm
 
-from yuuagents import AgentContext, Session
+from yuuagents import AgentContext, ConversationInput, Session
 from yuuagents.agent import AgentConfig
 
 
@@ -46,7 +46,7 @@ def _make_session(*replies: str) -> Session:
 async def test_session_start_and_wait():
     session = _make_session("first reply")
 
-    session.start("first input")
+    session.start(ConversationInput(messages=[yuullm.user("first input")]))
     async for _step in session.step_iter():
         pass
 
@@ -59,14 +59,17 @@ async def test_session_start_and_wait():
 
 async def test_session_resume_preserves_history():
     session = _make_session("reply")
-    session.start("first input")
+    session.start(ConversationInput(messages=[yuullm.user("first input")]))
     async for _step in session.step_iter():
         pass
 
     old_history = list(session.history)
 
     session2 = _make_session("continued reply")
-    session2.resume("followup", history=old_history)
+    session2.resume(
+        ConversationInput(messages=[yuullm.user("followup")]),
+        history=old_history,
+    )
     async for _step in session2.step_iter():
         pass
 
@@ -79,7 +82,7 @@ async def test_session_resume_preserves_history():
 
 async def test_session_resume_can_reuse_conversation_id():
     session = _make_session("reply")
-    session.start("first input")
+    session.start(ConversationInput(messages=[yuullm.user("first input")]))
     async for _step in session.step_iter():
         pass
 
@@ -88,7 +91,7 @@ async def test_session_resume_can_reuse_conversation_id():
 
     session2 = _make_session("continued reply")
     session2.resume(
-        "followup",
+        ConversationInput(messages=[yuullm.user("followup")]),
         history=list(session.history),
         conversation_id=original_conversation_id,
     )
@@ -100,7 +103,7 @@ async def test_session_resume_can_reuse_conversation_id():
 
 async def test_session_send_injects_message():
     session = _make_session("reply")
-    session.start("first input")
+    session.start(ConversationInput(messages=[yuullm.user("first input")]))
     # send is fire-and-forget; the agent will pick it up from mailbox
     async for _step in session.step_iter():
         pass

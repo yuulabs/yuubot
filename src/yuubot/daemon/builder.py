@@ -18,14 +18,16 @@ if TYPE_CHECKING:
     from yuuagents.context import DockerExecutor
 
 import attrs
-from yuuagents import Session
+import yuullm
+from yuuagents import ConversationInput, HandoffInput, ScheduledInput, Session
 from yuuagents.agent import AgentConfig
 from yuuagents.context import AgentContext
+from yuuagents.input import AgentInput
 
 from yuubot.config import Config
 from yuubot.core import env
 from yuubot.core.media_paths import MediaPathContext, host_to_runtime, to_file_uri
-from yuubot.core.models import AtSegment, ImageSegment, TextSegment
+from yuubot.core.models import AtSegment, ImageSegment
 from yuubot.core.types import InboundMessage
 from yuubot.daemon.bot_info import BotInfo
 from yuubot.daemon.render import RenderContext, RenderPolicy, render_memory_hints, render_task
@@ -53,6 +55,7 @@ class TurnContext:
     user_role: str = ""
     text_override: str = ""
     handoff_text: str = ""
+    startup_kind: str = "conversation"
     is_continuation: bool = False
     group_name: str = ""
     bot_name: str = ""
@@ -63,6 +66,7 @@ class TurnContext:
 class TaskBundle:
     task_text: str
     user_items: list[Any]
+    startup_input: AgentInput
     is_multimodal: bool = False
 
 
@@ -159,6 +163,7 @@ class AgentRunBuilder:
         user_role: str = "",
         text_override: str = "",
         handoff_text: str = "",
+        startup_kind: str = "conversation",
         is_continuation: bool = False,
         task_id: str = "",
     ) -> TurnContext:
@@ -172,6 +177,7 @@ class AgentRunBuilder:
             user_role=user_role,
             text_override=text_override,
             handoff_text=handoff_text,
+            startup_kind=startup_kind,
             is_continuation=is_continuation,
             group_name=group_name,
             bot_name=bot_name,
@@ -179,7 +185,6 @@ class AgentRunBuilder:
         )
 
     async def build_task_bundle(self, turn: TurnContext) -> TaskBundle:
-        merged_message = self._merge_messages(turn)
         prompt_spec, _ = self.build_prompt(turn.agent_name)
         tool_names = list(getattr(prompt_spec, "tools", []) or [])
         docker_binding = await self._build_docker_binding(
@@ -189,9 +194,10 @@ class AgentRunBuilder:
         memory_hints = await render_memory_hints(
             await self._memory_probe_text(turn),
             turn.message.ctx_id or None,
+            skip_topic=turn.is_continuation,
         )
         text = await render_task(
-            merged_message,
+            turn.message,
             RenderPolicy(),
             RenderContext(
                 group_name=turn.group_name,
@@ -204,12 +210,29 @@ class AgentRunBuilder:
             memory_hints=memory_hints,
         )
         if not self.has_vision(turn.agent_name):
-            return TaskBundle(task_text=text, user_items=[text], is_multimodal=False)
+            user_items = [text]
+            return TaskBundle(
+                task_text=text,
+                user_items=user_items,
+                startup_input=self._build_startup_input(turn, user_items),
+                is_multimodal=False,
+            )
 
         items = self._build_multimodal_items(text, turn, docker_binding=docker_binding)
         if len(items) == 1:
-            return TaskBundle(task_text=text, user_items=[text], is_multimodal=False)
-        return TaskBundle(task_text=text, user_items=items, is_multimodal=True)
+            user_items = [text]
+            return TaskBundle(
+                task_text=text,
+                user_items=user_items,
+                startup_input=self._build_startup_input(turn, user_items),
+                is_multimodal=False,
+            )
+        return TaskBundle(
+            task_text=text,
+            user_items=items,
+            startup_input=self._build_startup_input(turn, items),
+            is_multimodal=True,
+        )
 
     async def build_run_context(
         self,
@@ -277,6 +300,7 @@ class AgentRunBuilder:
         agent_name: str,
         first_user_message: str,
         parent_env: AgentEnv,
+        startup_kind: str = "conversation",
     ) -> TurnContext:
         event = {
             "post_type": "message",
@@ -297,6 +321,7 @@ class AgentRunBuilder:
             agent_name=agent_name,
             user_role=parent_env.values.get(env.USER_ROLE, ""),
             text_override=first_user_message,
+            startup_kind=startup_kind,
             bot_name="",
             task_id=parent_env.values.get(env.TASK_ID, ""),
         )
@@ -325,25 +350,20 @@ class AgentRunBuilder:
         rendered_parts = [part for part in parts if part]
         return "\n".join(rendered_parts)
 
-    def _merge_messages(self, turn: TurnContext) -> InboundMessage:
+    def _build_startup_input(
+        self,
+        turn: TurnContext,
+        user_items: list[Any],
+    ) -> AgentInput:
+        user_message = yuullm.user(*user_items)
+        if turn.startup_kind == "scheduled":
+            return ScheduledInput(trigger=[user_message])
         if turn.handoff_text:
-            return self._build_handoff_message(turn)
-        return turn.message
-
-    def _build_handoff_message(self, turn: TurnContext) -> InboundMessage:
-        return InboundMessage(
-            message_id=turn.message.message_id,
-            ctx_id=turn.message.ctx_id,
-            chat_type=turn.message.chat_type,
-            group_id=turn.message.group_id,
-            self_id=turn.message.self_id,
-            sender=turn.message.sender,
-            segments=[TextSegment(text=turn.handoff_text)],
-            timestamp=turn.message.timestamp,
-            raw_message=turn.handoff_text,
-            extra_messages=[turn.message],
-            raw_event=turn.message.raw_event,
-        )
+            return HandoffInput(
+                context=[yuullm.user(turn.handoff_text)],
+                task=[user_message],
+            )
+        return ConversationInput(messages=[user_message])
 
     def _build_multimodal_items(
         self,

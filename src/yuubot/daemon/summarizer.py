@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 import attrs
+import yuullm
 import yuutools as yt
 from loguru import logger
-from yuuagents import AgentContext, Session
+from yuuagents import AgentContext, ConversationInput, Session
 from yuuagents.agent import AgentConfig
 
 
@@ -179,7 +180,7 @@ async def _run_summarizer(llm: Any, user_content: str, agent_id: str) -> str:
             docker_container="",
         ),
     )
-    session.start(user_content)
+    session.start(ConversationInput(messages=[yuullm.user(user_content)]))
     async for _step in session.step_iter():
         pass
 
@@ -224,7 +225,7 @@ async def summarize_via_fork(runtime_session: Session) -> str:
 
     fork = Session(config=config, context=context)
     fork.resume(
-        task=_FORK_SUMMARY_INSTRUCTION,
+        ConversationInput(messages=[yuullm.user(_FORK_SUMMARY_INSTRUCTION)]),
         history=list(runtime_session.history),
         conversation_id=runtime_session.conversation_id,
     )

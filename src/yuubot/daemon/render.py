@@ -210,16 +210,16 @@ async def render_signal(
     msg_xml = await _render_single_msg_xml(msg, segments, media_path_ctx)
 
     probe_text = await format_segments(msg.segments)
-    memory_hints = await render_memory_hints(probe_text, msg.ctx_id or None)
+    memory_hints = await render_memory_hints(probe_text, msg.ctx_id or None, skip_topic=True)
 
     return f"你收到了新消息:\n{msg_xml}\n{memory_hints}"
 
 
-async def render_memory_hints(text: str, ctx_id: int | None = None) -> str:
+async def render_memory_hints(text: str, ctx_id: int | None = None, skip_topic: bool = False) -> str:
     """Probe message text against memory store, return hint string with snippets.
 
     Combines FTS5 tokenized search and recall_term substring matching.
-    Also appends group topic if available.
+    Also appends group topic if available (skip_topic=True to omit).
     Best-effort: returns empty string on any failure.
     """
     try:
@@ -232,8 +232,8 @@ async def render_memory_hints(text: str, ctx_id: int | None = None) -> str:
         if snippets:
             parts.append(ConversationRender.memory_hint(snippets=snippets))
 
-        # Group topic context
-        if ctx_id is not None:
+        # Group topic context — only for initial messages
+        if ctx_id is not None and not skip_topic:
             topic = await get_group_topic(ctx_id)
             if topic:
                 parts.append(ConversationRender.group_topic_hint(topic=topic))

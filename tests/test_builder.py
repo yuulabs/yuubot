@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import attrs
+from yuuagents import ConversationInput, HandoffInput
 
 from yuubot.core.onebot import to_inbound_message
 from yuubot.core.types import InboundMessage
@@ -62,7 +63,7 @@ async def test_build_task_bundle_renders_single_message(yuubot_config, monkeypat
     primary = _make_inbound("/yllm first")
     captured: dict[str, object] = {}
 
-    async def fake_render_memory_hints(text: str, ctx_id: int | None = None) -> str:
+    async def fake_render_memory_hints(text: str, ctx_id: int | None = None, skip_topic: bool = False) -> str:
         captured["memory_text"] = text
         return ""
 
@@ -87,15 +88,16 @@ async def test_build_task_bundle_renders_single_message(yuubot_config, monkeypat
     assert captured["bot_name"] == "Bot"
     assert "first" in memory_text
     assert bundle.user_items == [bundle.task_text]
+    assert bundle.startup_input == ConversationInput(messages=[("user", [{"type": "text", "text": "rendered task"}])])
 
 
 async def test_build_task_bundle_prepends_handoff_message(yuubot_config, monkeypatch):
-    """Rollover handoff text becomes the first rendered message of the next turn."""
+    """Rollover handoff text becomes structured context for the next turn."""
     builder = _make_builder(yuubot_config)
     primary = _make_inbound("最新补充")
     captured: dict[str, object] = {}
 
-    async def fake_render_memory_hints(text: str, ctx_id: int | None = None) -> str:
+    async def fake_render_memory_hints(text: str, ctx_id: int | None = None, skip_topic: bool = False) -> str:
         captured["memory_text"] = text
         return ""
 
@@ -112,16 +114,20 @@ async def test_build_task_bundle_prepends_handoff_message(yuubot_config, monkeyp
         agent_name="main",
         task_id="task-handoff",
         handoff_text="这是上一轮的压缩摘要",
+        startup_kind="handoff",
     )
-    await builder.build_task_bundle(turn)
+    bundle = await builder.build_task_bundle(turn)
 
     extra_messages = captured["extra_messages"]
-    assert captured["first_text"] == "这是上一轮的压缩摘要"
+    assert captured["first_text"] == "最新补充"
     assert isinstance(extra_messages, list)
-    assert len(extra_messages) == 1
-    assert extra_messages[0].raw_message == "最新补充"
+    assert len(extra_messages) == 0
     assert "这是上一轮的压缩摘要" in str(captured["memory_text"])
     assert "最新补充" in str(captured["memory_text"])
+    assert bundle.startup_input == HandoffInput(
+        context=[("user", [{"type": "text", "text": "这是上一轮的压缩摘要"}])],
+        task=[("user", [{"type": "text", "text": "rendered task"}])],
+    )
 
 
 async def test_build_run_context_collects_runtime_values(yuubot_config):
@@ -258,4 +264,3 @@ async def test_session_launch_collects_agent_config_and_context(yuubot_config):
     assert launch.config.system == "测试人格"
     assert launch.context.agent_id == "runtime-4"
     assert launch.context.subprocess_env["ctx_id"] == "1"
-

@@ -7,6 +7,7 @@ import contextlib
 from typing import Any
 
 from loguru import logger
+import yuullm
 from yuuagents import Session
 from yuuagents.context import DelegateDepthExceededError
 from yuuagents.types import AgentStatus
@@ -254,9 +255,11 @@ class AgentRunner:
                 runtime_id,
             )
             session.send(
-                "你已经长时间没有使用 im send 向用户同步进展。"
-                "请立即停止等待中的前台工具结果，先用 im send 简短说明你正在做什么、"
-                "为什么还需要一些时间，以及下一步会怎么继续。",
+                yuullm.user(
+                    "你已经长时间没有使用 im send 向用户同步进展。"
+                    "请立即停止等待中的前台工具结果，先用 im send 简短说明你正在做什么、"
+                    "为什么还需要一些时间，以及下一步会怎么继续。",
+                ),
                 defer_tools=True,
             )
         except asyncio.CancelledError:
@@ -308,12 +311,12 @@ class AgentRunner:
         # Start or resume the session
         if session is not None and hasattr(session, "history") and session.history:
             working_session.resume(
-                bundle.task_text,
+                bundle.startup_input,
                 history=session.history,
                 conversation_id=getattr(session, "conversation_id", None),
             )
         else:
-            working_session.start(bundle.task_text)
+            working_session.start(bundle.startup_input)
 
         self._running_sessions[runtime_id] = working_session
 
@@ -380,7 +383,7 @@ class AgentRunner:
                 return
             while True:
                 msg = await q.get()
-                session.send(msg)
+                session.send(yuullm.user(msg))
         except asyncio.CancelledError:
             pass
 
@@ -482,7 +485,7 @@ class AgentRunner:
             agent_env=run_ctx.agent_env,
             ctx_id=None,
         )
-        session.start(bundle.task_text)
+        session.start(bundle.startup_input)
         child_flow = session.flow
         if child_flow is not None:
             parent_session.attach_child_flow(parent_run_id, child_flow)
@@ -573,7 +576,7 @@ class AgentRunner:
             message.strip()
             or "请立即停止等待中的前台工具，把当前工作移到后台，并先汇报简短进展。"
         )
-        delegate.send(prompt, defer_tools=True)
+        delegate.send(yuullm.user(prompt), defer_tools=True)
         return f"Sent defer signal to delegated run {run_id}"
 
     async def input_run(
@@ -589,7 +592,7 @@ class AgentRunner:
             return f"[ERROR] invalid parent session for run {run_id}"
         delegate = self._delegate_sessions_by_run_id.get(run_id)
         if delegate is not None:
-            delegate.send(data)
+            delegate.send(yuullm.user(data))
             return f"Input sent to delegated run {run_id}"
         flow = parent_session.find_flow(run_id)
         if flow is None:
@@ -659,6 +662,7 @@ class AgentRunner:
             user_role=user_role,
             text_override=text_override,
             handoff_text=handoff_text,
+            startup_kind="handoff" if handoff_text else "conversation",
             is_continuation=current_session is not None,
             task_id=task_id,
         )
@@ -703,6 +707,7 @@ class AgentRunner:
             agent_name=agent_name,
             first_user_message=full_task,
             parent_env=base_env,
+            startup_kind="scheduled",
         )
         try:
             await self._launch(

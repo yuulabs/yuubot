@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yuutools as yt
 from loguru import logger
+from yuuagents import ConversationInput
 from yuuagents.agent import AgentConfig
 from yuuagents.context import AgentContext
 from yuuagents.core.flow import Agent as FlowAgent
@@ -102,11 +103,16 @@ async def _describe_image(image_path: str) -> str:
         docker_container="",
     )
     agent = FlowAgent(config=config, ctx=ctx)
-    agent.start()
-    agent.send(yuullm.user(
-        "请描述这张图片：",
-        {"type": "image_url", "image_url": {"url": data_uri}},
-    ))
+    agent.start(
+        ConversationInput(
+            messages=[
+                yuullm.user(
+                    "请描述这张图片：",
+                    {"type": "image_url", "image_url": {"url": data_uri}},
+                )
+            ]
+        )
+    )
     async for _step in agent.steps():
         pass
     history = agent.messages

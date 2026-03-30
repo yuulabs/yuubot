@@ -10,10 +10,10 @@ from yuubot.daemon.agent_runner import AgentRunner
 class _FakeAgent:
     def __init__(self) -> None:
         self.flow = SimpleNamespace(stem=[])
-        self.sent: list[tuple[str, bool]] = []
+        self.sent: list[tuple[yuullm.Message, bool]] = []
 
-    def send(self, content: str, *, defer_tools: bool = False) -> None:
-        self.sent.append((content, defer_tools))
+    def send(self, message: yuullm.Message, *, defer_tools: bool = False) -> None:
+        self.sent.append((message, defer_tools))
 
 
 class _FakeSession:
@@ -44,8 +44,8 @@ class _FakeSession:
             return True
         return False
 
-    def send(self, content: str, *, defer_tools: bool = False) -> None:
-        self._agent.send(content, defer_tools=defer_tools)
+    def send(self, message: yuullm.Message, *, defer_tools: bool = False) -> None:
+        self._agent.send(message, defer_tools=defer_tools)
 
 
 @pytest.mark.asyncio
@@ -62,8 +62,10 @@ async def test_silence_timeout_defers_and_injects_progress_prompt(yuubot_config)
     )
 
     assert len(session._agent.sent) == 1
-    content, defer_tools = session._agent.sent[0]
+    message, defer_tools = session._agent.sent[0]
     assert defer_tools is True
+    assert message[0] == "user"
+    content = "".join(item["text"] for item in message[1] if item.get("type") == "text")
     assert "im send" in content
 
 
