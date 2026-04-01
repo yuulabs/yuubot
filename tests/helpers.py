@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 
@@ -38,3 +39,10 @@ def sent_texts(sent: list[dict]) -> list[str]:
 def history_text(history: list) -> str:
     """Flatten session history into a string for behavior assertions."""
     return "\n".join(str(item) for item in history)
+
+
+async def wait_worker(dispatcher, key: str, timeout: float = 5.0) -> None:
+    """Wait until a dispatcher worker drains its queue."""
+    worker = dispatcher._workers.get(key)
+    if worker:
+        await asyncio.wait_for(worker.queue.join(), timeout=timeout)

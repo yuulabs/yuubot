@@ -8,6 +8,7 @@ import httpx
 from loguru import logger
 
 from yuubot.capabilities import capability, get_context, text_block, ContentBlock
+from yuubot.characters import get_character
 from yuubot.config import load_config
 from yuubot.core.models import ScheduledTask
 from .cron import is_long_cycle, validate_cron
@@ -46,9 +47,11 @@ def _check_agent_permission(cfg, target_agent: str) -> str | None:
         return None
     if target_agent == caller:
         return None
-    agents_cfg = cfg.yuuagents.get("agents", {})
-    caller_cfg = agents_cfg.get(caller, {})
-    allowed = caller_cfg.get("subagents", [])
+    try:
+        caller_cfg = get_character(caller)
+    except KeyError:
+        return None
+    allowed = list(caller_cfg.spec.subagents)
     if "*" in allowed or target_agent in allowed:
         return None
     return (
@@ -82,7 +85,6 @@ async def _notify_reload(cfg) -> None:
 
 @capability("schedule")
 class ScheduleCapability:
-
     async def create(
         self,
         *,
@@ -93,7 +95,11 @@ class ScheduleCapability:
         **_kw,
     ) -> ContentBlocks:
         if not _positional or len(_positional) < 2:
-            return [text_block("错误: 用法: schedule create <cron> <task> [--agent ...] [--ctx ...] [--recurring]")]
+            return [
+                text_block(
+                    "错误: 用法: schedule create <cron> <task> [--agent ...] [--ctx ...] [--recurring]"
+                )
+            ]
 
         cron_expr = _positional[0]
         task = " ".join(_positional[1:])
@@ -117,10 +123,12 @@ class ScheduleCapability:
                 if is_long_cycle(t.cron):
                     existing_long += 1
             if existing_long >= cfg.schedule.max_long_cycle:
-                return [text_block(
-                    f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。"
-                    f"请先删除或禁用已有的长周期任务。"
-                )]
+                return [
+                    text_block(
+                        f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。"
+                        f"请先删除或禁用已有的长周期任务。"
+                    )
+                ]
 
         created_by = _caller_agent() or str(get_context().user_id or "")
         obj = await ScheduledTask.create(
@@ -172,7 +180,7 @@ class ScheduleCapability:
             once_tag = " [once]" if t.once else " [recurring]"
             ctx_str = f" ctx={t.ctx_id}" if t.ctx_id is not None else ""
             lines.append(
-                f"[{t.id}] ({status}{once_tag}) cron=\"{t.cron}\" "
+                f'[{t.id}] ({status}{once_tag}) cron="{t.cron}" '
                 f"agent={t.agent}{ctx_str}"
             )
             lines.append(f"     task: {t.task}")
@@ -218,11 +226,19 @@ class ScheduleCapability:
             validate_cron(cron)
             if not obj.once and is_long_cycle(cron):
                 existing_long = 0
-                for t in await ScheduledTask.filter(enabled=True, once=False).exclude(id=task_id).all():
+                for t in (
+                    await ScheduledTask.filter(enabled=True, once=False)
+                    .exclude(id=task_id)
+                    .all()
+                ):
                     if is_long_cycle(t.cron):
                         existing_long += 1
                 if existing_long >= cfg.schedule.max_long_cycle:
-                    return [text_block(f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。")]
+                    return [
+                        text_block(
+                            f"错误: 长周期定时任务已达上限 ({cfg.schedule.max_long_cycle})。"
+                        )
+                    ]
             obj.cron = cron
         if task is not None:
             obj.task = task

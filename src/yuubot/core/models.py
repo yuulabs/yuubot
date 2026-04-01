@@ -51,7 +51,21 @@ class PokeSegment(msgspec.Struct, tag="poke"):
     suffix: str = ""     # optional suffix text
 
 
-Segment = TextSegment | ImageSegment | AtSegment | ReplySegment | ForwardSegment | JsonSegment | PokeSegment
+class ReactSegment(msgspec.Struct, tag="react"):
+    message_id: str
+    emoji_id: str
+
+
+Segment = (
+    TextSegment
+    | ImageSegment
+    | AtSegment
+    | ReplySegment
+    | ForwardSegment
+    | JsonSegment
+    | PokeSegment
+    | ReactSegment
+)
 
 Message = list[Segment]
 
@@ -98,6 +112,8 @@ def segments_to_plain(segments: Message) -> str:
         elif isinstance(seg, PokeSegment):
             suffix = f" {seg.suffix}" if seg.suffix else ""
             parts.append(f"[{seg.sender_qq} {seg.action} {seg.target_qq}{suffix}]")
+        elif isinstance(seg, ReactSegment):
+            parts.append(f"[表情回应:{seg.emoji_id} -> 消息{seg.message_id}]")
     return "".join(parts)
 
 

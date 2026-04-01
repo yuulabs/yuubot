@@ -5,6 +5,56 @@ from datetime import datetime, timedelta, timezone
 from tortoise import connections
 
 
+def _rows_to_messages(rows) -> list[dict]:
+    return [
+        {
+            "db_id": row[0],
+            "message_id": row[1],
+            "timestamp": row[2],
+            "user_id": row[3],
+            "nickname": row[4],
+            "display_name": row[5],
+            "ctx_id": row[6],
+            "content": row[7],
+            "raw_message": row[8],
+            "media_files": row[9] if row[9] else [],
+        }
+        for row in rows
+    ]
+
+
+async def resolve_message_db_id(
+    *,
+    message_id: int | None,
+    ctx_id: int | None = None,
+    user_id: int | None = None,
+) -> int:
+    """Resolve OneBot ``message_id`` to the local messages-table row ID."""
+    if message_id is None:
+        return 0
+
+    conn = connections.get("default")
+    conditions = ["message_id = ?"]
+    params: list[object] = [message_id]
+
+    if ctx_id is not None:
+        conditions.append("ctx_id = ?")
+        params.append(ctx_id)
+    if user_id is not None:
+        conditions.append("user_id = ?")
+        params.append(user_id)
+
+    sql = (
+        "SELECT id FROM messages WHERE "
+        + " AND ".join(conditions)
+        + " ORDER BY id DESC LIMIT 1"
+    )
+    _, rows = await conn.execute_query(sql, params)
+    if not rows:
+        return 0
+    return int(rows[0][0] or 0)
+
+
 async def search_messages(
     keywords: str,
     ctx_id: int | None,
@@ -44,20 +94,105 @@ async def search_messages(
 
     _, rows = await conn.execute_query(sql, params)
 
-    return [
-        {
-            "message_id": row[0],
-            "timestamp": row[1],
-            "user_id": row[2],
-            "nickname": row[3],
-            "display_name": row[4],
-            "ctx_id": row[5],
-            "content": row[6],
-            "raw_message": row[7],
-            "media_files": row[8] if row[8] else [],
-        }
-        for row in rows
-    ]
+    return _rows_to_messages([(None, *row) for row in rows])
+
+
+async def recent_messages(
+    ctx_id: int,
+    *,
+    after_row_id: int = 0,
+    upto_row_id: int | None = None,
+    limit: int | None = 50,
+) -> list[dict]:
+    """Return recent real QQ messages in a ctx ordered oldest → newest.
+
+    ``after_row_id`` is exclusive. ``upto_row_id`` is inclusive.
+    When ``limit`` is None, returns the full window.
+    """
+    conn = connections.get("default")
+
+    conditions = ["ctx_id = ?", "id > ?"]
+    params: list[object] = [ctx_id, after_row_id]
+    if upto_row_id is not None:
+        conditions.append("id <= ?")
+        params.append(upto_row_id)
+
+    sql = f"""
+        SELECT id, message_id, timestamp, user_id, nickname, display_name, ctx_id, content, raw_message, media_files
+        FROM messages
+        WHERE {" AND ".join(conditions)}
+        ORDER BY id ASC
+    """
+    if limit is not None:
+        sql += "\nLIMIT ?"
+        params.append(limit)
+
+    _, rows = await conn.execute_query(sql, params)
+    return _rows_to_messages(rows)
+
+
+async def last_message_row_id_by_user(
+    ctx_id: int,
+    *,
+    user_id: int,
+    before_row_id: int | None = None,
+) -> int:
+    """Return the latest message row ID sent by ``user_id`` in ``ctx_id``."""
+    conn = connections.get("default")
+    conditions = ["ctx_id = ?", "user_id = ?"]
+    params: list[object] = [ctx_id, user_id]
+    if before_row_id is not None:
+        conditions.append("id < ?")
+        params.append(before_row_id)
+
+    sql = f"""
+        SELECT id
+        FROM messages
+        WHERE {" AND ".join(conditions)}
+        ORDER BY id DESC
+        LIMIT 1
+    """
+    _, rows = await conn.execute_query(sql, params)
+    if not rows:
+        return 0
+    return int(rows[0][0] or 0)
+
+
+async def recent_window_messages(
+    ctx_id: int,
+    *,
+    after_row_id: int = 0,
+    upto_row_id: int | None = None,
+    limit: int = 10,
+) -> tuple[list[dict], bool]:
+    """Return the newest bounded ctx window ordered oldest -> newest.
+
+    ``after_row_id`` is exclusive. ``upto_row_id`` is inclusive.
+    Returns ``(messages, truncated)`` where ``truncated`` means older messages
+    existed in the same window but only the newest ``limit`` were kept.
+    """
+    conn = connections.get("default")
+
+    conditions = ["ctx_id = ?", "id > ?"]
+    params: list[object] = [ctx_id, after_row_id]
+    if upto_row_id is not None:
+        conditions.append("id <= ?")
+        params.append(upto_row_id)
+
+    sql = f"""
+        SELECT id, message_id, timestamp, user_id, nickname, display_name, ctx_id, content, raw_message, media_files
+        FROM messages
+        WHERE {" AND ".join(conditions)}
+        ORDER BY id DESC
+        LIMIT ?
+    """
+    params.append(limit + 1)
+    _, rows = await conn.execute_query(sql, params)
+    truncated = len(rows) > limit
+    if truncated:
+        rows = rows[:limit]
+    rows.reverse()
+    return _rows_to_messages(rows), truncated
 
 
 async def browse_messages(
@@ -164,6 +299,7 @@ async def browse_messages(
 
     results = [
         {
+            "db_id": 0,
             "message_id": row[0],
             "timestamp": row[1],
             "user_id": row[2],

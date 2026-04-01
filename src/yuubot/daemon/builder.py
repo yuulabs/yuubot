@@ -13,16 +13,19 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 if TYPE_CHECKING:
     from yuuagents.context import DockerExecutor
 
 import attrs
 import yuullm
-from yuuagents import ConversationInput, HandoffInput, ScheduledInput, Session
+from yuuagents import ConversationInput, HandoffInput, ScheduledInput
 from yuuagents.agent import AgentConfig
+from yuuagents.capabilities import AgentCapabilities, DockerCapability
 from yuuagents.context import AgentContext
-from yuuagents.input import AgentInput
+from yuuagents.core.flow import Agent
+from yuuagents.input import AgentInput, render_message_text
 
 from yuubot.config import Config
 from yuubot.core import env
@@ -32,6 +35,7 @@ from yuubot.core.types import InboundMessage
 from yuubot.daemon.bot_info import BotInfo
 from yuubot.daemon.render import RenderContext, RenderPolicy, render_memory_hints, render_task
 from yuubot.capabilities.im.formatter import format_segments
+from yuubot.capabilities.im.query import last_message_row_id_by_user, recent_window_messages
 
 
 @attrs.define(frozen=True)
@@ -57,6 +61,7 @@ class TurnContext:
     handoff_text: str = ""
     startup_kind: str = "conversation"
     is_continuation: bool = False
+    recent_ctx_upto_row_id: int = 0
     group_name: str = ""
     bot_name: str = ""
     task_id: str = ""
@@ -81,22 +86,34 @@ class RunContext:
     tool_manager: Any
     persona: str
     agent_env: AgentEnv
-    addon_context: Any
+    capability_context: Any
     docker: DockerExecutor | None
     docker_binding: DockerBinding
     delegate_depth: int = 0
 
-    def build_agent_context(self, *, manager: Any) -> AgentContext:
+    def build_agent_context(
+        self,
+        *,
+        basin: Any,
+        spawn_agent: Any,
+    ) -> AgentContext:
+        docker_capability = None
+        if self.docker is not None and self.docker_binding.container_id:
+            docker_capability = DockerCapability(
+                executor=self.docker,
+                container_id=self.docker_binding.container_id,
+            )
         return AgentContext(
             task_id=self.task_id,
             agent_id=self.runtime_id,
             workdir=self.docker_binding.workdir,
-            docker_container=self.docker_binding.container_id,
+            capabilities=AgentCapabilities(
+                docker=docker_capability,
+                basin=basin,
+                spawn_agent=spawn_agent,
+                subprocess_env=dict(self.agent_env.values),
+            ),
             delegate_depth=self.delegate_depth,
-            manager=manager,
-            docker=self.docker,
-            subprocess_env=self.agent_env.values,
-            addon_context=self.addon_context,
         )
 
     def build_agent_config(self, *, llm: Any) -> AgentConfig:
@@ -105,9 +122,6 @@ class RunContext:
             system=self.system_prompt,
             tools=self.tool_manager,
             llm=llm,
-            max_steps=self.prompt_spec.agent_spec.max_steps,
-            soft_timeout=self.prompt_spec.agent_spec.soft_timeout,
-            silence_timeout=self.prompt_spec.agent_spec.silence_timeout,
             tool_batch_timeout=self.prompt_spec.agent_spec.tool_batch_timeout,
         )
 
@@ -120,9 +134,10 @@ class ActiveRun:
 
 
 @attrs.define(frozen=True)
-class SessionLaunch:
+class AgentLaunch:
     config: AgentConfig
     context: AgentContext
+    capability_context: Any
 
     @classmethod
     def from_run_context(
@@ -130,15 +145,40 @@ class SessionLaunch:
         run_ctx: RunContext,
         *,
         llm: Any,
-        manager: Any,
-    ) -> SessionLaunch:
+        basin: Any,
+        spawn_agent: Any,
+    ) -> AgentLaunch:
         return cls(
             config=run_ctx.build_agent_config(llm=llm),
-            context=run_ctx.build_agent_context(manager=manager),
+            context=run_ctx.build_agent_context(
+                basin=basin,
+                spawn_agent=spawn_agent,
+            ),
+            capability_context=run_ctx.capability_context,
         )
 
-    def open(self) -> Session:
-        return Session(config=self.config, context=self.context)
+    def open(
+        self,
+        startup_input: AgentInput,
+        *,
+        flow_id: str | None = None,
+        initial_messages: list[yuullm.Message] | None = None,
+        conversation_id: UUID | None = None,
+    ) -> Agent:
+        from yuubot.capabilities.runtime import register_capability_context
+
+        if self.capability_context is not None:
+            register_capability_context(self.context.agent_id, self.capability_context)
+
+        agent = Agent(
+            config=self.config,
+            ctx=self.context,
+            flow_id=flow_id,
+            conversation_id=conversation_id,
+            initial_messages=list(initial_messages or []),
+        )
+        agent.start(startup_input)
+        return agent
 
 
 @attrs.define
@@ -165,6 +205,7 @@ class AgentRunBuilder:
         handoff_text: str = "",
         startup_kind: str = "conversation",
         is_continuation: bool = False,
+        recent_ctx_upto_row_id: int = 0,
         task_id: str = "",
     ) -> TurnContext:
         group_name = ""
@@ -179,18 +220,20 @@ class AgentRunBuilder:
             handoff_text=handoff_text,
             startup_kind=startup_kind,
             is_continuation=is_continuation,
+            recent_ctx_upto_row_id=recent_ctx_upto_row_id,
             group_name=group_name,
             bot_name=bot_name,
             task_id=task_id,
         )
 
     async def build_task_bundle(self, turn: TurnContext) -> TaskBundle:
-        prompt_spec, _ = self.build_prompt(turn.agent_name)
+        prompt_spec, _ = await self.build_prompt(turn.agent_name)
         tool_names = list(getattr(prompt_spec, "tools", []) or [])
         docker_binding = await self._build_docker_binding(
             turn.task_id,
             tool_names,
         )
+        has_vision = await self.has_vision(turn.agent_name)
         memory_hints = await render_memory_hints(
             await self._memory_probe_text(turn),
             turn.message.ctx_id or None,
@@ -202,14 +245,15 @@ class AgentRunBuilder:
             RenderContext(
                 group_name=turn.group_name,
                 bot_name=turn.bot_name,
-                has_vision=self.has_vision(turn.agent_name),
+                has_vision=has_vision,
                 bot_qq=str(self.config.bot.qq),
                 docker_host_mount=docker_binding.host_mount,
             ),
             is_continuation=turn.is_continuation,
             memory_hints=memory_hints,
+            recent_ctx_upto_row_id=turn.recent_ctx_upto_row_id,
         )
-        if not self.has_vision(turn.agent_name):
+        if not has_vision:
             user_items = [text]
             return TaskBundle(
                 task_text=text,
@@ -243,7 +287,7 @@ class AgentRunBuilder:
         tool_names: list[str] | None = None,
         delegate_depth: int = 0,
     ) -> RunContext:
-        prompt_spec, system_prompt = self.build_prompt(turn.agent_name)
+        prompt_spec, system_prompt = await self.build_prompt(turn.agent_name)
         resolved_tool_names = list(prompt_spec.tools) if tool_names is None else list(tool_names)
         tool_manager = self.build_tool_manager(resolved_tool_names)
         docker_binding = await self._build_docker_binding(task_id, resolved_tool_names)
@@ -277,6 +321,7 @@ class AgentRunBuilder:
             docker_home_host_dir=docker_binding.host_home_dir,
             docker_home_dir=docker_binding.container_home_dir,
         )
+        capability_context.runtime_id = runtime_id
         persona = prompt_spec.resolved_sections[0][1] if prompt_spec.resolved_sections else ""
         return RunContext(
             task_id=task_id,
@@ -288,7 +333,7 @@ class AgentRunBuilder:
             tool_manager=tool_manager,
             persona=persona,
             agent_env=agent_env,
-            addon_context=capability_context,
+            capability_context=capability_context,
             docker=self.docker if self.needs_docker(resolved_tool_names) else None,
             docker_binding=docker_binding,
             delegate_depth=delegate_depth,
@@ -298,17 +343,31 @@ class AgentRunBuilder:
         self,
         *,
         agent_name: str,
-        first_user_message: str,
+        input: AgentInput,
         parent_env: AgentEnv,
-        startup_kind: str = "conversation",
     ) -> TurnContext:
+        startup_kind = input.kind
+        handoff_text = ""
+        if isinstance(input, HandoffInput):
+            handoff_text = self._render_input_messages(input.context)
+
+        if isinstance(input, ConversationInput):
+            primary_text = self._render_input_messages(input.messages)
+        elif isinstance(input, HandoffInput):
+            primary_text = self._render_input_messages(input.task)
+        elif isinstance(input, ScheduledInput):
+            primary_text = self._render_input_messages(input.trigger)
+        else:
+            primary_text = ""
+
+        raw_text = primary_text or handoff_text or startup_kind
         event = {
             "post_type": "message",
             "message_type": "private",
             "message_id": 0,
             "user_id": int(parent_env.values.get(env.USER_ID, "0") or 0),
-            "message": [{"type": "text", "data": {"text": first_user_message}}],
-            "raw_message": first_user_message,
+            "message": [{"type": "text", "data": {"text": raw_text}}],
+            "raw_message": raw_text,
             "time": 0,
             "self_id": self.config.bot.qq,
             "sender": {"nickname": "", "card": ""},
@@ -320,7 +379,8 @@ class AgentRunBuilder:
             message=to_inbound_message(event),
             agent_name=agent_name,
             user_role=parent_env.values.get(env.USER_ROLE, ""),
-            text_override=first_user_message,
+            text_override=primary_text,
+            handoff_text=handoff_text,
             startup_kind=startup_kind,
             bot_name="",
             task_id=parent_env.values.get(env.TASK_ID, ""),
@@ -345,6 +405,28 @@ class AgentRunBuilder:
             parts.append(turn.handoff_text)
         if turn.text_override:
             parts.append(turn.text_override)
+        elif (
+            turn.is_continuation
+            and turn.message.ctx_id
+            and turn.recent_ctx_upto_row_id > 0
+        ):
+            anchor_row_id = await last_message_row_id_by_user(
+                turn.message.ctx_id,
+                user_id=self.config.bot.qq,
+                before_row_id=turn.recent_ctx_upto_row_id,
+            )
+            messages, _ = await recent_window_messages(
+                turn.message.ctx_id,
+                after_row_id=anchor_row_id,
+                upto_row_id=turn.recent_ctx_upto_row_id,
+                limit=10,
+            )
+            if messages:
+                parts.append("\n".join(
+                    str(msg.get("content", "")).strip()
+                    for msg in messages
+                    if str(msg.get("content", "")).strip()
+                ))
         else:
             parts.append(await format_segments(turn.message.segments))
         rendered_parts = [part for part in parts if part]
@@ -364,6 +446,11 @@ class AgentRunBuilder:
                 task=[user_message],
             )
         return ConversationInput(messages=[user_message])
+
+    @staticmethod
+    def _render_input_messages(messages: list[yuullm.Message]) -> str:
+        parts = [render_message_text(message).strip() for message in messages]
+        return "\n\n".join(part for part in parts if part)
 
     def _build_multimodal_items(
         self,

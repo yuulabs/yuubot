@@ -18,9 +18,12 @@ dependencies = [
     "trafilatura",
     "attrs",
     "msgspec",
-    "yuuagents",
     "loguru>=0.7.3",
     "playwright-stealth>=2.0.2",
+    "yuuagents>=0.1.1",
+    "yuullm>=0.6.0",
+    "yuutools>=0.2.0",
+    "yuutrace>=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -39,11 +42,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
-[tool.uv.sources]
-yuuagents = { workspace = true }
-yuullm = { workspace = true }
-yuutrace = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yuubot"]

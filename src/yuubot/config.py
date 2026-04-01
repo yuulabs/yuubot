@@ -11,6 +11,7 @@ from typing import Any
 import msgspec
 import yaml
 from dotenv import load_dotenv
+from loguru import logger
 
 _ENV_RE = re.compile(r"\$\{(\w+)\}")
 
@@ -60,13 +61,6 @@ class DatabaseConfig(msgspec.Struct):
     simple_ext: str = ""  # path to libsimple (without .so), auto-detected if empty
 
 
-class LLMConfig(msgspec.Struct):
-    provider: str = "openai"
-    model: str = "gpt-4o"
-    base_url: str = "https://api.openai.com/v1"
-    api_key: str = ""
-
-
 class CronJob(msgspec.Struct):
     task: str = ""
     cron: str = ""
@@ -96,9 +90,9 @@ class ResponseConfig(msgspec.Struct):
 class SessionConfig(msgspec.Struct):
     ttl: int = 300  # seconds before session expires
     max_tokens: int = 60000  # context window token limit
-    summarizer_provider: str = ""  # provider for summarizer/compressor LLM (required)
-    summarizer_model: str = ""  # model for summarizer/compressor LLM (required)
-    summarize_steps_span: int = 8  # steps to look back when generating compression summary
+    summarize_steps_span: int = (
+        8  # steps to look back when generating compression summary
+    )
 
 
 class Config(msgspec.Struct):
@@ -108,7 +102,12 @@ class Config(msgspec.Struct):
     database: DatabaseConfig = msgspec.field(default_factory=DatabaseConfig)
     log_dir: str = "~/.yuubot/logs"
     yuuagents: dict[str, Any] = msgspec.field(default_factory=dict)
-    llm: LLMConfig = msgspec.field(default_factory=LLMConfig)
+    provider_priorities: dict[str, int] = msgspec.field(default_factory=dict)
+    provider_affinity: dict[str, dict[str, int]] = msgspec.field(default_factory=dict)
+    llm_roles: dict[str, str] = msgspec.field(default_factory=dict)
+    agent_llm_refs: dict[str, str] = msgspec.field(default_factory=dict)
+    families: dict[str, Any] = msgspec.field(default_factory=dict)
+    selectors: list[str] = msgspec.field(default_factory=list)
     api_keys: dict[str, str] = msgspec.field(default_factory=dict)
     cron_jobs: list[CronJob] = msgspec.field(default_factory=list)
     memory: MemoryConfig = msgspec.field(default_factory=MemoryConfig)
@@ -129,6 +128,7 @@ class Config(msgspec.Struct):
         }
 
         from yuubot.characters import CHARACTER_REGISTRY
+
         char = CHARACTER_REGISTRY.get(agent_name)
         if char is not None:
             return _role_map.get(char.min_role.lower(), Role.FOLK)
@@ -137,6 +137,7 @@ class Config(msgspec.Struct):
     def validate_agent_permissions(self) -> None:
         """Ensure parent min_role >= every subagent's min_role."""
         from yuubot.characters import CHARACTER_REGISTRY
+
         for name, char in CHARACTER_REGISTRY.items():
             parent_role = self.agent_min_role(name)
             for sub_name in char.spec.subagents:
@@ -151,6 +152,7 @@ class Config(msgspec.Struct):
     def validate_subagent_tools(self) -> None:
         """Ensure agents with subagents have delegate tool configured."""
         from yuubot.characters import CHARACTER_REGISTRY
+
         for name, char in CHARACTER_REGISTRY.items():
             if char.spec.subagents and "delegate" not in char.spec.tools:
                 raise ValueError(
@@ -161,6 +163,7 @@ class Config(msgspec.Struct):
     @property
     def persona(self) -> str:
         from yuubot.characters import get_character
+
         char = get_character("main")
         return char.resolve_persona()
 
@@ -171,6 +174,38 @@ class Config(msgspec.Struct):
         paths_obj = skills.get("paths")
         paths = paths_obj if isinstance(paths_obj, list) else ["~/.yagents/skills"]
         return [str(Path(p).expanduser()) for p in paths]
+
+    def agent_llm_ref(self, agent_name: str) -> str:
+        ref = str(self.agent_llm_refs.get(agent_name, "") or "").strip()
+        if ref:
+            return ref
+
+        from yuubot.characters import CHARACTER_REGISTRY
+
+        char = CHARACTER_REGISTRY.get(agent_name)
+        if char is not None:
+            llm_ref = str(getattr(char, "llm_ref", "") or "").strip()
+            if llm_ref:
+                return llm_ref
+            provider = str(getattr(char, "provider", "") or "").strip()
+            model = str(getattr(char, "model", "") or "").strip()
+            if provider and model:
+                return f"{provider}/{model}"
+
+        agents_obj = self.yuuagents.get("agents")
+        agents = agents_obj if isinstance(agents_obj, dict) else {}
+        agent_cfg = agents.get(agent_name, agents.get("main", {}))
+        if isinstance(agent_cfg, dict):
+            provider = str(agent_cfg.get("provider", "") or "").strip()
+            model = str(agent_cfg.get("model", "") or "").strip()
+            if provider and model:
+                return f"{provider}/{model}"
+        if agent_name != "main":
+            return self.agent_llm_ref("main")
+        raise ValueError(f"agent {agent_name!r} has no llm ref configured")
+
+    def build_yuuagents_config(self) -> dict[str, Any]:
+        return build_yuuagents_config(self)
 
 
 # ── Loading Logic ────────────────────────────────────────────────
@@ -204,7 +239,13 @@ def _expand_path(p: str) -> str:
 
 def _walk_expand_paths(obj: Any, path_keys: set[str] | None = None) -> Any:
     """Expand ~ in known path fields."""
-    _path_keys = path_keys or {"path", "browser_profile", "download_dir", "media_dir", "log_dir"}
+    _path_keys = path_keys or {
+        "path",
+        "browser_profile",
+        "download_dir",
+        "media_dir",
+        "log_dir",
+    }
     if isinstance(obj, dict):
         return {
             k: (
@@ -250,25 +291,125 @@ def _find_config(explicit: str | None = None) -> Path:
     )
 
 
+def _find_llm_config(config_path: Path) -> Path | None:
+    """Look for llm.yaml next to the main config file."""
+    llm_path = config_path.with_name("llm.yaml")
+    return llm_path if llm_path.exists() else None
+
+
+def _derive_agent_llm_refs(raw_yuuagents: dict[str, Any]) -> dict[str, str]:
+    agents_raw = raw_yuuagents.get("agents", {})
+    if not isinstance(agents_raw, dict):
+        return {}
+    result: dict[str, str] = {}
+    for name, payload in agents_raw.items():
+        if not isinstance(payload, dict):
+            continue
+        provider = str(payload.get("provider", "") or "").strip()
+        model = str(payload.get("model", "") or "").strip()
+        if provider and model:
+            result[str(name)] = f"{provider}/{model}"
+    return result
+
+
+def _strip_provider_model_catalogs(raw_yuuagents: dict[str, Any]) -> dict[str, int]:
+    providers_raw = raw_yuuagents.get("providers", {})
+    if not isinstance(providers_raw, dict):
+        return {}
+    removed: dict[str, int] = {}
+    for provider_name, provider_cfg in providers_raw.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        if "models" not in provider_cfg:
+            continue
+        models_raw = provider_cfg.pop("models")
+        removed[str(provider_name)] = (
+            len(models_raw) if isinstance(models_raw, dict) else 0
+        )
+    return removed
+
+
+def _split_llm_ref(ref: str) -> tuple[str, str]:
+    ref = ref.strip()
+    if "/" not in ref:
+        raise ValueError(f"invalid llm ref: {ref!r}")
+    provider, model = ref.split("/", 1)
+    provider = provider.strip()
+    model = model.strip()
+    if not provider or not model:
+        raise ValueError(f"invalid llm ref: {ref!r}")
+    return provider, model
+
+
 def load_config(path: str | None = None) -> Config:
     """Load, resolve env vars, expand paths, and return Config."""
     config_path = _find_config(path)
     os.environ[_ENV_CONFIG_KEY] = str(config_path.resolve())
     load_dotenv(dotenv_path=config_path.with_name(".env"), override=False)
     load_dotenv(override=False)
-    raw = yaml.safe_load(config_path.read_text()) or {}
-    yuuagents_path = config_path.with_name("yuuagents.config.yaml")
-    if yuuagents_path.exists():
-        yuuagents_raw = yaml.safe_load(yuuagents_path.read_text()) or {}
-        if not isinstance(yuuagents_raw, dict):
-            raise TypeError(f"{yuuagents_path} must be a mapping at the top level")
-        raw_yuuagents = raw.get("yuuagents") or {}
-        if raw_yuuagents and not isinstance(raw_yuuagents, dict):
-            raise TypeError("config.yaml key 'yuuagents' must be a mapping if present")
-        raw["yuuagents"] = _deep_merge(raw_yuuagents, yuuagents_raw)
+    # llm.yaml is the LLM-provider base; config.yaml overrides on top
+    raw: dict[str, Any] = {}
+    llm_path = _find_llm_config(config_path)
+    if llm_path is not None:
+        llm_raw = yaml.safe_load(llm_path.read_text(encoding="utf-8")) or {}
+        if isinstance(llm_raw, dict):
+            raw = llm_raw
+    raw = _deep_merge(raw, yaml.safe_load(config_path.read_text()) or {})
+    raw_yuuagents = raw.get("yuuagents") or {}
+    if raw_yuuagents and not isinstance(raw_yuuagents, dict):
+        raise TypeError("config.yaml key 'yuuagents' must be a mapping if present")
+    raw["yuuagents"] = raw_yuuagents
+    removed_catalogs = _strip_provider_model_catalogs(raw_yuuagents)
+    if removed_catalogs:
+        logger.warning(
+            "Ignoring deprecated yuuagents.providers.*.models config: {}",
+            ", ".join(
+                f"{provider}({count})"
+                for provider, count in sorted(removed_catalogs.items())
+            ),
+        )
+    if not raw.get("agent_llm_refs"):
+        derived_refs = _derive_agent_llm_refs(raw["yuuagents"])
+        if derived_refs:
+            raw["agent_llm_refs"] = derived_refs
     raw = _walk_resolve(raw)
     raw = _walk_expand_paths(raw)
     cfg = msgspec.convert(raw, Config)
+    cfg.yuuagents = build_yuuagents_config(cfg)
     cfg.validate_agent_permissions()
     cfg.validate_subagent_tools()
     return cfg
+
+
+def build_yuuagents_config(cfg: Config) -> dict[str, Any]:
+    """Build the yuuagents-compatible config payload from yuubot config."""
+    payload = deepcopy(cfg.yuuagents)
+    _strip_provider_model_catalogs(payload)
+    from yuubot.characters import CHARACTER_REGISTRY
+
+    payload["agents"] = {
+        name: {
+            "description": char.description,
+            "provider": provider,
+            "model": model,
+            "persona": char.resolve_persona(),
+            "subagents": list(char.spec.subagents),
+            "tools": list(char.spec.tools),
+        }
+        for name, char in CHARACTER_REGISTRY.items()
+        for provider, model in [_split_llm_ref(cfg.agent_llm_ref(name))]
+    }
+    return payload
+
+
+def write_yagents_config(cfg: Config, path: Path | None = None) -> Path:
+    """Write the generated yuuagents config to the installed runtime location."""
+    target = path or (Path.home() / ".yagents" / "config.yaml")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        yaml.safe_dump(
+            cfg.build_yuuagents_config(), allow_unicode=True, sort_keys=False
+        ),
+        encoding="utf-8",
+    )
+    return target

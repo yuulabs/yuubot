@@ -11,9 +11,10 @@ import httpx
 from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import Command, CommandRequest, RootCommand
 from yuubot.config import Config
-from yuubot.core.models import AtSegment, segments_to_plain
+from yuubot.core.models import AtSegment, ReplySegment, segments_to_plain
 from yuubot.core.onebot import build_send_msg, to_inbound_message
-from yuubot.core.types import InboundMessage, Route
+from yuubot.core.types import CommandRoute, InboundMessage, Route
+from yuubot.capabilities.im.query import resolve_message_db_id
 from yuubot.daemon.routing import resolve_route
 from yuubot.daemon.conversation import ConversationManager, conversation_worth_curating
 
@@ -44,6 +45,18 @@ class RoutedCommand:
 
 def _mentions_bot(message: InboundMessage, bot_qq: int) -> bool:
     return any(isinstance(seg, AtSegment) and seg.qq == str(bot_qq) for seg in message.segments)
+
+
+def _command_text(message: InboundMessage, bot_qq: int) -> str:
+    """Return message text normalized for command matching."""
+    replies = [seg for seg in message.segments if isinstance(seg, ReplySegment)]
+    others = [
+        seg for seg in message.segments
+        if not isinstance(seg, ReplySegment)
+        and not (isinstance(seg, AtSegment) and seg.qq == str(bot_qq))
+    ]
+    cmd_segs = [seg for seg in others if not isinstance(seg, AtSegment)]
+    return segments_to_plain(cmd_segs + replies).strip()  # type: ignore[invalid-argument-type]
 
 
 def _message_preview(message: InboundMessage, max_chars: int = 160) -> str:
@@ -161,9 +174,7 @@ class Dispatcher:
         # Lazily collect expired sessions and trigger curator for substantial ones
         for expired in self.conv_mgr.collect_expired():
             if conversation_worth_curating(expired):
-                asyncio.create_task(
-                    self.agent_runner.curate(expired.history, expired.ctx_id, expired.started_by)
-                )
+                asyncio.create_task(self.agent_runner.curate(expired))
 
         user_id = event.get("user_id", 0)
         group_id = event.get("group_id", 0)
@@ -177,6 +188,13 @@ class Dispatcher:
 
         # Route the message using pure routing logic
         inbound = to_inbound_message(event)
+        inbound.db_id = await resolve_message_db_id(
+            message_id=inbound.message_id,
+            ctx_id=ctx_id or None,
+            user_id=user_id or None,
+        )
+        if ctx_id and inbound.db_id:
+            self.conv_mgr.observe_message(ctx_id, inbound.db_id)
         preview = _message_preview(inbound)
         logger.info(
             "Received: type={} user={} group={} ctx={} text={}",
@@ -192,6 +210,8 @@ class Dispatcher:
             is_auto=self.conv_mgr.is_auto,
             bot_qq=self.config.bot.qq,
         )
+        if route is None:
+            route = await self._resolve_dynamic_entry_route(inbound)
 
         if route is None:
             return
@@ -248,6 +268,32 @@ class Dispatcher:
             except Exception:
                 logger.exception("Error executing command: {}", routed.command.prefix)
 
+    async def _resolve_dynamic_entry_route(
+        self,
+        message: InboundMessage,
+    ) -> CommandRoute | None:
+        entry_mgr = self.deps.get("entry_mgr")
+        if entry_mgr is None:
+            return None
+
+        cmd_text = _command_text(message, self.config.bot.qq)
+        if not cmd_text.startswith("/"):
+            return None
+
+        parts = cmd_text.split(None, 1)
+        entry = parts[0]
+        remaining = parts[1] if len(parts) > 1 else ""
+        scope = str(message.group_id or "global")
+        route = await entry_mgr.get_route(entry, scope)
+        if not route:
+            return None
+
+        return CommandRoute(
+            command_path=tuple(route.split()),
+            remaining=remaining,
+            entry=entry,
+        )
+
     def _build_routed_command(self, route: Route, message: InboundMessage) -> RoutedCommand | None:
         command = self.root.find(list(route.command_path))
         if command is None or command.executor is None:
@@ -283,7 +329,11 @@ class Dispatcher:
         if conv is not None and conv.state == "running":
             active = self.agent_runner.get_active_run(ctx_id)
             if active is not None:
-                rendered = await self.agent_runner.render_signal(routed.message)
+                upto_row_id = conv.latest_ctx_row_id or routed.message.db_id
+                rendered = await self.agent_runner.render_signal(
+                    routed.message,
+                    upto_row_id=upto_row_id,
+                )
                 if rendered:
                     self.agent_runner.enqueue_signal(active.runtime_id, rendered)
             self.conv_mgr.touch(conv)

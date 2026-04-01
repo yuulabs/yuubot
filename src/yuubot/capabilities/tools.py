@@ -12,6 +12,26 @@ import yuutools as yt
 from loguru import logger
 
 
+def _resolve_capability_context(
+    *,
+    capability_context,
+    addon_context,
+    agent_context,
+):
+    from yuubot.capabilities import CapabilityContext
+    from yuubot.capabilities.runtime import capability_context_for_agent
+
+    explicit = capability_context or addon_context
+    if isinstance(explicit, CapabilityContext):
+        return explicit
+
+    agent_id = getattr(agent_context, "agent_id", "")
+    resolved = capability_context_for_agent(agent_id) if agent_id else None
+    if resolved is None:
+        raise RuntimeError("capability context unavailable for this agent")
+    return resolved
+
+
 @yt.tool(
     params={
         "command": (
@@ -27,24 +47,20 @@ from loguru import logger
 )
 async def call_cap_cli(
     command: str,
-    addon_context=yt.depends(lambda ctx: ctx.addon_context),
+    capability_context=None,
+    addon_context=None,
+    agent_context=yt.depends(lambda ctx: ctx),
 ) -> str | list[dict]:
     """Execute a capability command and return the result."""
     from yuubot.capabilities import execute, CapabilityContext
 
-    cap_ctx = addon_context if isinstance(addon_context, CapabilityContext) else CapabilityContext(
-        config=addon_context.config,
-        ctx_id=addon_context.ctx_id,
-        user_id=addon_context.user_id,
-        user_role=addon_context.user_role,
-        agent_name=addon_context.agent_name,
-        task_id=addon_context.task_id,
-        allowed_caps=getattr(addon_context, "allowed_caps", None),
-        action_filters=getattr(addon_context, "action_filters", None),
-        docker_host_mount=getattr(addon_context, "docker_host_mount", ""),
-        docker_home_host_dir=getattr(addon_context, "docker_home_host_dir", ""),
-        docker_home_dir=getattr(addon_context, "docker_home_dir", ""),
+    cap_ctx = _resolve_capability_context(
+        capability_context=capability_context,
+        addon_context=addon_context,
+        agent_context=agent_context,
     )
+    if not isinstance(cap_ctx, CapabilityContext):
+        raise RuntimeError("invalid capability context")
 
     try:
         result = await execute(command, context=cap_ctx)
@@ -75,12 +91,19 @@ async def call_cap_cli(
 )
 async def read_cap_doc(
     name: str,
-    addon_context=yt.depends(lambda ctx: ctx.addon_context),
+    capability_context=None,
+    addon_context=None,
+    agent_context=yt.depends(lambda ctx: ctx),
 ) -> str:
     """Read capability documentation."""
     from yuubot.capabilities import CapabilityContext, load_capability_doc
 
-    cap_ctx = addon_context if isinstance(addon_context, CapabilityContext) else None
+    resolved = _resolve_capability_context(
+        capability_context=capability_context,
+        addon_context=addon_context,
+        agent_context=agent_context,
+    )
+    cap_ctx = resolved if isinstance(resolved, CapabilityContext) else None
     action_filter = None
     if cap_ctx is not None and cap_ctx.action_filters is not None:
         action_filter = cap_ctx.action_filters.get(name)

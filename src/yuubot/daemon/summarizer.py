@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from typing import Any
 
 import attrs
 import yuullm
 import yuutools as yt
 from loguru import logger
-from yuuagents import AgentContext, ConversationInput, Session
+from yuuagents import AgentContext, ConversationInput
 from yuuagents.agent import AgentConfig
+from yuuagents.core.flow import Agent
+
+from yuubot.capabilities.runtime import (
+    register_capability_context,
+    unregister_capability_context,
+)
+from yuubot.daemon.runtime_session import RuntimeSession
 
 
 _SYSTEM_PROMPT = (
@@ -165,26 +173,25 @@ async def _run_summarizer(llm: Any, user_content: str, agent_id: str) -> str:
     task_id = str(uuid4())
     runtime_id = f"{agent_id}-{task_id[:8]}"
 
-    session = Session(
+    agent = Agent(
         config=AgentConfig(
             agent_id=runtime_id,
             system=_SYSTEM_PROMPT,
             tools=yt.ToolManager(),
             llm=llm,
-            max_steps=1,
         ),
-        context=AgentContext(
+        ctx=AgentContext(
             task_id=task_id,
             agent_id=runtime_id,
             workdir="",
-            docker_container="",
         ),
     )
-    session.start(ConversationInput(messages=[yuullm.user(user_content)]))
-    async for _step in session.step_iter():
-        pass
+    agent.start(ConversationInput(messages=[yuullm.user(user_content)]))
+    async with aclosing(agent.steps()) as gen:
+        async for _step in gen:
+            break
 
-    for msg in reversed(session.history):
+    for msg in reversed(agent.messages):
         role, items = msg
         if role != "assistant":
             continue
@@ -205,7 +212,7 @@ _FORK_SUMMARY_INSTRUCTION = (
 )
 
 
-async def summarize_via_fork(runtime_session: Session) -> str:
+async def summarize_via_fork(runtime_session: RuntimeSession) -> str:
     """Fork the agent session to generate a structured handoff summary.
 
     Reuses the agent's config (system prompt + tools + LLM) so all history
@@ -217,23 +224,33 @@ async def summarize_via_fork(runtime_session: Session) -> str:
     task_id = str(uuid4())
     agent_id = f"summarizer-{runtime_session.config.agent_id}"
 
-    config = attrs.evolve(runtime_session.config, agent_id=agent_id, max_steps=1)
-    context = runtime_session.context.evolve(
+    config = attrs.evolve(runtime_session.config, agent_id=agent_id)
+    context = attrs.evolve(
+        runtime_session.context,
         task_id=task_id,
         agent_id=agent_id,
     )
+    if runtime_session.capability_context is not None:
+        register_capability_context(agent_id, runtime_session.capability_context)
 
-    fork = Session(config=config, context=context)
-    fork.resume(
-        ConversationInput(messages=[yuullm.user(_FORK_SUMMARY_INSTRUCTION)]),
-        history=list(runtime_session.history),
+    fork = Agent(
+        config=config,
+        ctx=context,
         conversation_id=runtime_session.conversation_id,
+        initial_messages=list(runtime_session.history),
     )
-    async for _ in fork.step_iter():
-        pass
+    try:
+        fork.start(
+            ConversationInput(messages=[yuullm.user(_FORK_SUMMARY_INSTRUCTION)]),
+        )
+        async with aclosing(fork.steps()) as gen:
+            async for _ in gen:
+                break
+    finally:
+        unregister_capability_context(agent_id)
 
     # Extract text from the last assistant message
-    for msg in reversed(fork.history):
+    for msg in reversed(fork.messages):
         role, items = msg
         if role != "assistant":
             continue

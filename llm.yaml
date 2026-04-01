@@ -1,0 +1,106 @@
+# ============================================================
+# yuubot LLM provider configuration
+# Copy to llm.yaml and fill in your settings.
+# config.yaml values override anything here when both are set.
+# ============================================================
+
+# ── Known selector names ─────────────────────────────────────
+# A plain list of selector strings that the auto-matching system recognises.
+# No bindings declared here — bindings are managed dynamically via /char alias.
+# These appear in /char selectors alongside any store entries.
+selectors:
+  - sonnet
+  - opus
+  - haiku
+  - gpt
+  - gemini-flash
+  - gemini-pro
+  - deepseek
+  - r1
+
+# ── Model families ───────────────────────────────────────────
+# family name is matched as a substring of the resolved model ID.
+# Add entries here instead of per-model 'vision:' flags in providers.
+families:
+  claude:
+    vision: true
+  gpt:
+    vision: true
+  gemini:
+    vision: true
+  deepseek:
+    vision: false
+  qwen:
+    vision: false
+  mistral:
+    vision: false
+
+# ── Provider priorities ──────────────────────────────────────
+# Higher weight = tried first for role-based resolution.
+provider_priorities:
+  aihubmix: 120
+  deepseek: 110
+  openrouter: 80
+  anthropic: 70
+
+# ── Selector-pattern affinity boosts ─────────────────────────
+# Patterns are glob-like (fnmatch against the lowercase selector).
+# Boost is added on top of provider_priorities for matching selectors.
+provider_affinity:
+  "deepseek-*":
+    deepseek: 100
+  "claude-*":
+    anthropic: 80
+  "gemini-*":
+    aihubmix: 30
+
+# ── Internal role selectors ───────────────────────────────────
+# Each value is either a bare selector (provider chosen by priority)
+# or a "provider/selector" explicit ref.
+llm_roles:
+  vision: "gemini-3.1-flash-lite-preview"
+  selector: "deepseek-chat"
+  summarizer: "deepseek-chat"
+
+# ── Agent LLM assignments ────────────────────────────────────
+# Format: "provider/selector"  (selector is fuzzy-matched against the provider's model list)
+agent_llm_refs:
+  main: "deepseek/deepseek-chat"
+  general: "deepseek/deepseek-chat"
+  researcher: "deepseek/deepseek-chat"
+  coder: "deepseek/deepseek-chat"
+  mem_curator: "deepseek/deepseek-chat"
+  ops: "deepseek/deepseek-chat"
+
+# ── Providers ────────────────────────────────────────────────
+# Nested under yuuagents so they are passed straight to the yuuagents runtime.
+# Model resolution now queries each provider online.
+# Keep only connection/default settings here.
+yuuagents:
+  provider_aliases:
+    or: openrouter
+    ahm: aihubmix
+    dpsk: deepseek
+
+  providers:
+    deepseek:
+      api_type: "openai-chat-completion"
+      api_key_env: "DEEPSEEK_API_KEY"
+      default_model: "deepseek-chat"
+      base_url: "https://api.deepseek.com/v1"
+
+    openrouter:
+      api_type: "openai-chat-completion"
+      api_key_env: "OPENROUTER_API_KEY"
+      default_model: "google/gemini-3.1-flash-lite-preview"
+      base_url: "https://openrouter.ai/api/v1"
+
+    aihubmix:
+      api_type: "openai-chat-completion"
+      api_key_env: "AIHUBMIX_API_KEY"
+      default_model: "anthropic/claude-sonnet-4.1"
+      base_url: "https://api.aihubmix.com/v1"
+
+    anthropic:
+      api_type: "anthropic-messages"
+      api_key_env: "ANTHROPIC_API_KEY"

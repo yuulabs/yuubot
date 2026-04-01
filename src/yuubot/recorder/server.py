@@ -14,7 +14,7 @@ from loguru import logger
 from yuubot.config import load_config
 from yuubot.core.context import ContextManager
 from yuubot.core.db import init_db, close_db
-from yuubot.core.models import MessageEvent, MessageRecord, segments_to_json, segments_to_plain
+from yuubot.core.models import GroupSetting, MessageEvent, MessageRecord, segments_to_json, segments_to_plain
 from yuubot.core.onebot import parse_event, parse_poke_notice
 from yuubot.recorder.api import create_api
 from yuubot.recorder.downloader import MediaDownloader
@@ -156,6 +156,17 @@ class NapCatWSServer:
             logger.exception("Failed to store poke event")
 
 
+async def load_muted_ctxs(ctx_mgr: ContextManager) -> set[int]:
+    """Load disabled group contexts from DB for recorder-side mute enforcement."""
+    muted_ctxs: set[int] = set()
+    disabled_groups = await GroupSetting.filter(bot_enabled=False).values_list("group_id", flat=True)
+    for group_id in disabled_groups:
+        ctx_id = await ctx_mgr.get_or_create("group", int(group_id))
+        muted_ctxs.add(ctx_id)
+    logger.info("Loaded {} muted contexts from DB", len(muted_ctxs))
+    return muted_ctxs
+
+
 async def run_recorder(config_path: str | None = None) -> None:
     """Entry point: start recorder (WS server + relay + HTTP API)."""
     cfg = load_config(config_path)
@@ -164,7 +175,7 @@ async def run_recorder(config_path: str | None = None) -> None:
     ctx_mgr = ContextManager()
     await ctx_mgr.load()
 
-    muted_ctxs: set[int] = set()
+    muted_ctxs = await load_muted_ctxs(ctx_mgr)
 
     downloader = MediaDownloader(cfg.recorder.media_dir)
     forward_resolver = ForwardResolver(cfg.recorder.napcat_http)

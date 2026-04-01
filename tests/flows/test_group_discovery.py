@@ -19,6 +19,34 @@ async def test_help_returns_command_list(dispatcher):
     assert "help" in reply_text or "子命令" in reply_text
 
 
+async def test_help_hides_inaccessible_commands_for_folk(dispatcher):
+    """Folk /yhelp should only expose commands they can actually access."""
+    with mock_recorder_api() as sent:
+        event = make_group_event("/yhelp", user_id=FOLK_QQ)
+        await send(dispatcher, event)
+
+    assert len(sent) >= 1
+    reply_text = sent[0]["message"][0]["data"]["text"]
+    assert "help" in reply_text
+    assert "  bot — " not in reply_text
+    assert "  char — " not in reply_text
+
+
+async def test_help_refuses_inaccessible_command_details(dispatcher):
+    """Folk /yhelp <command> on hidden commands should be silently ignored."""
+    with mock_recorder_api() as sent:
+        event = make_group_event("/yhelp bot", user_id=FOLK_QQ)
+        await send(dispatcher, event)
+
+    assert sent == []
+
+    with mock_recorder_api() as sent:
+        event = make_group_event("/yhelp char", user_id=FOLK_QQ)
+        await send(dispatcher, event)
+
+    assert sent == []
+
+
 async def test_hhsh_translates_abbreviation(dispatcher):
     """Folk user sends /yhhsh yyds → gets translated result."""
     with mock_recorder_api() as sent, mock_hhsh_api():

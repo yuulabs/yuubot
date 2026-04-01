@@ -1,17 +1,19 @@
-"""Capability runtime — unified entry point for CLI-style calls."""
+"""Runtime helpers for bridging yuubot capability context into yuuagents."""
 
 from __future__ import annotations
 
-from yuubot.capabilities import CapabilityContext, ContentBlock, execute
+from yuubot.capabilities import CapabilityContext
+
+_CAPABILITY_CONTEXTS: dict[str, CapabilityContext] = {}
 
 
-async def call_cap_cli(
-    command: str,
-    *,
-    context: CapabilityContext | None = None,
-) -> list[ContentBlock]:
-    """Unified entry point for capability CLI calls.
+def register_capability_context(agent_id: str, context: CapabilityContext) -> None:
+    _CAPABILITY_CONTEXTS[agent_id] = context
 
-    Thin wrapper around execute() for use by tools and other callers.
-    """
-    return await execute(command, context=context)
+
+def unregister_capability_context(agent_id: str) -> None:
+    _CAPABILITY_CONTEXTS.pop(agent_id, None)
+
+
+def capability_context_for_agent(agent_id: str) -> CapabilityContext | None:
+    return _CAPABILITY_CONTEXTS.get(agent_id)

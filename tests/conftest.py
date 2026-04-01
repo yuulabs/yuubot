@@ -1,25 +1,37 @@
 """Shared fixtures for end-to-end flow tests."""
 
+# ruff: noqa: E402
+
 import asyncio
 from pathlib import Path
 import sqlite3
 import socket
 from urllib.parse import quote
+from unittest.mock import patch
 
 import msgspec
 import pytest
 import yaml
+import yuullm
 
 # Set up a no-op TracerProvider so yuutrace.require_initialized() passes
 # but traces do NOT go to the production ~/.yagents/traces.db.
 from opentelemetry import trace as _otel_trace
 from opentelemetry.sdk.trace import TracerProvider as _TracerProvider
+
 _otel_trace.set_tracer_provider(_TracerProvider())
 
 from yuubot.commands.builtin import build_command_tree  # noqa: E402
 from yuubot.commands.entry import EntryManager  # noqa: E402
 from yuubot.commands.roles import RoleManager  # noqa: E402
-from yuubot.config import Config, BotConfig, DaemonConfig, DatabaseConfig, ResponseConfig, SessionConfig  # noqa: E402
+from yuubot.config import (
+    Config,
+    BotConfig,
+    DaemonConfig,
+    DatabaseConfig,
+    ResponseConfig,
+    SessionConfig,
+)  # noqa: E402
 from yuubot.core.db import init_db, close_db  # noqa: E402
 from yuubot.daemon.agent_runner import AgentRunner  # noqa: E402
 from yuubot.daemon.dispatcher import Dispatcher  # noqa: E402
@@ -34,8 +46,31 @@ GROUP_ID = 1000
 FOLK_QQ = 20001
 MOD_QQ = 20002
 
+PROVIDER_MODEL_LISTS: dict[str, list[str]] = {
+    "test": [
+        "test-model",
+        "test-model-v2",
+    ],
+    "aihubmix": [
+        "anthropic/claude-sonnet-4.1",
+        "google/gemini-3.1-flash-lite-preview",
+        "deepseek/deepseek-chat",
+    ],
+    "openrouter": [
+        "anthropic/claude-sonnet-4.1",
+        "anthropic/claude-sonnet-4.0-preview",
+        "openai/gpt-4.1",
+        "google/gemini-3.1-flash-lite-preview",
+        "deepseek/deepseek-chat",
+    ],
+    "deepseek": [
+        "deepseek-chat",
+    ],
+}
+
 
 # ── Test character registration ──────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def test_characters():
@@ -46,39 +81,83 @@ def test_characters():
     original = dict(CHARACTER_REGISTRY)
 
     # Register test main agent
-    register(Character(
-        name="main",
-        description="Test main agent",
-        min_role="folk",
-        persona="你是测试机器人。",
-        spec=AgentSpec(
-            tools=[],
-            max_steps=4,
-        ),
-        provider="test",
-        model="test-model",
-    ))
+    register(
+        Character(
+            name="main",
+            description="Test main agent",
+            min_role="folk",
+            persona="你是测试机器人。",
+            spec=AgentSpec(
+                tools=[],
+                max_steps=4,
+            ),
+            provider="test",
+            model="test-model",
+        )
+    )
 
     # Register test general agent
-    register(Character(
-        name="general",
-        description="General agent (master only)",
-        min_role="master",
-        persona="通用助手。",
-        spec=AgentSpec(
-            tools=["execute_bash"],
-            ext_skills=["*"],
-            max_steps=4,
-        ),
-        provider="test",
-        model="test-model",
-    ))
+    register(
+        Character(
+            name="general",
+            description="General agent (master only)",
+            min_role="master",
+            persona="通用助手。",
+            spec=AgentSpec(
+                tools=["execute_bash"],
+                ext_skills=["*"],
+                max_steps=4,
+            ),
+            provider="test",
+            model="test-model",
+        )
+    )
 
     yield
 
     # Restore original registry
     CHARACTER_REGISTRY.clear()
     CHARACTER_REGISTRY.update(original)
+
+
+@pytest.fixture(autouse=True)
+def mock_provider_model_lists():
+    async def _fake_list_models(self):
+        return [
+            yuullm.ProviderModel(id=model_id)
+            for model_id in PROVIDER_MODEL_LISTS.get(self.provider, [])
+        ]
+
+    with (
+        patch.object(
+            yuullm.providers.OpenAIChatCompletionProvider,
+            "list_models",
+            _fake_list_models,
+        ),
+        patch.object(
+            yuullm.providers.AnthropicMessagesProvider,
+            "list_models",
+            _fake_list_models,
+        ),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def mock_selector_candidate_choice(monkeypatch):
+    from yuubot.model_resolution import ModelResolver, _score_candidate
+
+    async def _fake_choose_candidate(
+        self, provider: str, selector: str, candidates: list[str]
+    ) -> str:
+        del self, provider
+        return sorted(
+            candidates,
+            key=lambda item: _score_candidate(selector, item),
+            reverse=True,
+        )[0]
+
+    monkeypatch.setattr(ModelResolver, "_choose_candidate", _fake_choose_candidate)
 
 
 # ── Fixtures ─────────────────────────────────────────────────────
@@ -88,6 +167,7 @@ def test_characters():
 async def db(tmp_path):
     """Initialize a tmp SQLite for yuubot ORM models."""
     from yuubot.core.models import GroupSetting
+
     db_path = str(tmp_path / "yuubot.db")
     await init_db(db_path)
     # Enable bot for test group by default (at-mode)
@@ -141,7 +221,29 @@ def yuubot_config(tmp_path, recorder_api_port, traces_db) -> Config:
         database=DatabaseConfig(path=str(tmp_path / "yuubot.db")),
         response=ResponseConfig(group_default="at", dm_whitelist=[]),
         session=SessionConfig(ttl=300, max_tokens=60000),
+        agent_llm_refs={
+            "main": "test/test-model",
+            "general": "test/test-model",
+        },
+        provider_priorities={
+            "aihubmix": 120,
+            "openrouter": 80,
+            "deepseek": 110,
+            "test": 60,
+        },
+        provider_affinity={
+            "deepseek-*": {"deepseek": 100},
+        },
+        llm_roles={
+            "vision": "gemini-3.1-flash-lite-preview",
+            "selector": "deepseek-chat",
+            "summarizer": "deepseek-chat",
+        },
         yuuagents={
+            "provider_aliases": {
+                "or": "openrouter",
+                "ahm": "aihubmix",
+            },
             "providers": {
                 "test": {
                     "api_type": "openai-chat-completion",
@@ -149,17 +251,23 @@ def yuubot_config(tmp_path, recorder_api_port, traces_db) -> Config:
                     "default_model": "test-model",
                     "base_url": "https://api.openai.com/v1",
                 },
-            },
-            "agents": {
-                "main": {
-                    "description": "Test main agent",
-                    "provider": "test",
-                    "model": "test-model",
+                "aihubmix": {
+                    "api_type": "openai-chat-completion",
+                    "api_key_env": "YUUBOT_TEST_LLM_KEY",
+                    "default_model": "anthropic/claude-sonnet-4.1",
+                    "base_url": "https://api.aihubmix.com/v1",
                 },
-                "general": {
-                    "description": "General agent (master only)",
-                    "provider": "test",
-                    "model": "test-model",
+                "openrouter": {
+                    "api_type": "openai-chat-completion",
+                    "api_key_env": "YUUBOT_TEST_LLM_KEY",
+                    "default_model": "anthropic/claude-sonnet-4.1",
+                    "base_url": "https://openrouter.ai/api/v1",
+                },
+                "deepseek": {
+                    "api_type": "openai-chat-completion",
+                    "api_key_env": "YUUBOT_TEST_LLM_KEY",
+                    "default_model": "deepseek-chat",
+                    "base_url": "https://api.deepseek.com/v1",
                 },
             },
             "daemon": {"socket": str(tmp_path / "yagents.sock")},
@@ -199,15 +307,11 @@ async def _lightweight_init(runner: AgentRunner) -> None:
     """Initialize yuuagents without starting daemon or touching ~/.yagents."""
     if runner.runtime.initialized:
         return
-    import json
     import msgspec
     from yuuagents.config import Config as YuuagentsConfig
     from yuuagents.persistence import TaskPersistence
-    from yuubot import config as yuubot_config
 
-    base_data = json.loads(msgspec.json.encode(YuuagentsConfig()))
-    merged_data = yuubot_config._deep_merge(base_data, runner.config.yuuagents)
-    cfg = msgspec.convert(merged_data, YuuagentsConfig)
+    cfg = msgspec.convert(runner.config.build_yuuagents_config(), YuuagentsConfig)
 
     # Only init DB (in-memory), skip dirs/config-write/docker/daemon
     persistence = TaskPersistence(db_url=cfg.db_url)
@@ -239,6 +343,7 @@ async def dispatcher(db, yuubot_config, session_mgr) -> Dispatcher:
         "config": yuubot_config,
         "session_mgr": session_mgr,
         "dm_whitelist": yuubot_config.response.dm_whitelist,
+        "agent_runner": agent_runner,
     }
 
     # Lightweight init: only DB, no daemon/docker/filesystem side effects

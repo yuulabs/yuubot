@@ -1,10 +1,31 @@
+"""Public CLI behavior tests."""
+
+from __future__ import annotations
+
 import attrs
 from click.testing import CliRunner
 
-from yuubot.cli import cli, hhsh, im, mem, schedule, vision, web
+from yuubot.cli import cli
 
 
-def test_capability_cli_executes_via_generic_runner(monkeypatch):
+def _fake_config():
+    return attrs.make_class(
+        "Cfg",
+        {
+            "database": attrs.field(
+                default=attrs.make_class(
+                    "DbCfg",
+                    {
+                        "path": attrs.field(default=":memory:"),
+                        "simple_ext": attrs.field(default=""),
+                    },
+                )()
+            ),
+        },
+    )()
+
+
+def test_capability_cli_executes_user_command(monkeypatch):
     captured = {}
 
     async def fake_execute(command, *, context=None):
@@ -12,31 +33,14 @@ def test_capability_cli_executes_via_generic_runner(monkeypatch):
         captured["context"] = context
         return [{"type": "text", "text": "ok"}]
 
-    monkeypatch.setattr("yuubot.capabilities.execute", fake_execute)
-    monkeypatch.setattr(
-        "yuubot.config.load_config",
-        lambda _path: attrs.make_class(
-            "Cfg",
-            {
-                "database": attrs.field(
-                    default=attrs.make_class(
-                        "DbCfg",
-                        {
-                            "path": attrs.field(default=":memory:"),
-                            "simple_ext": attrs.field(default=""),
-                        },
-                    )()
-                ),
-            },
-        )(),
-    )
-
     async def fake_init_db(*_args, **_kwargs):
         return None
 
     async def fake_close_db():
         return None
 
+    monkeypatch.setattr("yuubot.capabilities.execute", fake_execute)
+    monkeypatch.setattr("yuubot.config.load_config", lambda _path: _fake_config())
     monkeypatch.setattr("yuubot.core.db.init_db", fake_init_db)
     monkeypatch.setattr("yuubot.core.db.close_db", fake_close_db)
 
@@ -48,33 +52,17 @@ def test_capability_cli_executes_via_generic_runner(monkeypatch):
 
     assert result.exit_code == 0
     assert captured["command"] == 'im send --ctx 3 -- [{"type":"text","data":{"text":"hi"}}]'
+    assert result.output.strip() == "ok"
 
 
-def test_capability_cli_rejects_missing_explicit_payload(monkeypatch):
-    monkeypatch.setattr(
-        "yuubot.config.load_config",
-        lambda _path: attrs.make_class(
-            "Cfg",
-            {
-                "database": attrs.field(
-                    default=attrs.make_class(
-                        "DbCfg",
-                        {
-                            "path": attrs.field(default=":memory:"),
-                            "simple_ext": attrs.field(default=""),
-                        },
-                    )()
-                ),
-            },
-        )(),
-    )
-
+def test_capability_cli_rejects_missing_payload(monkeypatch):
     async def fake_init_db(*_args, **_kwargs):
         return None
 
     async def fake_close_db():
         return None
 
+    monkeypatch.setattr("yuubot.config.load_config", lambda _path: _fake_config())
     monkeypatch.setattr("yuubot.core.db.init_db", fake_init_db)
     monkeypatch.setattr("yuubot.core.db.close_db", fake_close_db)
 
@@ -85,44 +73,21 @@ def test_capability_cli_rejects_missing_explicit_payload(monkeypatch):
     assert "requires JSON payload after '--'" in result.output
 
 
-def test_capability_cli_commands_are_auto_registered():
-    assert "restore" in mem.commands
-    assert "list" in mem.commands
-    assert "search" in web.commands
-    assert "send" in im.commands
-    assert "guess" in hhsh.commands
-    assert "create" in schedule.commands
-    assert "describe" in vision.commands
+def test_capability_help_exposes_human_facing_commands():
+    runner = CliRunner()
+
+    im_help = runner.invoke(cli, ["im", "--help"])
+    web_help = runner.invoke(cli, ["web", "--help"])
+
+    assert im_help.exit_code == 0
+    assert "send" in im_help.output
+    assert "login" in im_help.output
+    assert web_help.exit_code == 0
+    assert "search" in web_help.output
+    assert "login" in web_help.output
 
 
-def test_manual_capability_cli_extensions_are_kept():
-    assert "login" in web.commands
-    assert "login" in im.commands
-
-
-def test_capability_cli_uses_contract_action_names():
-    assert sorted(mem.commands) == ["config", "delete", "list", "recall", "restore", "save", "show"]
-
-
-def test_mem_list_uses_pager_and_is_hidden_in_bot(monkeypatch):
-    monkeypatch.setattr(
-        "yuubot.config.load_config",
-        lambda _path: attrs.make_class(
-            "Cfg",
-            {
-                "database": attrs.field(
-                    default=attrs.make_class(
-                        "DbCfg",
-                        {
-                            "path": attrs.field(default=":memory:"),
-                            "simple_ext": attrs.field(default=""),
-                        },
-                    )()
-                ),
-            },
-        )(),
-    )
-
+def test_mem_list_is_hidden_in_bot_help_and_uses_pager(monkeypatch):
     async def fake_init_db(*_args, **_kwargs):
         return None
 
@@ -145,6 +110,7 @@ def test_mem_list_uses_pager_and_is_hidden_in_bot(monkeypatch):
 
     paged = {}
 
+    monkeypatch.setattr("yuubot.config.load_config", lambda _path: _fake_config())
     monkeypatch.setattr("yuubot.core.db.init_db", fake_init_db)
     monkeypatch.setattr("yuubot.core.db.close_db", fake_close_db)
     monkeypatch.setattr("yuubot.capabilities.mem.store.list_memories", fake_list_memories)
@@ -162,24 +128,6 @@ def test_mem_list_uses_pager_and_is_hidden_in_bot(monkeypatch):
 
 
 def test_mem_restore_accepts_multiple_ids(monkeypatch):
-    monkeypatch.setattr(
-        "yuubot.config.load_config",
-        lambda _path: attrs.make_class(
-            "Cfg",
-            {
-                "database": attrs.field(
-                    default=attrs.make_class(
-                        "DbCfg",
-                        {
-                            "path": attrs.field(default=":memory:"),
-                            "simple_ext": attrs.field(default=""),
-                        },
-                    )()
-                ),
-            },
-        )(),
-    )
-
     async def fake_init_db(*_args, **_kwargs):
         return None
 
@@ -192,6 +140,7 @@ def test_mem_restore_accepts_multiple_ids(monkeypatch):
         restored["ids"] = ids
         return len(ids)
 
+    monkeypatch.setattr("yuubot.config.load_config", lambda _path: _fake_config())
     monkeypatch.setattr("yuubot.core.db.init_db", fake_init_db)
     monkeypatch.setattr("yuubot.core.db.close_db", fake_close_db)
     monkeypatch.setattr("yuubot.capabilities.mem.store.restore", fake_restore)

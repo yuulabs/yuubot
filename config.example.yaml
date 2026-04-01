@@ -32,11 +32,25 @@ daemon:
 database:
   path: "~/.yuubot/yuubot.db"
 
-llm:
-  provider: "openai"
-  model: "gpt-4o"
-  base_url: "https://api.openai.com/v1"
-  api_key: "${OPENAI_API_KEY}"
+# LLM provider config (families, providers, roles, priorities, agent refs)
+# lives in llm.yaml — see llm.example.yaml.
+
+# yuuagents runtime settings (non-provider). Compiled into ~/.yagents/config.yaml.
+# Agent entries are synthesized automatically from agent_llm_refs and characters.
+yuuagents:
+  db:
+    url: "sqlite+aiosqlite:///~/.yagents/tasks.sqlite3"
+  yuutrace:
+    db_path: "~/.yagents/traces.db"
+    ui_port: 8080
+    server_port: 4318
+  docker:
+    image: "yuuagents-runtime:latest"
+  tavily:
+    api_key_env: "TAVILY_API_KEY"
+  skills:
+    paths:
+      - "~/.yagents/skills"
 
 api_keys:
   tavily: "${TAVILY_API_KEY}"
@@ -63,5 +77,4 @@ response:
 session:
   ttl: 300            # seconds before session expires (default 5 min)
   max_tokens: 60000   # single-turn token threshold for context rollover
-  summarizer_provider: ""       # provider name from yuuagents.providers (default: main agent's)
-  summarizer_model: "deepseek-chat"  # cheap model for summary (default: main agent's model)
+  summarize_steps_span: 8

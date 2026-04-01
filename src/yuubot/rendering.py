@@ -62,9 +62,24 @@ class ConversationRender:
 """
 
     @staticmethod
-    def user_continuation(*, total_msgs: int, msg_xml: str, memory_hints: str) -> str:
-        count = f"你收到了{total_msgs}条新消息:\n" if total_msgs > 1 else ""
-        return f"{count}{msg_xml}\n{memory_hints}"
+    def user_continuation(
+        *,
+        total_msgs: int,
+        msg_xml: str,
+        memory_hints: str,
+        truncated: bool = False,
+        trigger_count: int = 1,
+    ) -> str:
+        truncation = "（过长，已截断到最近10条）" if truncated else ""
+        trigger_hint = (
+            f"请回复其中所有直接 @你 或使用 /yllm 触发你的消息（共 {trigger_count} 条）。"
+        )
+        return (
+            f"下面是你上次回复后到现在的群聊片段，共 {total_msgs} 条{truncation}:\n"
+            f"{msg_xml}\n"
+            f"{trigger_hint}\n"
+            f"{memory_hints}"
+        )
 
     @staticmethod
     def tool_result(result: str) -> str:

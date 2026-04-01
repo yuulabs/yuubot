@@ -4,6 +4,7 @@
 Usage:
     python scripts/conv.py                        # list recent conversations
     python scripts/conv.py -l                     # show the latest conversation
+    python scripts/conv.py --ctx 12              # only conversations for ctx 12
     python scripts/conv.py <id-or-prefix>         # show full conversation
     python scripts/conv.py <id> -n                # compact: collapse tool calls
     python scripts/conv.py <id> --tool im         # only show tool calls matching "im"
@@ -94,30 +95,57 @@ def highlight(text: str, pattern: re.Pattern | None) -> str:
     return pattern.sub(lambda m: f"{BG_YELLOW}{FG_BLACK}{m.group()}{RESET}", text)
 
 
-def resolve_id(conn: sqlite3.Connection, prefix: str) -> str:
+def _ctx_agent_like_patterns(ctx_id: int) -> tuple[str, ...]:
+    return (
+        f"agent-%-{ctx_id}",
+        f"yuubot-%-{ctx_id}",
+    )
+
+
+def _ctx_filter_sql(ctx_id: int | None, column: str = "agent") -> tuple[str, tuple[str, ...]]:
+    if ctx_id is None:
+        return "", ()
+    patterns = _ctx_agent_like_patterns(ctx_id)
+    clause = " AND (" + " OR ".join(f"{column} LIKE ?" for _ in patterns) + ")"
+    return clause, patterns
+
+
+def resolve_id(conn: sqlite3.Connection, prefix: str, *, ctx_id: int | None = None) -> str:
+    ctx_clause, ctx_params = _ctx_filter_sql(ctx_id)
     rows = conn.execute(
         "SELECT DISTINCT conversation_id FROM spans "
-        "WHERE conversation_id LIKE ? LIMIT 2",
-        (f"{prefix}%",),
+        f"WHERE conversation_id LIKE ?{ctx_clause} LIMIT 2",
+        (f"{prefix}%", *ctx_params),
     ).fetchall()
     if not rows:
-        sys.exit(f"ERROR: no conversation matching prefix: {prefix!r}")
+        detail = f" for ctx {ctx_id}" if ctx_id is not None else ""
+        sys.exit(f"ERROR: no conversation matching prefix{detail}: {prefix!r}")
     if len(rows) > 1:
         sys.exit(f"ERROR: prefix {prefix!r} is ambiguous — {[r[0] for r in rows]}")
     return rows[0][0]
 
 
-def latest_id(conn: sqlite3.Connection) -> str:
+def latest_id(conn: sqlite3.Connection, *, ctx_id: int | None = None) -> str:
+    ctx_clause, ctx_params = _ctx_filter_sql(ctx_id)
     row = conn.execute(
         "SELECT conversation_id FROM spans WHERE conversation_id IS NOT NULL "
-        "ORDER BY start_time_unix_nano DESC LIMIT 1"
+        f"{ctx_clause} ORDER BY start_time_unix_nano DESC LIMIT 1",
+        ctx_params,
     ).fetchone()
     if not row:
-        sys.exit("ERROR: no conversations found")
+        detail = f" for ctx {ctx_id}" if ctx_id is not None else ""
+        sys.exit(f"ERROR: no conversations found{detail}")
     return row[0]
 
 
-def list_conversations(conn: sqlite3.Connection, agent: str | None, limit: int) -> None:
+def list_conversations(
+    conn: sqlite3.Connection,
+    agent: str | None,
+    limit: int,
+    *,
+    ctx_id: int | None = None,
+) -> None:
+    ctx_clause, ctx_params = _ctx_filter_sql(ctx_id)
     query = """
         SELECT conversation_id,
                agent,
@@ -128,16 +156,21 @@ def list_conversations(conn: sqlite3.Connection, agent: str | None, limit: int) 
         FROM spans
         WHERE conversation_id IS NOT NULL
         {agent_filter}
+        {ctx_filter}
         GROUP BY conversation_id
         ORDER BY first_ts DESC
         LIMIT ?
     """
     if agent:
         rows = conn.execute(
-            query.format(agent_filter="AND agent = ?"), (agent, limit)
+            query.format(agent_filter="AND agent = ?", ctx_filter=ctx_clause),
+            (agent, *ctx_params, limit),
         ).fetchall()
     else:
-        rows = conn.execute(query.format(agent_filter=""), (limit,)).fetchall()
+        rows = conn.execute(
+            query.format(agent_filter="", ctx_filter=ctx_clause),
+            (*ctx_params, limit),
+        ).fetchall()
 
     print(f"{'id':>8}  {'agent':<16}  {'model':<18}  {'time':<13}  {'user':>5}  {'tools':>5}")
     print("-" * 74)
@@ -286,6 +319,7 @@ def main() -> None:
     parser.add_argument("--full", action="store_true", help="no truncation on tool input/output")
     parser.add_argument("--grep", help="highlight/filter lines matching this pattern")
     parser.add_argument("--agent", help="filter list by agent name")
+    parser.add_argument("--ctx", type=int, help="filter conversations by ctx_id suffix in runtime agent name")
     parser.add_argument("--limit", type=int, default=20, help="max conversations to list (default 20)")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--db", default=str(TRACES_DB), help="path to traces.db")
@@ -299,7 +333,11 @@ def main() -> None:
     conn = open_db(Path(args.db))
 
     if args.last or args.conv_id:
-        conv_id = latest_id(conn) if args.last else resolve_id(conn, args.conv_id)
+        conv_id = (
+            latest_id(conn, ctx_id=args.ctx)
+            if args.last
+            else resolve_id(conn, args.conv_id, ctx_id=args.ctx)
+        )
         show_conversation(
             conn,
             conv_id,
@@ -309,7 +347,7 @@ def main() -> None:
             grep=grep_pattern,
         )
     else:
-        list_conversations(conn, agent=args.agent, limit=args.limit)
+        list_conversations(conn, agent=args.agent, limit=args.limit, ctx_id=args.ctx)
 
 
 if __name__ == "__main__":

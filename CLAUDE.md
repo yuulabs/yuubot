@@ -20,11 +20,11 @@ uv run ruff check src/
 # Type check
 uv run ty check
 
-# Run the bot
-uv run ybot daemon --config config.yaml
+# Start NapCat + Recorder (background screen sessions)
+uv run ybot launch --config config.yaml
 
-# Run the recorder (NapCat bridge)
-uv run ybot recorder --config config.yaml
+# Run the bot daemon (foreground)
+uv run ybot up --config config.yaml
 ```
 
 ## Architecture
@@ -34,7 +34,7 @@ yuubot is a QQ bot daemon that bridges NapCat/OneBot events to LLM agents. Five 
 1. **Message** (`core/types.py`) — `InboundMessage` is the typed business-layer message converted from raw OneBot events. Never pass raw `event` dicts past the ingress layer.
 2. **Route** (`core/types.py`, `daemon/routing.py`) — Pure function `resolve_route()` returns either `CommandRoute` or `ConversationRoute`. No routing logic lives outside this module.
 3. **Conversation** (`daemon/conversation.py`) — `ConversationManager` owns all session state (replaces the old session/flow/ping/auto-mode scatter). States: `idle → running → closed`. Pending messages accumulate in `pending_messages`; rendering happens only when a turn actually fires.
-4. **Capability** (`capabilities/`) — Typed contracts for bot-native capabilities (im, mem, web, img, schedule). Each capability has a YAML contract in `capabilities/contracts/`. LLM calls capabilities via `call_cap_cli` tool using raw CLI syntax: `im send --ctx 12 -- [...]`.
+4. **Capability** (`capabilities/`) — Typed contracts for bot-native capabilities (im, mem, web, img, schedule). Each capability has a YAML contract at `capabilities/<name>/contract.yaml`. LLM calls capabilities via `call_cap_cli` tool using raw CLI syntax: `im send --ctx 12 -- [...]`.
 5. **RenderPolicy** (`daemon/render.py`) — `RenderPolicy` is a frozen msgspec.Struct that centrally declares how messages become LLM input (format, name resolution, image handling, etc.).
 
 ### Request flow
@@ -59,11 +59,11 @@ NapCat WS → recorder/relay.py
 | Conversation state | `daemon/conversation.py` |
 | Agent execution | `daemon/agent_runner.py`, `daemon/builder.py`, `daemon/runtime.py` |
 | Rendering | `daemon/render.py`, `rendering.py` |
-| Capability contracts | `capabilities/contract.py`, `capabilities/contracts/*.yaml` |
-| Capability implementations | `capabilities/im/`, `capabilities/mem.py`, etc. |
+| Capability contracts | `capabilities/contract.py`, `capabilities/<name>/contract.yaml` |
+| Capability implementations | `capabilities/im/`, `capabilities/mem/`, etc. |
 | Characters/agents | `characters/*.py` — registered via `characters.register(Character(...))` |
 | Commands (admin/user) | `commands/builtin.py`, `commands/ychar.py` |
-| Config | `config.py` — `load_config()` merges `config.yaml` + `yuuagents.config.yaml` |
+| Config | `config.py` — `load_config()` reads `config.yaml` as the single source of truth and synthesizes the yuuagents runtime config |
 | DB | `core/db.py` (Tortoise ORM + SQLite with optional libsimple FTS5) |
 | Errors | `core/errors.py` — `YuubotError`, `ConfigurationError`, `CapabilityError`, `MessageSendError` |
 
@@ -78,9 +78,11 @@ The `main` character is the default QQ bot agent (夕雨/Yuu). Other characters:
 
 ### Config files
 
-- `config.yaml` — main config (bot QQ, recorder ports, LLM, DB path, etc.)
-- `yuuagents.config.yaml` — agent-specific config (deep-merged into `config.yuuagents`)
+- `config.yaml` — bot/daemon/recorder/session/DB settings (no LLM provider details)
+- `llm.yaml` — all LLM provider config: `families`, `providers`, `provider_aliases`, `provider_priorities`, `provider_affinity`, `llm_roles`, `agent_llm_refs`. Loaded first as base; `config.yaml` overrides on top.
 - `.env` — env vars, loaded alongside config; supports `${VAR}` substitution in YAML
+
+`load_config()` merges `llm.yaml` (base) → `config.yaml` (override), then synthesizes the yuuagents runtime config.
 
 ### capabilities/
 
@@ -132,25 +134,25 @@ Conversation traces live in `~/.yagents/traces.db` (span-based, no events). Use 
 
 ```bash
 # List recent conversations (short IDs, local time)
-python scripts/conv.py
+uv run python scripts/conv.py
 
 # Show the latest conversation in full
-python scripts/conv.py -l
+uv run python scripts/conv.py -l
 
 # Show a conversation by ID prefix (no need to copy full UUID)
-python scripts/conv.py abc12345
+uv run python scripts/conv.py abc12345
 
 # Compact view — collapses tool calls into a count, no tool output
-python scripts/conv.py -l -n
+uv run python scripts/conv.py -l -n
 
 # Filter list by agent
-python scripts/conv.py --agent main --limit 10
+uv run python scripts/conv.py --agent main --limit 10
 
 # Debug a specific tool — only show matching tool calls, full payload
-python scripts/conv.py abc12345 --tool "im send" --full
+uv run python scripts/conv.py abc12345 --tool "im send" --full
 
 # Search/highlight within a conversation
-python scripts/conv.py abc12345 --grep "错误"
+uv run python scripts/conv.py abc12345 --grep "错误"
 ```
 
 Compact mode (`-n`) is the go-to for quick reads: it shows USER/ASSISTANT turns and collapses all tool calls into `(N tool calls)`. Full mode shows each `TOOL:` span with output (truncated at 600 chars by default, use `--full` to disable).

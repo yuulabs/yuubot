@@ -96,8 +96,18 @@ def build_command_tree(entries: list[str], llm_executor=None) -> RootCommand:
 
     # /char — character inspection and runtime config
     from yuubot.commands.ychar import (
+        exec_char_alias,
+        exec_char_alias_delete,
+        exec_char_alias_refresh,
+        exec_char_alias_show,
         exec_char_config,
         exec_char_list,
+        exec_char_role_clear,
+        exec_char_role_list,
+        exec_char_role_refresh,
+        exec_char_role_set,
+        exec_char_role_show,
+        exec_char_selector_list,
         exec_char_show_config,
         exec_char_show_prompt,
     )
@@ -123,7 +133,74 @@ def build_command_tree(entries: list[str], llm_executor=None) -> RootCommand:
         prefix="config",
         executor=exec_char_config,
         min_role=Role.MASTER,
-        help_text="热更新 Character 配置: /char config <name> provider=x model=y",
+        help_text="热更新 Character 配置: /char config <name> llm=<provider>/<selector-or-model>",
+    )
+    char_alias_show = Command(
+        prefix="show",
+        executor=exec_char_alias_show,
+        min_role=Role.MASTER,
+        help_text="显示 selector 状态: /char alias show <selector>",
+    )
+    char_alias_refresh = Command(
+        prefix="refresh",
+        executor=exec_char_alias_refresh,
+        min_role=Role.MASTER,
+        help_text="刷新 selector 缓存: /char alias refresh <selector or provider/selector>",
+    )
+    char_alias_delete = Command(
+        prefix="delete",
+        executor=exec_char_alias_delete,
+        min_role=Role.MASTER,
+        help_text="删除 selector 或某个 provider 下的绑定: /char alias delete <selector or provider/selector>",
+    )
+    char_alias = Command(
+        prefix="alias",
+        executor=exec_char_alias,
+        subs=[char_alias_show, char_alias_refresh, char_alias_delete],
+        min_role=Role.MASTER,
+        help_text="管理 selector 绑定: /char alias <provider>/<model> as <selector>",
+    )
+    char_role_show = Command(
+        prefix="show",
+        executor=exec_char_role_show,
+        min_role=Role.MASTER,
+        help_text="显示 role 当前 selector/provider 解析: /char role show <role>",
+    )
+    char_role_list = Command(
+        prefix="list",
+        executor=exec_char_role_list,
+        min_role=Role.MASTER,
+        help_text="列出所有可配置的内部 LLM role: /char role list",
+    )
+    char_role_set = Command(
+        prefix="set",
+        executor=exec_char_role_set,
+        min_role=Role.MASTER,
+        help_text="热切换 role: /char role set <role> <selector|provider|provider/selector>",
+    )
+    char_role_refresh = Command(
+        prefix="refresh",
+        executor=exec_char_role_refresh,
+        min_role=Role.MASTER,
+        help_text="刷新 role 的 sticky provider/selector 解析: /char role refresh <role>",
+    )
+    char_role_clear = Command(
+        prefix="clear",
+        executor=exec_char_role_clear,
+        min_role=Role.MASTER,
+        help_text="清除 role 的 runtime override: /char role clear <role>",
+    )
+    char_role = Command(
+        prefix="role",
+        subs=[char_role_list, char_role_show, char_role_set, char_role_refresh, char_role_clear],
+        min_role=Role.MASTER,
+        help_text="角色级 LLM 热切换与检查",
+    )
+    char_selector_list = Command(
+        prefix="selectors",
+        executor=exec_char_selector_list,
+        min_role=Role.MASTER,
+        help_text="列出已知 selector（llm.yaml hints + store 绑定）: /char selectors",
     )
     char_list = Command(
         prefix="list",
@@ -133,7 +210,7 @@ def build_command_tree(entries: list[str], llm_executor=None) -> RootCommand:
     )
     char_cmd = Command(
         prefix="char",
-        subs=[char_show, char_config, char_list],
+        subs=[char_show, char_config, char_alias, char_role, char_selector_list, char_list],
         min_role=Role.MASTER,
         help_text="Character 管理命令",
     )
@@ -276,11 +353,16 @@ async def _exec_allow_dm(request: CommandRequest) -> str | None:
 async def _exec_help(request: CommandRequest) -> str | None:
     """Show help for a specific command route, or root if none given."""
     root: RootCommand = request.deps["root"]
+    role_mgr: RoleManager = request.deps["role_mgr"]
+    scope = str(request.message.group_id or "global")
+    caller_role = await role_mgr.get(request.message.sender.user_id, scope)
     route = request.remaining.split() if request.remaining.strip() else []
     target = root.find(route)
     if target is None:
         return f"未知命令: {' '.join(route)}"
-    return target.help()
+    if not target.is_visible_to(caller_role):
+        return None
+    return target.help(caller_role)
 
 
 async def _exec_hhsh(request: CommandRequest) -> str | None:

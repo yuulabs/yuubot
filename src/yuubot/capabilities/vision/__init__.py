@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-import os
+from contextlib import aclosing
 from pathlib import Path
 
 import yuutools as yt
@@ -11,10 +11,11 @@ from loguru import logger
 from yuuagents import ConversationInput
 from yuuagents.agent import AgentConfig
 from yuuagents.context import AgentContext
-from yuuagents.core.flow import Agent as FlowAgent
+from yuuagents.core.flow import Agent
 
 from yuubot.capabilities import ContentBlock, capability, get_context, text_block, uri_to_path
 from yuubot.core.media_paths import MediaPathContext, MediaPathError, input_to_host
+from yuubot.model_resolution import ModelResolver
 
 _SYSTEM_PROMPT = (
     "你是一个图片描述助手。请用中文描述图片内容。\n"
@@ -27,26 +28,25 @@ _SYSTEM_PROMPT = (
     "- 直接描述，不要以'这张图片'开头"
 )
 
-_MODEL = "google/gemini-3.1-flash-lite-preview"
 
+async def _make_vision_llm():
+    ctx = get_context()
+    resolver = getattr(ctx, "model_resolver", None)
+    if resolver is None:
+        if ctx.config is None:
+            raise ValueError("vision role requires config in capability context")
+        resolver = ModelResolver(ctx.config)
 
-def _make_vision_llm():
-    import yuullm
-    from yuullm.providers import OpenAIChatCompletionProvider
+    if hasattr(resolver, "resolve_role_llm"):
+        client, _resolved = await resolver.resolve_role_llm("vision")
+        return client
 
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise ValueError("OPENROUTER_API_KEY not set in environment")
+    if ctx.config is None:
+        raise ValueError("vision role requires config in capability context")
+    resolved = await resolver.resolve_role("vision")
+    from yuubot.model_resolution import build_llm_client
 
-    provider = OpenAIChatCompletionProvider(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-    )
-    return yuullm.YLLMClient(
-        provider=provider,
-        default_model=_MODEL,
-        price_calculator=yuullm.PriceCalculator(),
-    )
+    return build_llm_client(resolved.resolved_provider, resolved.resolved_model, ctx.config)
 
 
 async def _get_cached(host_path: str) -> str | None:
@@ -83,7 +83,7 @@ async def _describe_image(image_path: str) -> str:
     data = base64.b64encode(p.read_bytes()).decode()
     data_uri = f"data:{mime};base64,{data}"
 
-    client = _make_vision_llm()
+    client = await _make_vision_llm()
     task_id = str(uuid4())
     agent_id = f"vision-{task_id[:8]}"
 
@@ -94,15 +94,13 @@ async def _describe_image(image_path: str) -> str:
         system=_SYSTEM_PROMPT,
         tools=yt.ToolManager(),
         llm=client,
-        max_steps=1,
     )
     ctx = AgentContext(
         task_id=task_id,
         agent_id=agent_id,
         workdir="",
-        docker_container="",
     )
-    agent = FlowAgent(config=config, ctx=ctx)
+    agent = Agent(config=config, ctx=ctx)
     agent.start(
         ConversationInput(
             messages=[
@@ -113,8 +111,9 @@ async def _describe_image(image_path: str) -> str:
             ]
         )
     )
-    async for _step in agent.steps():
-        pass
+    async with aclosing(agent.steps()) as gen:
+        async for _step in gen:
+            break
     history = agent.messages
 
     for msg in reversed(history):

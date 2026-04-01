@@ -226,6 +226,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 config.yaml
+yuuagents.config.yaml
+.omx/
 
 # Vendor (downloaded binaries, e.g. libsimple)
 vendor/

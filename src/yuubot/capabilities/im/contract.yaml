@@ -40,6 +40,15 @@ actions:
       # 两个过滤条件为 OR 关系：满足任一即保留
     payload_rule: none
     return_shape: text
+  - name: recent
+    summary: 查看当前 ctx 中某条消息之后的最近真实消息
+    usage: |
+      im recent --ctx <ctx_id> --limit 50
+      im recent --ctx <ctx_id> --after-msg <msg_id> --limit 50
+      # 默认返回当前 ctx 最新的 N 条消息
+      # 指定 --after-msg 时，返回这条消息之后的新消息
+    payload_rule: none
+    return_shape: text
   - name: react
     summary: 对消息贴表情回应（emoji reaction）
     usage: |

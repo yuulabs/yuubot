@@ -23,10 +23,12 @@ from yuubot.core.types import InboundMessage
 from yuubot.rendering import ConversationRender
 from yuubot.capabilities.im.formatter import (
     format_message_to_xml,
+    format_messages_to_xml,
     format_segments,
     get_user_alias,
     replace_command_prefix,
 )
+from yuubot.capabilities.im.query import last_message_row_id_by_user, recent_window_messages
 
 
 # ── Policy & Context ─────────────────────────────────────────────
@@ -114,6 +116,7 @@ async def render_task(
     *,
     is_continuation: bool = False,
     memory_hints: str = "",
+    recent_ctx_upto_row_id: int = 0,
 ) -> str:
     """Render an InboundMessage to an LLM task string.
 
@@ -136,25 +139,54 @@ async def render_task(
         host_home_dir="",
         container_home_dir="",
     )
-    msg_xml = await _render_single_msg_xml(msg, segments, media_path_ctx)
+    total_msgs = 1
+    truncated = False
+    trigger_count = 1 + len(msg.extra_messages)
+    msg_xml = ""
 
-    # Render extra (debounced) typed messages
-    extra_messages = msg.extra_messages[: policy.max_batch_size - 1]
-    for extra in extra_messages:
-        extra_segments = list(extra.segments)
-        if policy.strip_bot_at and context.bot_qq:
-            extra_segments = _strip_bot_at(extra_segments, context.bot_qq)
-        if policy.replace_prefix_with_bot_name and context.bot_name:
-            extra_segments = replace_command_prefix(extra_segments, context.bot_name)
-        extra_xml = await _render_single_msg_xml(extra, extra_segments, media_path_ctx)
-        msg_xml += "\n" + extra_xml
+    if is_continuation and msg.ctx_id and recent_ctx_upto_row_id > 0 and context.bot_qq:
+        anchor_row_id = await last_message_row_id_by_user(
+            msg.ctx_id,
+            user_id=int(context.bot_qq),
+            before_row_id=recent_ctx_upto_row_id,
+        )
+        recent, truncated = await recent_window_messages(
+            msg.ctx_id,
+            after_row_id=anchor_row_id,
+            upto_row_id=recent_ctx_upto_row_id,
+            limit=10,
+        )
+        if recent:
+            msg_xml = await format_messages_to_xml(
+                recent,
+                bot_qq=int(context.bot_qq),
+                bot_name=context.bot_name or None,
+            )
+            total_msgs = len(recent)
+
+    if not msg_xml:
+        msg_xml = await _render_single_msg_xml(msg, segments, media_path_ctx)
+
+        # Render extra (debounced) typed messages
+        extra_messages = msg.extra_messages[: policy.max_batch_size - 1]
+        for extra in extra_messages:
+            extra_segments = list(extra.segments)
+            if policy.strip_bot_at and context.bot_qq:
+                extra_segments = _strip_bot_at(extra_segments, context.bot_qq)
+            if policy.replace_prefix_with_bot_name and context.bot_name:
+                extra_segments = replace_command_prefix(extra_segments, context.bot_name)
+            extra_xml = await _render_single_msg_xml(extra, extra_segments, media_path_ctx)
+            msg_xml += "\n" + extra_xml
+        total_msgs = 1 + len(extra_messages)
 
     # Assemble final text
     if is_continuation:
         return ConversationRender.user_continuation(
-            total_msgs=1 + len(extra_messages),
+            total_msgs=total_msgs,
             msg_xml=msg_xml,
             memory_hints=memory_hints,
+            truncated=truncated,
+            trigger_count=trigger_count,
         )
 
     location = _build_location(msg, context.group_name, policy.include_group_name)
@@ -189,6 +221,8 @@ async def render_signal(
     msg: InboundMessage,
     policy: RenderPolicy,
     context: RenderContext,
+    *,
+    upto_row_id: int = 0,
 ) -> str:
     """Render an incoming message as a signal for a running agent.
 
@@ -207,12 +241,49 @@ async def render_signal(
         host_home_dir="",
         container_home_dir="",
     )
-    msg_xml = await _render_single_msg_xml(msg, segments, media_path_ctx)
+    msg_xml = ""
+    probe_text = ""
+    total_msgs = 1
+    truncated = False
+    trigger_count = 1 + len(msg.extra_messages)
+    if msg.ctx_id and upto_row_id > 0 and context.bot_qq:
+        anchor_row_id = await last_message_row_id_by_user(
+            msg.ctx_id,
+            user_id=int(context.bot_qq),
+            before_row_id=upto_row_id,
+        )
+        recent, truncated = await recent_window_messages(
+            msg.ctx_id,
+            after_row_id=anchor_row_id,
+            upto_row_id=upto_row_id,
+            limit=10,
+        )
+        if recent:
+            msg_xml = await format_messages_to_xml(
+                recent,
+                bot_qq=int(context.bot_qq),
+                bot_name=context.bot_name or None,
+            )
+            total_msgs = len(recent)
+            probe_text = "\n".join(
+                str(item.get("content", "")).strip()
+                for item in recent
+                if str(item.get("content", "")).strip()
+            )
 
-    probe_text = await format_segments(msg.segments)
+    if not msg_xml:
+        msg_xml = await _render_single_msg_xml(msg, segments, media_path_ctx)
+    if not probe_text:
+        probe_text = await format_segments(msg.segments)
     memory_hints = await render_memory_hints(probe_text, msg.ctx_id or None, skip_topic=True)
 
-    return f"你收到了新消息:\n{msg_xml}\n{memory_hints}"
+    truncation = "（过长，已截断到最近10条）" if truncated else ""
+    return (
+        f"你上次回复后又出现了新的群聊片段，共 {total_msgs} 条{truncation}:\n"
+        f"{msg_xml}\n"
+        f"请回复其中所有直接 @你 或使用 /yllm 触发你的消息（共 {trigger_count} 条）。\n"
+        f"{memory_hints}"
+    )
 
 
 async def render_memory_hints(text: str, ctx_id: int | None = None, skip_topic: bool = False) -> str:

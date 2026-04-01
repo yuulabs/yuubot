@@ -38,6 +38,9 @@ class Conversation:
     created_at: float = attrs.field(factory=time.monotonic)
     summary_prompt: str = ""
     original_task: str = ""  # persists the very first user request across rollovers
+    start_row_id: int = 0
+    latest_ctx_row_id: int = 0
+    delivered_row_id: int = 0
     session: object | None = None
     _history_snapshot: list = attrs.field(factory=list)
 
@@ -188,6 +191,29 @@ class ConversationManager:
     def touch(self, conv: Conversation) -> None:
         """Refresh conversation TTL."""
         conv.last_active_at = time.monotonic()
+
+    def observe_message(self, ctx_id: int, row_id: int) -> None:
+        """Record the latest persisted QQ message visible in this ctx."""
+        if row_id <= 0:
+            return
+        for key, conv in self._conversations.items():
+            if key[0] != ctx_id:
+                continue
+            if row_id > conv.latest_ctx_row_id:
+                conv.latest_ctx_row_id = row_id
+            if conv.start_row_id == 0:
+                conv.start_row_id = row_id
+
+    def mark_delivered(self, conv: Conversation, row_id: int) -> None:
+        """Mark QQ messages up to ``row_id`` as already delivered to the LLM."""
+        if row_id <= 0:
+            return
+        if conv.start_row_id == 0:
+            conv.start_row_id = row_id
+        if row_id > conv.delivered_row_id:
+            conv.delivered_row_id = row_id
+        if row_id > conv.latest_ctx_row_id:
+            conv.latest_ctx_row_id = row_id
 
     def close(self, ctx_id: int) -> list[Conversation]:
         """Close all conversations for a ctx. Returns closed conversations."""

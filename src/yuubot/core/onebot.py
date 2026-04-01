@@ -5,6 +5,7 @@ import msgspec
 
 from yuubot.core.models import (
     AtSegment,
+    ForwardSegment,
     ImageSegment,
     JsonSegment,
     Message,
@@ -12,8 +13,8 @@ from yuubot.core.models import (
     MetaEvent,
     NoticeEvent,
     PokeSegment,
+    ReactSegment,
     ReplySegment,
-    ForwardSegment,
     Segment,
     TextSegment,
 )
@@ -57,6 +58,11 @@ def parse_segments(raw_segments: list[dict]) -> Message:
             ))
         elif t == "json":
             result.append(JsonSegment(data=data.get("data", "")))
+        elif t == "react":
+            result.append(ReactSegment(
+                message_id=str(data.get("message_id", "")),
+                emoji_id=str(data.get("emoji_id", "")),
+            ))
         else:
             # Unknown segment type — store as text placeholder
             result.append(TextSegment(text=f"[{t}]"))
@@ -91,6 +97,11 @@ def segments_to_onebot(segments: Message) -> list[dict]:
                 "sender_qq": seg.sender_qq, "target_qq": seg.target_qq,
                 "action": seg.action, "suffix": seg.suffix,
             }})
+        elif isinstance(seg, ReactSegment):
+            result.append({"type": "react", "data": {
+                "message_id": seg.message_id,
+                "emoji_id": seg.emoji_id,
+            }})
     return result
 
 
@@ -110,6 +121,7 @@ def to_inbound_message(event: dict) -> InboundMessage:
         message_id=event.get("message_id", 0),
         ctx_id=ctx_id,
         chat_type=msg_type,
+        db_id=int(event.get("_db_id", 0) or 0),
         group_id=event.get("group_id", 0),
         self_id=event.get("self_id", 0),
         sender=sender,

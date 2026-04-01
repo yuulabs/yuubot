@@ -233,7 +233,7 @@ async def test_large_output_tokens_trigger_rollover(dispatcher, session_mgr, mon
         total_tokens=140,
     )
 
-    with mock_recorder_api() as sent, mock_llm(
+    with mock_recorder_api(), mock_llm(
         [make_text_response("长回复但不该 rollover")],
         usages=[output_heavy_usage],
     ):

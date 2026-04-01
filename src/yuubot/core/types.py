@@ -45,6 +45,7 @@ class InboundMessage(msgspec.Struct):
     sender: Sender
     segments: list[Segment]
     timestamp: int
+    db_id: int = 0
     raw_event: dict = msgspec.field(default_factory=dict)  # original OneBot dict, for transition
     group_id: int = 0
     self_id: int = 0

@@ -69,6 +69,7 @@ class CapabilityContext:
     """Runtime context for capability execution."""
 
     config: Config | None = None
+    model_resolver: Any | None = None
     ctx_id: int | None = None
     user_id: int | None = None
     user_role: str = ""

@@ -20,6 +20,7 @@ from yuubot.core.models import (
     Message,
     MessageRecord,
     PokeSegment,
+    ReactSegment,
     ReplySegment,
     TextSegment,
     segments_from_json,
@@ -117,9 +118,14 @@ async def get_user_alias(user_id: int, ctx_id: int | None = None) -> str | None:
     return result
 
 
-def _best_name(nickname: str | None, display_name: str | None, alias: str | None) -> str:
-    """Pick the best display name: alias > display_name > nickname > empty."""
-    return alias or display_name or nickname or ""
+def _canonical_name(nickname: str | None, display_name: str | None) -> str:
+    """Pick the stable real-name field shown as ``name`` in XML."""
+    return nickname or display_name or ""
+
+
+def _best_display_name(display_name: str | None, alias: str | None) -> str:
+    """Pick the best contextual visible name for group display / mentions."""
+    return alias or display_name or ""
 
 
 async def _resolve_at_name(qq: str, ctx_id: int | None = None) -> str:
@@ -135,7 +141,10 @@ async def _resolve_at_name(qq: str, ctx_id: int | None = None) -> str:
 
     record = await MessageRecord.filter(user_id=uid).order_by("-id").first()
     if record:
-        return _best_name(record.nickname, record.display_name, None)
+        return _best_display_name(record.display_name, None) or _canonical_name(
+            record.nickname,
+            record.display_name,
+        )
 
     return qq
 
@@ -221,6 +230,10 @@ async def format_segments(
             target = await _resolve_at_name(seg.target_qq, ctx_id)
             suffix = f" {html.escape(seg.suffix)}" if seg.suffix else ""
             parts.append(f"[{html.escape(sender)} {html.escape(seg.action)} {html.escape(target)}{suffix}]")
+        elif isinstance(seg, ReactSegment):
+            parts.append(
+                f'[react to="{html.escape(seg.message_id)}" emoji="{html.escape(seg.emoji_id)}"]'
+            )
 
     content = ''.join(parts)
     if extract_replies:
@@ -256,12 +269,15 @@ async def format_message_to_xml(
         segments, media_files, ctx_id=ctx_id, extract_replies=True, media_path_ctx=media_path_ctx,
     )
 
-    name = _best_name(nickname, display_name, alias)
+    name = _canonical_name(nickname, display_name)
+    visible_name = _best_display_name(display_name, alias)
 
     # Build attributes
     attrs_parts = [f'id="{msg_id}"']
     if name:
         attrs_parts.append(f'name="{html.escape(name)}"')
+    if visible_name:
+        attrs_parts.append(f'display_name="{html.escape(visible_name)}"')
     attrs_parts.append(f'qq="{user_id}"')
 
     if isinstance(timestamp, datetime):
@@ -284,7 +300,10 @@ async def _format_reply_standalone(reply_msg_id: str, ctx_id: int | None = None)
     segs = segments_from_json(record.raw_message)
     content = await format_segments(segs, record.media_files)
     alias = await get_user_alias(record.user_id, ctx_id)
-    sender = _best_name(record.nickname, record.display_name, alias)
+    sender = _best_display_name(record.display_name, alias) or _canonical_name(
+        record.nickname,
+        record.display_name,
+    )
 
     return f'<quote from="{html.escape(sender)}">{content}</quote>'
 
@@ -298,7 +317,10 @@ async def _format_reply_inline(reply_msg_id: str, ctx_id: int | None = None) -> 
     segs = segments_from_json(record.raw_message)
     content = await format_segments(segs, record.media_files)
     alias = await get_user_alias(record.user_id, ctx_id)
-    sender = _best_name(record.nickname, record.display_name, alias)
+    sender = _best_display_name(record.display_name, alias) or _canonical_name(
+        record.nickname,
+        record.display_name,
+    )
 
     return (
         f'<reply msg_id="{html.escape(reply_msg_id)}"'

@@ -4,23 +4,37 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any
+from contextlib import aclosing
 
 from loguru import logger
 import yuullm
-from yuuagents import Session
+from yuuagents import Basin, ConversationInput, ScheduledInput
 from yuuagents.context import DelegateDepthExceededError
+from yuuagents.core.flow import FlowState
+from yuuagents.input import AgentInput
 from yuuagents.types import AgentStatus
 
+from yuubot.capabilities.runtime import unregister_capability_context
 from yuubot.characters import CHARACTER_REGISTRY
 from yuubot.config import Config
 from yuubot.core import env
 from yuubot.core.types import InboundMessage
+from yuubot.capabilities.im.formatter import format_messages_to_xml
+from yuubot.capabilities.im.query import recent_messages
 from yuubot.daemon.bot_info import BotInfo
-from yuubot.daemon.builder import ActiveRun, AgentEnv, AgentRunBuilder, SessionLaunch, TurnContext
-from yuubot.daemon.render import RenderContext, RenderPolicy, render_signal as _render_signal
+from yuubot.daemon.builder import (
+    ActiveRun,
+    AgentEnv,
+    AgentLaunch,
+    AgentRunBuilder,
+    RunContext,
+    TurnContext,
+)
+from yuubot.daemon.conversation import Conversation
 from yuubot.daemon.llm_factory import make_summary_llm
+from yuubot.daemon.render import RenderContext, RenderPolicy, render_signal as _render_signal
 from yuubot.daemon.runtime import AgentRuntime
+from yuubot.daemon.runtime_session import RuntimeSession
 
 
 class AgentRunner:
@@ -30,12 +44,13 @@ class AgentRunner:
         self.config = config
         self.runtime = AgentRuntime(config)
         self.bot_info = BotInfo(config=config)
+        self._basin = Basin()
         self._active_runs_by_runtime: dict[str, ActiveRun] = {}
         self._active_runs_by_ctx: dict[int, ActiveRun] = {}
         self._signal_queues: dict[str, asyncio.Queue[str]] = {}
         self._silence_watchers: dict[str, asyncio.Task[None]] = {}
-        self._delegate_sessions_by_run_id: dict[str, Session] = {}
-        self._running_sessions: dict[str, Session] = {}
+        self._step_loop_tasks: dict[str, asyncio.Task[str]] = {}
+        self._running_sessions: dict[str, RuntimeSession] = {}
 
     @property
     def _builder(self) -> AgentRunBuilder:
@@ -57,41 +72,69 @@ class AgentRunner:
         await self.runtime.ensure_init()
 
     async def stop(self) -> None:
+        for task in list(self._step_loop_tasks.values()):
+            task.cancel()
+        if self._step_loop_tasks:
+            await asyncio.gather(*self._step_loop_tasks.values(), return_exceptions=True)
+
+        for session in list(self._running_sessions.values()):
+            session.cancel()
+        waits = [
+            session.wait()
+            for session in self._running_sessions.values()
+            if session.flow._task is not None
+        ]
+        if waits:
+            await asyncio.gather(*waits, return_exceptions=True)
+
+        for runtime_id in list(self._running_sessions):
+            unregister_capability_context(runtime_id)
+        self._running_sessions.clear()
+        self._active_runs_by_runtime.clear()
+        self._active_runs_by_ctx.clear()
+        self._signal_queues.clear()
+        self._silence_watchers.clear()
+        self._step_loop_tasks.clear()
+        self._prune_basin()
         await self.runtime.stop()
 
-    def _make_llm(self, agent_name: str):
+    async def _make_llm(self, agent_name: str):
         """Compatibility shim for tests and older call sites."""
-        return self.runtime.make_llm(agent_name)
+        return await self.runtime.make_llm(agent_name)
 
     def get_active_run(self, ctx_id: int) -> ActiveRun | None:
         return self._active_runs_by_ctx.get(ctx_id)
 
     def cancel_ctx(self, ctx_id: int) -> bool:
-        active = self._active_runs_by_ctx.pop(ctx_id, None)
+        active = self._active_runs_by_ctx.get(ctx_id)
         if active is None:
             return False
-        self._active_runs_by_runtime.pop(active.runtime_id, None)
+        step_task = self._step_loop_tasks.get(active.runtime_id)
+        if step_task is not None:
+            step_task.cancel()
         session = self._running_sessions.get(active.runtime_id)
         if session is not None:
             session.cancel()
         logger.info("Run cancelled for ctx={}", ctx_id)
         return True
 
-    def _cancel_session_step_loop(self, runtime_id: str) -> None:
-        """Cancel the step-loop task driving a session, if any."""
-        session = self._running_sessions.get(runtime_id)
-        if session is not None:
-            session.cancel()
-
     # -- Signal support --
 
     def enqueue_signal(self, runtime_id: str, text: str) -> None:
-        """Enqueue a signal message for a running agent."""
+        """Enqueue the latest signal message for a running agent."""
         q = self._signal_queues.get(runtime_id)
         if q is not None:
+            while not q.empty():
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    q.get_nowait()
             q.put_nowait(text)
 
-    async def render_signal(self, msg: InboundMessage) -> str:
+    async def render_signal(
+        self,
+        msg: InboundMessage,
+        *,
+        upto_row_id: int = 0,
+    ) -> str:
         """Render a message through the full pipeline for use as a signal."""
         bot_name = await self.bot_info.bot_name()
         group_name = ""
@@ -107,7 +150,12 @@ class AgentRunner:
             bot_qq=str(self.config.bot.qq),
             docker_host_mount=docker_host_mount,
         )
-        return await _render_signal(msg, RenderPolicy(), context)
+        return await _render_signal(
+            msg,
+            RenderPolicy(),
+            context,
+            upto_row_id=upto_row_id,
+        )
 
     # -- Summarize / curate --
 
@@ -117,13 +165,10 @@ class AgentRunner:
         history: list,
         agent_name: str = "main",
     ) -> str:
-        from yuuagents import Session as _Session
         from yuubot.daemon.summarizer import summarize as summarize_history
         from yuubot.daemon.summarizer import summarize_via_fork
 
-        # Prefer fork-based summarization (cache-friendly, higher quality).
-        # Fall back to the external summarizer on failure.
-        if isinstance(runtime_session, _Session):
+        if isinstance(runtime_session, RuntimeSession):
             try:
                 result = await summarize_via_fork(runtime_session)
                 if result:
@@ -132,10 +177,10 @@ class AgentRunner:
             except Exception:
                 logger.exception("Fork summarizer failed, falling back")
 
-        llm = make_summary_llm(self.config)
+        llm = await make_summary_llm(self.config)
         return await summarize_history(history, llm)
 
-    async def curate(self, history: list, ctx_id: int, user_id: int) -> None:
+    async def curate(self, conv: Conversation) -> None:
         agent_name = "mem_curator"
         if agent_name not in CHARACTER_REGISTRY:
             logger.debug("mem_curator not configured, skipping")
@@ -145,10 +190,36 @@ class AgentRunner:
 
         from yuubot.daemon.summarizer import extract_original_task, render_for_curator
 
+        history = conv.history
+        ctx_id = conv.ctx_id
+        user_id = conv.started_by
+
+        bot_name = await self.bot_info.bot_name()
+        qq_transcript = ""
+        if conv.start_row_id > 0 and conv.latest_ctx_row_id >= conv.start_row_id:
+            records = await recent_messages(
+                ctx_id,
+                after_row_id=conv.start_row_id - 1,
+                upto_row_id=conv.latest_ctx_row_id,
+                limit=None,
+            )
+            if records:
+                qq_transcript = await format_messages_to_xml(
+                    records,
+                    bot_qq=self.config.bot.qq,
+                    bot_name=bot_name,
+                )
+
         task = (
-            f"以下是本轮 session 的对话摘要，请整理记忆。\n\n"
+            f"以下是本轮 session 的真实 QQ 消息记录与内部摘要，请整理记忆。\n\n"
             f"原始任务：\n{extract_original_task(history)}\n\n"
-            f"对话内容：\n{render_for_curator(history)}\n\n"
+            f"真实 QQ 消息记录（若与内部摘要冲突，以这里和人类纠错为准）：\n"
+            f"{qq_transcript or '（无可用 QQ 记录）'}\n\n"
+            f"内部摘要（可能遗漏或误读，仅供参考）：\n{render_for_curator(history)}\n\n"
+            "写记忆时，优先使用真实 QQ 记录里可见的稳定锚点来把事实写完整，例如 qq、明确名字、绝对时间、URL、img_id。\n"
+            "不要把只靠当前对话语境才能理解的简称、代词、相对称呼、相对时间直接写进记忆；若能补全锚点后再保存，否则不要保存。\n\n"
+            "如果完整写成绝对事实仍可能歧义，或上下文太长难以压缩，请把来源消息窗口直接写进记忆，格式优先用「来源: msg_id=<起始消息ID> +<后续条数>条」。\n"
+            "只引用证明该事实所需的最小连续窗口，便于后续按 msg_id 回查来源。\n\n"
             f"ctx_id: {ctx_id}\n"
         )
         base_env = AgentEnv(
@@ -161,7 +232,7 @@ class AgentRunner:
         )
         turn = self._builder.build_delegated_turn(
             agent_name=agent_name,
-            first_user_message=task,
+            input=ConversationInput(messages=[yuullm.user(task)]),
             parent_env=base_env,
         )
         try:
@@ -170,7 +241,7 @@ class AgentRunner:
             logger.exception("mem_curator failed for ctx={}", ctx_id)
 
     @staticmethod
-    def _last_assistant_text(session: Session) -> str:
+    def _last_assistant_text(session: RuntimeSession) -> str:
         for msg in reversed(session.history):
             role, items = msg
             if role != "assistant":
@@ -211,7 +282,6 @@ class AgentRunner:
     def _unregister_active_run(self, runtime_id: str, ctx_id: int | None) -> None:
         self._active_runs_by_runtime.pop(runtime_id, None)
         self._signal_queues.pop(runtime_id, None)
-        self._running_sessions.pop(runtime_id, None)
         watcher = self._silence_watchers.pop(runtime_id, None)
         if watcher is not None:
             watcher.cancel()
@@ -222,7 +292,7 @@ class AgentRunner:
             self._active_runs_by_ctx.pop(ctx_id, None)
 
     @staticmethod
-    def _history_has_im_send(session: Session) -> bool:
+    def _history_has_im_send(session: RuntimeSession) -> bool:
         return session.has_tool_call("call_cap_cli", argument_contains="im send")
 
     async def _watch_silence_timeout(
@@ -230,10 +300,10 @@ class AgentRunner:
         *,
         runtime_id: str,
         agent_name: str,
-        session: Session,
+        session: RuntimeSession,
         ctx_id: int | None,
+        timeout: float | None,
     ) -> None:
-        timeout = session.config.silence_timeout
         if timeout is None or timeout <= 0:
             return
 
@@ -243,9 +313,6 @@ class AgentRunner:
             if active is None:
                 return
             if self._history_has_im_send(session):
-                return
-
-            if session.agent is None:
                 return
 
             logger.info(
@@ -265,18 +332,94 @@ class AgentRunner:
         except asyncio.CancelledError:
             pass
 
-    async def _launch(
+    def _prune_basin(self) -> None:
+        for flow in list(self._basin.iter_flows()):
+            task = getattr(flow, "_task", None)
+            if flow.state in (
+                FlowState.DONE,
+                FlowState.ERROR,
+                FlowState.CANCELLED,
+            ) and (task is None or task.done()):
+                self._basin.forget(flow.id)
+
+    def _cleanup_runtime_session(self, session: RuntimeSession) -> None:
+        self._running_sessions.pop(session.runtime_id, None)
+        unregister_capability_context(session.runtime_id)
+        self._prune_basin()
+
+    async def _interrupt_session(self, session: RuntimeSession) -> None:
+        session.cancel()
+        waits = [
+            child.wait()
+            for child in session.flow.children
+            if child._task is not None
+        ]
+        if waits:
+            await asyncio.gather(*waits, return_exceptions=True)
+        await session.kill()
+
+    def _ensure_delegate_allowed(self, caller_name: str, target_agent: str) -> None:
+        allowed = set()
+        caller_char = CHARACTER_REGISTRY.get(caller_name)
+        if caller_char is not None:
+            allowed.update(caller_char.spec.subagents)
+        if target_agent not in allowed:
+            raise ValueError(
+                f"Agent {caller_name!r} is not allowed to delegate to {target_agent!r}",
+            )
+
+    def _make_spawn_agent(self, parent_run_ctx: RunContext):
+        async def _spawn(
+            parent_flow,
+            agent: str,
+            input: AgentInput,
+            tools: list[str] | None,
+            delegate_depth: int,
+        ):
+            if delegate_depth > 3:
+                raise DelegateDepthExceededError(
+                    max_depth=3,
+                    current_depth=delegate_depth - 1,
+                    target_agent=agent,
+                )
+
+            self._ensure_delegate_allowed(parent_run_ctx.agent_name, agent)
+
+            child_task_id = parent_run_ctx.task_id or self.runtime.new_task_id()
+            child_flow_id = self.runtime.new_task_id()
+            child_runtime_id = f"delegate-{agent}-{child_flow_id[:8]}"
+            turn = self._builder.build_delegated_turn(
+                agent_name=agent,
+                input=input,
+                parent_env=parent_run_ctx.agent_env,
+            )
+            session, _ = await self._open_runtime_session(
+                turn=turn,
+                task_id=child_task_id,
+                runtime_id=child_runtime_id,
+                flow_id=child_flow_id,
+                tool_names=tools,
+                delegate_depth=delegate_depth,
+            )
+            session.flow.parent = parent_flow
+            if session.flow not in parent_flow.children:
+                parent_flow.children.append(session.flow)
+            session.flow.start(self._drive_background_session(session))
+            return session.agent
+
+        return _spawn
+
+    async def _open_runtime_session(
         self,
         *,
         turn: TurnContext,
         task_id: str,
         runtime_id: str,
+        flow_id: str,
         tool_names: list[str] | None = None,
-        session_history: list | None = None,
-        session: Session | None = None,
+        previous: RuntimeSession | None = None,
         delegate_depth: int = 0,
-        track_ctx: bool = False,
-    ) -> Session:
+    ) -> tuple[RuntimeSession, RunContext]:
         bundle = await self._builder.build_task_bundle(turn)
         run_ctx = await self._builder.build_run_context(
             turn=turn,
@@ -285,12 +428,183 @@ class AgentRunner:
             tool_names=tool_names,
             delegate_depth=delegate_depth,
         )
-        launch = SessionLaunch.from_run_context(
+        launch = AgentLaunch.from_run_context(
             run_ctx,
-            llm=self._make_llm(turn.agent_name),
-            manager=self,
+            llm=await self._make_llm(turn.agent_name),
+            basin=self._basin,
+            spawn_agent=self._make_spawn_agent(run_ctx),
         )
-        working_session = launch.open()
+
+        initial_messages = previous.history if previous is not None else None
+        conversation_id = previous.conversation_id if previous is not None else None
+        try:
+            agent = launch.open(
+                bundle.startup_input,
+                flow_id=flow_id,
+                initial_messages=initial_messages,
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            unregister_capability_context(runtime_id)
+            raise
+
+        session = RuntimeSession(
+            task_id=task_id,
+            runtime_id=runtime_id,
+            agent_name=turn.agent_name,
+            agent=agent,
+            capability_context=run_ctx.capability_context,
+        )
+        session.flow.info["runtime_id"] = runtime_id
+        session.flow.info["agent_name"] = turn.agent_name
+        self._running_sessions[runtime_id] = session
+        return session, run_ctx
+
+    async def _drive_background_session(self, session: RuntimeSession) -> None:
+        try:
+            async with aclosing(session.agent.steps()) as gen:
+                async for _ in gen:
+                    pass
+            session.status = AgentStatus.DONE
+        except asyncio.CancelledError:
+            session.status = AgentStatus.CANCELLED
+            with contextlib.suppress(Exception):
+                await self._interrupt_session(session)
+            raise
+        except Exception as exc:
+            session.status = AgentStatus.ERROR
+            session.flow.info["error"] = str(exc)
+            with contextlib.suppress(Exception):
+                await self._interrupt_session(session)
+            logger.exception(
+                "Delegated agent failed: runtime_id={} agent={}",
+                session.runtime_id,
+                session.agent_name,
+            )
+            raise
+        finally:
+            self._cleanup_runtime_session(session)
+
+    async def _drive_foreground_session(
+        self,
+        *,
+        session: RuntimeSession,
+        run_ctx: RunContext,
+        ctx_id: int | None,
+    ) -> str:
+        timeout = self.config.daemon.agent_timeout
+        max_steps = run_ctx.prompt_spec.agent_spec.max_steps
+        stop_reason = "natural"
+        step_count = 0
+
+        logger.info(
+            "Step loop started: ctx={} runtime_id={} agent={} timeout={}s max_steps={}",
+            ctx_id,
+            session.runtime_id,
+            session.agent_name,
+            timeout,
+            max_steps,
+        )
+        t0 = asyncio.get_running_loop().time()
+
+        try:
+            timeout_ctx = asyncio.timeout(timeout) if timeout else contextlib.nullcontext()
+            async with timeout_ctx:
+                async with aclosing(session.agent.steps()) as gen:
+                    async for step in gen:
+                        step_count += 1
+                        if step.done:
+                            session.status = AgentStatus.DONE
+                            session.flow.state = FlowState.DONE
+                            logger.debug(
+                                "Step loop done (natural): ctx={} runtime_id={} steps={}",
+                                ctx_id,
+                                session.runtime_id,
+                                step_count,
+                            )
+                            return stop_reason
+                        if max_steps and step.rounds >= max_steps:
+                            stop_reason = "max_steps"
+                            logger.info(
+                                "Step loop done (max_steps): ctx={} runtime_id={} steps={}",
+                                ctx_id,
+                                session.runtime_id,
+                                step_count,
+                            )
+                            await self._interrupt_session(session)
+                            session.status = AgentStatus.CANCELLED
+                            session.flow.state = FlowState.CANCELLED
+                            return stop_reason
+        except TimeoutError:
+            stop_reason = "timeout"
+            logger.warning(
+                "Agent run timed out after {}s: ctx={} runtime_id={} steps={}",
+                timeout,
+                ctx_id,
+                session.runtime_id,
+                step_count,
+            )
+            await self._interrupt_session(session)
+            session.status = AgentStatus.CANCELLED
+            session.flow.state = FlowState.CANCELLED
+            return stop_reason
+        except asyncio.CancelledError:
+            stop_reason = "cancelled"
+            logger.info(
+                "Agent run cancelled: ctx={} runtime_id={} steps={}",
+                ctx_id,
+                session.runtime_id,
+                step_count,
+            )
+            with contextlib.suppress(Exception):
+                await self._interrupt_session(session)
+            session.status = AgentStatus.CANCELLED
+            session.flow.state = FlowState.CANCELLED
+            raise
+        except Exception as exc:
+            stop_reason = "error"
+            session.status = AgentStatus.ERROR
+            session.flow.state = FlowState.ERROR
+            session.flow.info["error"] = str(exc)
+            with contextlib.suppress(Exception):
+                await self._interrupt_session(session)
+            logger.exception(
+                "Agent run failed: ctx={} runtime_id={}",
+                ctx_id,
+                session.runtime_id,
+            )
+            raise
+        finally:
+            elapsed = asyncio.get_running_loop().time() - t0
+            logger.info(
+                "Step loop ended: ctx={} runtime_id={} reason={} steps={} elapsed={:.1f}s",
+                ctx_id,
+                session.runtime_id,
+                stop_reason,
+                step_count,
+                elapsed,
+            )
+
+    async def _launch(
+        self,
+        *,
+        turn: TurnContext,
+        task_id: str,
+        runtime_id: str,
+        tool_names: list[str] | None = None,
+        session: RuntimeSession | None = None,
+        delegate_depth: int = 0,
+        track_ctx: bool = False,
+    ) -> RuntimeSession:
+        working_session, run_ctx = await self._open_runtime_session(
+            turn=turn,
+            task_id=task_id,
+            runtime_id=runtime_id,
+            flow_id=task_id,
+            tool_names=tool_names,
+            previous=session,
+            delegate_depth=delegate_depth,
+        )
         ctx_id = turn.message.ctx_id if track_ctx else None
 
         self._register_active_run(
@@ -299,84 +613,46 @@ class AgentRunner:
             agent_env=run_ctx.agent_env,
             ctx_id=ctx_id,
         )
+        silence_timeout = run_ctx.prompt_spec.agent_spec.silence_timeout
         self._silence_watchers[runtime_id] = asyncio.create_task(
             self._watch_silence_timeout(
                 runtime_id=runtime_id,
                 agent_name=turn.agent_name,
                 session=working_session,
                 ctx_id=ctx_id,
+                timeout=silence_timeout,
             )
         )
 
-        # Start or resume the session
-        if session is not None and hasattr(session, "history") and session.history:
-            working_session.resume(
-                bundle.startup_input,
-                history=session.history,
-                conversation_id=getattr(session, "conversation_id", None),
-            )
-        else:
-            working_session.start(bundle.startup_input)
-
-        self._running_sessions[runtime_id] = working_session
-
-        # Background task: drain signal queue → send to running agent
         signal_task = asyncio.create_task(
             self._signal_drainer(working_session, runtime_id)
         )
-
-        # Host-driven step loop with budget checks
-        timeout = self.config.daemon.agent_timeout
-        agent_spec = run_ctx.prompt_spec.agent_spec
-        max_steps = agent_spec.max_steps
-        stop_reason = "natural"
-        step_count = 0
-
-        logger.info(
-            "Step loop started: ctx={} runtime_id={} agent={} timeout={}s max_steps={}",
-            ctx_id, runtime_id, turn.agent_name, timeout, max_steps,
+        step_task = asyncio.create_task(
+            self._drive_foreground_session(
+                session=working_session,
+                run_ctx=run_ctx,
+                ctx_id=ctx_id,
+            )
         )
-        t0 = asyncio.get_running_loop().time()
+        self._step_loop_tasks[runtime_id] = step_task
 
         try:
-            timeout_ctx = asyncio.timeout(timeout) if timeout else contextlib.nullcontext()
-            async with timeout_ctx:
-                async with contextlib.aclosing(working_session.step_iter()) as gen:
-                    async for step in gen:
-                        step_count += 1
-                        if step.done:
-                            logger.debug(
-                                "Step loop done (natural): ctx={} runtime_id={} steps={}",
-                                ctx_id, runtime_id, step_count,
-                            )
-                            break
-                        if max_steps and step.rounds >= max_steps:
-                            stop_reason = "max_steps"
-                            logger.info(
-                                "Step loop done (max_steps): ctx={} runtime_id={} steps={}",
-                                ctx_id, runtime_id, step_count,
-                            )
-                            break
-        except TimeoutError:
-            stop_reason = "timeout"
-            logger.warning(
-                "Agent run timed out after {}s: ctx={} runtime_id={} steps={}",
-                timeout, ctx_id, runtime_id, step_count,
-            )
+            stop_reason = await step_task
+            working_session.stop_reason = stop_reason
+            return working_session
+        except asyncio.CancelledError:
+            working_session.stop_reason = "cancelled"
+            raise
         finally:
-            elapsed = asyncio.get_running_loop().time() - t0
-            logger.info(
-                "Step loop ended: ctx={} runtime_id={} reason={} steps={} elapsed={:.1f}s",
-                ctx_id, runtime_id, stop_reason, step_count, elapsed,
-            )
             signal_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await signal_task
+            self._step_loop_tasks.pop(runtime_id, None)
             self._unregister_active_run(runtime_id, ctx_id)
+            self._cleanup_runtime_session(working_session)
 
-        working_session.stop_reason = stop_reason
-        return working_session
-
-    async def _signal_drainer(self, session: Session, runtime_id: str) -> None:
-        """Continuously drain signals and forward them to the running session."""
+    async def _signal_drainer(self, session: RuntimeSession, runtime_id: str) -> None:
+        """Continuously drain signals and forward them to the running agent."""
         try:
             q = self._signal_queues.get(runtime_id)
             if q is None:
@@ -396,7 +672,11 @@ class AgentRunner:
     ) -> str:
         task_id = turn.task_id or self.runtime.new_task_id()
         ctx_id = turn.message.ctx_id
-        runtime_id = f"agent-{turn.agent_name}-{ctx_id}" if ctx_id else f"agent-{turn.agent_name}-{task_id[:8]}"
+        runtime_id = (
+            f"agent-{turn.agent_name}-{ctx_id}"
+            if ctx_id
+            else f"agent-{turn.agent_name}-{task_id[:8]}"
+        )
         session = await self._launch(
             turn=turn,
             task_id=task_id,
@@ -405,243 +685,6 @@ class AgentRunner:
             delegate_depth=delegate_depth,
         )
         return self._last_assistant_text(session)
-
-    async def _run_agent(
-        self,
-        agent_name: str,
-        task: str,
-        *,
-        agent_env: dict[str, str],
-        tool_names: list[str] | None = None,
-        delegate_depth: int = 0,
-    ) -> str:
-        if agent_name not in CHARACTER_REGISTRY:
-            raise ValueError(f"Unknown agent {agent_name!r}")
-        run_env = dict(agent_env)
-        run_env[env.AGENT_NAME] = agent_name
-        turn = self._builder.build_delegated_turn(
-            agent_name=agent_name,
-            first_user_message=task,
-            parent_env=AgentEnv(run_env),
-        )
-        return await self._run_simple_turn(
-            turn,
-            tool_names=tool_names,
-            delegate_depth=delegate_depth,
-        )
-
-    async def start_delegate(
-        self,
-        *,
-        parent: object,
-        parent_run_id: str,
-        agent: str,
-        first_user_message: str,
-        tools: list[str] | None,
-        delegate_depth: int,
-    ) -> Session:
-        if delegate_depth > 3:
-            raise DelegateDepthExceededError(
-                max_depth=3,
-                current_depth=delegate_depth,
-                target_agent=agent,
-            )
-        parent_session = parent if isinstance(parent, Session) else None
-        if parent_session is None:
-            raise ValueError("delegate requires a parent session")
-        active_parent = self._active_runs_by_runtime.get(parent_session.agent_id)
-        caller_name = parent_session.agent_id if active_parent is None else active_parent.agent_name
-        allowed = set()
-        caller_char = CHARACTER_REGISTRY.get(caller_name)
-        if caller_char is not None:
-            allowed.update(caller_char.spec.subagents)
-        if agent not in allowed:
-            raise ValueError(f"Agent {caller_name!r} is not allowed to delegate to {agent!r}")
-        parent_env = {} if active_parent is None else dict(active_parent.agent_env.values)
-        task_id = self.runtime.new_task_id()
-        runtime_id = f"delegate-{agent}-{task_id[:8]}"
-        turn = self._builder.build_delegated_turn(
-            agent_name=agent,
-            first_user_message=first_user_message,
-            parent_env=AgentEnv(parent_env),
-        )
-        bundle = await self._builder.build_task_bundle(turn)
-        run_ctx = await self._builder.build_run_context(
-            turn=turn,
-            task_id=task_id,
-            runtime_id=runtime_id,
-            tool_names=tools,
-            delegate_depth=delegate_depth,
-        )
-        launch = SessionLaunch.from_run_context(
-            run_ctx,
-            llm=self._make_llm(agent),
-            manager=self,
-        )
-        session = launch.open()
-        self._register_active_run(
-            runtime_id=runtime_id,
-            agent_name=agent,
-            agent_env=run_ctx.agent_env,
-            ctx_id=None,
-        )
-        session.start(bundle.startup_input)
-        child_flow = session.flow
-        if child_flow is not None:
-            parent_session.attach_child_flow(parent_run_id, child_flow)
-        self._delegate_sessions_by_run_id[parent_run_id] = session
-        asyncio.create_task(
-            self._wait_delegate_session(session, runtime_id),
-            name=f"delegate-wait-{runtime_id}",
-        )
-        return session
-
-    async def _wait_delegate_session(self, session: Session, runtime_id: str) -> None:
-        try:
-            async for _step in session.step_iter():
-                pass
-        finally:
-            self._delegate_sessions_by_run_id = {
-                run_id: child
-                for run_id, child in self._delegate_sessions_by_run_id.items()
-                if child is not session
-            }
-            self._unregister_active_run(runtime_id, None)
-
-    def inspect_run(
-        self,
-        *,
-        parent: object,
-        run_id: str,
-        limit: int = 200,
-        max_chars: int = 4000,
-    ) -> str:
-        parent_session = parent if isinstance(parent, Session) else None
-        if parent_session is None:
-            return f"[ERROR] invalid parent session for run {run_id}"
-        flow = parent_session.find_flow(run_id)
-        if flow is None:
-            if parent_session.agent is None:
-                return f"[ERROR] parent session not started for run {run_id}"
-            return f"[ERROR] unknown run id {run_id!r}"
-        lines = [f"run_id: {flow.id}", f"kind: {flow.kind}"]
-        tool_name = flow.info.get("tool_name")
-        if isinstance(tool_name, str) and tool_name:
-            lines.append(f"tool_name: {tool_name}")
-        delegate = self._delegate_sessions_by_run_id.get(run_id)
-        if delegate is not None:
-            lines.append(f"delegate_status: {delegate.status.value}")
-            delegate_flow = delegate.flow
-            if delegate_flow is not None:
-                from yuuagents.core.flow import render_agent_event
-
-                lines.append("delegate_stem:")
-                lines.append(delegate_flow.render(render_agent_event, limit=limit) or "<empty>")
-        lines.append("stem:")
-        lines.append(flow.render(str, limit=limit) or "<empty>")
-        return self._truncate_text("\n".join(lines), max_chars)
-
-    def cancel_run(
-        self,
-        *,
-        parent: object,
-        run_id: str,
-    ) -> str:
-        parent_session = parent if isinstance(parent, Session) else None
-        if parent_session is None:
-            return f"[ERROR] invalid parent session for run {run_id}"
-        flow = parent_session.find_flow(run_id)
-        if flow is None:
-            if parent_session.agent is None:
-                return f"[ERROR] parent session not started for run {run_id}"
-            return f"[ERROR] unknown run id {run_id!r}"
-        flow.cancel()
-        delegate = self._delegate_sessions_by_run_id.get(run_id)
-        if delegate is not None:
-            delegate.status = AgentStatus.CANCELLED
-        return f"Cancelled run {run_id}"
-
-    def defer_run(
-        self,
-        *,
-        parent: object,
-        run_id: str,
-        message: str,
-    ) -> str:
-        _ = parent
-        delegate = self._delegate_sessions_by_run_id.get(run_id)
-        if delegate is None:
-            return f"[ERROR] run {run_id!r} is not a delegated agent"
-        prompt = (
-            message.strip()
-            or "请立即停止等待中的前台工具，把当前工作移到后台，并先汇报简短进展。"
-        )
-        delegate.send(yuullm.user(prompt), defer_tools=True)
-        return f"Sent defer signal to delegated run {run_id}"
-
-    async def input_run(
-        self,
-        *,
-        parent: object,
-        run_id: str,
-        data: str,
-        append_newline: bool = True,
-    ) -> str:
-        parent_session = parent if isinstance(parent, Session) else None
-        if parent_session is None:
-            return f"[ERROR] invalid parent session for run {run_id}"
-        delegate = self._delegate_sessions_by_run_id.get(run_id)
-        if delegate is not None:
-            delegate.send(yuullm.user(data))
-            return f"Input sent to delegated run {run_id}"
-        flow = parent_session.find_flow(run_id)
-        if flow is None:
-            if parent_session.agent is None:
-                return f"[ERROR] parent session not started for run {run_id}"
-            return f"[ERROR] unknown run id {run_id!r}"
-        tool_name = flow.info.get("tool_name")
-        if tool_name != "execute_bash":
-            return f"[ERROR] run {run_id!r} does not accept input"
-        docker = parent_session.context.docker
-        container = parent_session.context.docker_container
-        if docker is None or not container:
-            return f"[ERROR] docker terminal unavailable for run {run_id!r}"
-        return await docker.write_terminal(
-            container,
-            run_id,
-            data,
-            append_newline=append_newline,
-        )
-
-    async def wait_runs(
-        self,
-        *,
-        parent: object,
-        run_ids: list[str],
-    ) -> str:
-        parent_session = parent if isinstance(parent, Session) else None
-        if parent_session is None:
-            return "[ERROR] invalid parent session for wait"
-        if parent_session.agent is None:
-            return "[ERROR] parent session not started for wait"
-        if not run_ids:
-            return "[ERROR] run_ids must not be empty"
-
-        waits: list[Any] = []
-        for run_id in run_ids:
-            delegate = self._delegate_sessions_by_run_id.get(run_id)
-            if delegate is not None:
-                if delegate.agent is None:
-                    return f"[ERROR] delegated run {run_id!r} not started"
-                waits.append(delegate.wait())
-                continue
-            flow = parent_session.find_flow(run_id)
-            if flow is None:
-                return f"[ERROR] unknown run id {run_id!r}"
-            waits.append(flow.wait())
-
-        await asyncio.gather(*waits)
-        return f"Wait finished for runs: {', '.join(run_ids)}"
 
     async def run_conversation(
         self,
@@ -652,7 +695,8 @@ class AgentRunner:
         session: object | None = None,
         handoff_text: str = "",
         text_override: str = "",
-    ) -> Session | None:
+        recent_ctx_upto_row_id: int = 0,
+    ) -> RuntimeSession | None:
         await self._ensure_init()
         current_session = getattr(session, "session", None)
         task_id = getattr(current_session, "task_id", "") or self.runtime.new_task_id()
@@ -664,6 +708,7 @@ class AgentRunner:
             handoff_text=handoff_text,
             startup_kind="handoff" if handoff_text else "conversation",
             is_continuation=current_session is not None,
+            recent_ctx_upto_row_id=recent_ctx_upto_row_id,
             task_id=task_id,
         )
         runtime_id = f"yuubot-{agent_name}-{turn.message.ctx_id}"
@@ -675,8 +720,21 @@ class AgentRunner:
                 session=current_session,
                 track_ctx=True,
             )
+        except asyncio.CancelledError:
+            logger.info(
+                "agent cancelled: ctx={} agent={} task_id={}",
+                turn.message.ctx_id,
+                agent_name,
+                task_id,
+            )
+            return None
         except BaseException:
-            logger.exception("agent failed: ctx={} agent={} task_id={}", turn.message.ctx_id, agent_name, task_id)
+            logger.exception(
+                "agent failed: ctx={} agent={} task_id={}",
+                turn.message.ctx_id,
+                agent_name,
+                task_id,
+            )
             return None
         return runtime_session
 
@@ -705,15 +763,18 @@ class AgentRunner:
         )
         turn = self._builder.build_delegated_turn(
             agent_name=agent_name,
-            first_user_message=full_task,
+            input=ScheduledInput(trigger=[yuullm.user(full_task)]),
             parent_env=base_env,
-            startup_kind="scheduled",
         )
         try:
             await self._launch(
                 turn=turn,
                 task_id=task_id,
-                runtime_id=f"yuubot-cron-{agent_name}-{ctx_id}" if ctx_id else f"yuubot-cron-{agent_name}-{task_id[:8]}",
+                runtime_id=(
+                    f"yuubot-cron-{agent_name}-{ctx_id}"
+                    if ctx_id
+                    else f"yuubot-cron-{agent_name}-{task_id[:8]}"
+                ),
             )
         except BaseException:
             logger.exception("Scheduled agent failed: {}", task)

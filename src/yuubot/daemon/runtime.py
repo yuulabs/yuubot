@@ -19,6 +19,7 @@ from yuubot.characters import CHARACTER_REGISTRY, get_character
 from yuubot.config import Config
 from yuubot.core import env
 from yuubot.daemon.llm_factory import make_llm
+from yuubot.model_resolution import ModelResolver, build_llm_client
 from yuubot.prompt import RuntimeInfo, build_prompt_spec, build_system_prompt
 
 
@@ -52,6 +53,7 @@ class AgentRuntime:
         self.config = config
         self.initialized = False
         self.docker: DockerManager | None = None
+        self.model_resolver = ModelResolver(config)
 
     @property
     def docker_executor(self) -> DockerExecutor | None:
@@ -90,6 +92,7 @@ class AgentRuntime:
 
         return CapabilityContext(
             config=self.config,
+            model_resolver=self.model_resolver,
             ctx_id=int(ctx_id) if ctx_id else None,
             user_id=int(user_id) if user_id else None,
             user_role=user_role,
@@ -137,22 +140,18 @@ class AgentRuntime:
         if self.initialized:
             return
         try:
-            import json
-
             import msgspec
             from yuuagents.config import Config as YuuagentsConfig
             from yuuagents.init import setup
 
-            from yuubot import config as yuubot_config
-
-            base_data = json.loads(msgspec.json.encode(YuuagentsConfig()))
-            merged_data = yuubot_config._deep_merge(base_data, self.config.yuuagents)
-            cfg = msgspec.convert(merged_data, YuuagentsConfig)
+            cfg = msgspec.convert(self.config.build_yuuagents_config(), YuuagentsConfig)
             await setup(cfg)
             self.initialized = True
 
             if not self.any_agent_needs_docker():
-                logger.info("No agent uses docker tools, skipping Docker initialization")
+                logger.info(
+                    "No agent uses docker tools, skipping Docker initialization"
+                )
                 return
 
             try:
@@ -193,35 +192,39 @@ class AgentRuntime:
         host_home_dir = await self.docker.host_home_dir(container_id)
         return docker_mount, host_home_dir, container_home
 
-    def get_runtime(self, agent_name: str) -> RuntimeInfo:
-        char = CHARACTER_REGISTRY.get(agent_name)
-        provider_name = char.provider if char and char.provider else ""
-        model = char.model if char and char.model else ""
-
-        if not provider_name or not model:
-            agents = self.config.yuuagents.get("agents", {})
-            agent_cfg = agents.get(agent_name, {})
-            if not provider_name:
-                provider_name = agent_cfg.get("provider", "")
-            if not model:
-                model = agent_cfg.get("model", "")
-
-        providers = self.config.yuuagents.get("providers", {})
-        provider_cfg = providers.get(provider_name, {})
-        models_cfg = provider_cfg.get("models", {})
-        model_cfg = models_cfg.get(model, {})
+    async def get_runtime(self, agent_name: str) -> RuntimeInfo:
+        resolved = await self.model_resolver.resolve_agent(agent_name)
         return RuntimeInfo(
-            provider=provider_name,
-            model=model,
-            supports_vision=bool(model_cfg.get("vision", False)),
+            provider=resolved.resolved_provider,
+            model=resolved.resolved_model,
+            supports_vision=resolved.supports_vision,
         )
 
-    def has_vision(self, agent_name: str) -> bool:
-        return self.get_runtime(agent_name).supports_vision
+    async def has_vision(self, agent_name: str) -> bool:
+        return (await self.get_runtime(agent_name)).supports_vision
 
-    def build_prompt(self, agent_name: str) -> tuple[Any, Any]:
+    async def make_role_llm(
+        self,
+        role_name: str,
+        *,
+        provider_override: str | None = None,
+        selector_override: str | None = None,
+        refresh: bool = False,
+    ) -> Any:
+        resolved = await self.model_resolver.resolve_role(
+            role_name,
+            provider_override=provider_override,
+            selector_override=selector_override,
+            refresh=refresh,
+            update_sticky=True,
+        )
+        return build_llm_client(
+            resolved.resolved_provider, resolved.resolved_model, self.config
+        )
+
+    async def build_prompt(self, agent_name: str) -> tuple[Any, Any]:
         char = get_character(agent_name)
-        runtime = self.get_runtime(agent_name)
+        runtime = await self.get_runtime(agent_name)
         prompt_spec = build_prompt_spec(char, runtime, self.config.skill_paths)
         system_prompt = build_system_prompt(prompt_spec)
         return prompt_spec, system_prompt
@@ -236,5 +239,5 @@ class AgentRuntime:
                 return True
         return False
 
-    def make_llm(self, agent_name: str = "main") -> Any:
-        return make_llm(agent_name, self.config)
+    async def make_llm(self, agent_name: str = "main") -> Any:
+        return await make_llm(agent_name, self.config)

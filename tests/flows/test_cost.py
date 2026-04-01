@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 
-from tests.conftest import MASTER_QQ, make_group_event
+from tests.conftest import FOLK_QQ, MASTER_QQ, make_group_event
 from tests.helpers import sent_texts
 from tests.mocks import mock_recorder_api
 
@@ -56,3 +56,25 @@ async def test_ycost_reads_shared_memory_traces_db(dispatcher, traces_db):
     assert any("近 7 天开销" in text for text in texts)
     assert any("yuubot (main): $0.1234 / 1 次" in text for text in texts)
     assert all("$0.5000" not in text for text in texts)
+
+
+async def test_ycost_all_requires_master(dispatcher):
+    with mock_recorder_api() as sent:
+        await dispatcher.dispatch(make_group_event("/ycost --all", user_id=FOLK_QQ))
+        await _wait_worker(dispatcher, "group:1000")
+
+    assert any("--all 仅限 Master 使用" in text for text in sent_texts(sent))
+
+
+async def test_ycost_all_aggregates_multiple_contexts(dispatcher, traces_db):
+    conn, _uri = traces_db
+    _seed_cost_trace(conn, agent="yuubot-main-1", trace_id="trace-1", amount=0.1234)
+    _seed_cost_trace(conn, agent="yuubot-main-2", trace_id="trace-2", amount=0.5000)
+
+    with mock_recorder_api() as sent:
+        await dispatcher.dispatch(make_group_event("/ycost --all", user_id=MASTER_QQ, ctx_id=1))
+        await _wait_worker(dispatcher, "group:1000")
+
+    texts = sent_texts(sent)
+    assert any("近 7 天开销 (全局):" in text for text in texts)
+    assert any("yuubot (main): $0.6234 / 2 次" in text for text in texts)

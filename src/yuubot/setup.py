@@ -99,13 +99,19 @@ def _step_install_playwright() -> None:
     click.echo("  Playwright 安装")
     click.echo("=" * 60)
     click.echo()
-    if not click.confirm("是否安装 Playwright Chromium 浏览器与系统依赖?", default=True):
+    if not click.confirm(
+        "是否安装 Playwright Chromium 浏览器与系统依赖?", default=True
+    ):
         click.echo("跳过 Playwright 安装。")
         return
 
     _ensure_sudo()
-    subprocess.run([sys.executable, "-m", "playwright", "install-deps", "chromium"], check=True)
-    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    subprocess.run(
+        [sys.executable, "-m", "playwright", "install-deps", "chromium"], check=True
+    )
+    subprocess.run(
+        [sys.executable, "-m", "playwright", "install", "chromium"], check=True
+    )
     click.echo("✓ Playwright Chromium 已就绪")
 
 
@@ -117,7 +123,9 @@ def _step_install_fonts() -> None:
     click.echo()
     language = click.prompt(
         "请选择界面语言/字体",
-        type=click.Choice(["zh-cn", "zh-tw", "ja", "ko", "en", "skip"], case_sensitive=False),
+        type=click.Choice(
+            ["zh-cn", "zh-tw", "ja", "ko", "en", "skip"], case_sensitive=False
+        ),
         default="zh-cn",
         show_choices=True,
     )
@@ -175,34 +183,11 @@ def _step_generate_config(qq: int, master: int, config_path: str | None) -> Path
     raw = yaml.safe_load(CONFIG_EXAMPLE.read_text())
     raw["bot"]["qq"] = qq
     raw["bot"]["master"] = master
-    target.write_text(yaml.dump(raw, allow_unicode=True, default_flow_style=False, sort_keys=False))
+    target.write_text(
+        yaml.dump(raw, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    )
     click.echo(f"✓ 配置已生成: {target}")
     return target
-
-
-def _step_configure_yuuagents(config_dir: Path) -> None:
-    config_path = config_dir / "yuuagents.config.yaml"
-    click.echo()
-    click.echo("=" * 60)
-    click.echo("  yuuagents 配置引导")
-    click.echo("=" * 60)
-    click.echo()
-
-    template_path = PROJECT_ROOT / "yuuagents.config.yaml"
-    if not template_path.exists():
-        click.echo(f"找不到 yuuagents 配置模板: {template_path}")
-        raise SystemExit(1)
-
-    if config_path.exists():
-        click.echo(f"✓ yuuagents 配置已存在: {config_path}")
-    else:
-        config_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
-        click.echo(f"✓ yuuagents 配置已生成: {config_path}")
-
-    click.echo()
-    click.echo("你可以后续直接编辑该文件以调整 yuuagents 行为。")
-    click.echo("例如设置 providers / agents / docker / external skills 等。")
-    click.echo("API Key 建议通过环境变量提供，例如 OPENAI_API_KEY / TAVILY_API_KEY。")
 
 
 def _step_write_napcat_config(qq: int, ws_port: int, http_port: int) -> None:
@@ -257,7 +242,9 @@ def _step_install_libsimple() -> None:
 
     vendor_dir = PROJECT_ROOT / "vendor"
     # Check if already installed
-    existing = list(vendor_dir.glob("*/libsimple.so")) + list(vendor_dir.glob("*/libsimple.dylib"))
+    existing = list(vendor_dir.glob("*/libsimple.so")) + list(
+        vendor_dir.glob("*/libsimple.dylib")
+    )
     if existing:
         click.echo(f"✓ libsimple 已安装: {existing[0].parent}")
         return
@@ -268,7 +255,9 @@ def _step_install_libsimple() -> None:
     if not asset:
         click.echo(f"⚠ 当前平台 ({system}/{machine}) 无预编译 libsimple，跳过。")
         click.echo("  记忆搜索将使用默认 FTS5 tokenizer（中文支持有限）。")
-        click.echo(f"  可手动从 https://github.com/wangfenjin/simple/releases 下载并放入 {vendor_dir}/")
+        click.echo(
+            f"  可手动从 https://github.com/wangfenjin/simple/releases 下载并放入 {vendor_dir}/"
+        )
         return
 
     url = _SIMPLE_URL.format(version=_SIMPLE_VERSION, asset=asset)
@@ -279,6 +268,7 @@ def _step_install_libsimple() -> None:
 
     try:
         import urllib.request
+
         urllib.request.urlretrieve(url, zip_path)
     except Exception as e:
         click.echo(f"⚠ 下载失败: {e}")
@@ -315,12 +305,14 @@ def run_setup(config_path: str | None = None) -> None:
     qq, master = _step_collect_info()
 
     cfg_path = _step_generate_config(qq, master, config_path)
-    _step_configure_yuuagents(cfg_path.parent)
 
     # Load config to get the correct ports
-    from yuubot.config import load_config
+    from yuubot.config import load_config, write_yagents_config
 
     cfg = load_config(str(cfg_path))
+    yagents_path = write_yagents_config(cfg)
+    click.echo(f"✓ 已生成 yuuagents 运行配置: {yagents_path}")
+    click.echo("  该文件由 yuubot 自动维护，不需要手动编辑。")
     _step_write_napcat_config(
         qq,
         ws_port=cfg.recorder.napcat_ws.port,

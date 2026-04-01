@@ -55,6 +55,14 @@ class Command:
     def check_permission(self, role: Role) -> bool:
         return role >= self.min_role
 
+    def is_visible_to(self, role: Role) -> bool:
+        """Whether this command should be exposed in help output for *role*."""
+        if not self.check_permission(role):
+            return False
+        if self.executor is not None:
+            return True
+        return any(sub.is_visible_to(role) for sub in self.subs)
+
     def find(self, route: list[str]) -> Command | None:
         """Walk the tree by route segments, return the target node or None."""
         if not route:
@@ -65,17 +73,18 @@ class Command:
                 return sub.find(route[1:])
         return None
 
-    def help(self) -> str:
+    def help(self, role: Role | None = None) -> str:
         """Show this command's details + one-level sub-command summaries."""
         lines: list[str] = []
         if self.prefix:
             lines.append(f"[{self.prefix}] {self.help_text}" if self.help_text else f"[{self.prefix}]")
             lines.append(f"  权限: {self.min_role.name}")
-        if self.subs:
+        visible_subs = self.subs if role is None else [sub for sub in self.subs if sub.is_visible_to(role)]
+        if visible_subs:
             if lines:
                 lines.append("")
             lines.append("子命令:")
-            for sub in self.subs:
+            for sub in visible_subs:
                 desc = sub.help_text or sub.prefix
                 lines.append(f"  {sub.prefix} — {desc}")
         if not lines:

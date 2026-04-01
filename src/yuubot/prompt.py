@@ -93,6 +93,7 @@ class Character:
     persona: str | FileRef
     spec: AgentSpec
     max_tokens: int = 60000  # compression threshold in input tokens
+    llm_ref: str = ""  # runtime-mutable, canonical provider/model ref
     provider: str = ""  # runtime-mutable, populated from YAML at startup
     model: str = ""     # runtime-mutable, populated from YAML at startup
     render_policy: object | None = None  # RenderPolicy from daemon.render, optional

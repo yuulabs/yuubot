@@ -14,10 +14,10 @@ import httpx
 from yuubot.capabilities import capability, get_context, text_block, ContentBlock
 from yuubot.config import load_config
 from yuubot.core.media_paths import MediaPathContext, MediaPathError, input_to_host, to_file_uri
-from .query import browse_messages, search_messages
+from .query import browse_messages, recent_messages, resolve_message_db_id, search_messages
 from .formatter import format_forward_nodes_to_xml, format_messages_to_xml
 from .political_filter import check_political_content
-from yuubot.core.models import ForwardRecord
+from yuubot.core.models import Context, ForwardRecord, MessageRecord
 
 type ContentBlocks = list[ContentBlock]
 
@@ -321,6 +321,39 @@ class ImCapability:
         xml_output = await format_messages_to_xml(results, bot_qq=bot_qq, bot_name=bot_name)
         return [text_block(xml_output)]
 
+    async def recent(
+        self,
+        *,
+        ctx: int | None = None,
+        after_msg: int | None = None,
+        limit: int = 50,
+        **_kw,
+    ) -> ContentBlocks:
+        ctx_id = _enforce_bot_ctx(ctx)
+        if ctx_id is None:
+            return [text_block("错误: 需要 --ctx 参数")]
+
+        after_row_id = 0
+        if after_msg is not None:
+            after_row_id = await resolve_message_db_id(message_id=after_msg, ctx_id=ctx_id)
+            if after_row_id == 0:
+                return [text_block(f"错误: 未找到消息 {after_msg}")]
+
+        results = await recent_messages(
+            ctx_id,
+            after_row_id=after_row_id,
+            limit=limit,
+        )
+        if not results:
+            return [text_block("未找到消息")]
+
+        actx = get_context()
+        bot_cfg = getattr(actx.config, "bot", None)
+        bot_qq = bot_cfg.qq if bot_cfg else None
+        bot_name = actx.bot_name or None
+        xml_output = await format_messages_to_xml(results, bot_qq=bot_qq, bot_name=bot_name)
+        return [text_block(xml_output)]
+
     async def read(
         self,
         *,
@@ -377,9 +410,28 @@ class ImCapability:
 
         cfg = _get_config()
         api = cfg.daemon.recorder_api
-        body = {"message_id": msg, "emoji_id": emoji_id}
+        record = await MessageRecord.filter(message_id=msg).order_by("-id").first()
+        if record is None:
+            return [text_block(f"未找到消息 {msg}")]
+
+        ctx = await Context.filter(id=record.ctx_id).first()
+        if ctx is None:
+            return [text_block(f"未找到消息 {msg} 的上下文")]
+
+        body = {
+            "message_type": ctx.type,
+            "message": [{
+                "type": "react",
+                "data": {"message_id": str(msg), "emoji_id": emoji_id},
+            }],
+        }
+        if ctx.type == "group":
+            body["group_id"] = ctx.target_id
+        else:
+            body["user_id"] = ctx.target_id
+
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(f"{api}/set_msg_emoji_like", json=body)
+            r = await client.post(f"{api}/send_msg", json=body, headers={"X-Bot-Mode": "1"})
             if r.status_code != 200:
                 return [text_block(f"表情回应失败: {r.text}")]
         return [text_block(f"已对消息 {msg} 回应 {emoji}")]

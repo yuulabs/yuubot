@@ -61,6 +61,12 @@ def _has_final_response(history: list) -> bool:
     return False
 
 
+def _max_seen_db_id(message: InboundMessage) -> int:
+    ids = [message.db_id]
+    ids.extend(extra.db_id for extra in message.extra_messages)
+    return max((mid for mid in ids if mid > 0), default=0)
+
+
 
 async def _send_reply(message: InboundMessage, text: str, config: Config) -> None:
     """Send a text reply back to the source context."""
@@ -149,8 +155,18 @@ class LLMExecutor:
             return f"权限不足: Agent {agent_name!r} 需要 {required_role.name} 权限"
 
         # Create a new session if needed (no active session, or switched agent)
+        created_new_session = session is None or session.agent_name != agent_name
         if session is None or session.agent_name != agent_name:
             session = self.conv_mgr.create(ctx_id, agent_name, user_id=user_id)
+
+        current_row_id = _max_seen_db_id(message)
+        if created_new_session and current_row_id:
+            session.start_row_id = current_row_id
+            session.latest_ctx_row_id = max(session.latest_ctx_row_id, current_row_id)
+
+        recent_ctx_upto_row_id = current_row_id
+        if getattr(session, "session", None) is not None:
+            recent_ctx_upto_row_id = max(session.latest_ctx_row_id, current_row_id)
 
         self.conv_mgr.set_running(ctx_id, agent_name)
         try:
@@ -163,6 +179,7 @@ class LLMExecutor:
                 session=session,
                 handoff_text=handoff_text,
                 text_override=text,
+                recent_ctx_upto_row_id=recent_ctx_upto_row_id,
             )
             if runtime_session is None:
                 return None
@@ -220,7 +237,7 @@ class LLMExecutor:
             logger.info("Session rolled over: ctx={} agent={} note_len={}", ctx_id, agent_name, len(note))
 
             if worth_curating:
-                asyncio.create_task(self._run_curator(history, ctx_id, user_id))
+                asyncio.create_task(self._run_curator(conv))
 
             # Auto-continue: at most once, and only if agent didn't finish replying
             if auto_count < 1 and not _has_final_response(history):
@@ -247,8 +264,8 @@ class LLMExecutor:
                 await _send_reply(message, "（已压缩上下文，新会话已就绪，可继续对话）", self.config)
             return
 
-    async def _run_curator(self, history: list, ctx_id: int, user_id: int) -> None:
+    async def _run_curator(self, conv: Conversation) -> None:
         try:
-            await self.agent_runner.curate(history, ctx_id, user_id)
+            await self.agent_runner.curate(conv)
         except Exception:
-            logger.exception("mem_curator failed for ctx={}", ctx_id)
+            logger.exception("mem_curator failed for ctx={}", conv.ctx_id)
