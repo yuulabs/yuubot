@@ -28,6 +28,7 @@ class BotAwareGroup(click.Group):
         return commands
 
 RECORDER_SESSION = "recorder"
+DAEMON_SESSION = "yuubot"
 
 
 def _screen_exists(name: str) -> bool:
@@ -324,9 +325,31 @@ def shutdown(ctx: click.Context, recorder_only: bool) -> None:
 
 
 @cli.command()
+@click.option("--detach", "-d", is_flag=True, default=False, help="后台运行（screen 会话）")
 @click.pass_context
-def up(ctx: click.Context) -> None:
+def up(ctx: click.Context, detach: bool) -> None:
     """Start yuubot daemon."""
+    if detach:
+        if _screen_exists(DAEMON_SESSION):
+            click.echo("Daemon 已在运行中。")
+            return
+        cfg_arg = f" -c {ctx.obj['config_path']}" if ctx.obj["config_path"] else ""
+        ybot_bin = shutil.which("ybot") or "ybot"
+        subprocess.run(
+            ["screen", "-dmS", DAEMON_SESSION, "bash", "-c",
+             f"{ybot_bin}{cfg_arg} up"],
+            check=True,
+        )
+        import time
+        time.sleep(1)
+        if _screen_exists(DAEMON_SESSION):
+            click.echo("Daemon 已在后台启动。")
+            click.echo(f"  screen -r {DAEMON_SESSION}    # 查看日志")
+        else:
+            click.echo("Daemon 启动失败，请检查 screen -r yuubot 查看日志。")
+            raise SystemExit(1)
+        return
+
     from yuubot.daemon.app import run_daemon
 
     asyncio.run(run_daemon(ctx.obj["config_path"]))
@@ -346,6 +369,27 @@ def down(ctx: click.Context) -> None:
         click.echo(f"Daemon shutdown: {r.status_code}")
     except httpx.ConnectError:
         click.echo("Daemon not running.")
+
+
+@cli.command()
+@click.option("--port", default=8080, show_default=True, help="WebUI 监听端口")
+@click.option("--host", default="127.0.0.1", show_default=True, help="WebUI 监听地址")
+@click.pass_context
+def traces(ctx: click.Context, port: int, host: str) -> None:
+    """启动 traces WebUI（查看 LLM 对话追踪）。"""
+    from pathlib import Path
+    from yuubot.config import load_config
+    from yuutrace.cli.ui import run_ui
+
+    cfg = load_config(ctx.obj["config_path"])
+    # Check yuuagents tracing config for custom db_path, fall back to default
+    tracing_cfg = cfg.yuuagents.get("tracing") or {}
+    db_path = str(
+        Path(tracing_cfg.get("db_path") or "~/.yagents/traces.db").expanduser()
+    )
+    click.echo(f"Traces DB: {db_path}")
+    click.echo(f"WebUI: http://{host}:{port}")
+    run_ui(db_path=db_path, host=host, port=port)
 
 
 # ── Phase 4: Web Capability ──────────────────────────────────────
