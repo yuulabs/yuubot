@@ -1,172 +1,118 @@
 # yuubot
 
-> **不是聊天机器人。是一个在 QQ 里活着的 Agent。**
+<img src="imgs/yuu-youfuku.png" align="right" width="220" alt="夕雨 Yuu">
 
-夕雨（Yuu）能主动翻聊天记录、搜历史消息、发表情反应、在 Docker 沙箱里写代码执行——她不是在等你问问题，她在真正地参与对话。
+夕雨（Yuu）是一个住在 QQ 群里的 agent。
 
-**一行命令安装，5 分钟上线：**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yuulabs/yuubot/main/install.sh | bash
-```
-
----
-
-## 和其他 QQ bot 的本质区别
-
-大多数 QQ bot 的模型是：**收到消息 → 调 LLM → 回复**。
-
-yuubot 的模型是：**收到消息 → 启动 Agent → Agent 自主决定做什么**。
-
-这意味着夕雨可以：
-
-- **翻回去看** — `im browse` 让她浏览任意时间段的聊天记录，不只是当前轮
-- **主动搜索** — `im search "关键词"` 在几个月的历史消息里全文检索
-- **贴表情反应** — 不一定要回复，贴个 👍 或 🤔 也是行动
-- **读图** — 调用专用视觉模型描述图片，结果缓存备用
-- **写代码、跑代码** — Docker 沙箱隔离，能力全开，无需为安全妥协
-- **管理记忆** — 跨会话记住用户偏好，并由专门的 curator agent 自动整理
-
-她有工具，不是只有嘴。
-
----
-
-## Docker 沙箱：能力全开，安全无忧
-
-夕雨可以在群里写 Python 脚本并立刻执行——这不是受限的"仅显示代码"模式，而是真正运行代码、返回结果。
-
-安全性由 Docker 容器隔离保证，而不是靠限制 LLM 的能力来回避风险。每次执行都在隔离的容器里：
-
-- 网络访问受控
-- 文件系统隔离
-- 容器崩了不影响主程序
-
-这意味着**不必为安全而阉割能力，也不必为了性能而走捷径**。安全和能力可以同时拥有。
-
----
-
-## 成本极低：$0.22/天跑一个活跃群聊 Agent
-
-这不是宣传数字，是 44 天真实运行的生产数据：
-
-| 指标 | 数值 |
-|------|------|
-| 运行时长 | 44 天连续在线 |
-| 总 LLM 请求 | ~13,800 次 |
-| 总费用 | **~$9.50 USD**（日均 $0.22） |
-| Cache 命中率 | **93.6%**（输入 token 中） |
-| 处理消息 | 36,098 条 |
-| 错误率 | 0.99% |
-| 活跃群聊 | 8 个 |
-
-93.6% 的输入 token 命中缓存，缓存读取价格是正常价格的 1/10。实际输入成本只有不缓存时的约 **16%**。
-
-这不是偶然：yuubot 的每一个工具返回、每一段 system prompt 都经过精心设计，最大化前缀重用。对话历史是递增的，system prompt 是固定的——DeepSeek 和 Claude 的自动 prompt cache 机制天然命中。
-
----
-
-## 记忆系统
-
-这是 yuubot 最不一样的地方。
-
-记忆不是简单地把用户说的话存进数据库。当对话上下文满载后，**记忆整理员（mem_curator）** 会被自动触发，审查整轮对话，按照严格标准决定：
-
-**值得保留的**：
-- 能改变未来行为的事实（偏好、约定、关系）
-- 有稳定锚点的信息（QQ 号、URL、绝对日期）
-
-**会被清除的**：
-- 从消息元数据就能推导的信息
-- 只靠"他/她/那个"等相对指代才能理解的记忆
-- 流水账、一次性快照、纯文字的表情包描述
-
-每条被保留的记忆都必须"脱离当前对话还能独立成立"。整理完后自动更新该群的话题摘要。
+和大多数 QQ bot 不同，她不只是"收到消息 → 调 LLM → 回复"。她跑的是完整的 agent 循环——可以翻历史记录、全文搜索几个月前的消息、在 Docker 沙箱里写代码执行、记住群友的偏好。她自己决定要做什么，然后做。
 
 ```
-# 群里存着的记忆可能长这样：
-"小明不喜欢被 @，有事 dm 更好（QQ:12345）"
-"排班查询网站：https://example.com/schedule"
-"本群常说的'团长'指王大明（QQ:67890）"
+用户：@bot 帮我看看上周大家讨论的那个框架叫什么
+Bot：[搜索历史消息] 上周三讨论的是 FastMCP，小明当时贴了文档链接。
+
+用户：/yllm 统计一下这个月大家发言次数
+Bot：[Docker 跑了一段 Python] 本月发言排行：小明 312 条、张三 289 条…
+
+用户：/yllm 周五晚上十点提醒我交作业
+Bot：好，周五 22:00 提醒你。
 ```
-
----
-
-## 多 Character 架构
-
-yuubot 内置多个专职 agent：
-
-| Character | 职责 |
-|-----------|------|
-| **main（夕雨/Yuu）** | 默认 QQ 群聊 agent，有完整人格，16 步上限 |
-| **general** | 无人设的通用助手，适合纯任务场景 |
-| **researcher** | 专注网页搜索和信息整合 |
-| **mem_curator** | 记忆整理员，会话 rollover 后自动触发 |
-
-每个 character 有独立的工具集、cap 权限和 token 预算，互不干扰。
 
 ---
 
 ## 快速开始
 
-**准备**：一个 QQ 小号 + 一个 LLM API Key（下方任选一）
+准备：一个 QQ 小号 + 一个 LLM API Key
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yuulabs/yuubot/main/install.sh | bash
 ```
 
-安装脚本引导你选择 LLM 服务商、填写 API Key、配置 QQ 号，自动生成所有配置文件。
+安装脚本引导你选择服务商、填写 API Key、配置 QQ 号，自动生成所有配置文件。
 
 ```bash
-source ~/.bashrc   # 刷新 PATH
-ybot launch        # 启动 QQ 协议端（扫码登录）
-ybot up            # 启动 Bot 主程序
+source ~/.bashrc
+ybot launch   # 启动 QQ 协议端（扫码登录）
+ybot up       # 启动 Bot 主程序
 ```
 
-然后在群里发 `/ybot on` 启用 Bot；如果希望群里不必 `@bot` 就能触发命令和 `/yllm`，用 `/ybot on --free`。平时和 bot 对话最常用的入口是 `/yllm 你好`。
+群里发 `/ybot on` 启用。加 `--free` 参数后无需 `@bot` 也能触发命令和 `/yllm`。
+
+---
+
+## 她能做什么
+
+| 能力 | 说明 |
+|------|------|
+| 翻历史 | `im browse` 浏览任意时间段聊天记录，`im search "关键词"` 全文检索 |
+| 发消息 | 普通文字、贴表情反应——不一定要回复，有时 👍 就够了 |
+| 读图 | 调用视觉模型描述图片，结果自动缓存 |
+| 联网搜索 | Tavily 实时搜索（可选，免费套餐 1000 次/月） |
+| 跑代码 | Docker 隔离 Python 沙箱，每次独立容器，网络和文件系统都隔离 |
+| 记忆 | 长期记忆跨会话保留，curator agent 自动整理，语义召回 |
+| 定时任务 | cron 格式，重启后恢复 |
+
+---
+
+## 记忆
+
+对话轮次超出上限后，`mem_curator` 会审查整轮对话，决定哪些内容值得存下来。
+
+保留标准很窄：必须是"脱离当前对话仍然成立"的信息。流水账、一次性截图描述、只靠上下文才能理解的内容一律丢掉。能存下来的大概长这样：
+
+```
+小明不喜欢被 @，有事 dm 更好（QQ:12345）
+排班查询：https://example.com/schedule
+本群说的"团长"指王大明（QQ:67890）
+```
+
+整理完后自动更新该群的话题摘要。
+
+---
+
+## 成本参考
+
+44 天真实运行数据（8 个活跃群聊）：
+
+| 指标 | 数值 |
+|------|------|
+| 总 LLM 请求 | ~13,800 次 |
+| 总费用 | ~$9.50 USD（日均 $0.22） |
+| Cache 命中率 | 93.6%（输入 token 中） |
+| 处理消息 | 36,098 条 |
+| 错误率 | 0.99% |
+
+93.6% 不是意外。每一条消息的渲染方式、每一个工具的返回格式、错误处理的措辞，都经过反复打磨，目的只有一个：让尽可能长的前缀在下一轮保持不变。常用的 capability 合约固定在 system prompt 里，而不是动态拼入——这一条单独就省掉了大量重复 token。DeepSeek 的 cache 窗口长达 24 小时，意味着即使群里沉默一整晚，第二天早上第一条消息还是能命中缓存。
+
+这些优化一点一点积累起来，最终 93.6% 的输入 token 走缓存，缓存价格是正常价格的 1/10，实际输入成本约为不优化时的 16%。
 
 ---
 
 ## 选择 LLM 服务商
 
-| 服务商 | 用途 | 费用 |
+| 服务商 | 用途 | 备注 |
 |--------|------|------|
-| **DeepSeek**（推荐） | 对话主力，国内直连，cache 命中率极高 | 极低，新用户有免费额度 |
-| **AiHubMix**（推荐搭配） | 图片理解（视觉模型），DeepSeek 不支持多模态 | 按用量计费，支持支付宝 |
-| **OpenRouter** | 海外用户，灵活切换所有主流模型 | 按用量计费 |
+| DeepSeek（推荐） | 对话主力 | 国内直连，24h cache 窗口，新用户有免费额度 |
+| AiHubMix（推荐搭配） | 图片理解 | DeepSeek 不支持多模态，视觉模型走这里，支持支付宝 |
+| OpenRouter | 海外用户备选 | 可灵活切换主流模型 |
 
-Tavily 搜索 Key 是可选的（免费套餐每月 1000 次），没有也能用，只是不能联网搜索。
+**热切换与自动降级**：模型和服务商可以在运行时切换，无需重启。配置多个 provider 后，某个服务商出现故障或限速时会自动降级到下一个——对群里的用户完全无感。
 
----
-
-## 在群里的样子
-
-```
-用户：@bot 帮我看一下上周大家讨论的那个框架叫什么来着
-Bot：[搜索历史消息] 上周三你们讨论的是 FastMCP，@小明 贴了文档链接。
-
-用户：/yllm 帮我写个脚本统计一下这个月大家发言次数
-Bot：[在 Docker 里跑了一段 Python] 本月发言排行：小明 312 条、张三 289 条...
-
-用户：/yllm 记住我不喜欢被 @ 打扰
-Bot：好的，记住了。有事我会直接发消息给你。
-
-用户：/yllm 周五晚上十点提醒我交作业
-Bot：已设置，周五 22:00 提醒你交作业。
-```
+Tavily 搜索 Key 可选，没有也能跑，只是联网搜索用不了。
 
 ---
 
-## 能力一览
+## 多角色
 
-| 能力 | 说明 |
-|------|------|
-| **im** | 发消息、搜索历史、浏览上下文、emoji 反应、读合并转发 |
-| **mem** | 长期记忆存取，curator 自动整理，语义召回 |
-| **web** | Tavily 实时搜索（可选，免费套餐 1000 次/月） |
-| **vision** | 图片内容描述，结果自动缓存 |
-| **img** | 图片搜索与发送 |
-| **schedule** | cron 格式定时任务，重启后恢复 |
-| **sandbox** | Docker 隔离 Python 沙箱，安全执行任意代码 |
+除了夕雨，yuubot 内置了几个专职 agent：
+
+| Character | 职责 |
+|-----------|------|
+| main（夕雨/Yuu） | 默认群聊 agent，有完整人格，16 步上限 |
+| general | 无人设的通用助手 |
+| researcher | 专注网页搜索和信息整合 |
+| mem_curator | 记忆整理，会话 rollover 后自动触发 |
+
+`/yllm #researcher 帮我找一下…` 可以指定角色。每个 character 有独立的工具集和 token 预算。
 
 ---
 
@@ -175,65 +121,45 @@ Bot：已设置，周五 22:00 提醒你交作业。
 ```yaml
 # ~/.local/share/yuubot-kit/yuubot/config.yaml
 bot:
-  qq: 123456789       # Bot QQ 号
-  master: 987654321   # 管理员 QQ 号
+  qq: 123456789
+  master: 987654321
 
 session:
-  ttl: 300            # 对话超时（秒）
-  max_tokens: 60000   # 单轮上下文上限
+  ttl: 300          # 对话超时（秒）
+  max_tokens: 60000
 
 memory:
-  forget_days: 90     # 自动永久删除旧记忆的天数
+  forget_days: 90
 ```
 
 ```bash
-# ~/.local/share/yuubot-kit/yuubot/.env
-DEEPSEEK_API_KEY=sk-...      # 或 AIHUBMIX_API_KEY / OPENROUTER_API_KEY
-TAVILY_API_KEY=tvly-...      # 可选
+# .env
+DEEPSEEK_API_KEY=sk-...
+TAVILY_API_KEY=tvly-...   # 可选
 ```
 
 更换模型：编辑 `llm.yaml` 中的 `agent_llm_refs`：
 
 ```yaml
 agent_llm_refs:
-  main: "deepseek/deepseek-chat"        # 极低成本（推荐）
-  main: "aihubmix/claude-sonnet-4-6"    # 更强推理
+  main: "deepseek/deepseek-chat"
+  # main: "aihubmix/claude-sonnet-4-6"
 ```
 
-修改后运行 `ybot down && ybot up` 重启生效。
+改完 `ybot down && ybot up` 重启生效。
 
 ---
 
-## 常用管理命令
+## 常用命令
 
 | 命令 | 说明 |
 |------|------|
 | `/ybot on` / `/ybot off` | 在当前群启用/关闭 Bot |
-| `/ybot on --free` | 开启 free 模式，群里无需 `@bot` 也能触发命令和 `/yllm` |
-| `/yllm 消息` | 群里最常用的入口，直接触发 Agent；可用 `#agent_name` 指定角色 |
-| `/yhelp` | 查看当前可用命令列表 |
-| `/yhelp <子命令>` | 查看某个命令及其子命令的详细用法 |
+| `/ybot on --free` | free 模式，无需 `@bot` 也能触发命令和 `/yllm` |
+| `/yllm 消息` | 触发 agent；`#角色名` 可指定 character |
+| `/yhelp` | 查看可用命令列表 |
 
-`/y` 只是命令前缀，不是单独的对话入口。
-
----
-
-## 技术栈
-
-yuubot 构建于同一仓库的 agent 框架上：
-
-```
-yuubot → yuuagents → { yuullm · yuutools · yuutrace }
-```
-
-- **yuuagents** — Flow 执行模型，每个 agent 运行都有完整事件日志、异步信箱和取消支持
-- **yuullm** — 统一流式 LLM 接口，支持 Anthropic / OpenAI / DeepSeek / OpenRouter / AiHubMix 等任意 OpenAI 兼容 provider
-- **yuutrace** — 基于 OpenTelemetry 的可观测性，对话历史落库可查
-
-```bash
-# 查看最近的对话记录
-uv run python scripts/conv.py -l
-```
+`/y` 是命令前缀，不是独立的对话入口。
 
 ---
 
@@ -241,9 +167,9 @@ uv run python scripts/conv.py -l
 
 | 平台 | 状态 |
 |------|------|
-| Linux x86_64 / ARM64 | ✅ 完整支持（推荐 VPS 长期运行） |
-| Windows (WSL2) | ✅ 支持 |
-| macOS | ⚠️ NapCat 可能需要手动处理 |
+| Linux x86_64 / ARM64 | 完整支持，推荐 VPS 长期运行 |
+| Windows (WSL2) | 支持 |
+| macOS | NapCat 可能需要手动处理 |
 
 ---
 
@@ -252,13 +178,13 @@ uv run python scripts/conv.py -l
 **Bot 没有回复**
 
 1. 确认已启用：`/ybot on`
-2. 查看日志：`tail -f ~/.yuubot/logs/daemon.log`
-3. 确认 `.env` 里的 API Key 正确
+2. 检查日志：`tail -f ~/.yuubot/logs/daemon.log`
+3. 确认 `.env` 里的 API Key 有效
 
-**`ybot` 命令找不到**
+**`ybot` 找不到**
 
 ```bash
-source ~/.bashrc   # 或 source ~/.zshrc
+source ~/.bashrc   # 或 ~/.zshrc
 ```
 
 **NapCat 启动失败**
@@ -266,9 +192,10 @@ source ~/.bashrc   # 或 source ~/.zshrc
 ```bash
 screen -r napcat   # 查看日志，Ctrl+A D 退出
 ```
+
 常见原因：账号被风控（换号或等几小时）、端口 8765-8767 被占用。
 
-**开机自启（服务器）**
+**开机自启**
 
 ```bash
 sudo tee /etc/systemd/system/yuubot.service > /dev/null <<'EOF'
@@ -290,7 +217,7 @@ EOF
 sudo systemctl enable --now yuubot
 ```
 
-**更新到最新版本**
+**更新**
 
 ```bash
 cd ~/.local/share/yuubot-kit
