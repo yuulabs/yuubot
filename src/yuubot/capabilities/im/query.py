@@ -1,8 +1,24 @@
 """Message query logic — FTS search on SQLite."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from tortoise import connections
+
+
+def _normalize_media_files(value: object) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return [value] if value.startswith(("/", "file://")) else []
+        if isinstance(decoded, list):
+            return [str(item) for item in decoded if item]
+    return []
 
 
 def _rows_to_messages(rows) -> list[dict]:
@@ -17,7 +33,7 @@ def _rows_to_messages(rows) -> list[dict]:
             "ctx_id": row[6],
             "content": row[7],
             "raw_message": row[8],
-            "media_files": row[9] if row[9] else [],
+            "media_files": _normalize_media_files(row[9]),
         }
         for row in rows
     ]

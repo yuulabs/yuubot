@@ -112,8 +112,9 @@ async def _send_via_pipeline(
         if bot_qq:
             record = await MessageRecord.filter(message_id=react_body["message_id"]).order_by("-id").first()
             if record is not None:
+                record_ctx_id = int(getattr(record, "ctx_id", 0))
                 await _log_bot_action(
-                    ctx_id=record.ctx_id,
+                    ctx_id=record_ctx_id,
                     bot_qq=bot_qq,
                     segments=[ReactSegment(
                         message_id=str(react_body["message_id"]),

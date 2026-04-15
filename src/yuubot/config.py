@@ -80,11 +80,19 @@ class WebConfig(msgspec.Struct):
 
 class ScheduleConfig(msgspec.Struct):
     max_long_cycle: int = 5
+    tick_seconds: float = 1.0  # clock-drift check interval for scheduler wakeups
+    late_grace_seconds: float = 2.0
+    catchup_spacing_seconds: float = 10.0
+    resume_threshold_seconds: float = 30.0
 
 
 class ResponseConfig(msgspec.Struct):
     group_default: str = "at"
     dm_whitelist: list[int] = msgspec.field(default_factory=list)
+
+
+class NetworkConfig(msgspec.Struct):
+    qq_direct: bool = True
 
 
 class SessionConfig(msgspec.Struct):
@@ -113,6 +121,7 @@ class Config(msgspec.Struct):
     memory: MemoryConfig = msgspec.field(default_factory=MemoryConfig)
     web: WebConfig = msgspec.field(default_factory=WebConfig)
     response: ResponseConfig = msgspec.field(default_factory=ResponseConfig)
+    network: NetworkConfig = msgspec.field(default_factory=NetworkConfig)
     schedule: ScheduleConfig = msgspec.field(default_factory=ScheduleConfig)
     session: SessionConfig = msgspec.field(default_factory=SessionConfig)
 

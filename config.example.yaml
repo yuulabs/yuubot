@@ -59,6 +59,10 @@ cron_jobs: []
 
 schedule:
   max_long_cycle: 5
+  tick_seconds: 1.0            # clock-drift check interval for wakeups
+  late_grace_seconds: 2.0
+  catchup_spacing_seconds: 10.0
+  resume_threshold_seconds: 30.0
 
 memory:
   forget_days: 90
@@ -72,6 +76,9 @@ web:
 response:
   group_default: "at"
   dm_whitelist: []
+
+network:
+  qq_direct: true   # NapCat runs without proxy env; yuubot direct-fetches QQ media
 
 # Session: multi-turn conversation settings.
 session:

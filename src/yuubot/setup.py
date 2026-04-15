@@ -206,11 +206,11 @@ def _step_write_napcat_config(qq: int, ws_port: int, http_port: int) -> None:
     click.echo()
 
 
-def _step_start_and_login() -> None:
+def _step_start_and_login(cfg) -> None:
     """Start NapCat and guide QR login."""
     if not napcat.is_running():
         click.echo("启动 NapCat...")
-        napcat.start()
+        napcat.start(qq_direct=cfg.network.qq_direct)
         if not napcat.wait_ready():
             click.echo("NapCat 启动失败，请检查: screen -r napcat")
             raise SystemExit(1)
@@ -320,7 +320,7 @@ def run_setup(config_path: str | None = None) -> None:
     )
     napcat.write_webui_port(cfg.recorder.napcat_webui_port)
 
-    _step_start_and_login()
+    _step_start_and_login(cfg)
 
     click.echo()
     click.echo("=" * 60)

@@ -138,7 +138,7 @@ class NapCatWSServer:
             if not group_id:
                 return
             ctx_id = await self.store.ctx_mgr.get_or_create("group", group_id)
-            segments = [poke]
+            segments: list = [poke]
             ts = datetime.fromtimestamp(raw.get("time", 0), tz=timezone.utc)
             await MessageRecord.create(
                 message_id=None,
@@ -161,7 +161,8 @@ async def load_muted_ctxs(ctx_mgr: ContextManager) -> set[int]:
     muted_ctxs: set[int] = set()
     disabled_groups = await GroupSetting.filter(bot_enabled=False).values_list("group_id", flat=True)
     for group_id in disabled_groups:
-        ctx_id = await ctx_mgr.get_or_create("group", int(group_id))
+        raw_group_id = group_id[0] if isinstance(group_id, tuple) else group_id
+        ctx_id = await ctx_mgr.get_or_create("group", int(raw_group_id))
         muted_ctxs.add(ctx_id)
     logger.info("Loaded {} muted contexts from DB", len(muted_ctxs))
     return muted_ctxs
@@ -177,7 +178,10 @@ async def run_recorder(config_path: str | None = None) -> None:
 
     muted_ctxs = await load_muted_ctxs(ctx_mgr)
 
-    downloader = MediaDownloader(cfg.recorder.media_dir)
+    downloader = MediaDownloader(
+        cfg.recorder.media_dir,
+        qq_direct=cfg.network.qq_direct,
+    )
     forward_resolver = ForwardResolver(cfg.recorder.napcat_http)
     store = Store(ctx_mgr=ctx_mgr, downloader=downloader, forward_resolver=forward_resolver)
     relay = RelayServer()

@@ -239,7 +239,7 @@ def launch(ctx: click.Context) -> None:
 
     if not napcat.is_running():
         click.echo("启动 NapCat...")
-        napcat.start()
+        napcat.start(qq_direct=cfg.network.qq_direct)
         qr = napcat.capture_qrcode(timeout=30)
         if qr:
             click.echo()

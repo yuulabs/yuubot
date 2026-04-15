@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import contextlib
 from contextlib import aclosing
 
@@ -32,6 +33,7 @@ from yuubot.daemon.builder import (
 )
 from yuubot.daemon.conversation import Conversation
 from yuubot.daemon.llm_factory import make_summary_llm
+from yuubot.daemon.llm_trace import LLMTraceContext, wrap_llm_client
 from yuubot.daemon.render import RenderContext, RenderPolicy, render_signal as _render_signal
 from yuubot.daemon.runtime import AgentRuntime
 from yuubot.daemon.runtime_session import RuntimeSession
@@ -247,7 +249,9 @@ class AgentRunner:
             if role != "assistant":
                 continue
             text = "".join(
-                item["text"] for item in items if item.get("type") == "text"
+                str(item.get("text", ""))
+                for item in items
+                if item.get("type") == "text"
             ).strip()
             if text:
                 return text
@@ -260,6 +264,107 @@ class AgentRunner:
         if max_chars <= 32:
             return text[:max_chars]
         return text[: max_chars - 15].rstrip() + "\n...[truncated]"
+
+    @staticmethod
+    def _snapshot_history(history: list[yuullm.Message]) -> list[yuullm.Message]:
+        return copy.deepcopy(history)
+
+    @classmethod
+    def _summarize_history_message(
+        cls,
+        message: yuullm.Message,
+        *,
+        max_text_chars: int = 96,
+    ) -> str:
+        role, items = message
+        text_parts: list[str] = []
+        tool_calls: list[str] = []
+        other_types: list[str] = []
+
+        for item in items:
+            item_type = item.get("type", "")
+            if item_type == "text":
+                text = item.get("text", "")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(cls._truncate_text(text.strip(), max_text_chars))
+                continue
+            if item_type == "tool_call":
+                name = item.get("name", "?")
+                tool_calls.append(str(name))
+                continue
+            content = item.get("content")
+            if isinstance(content, str) and content.strip():
+                text_parts.append(cls._truncate_text(content.strip(), max_text_chars))
+                continue
+            other_types.append(str(item_type or "?"))
+
+        segments: list[str] = [role]
+        if text_parts:
+            segments.append(f'text="{ " | ".join(text_parts) }"')
+        if tool_calls:
+            segments.append(f"tool_calls={','.join(tool_calls)}")
+        if other_types:
+            segments.append(f"types={','.join(other_types)}")
+        return "[" + " ".join(segments) + "]"
+
+    @classmethod
+    def _summarize_history_delta(
+        cls,
+        before: list[yuullm.Message],
+        after: list[yuullm.Message],
+        *,
+        max_messages: int = 3,
+    ) -> str:
+        shared = min(len(before), len(after))
+        first_diff = shared
+        for idx in range(shared):
+            if before[idx] != after[idx]:
+                first_diff = idx
+                break
+
+        delta = after[first_diff:]
+        if not delta:
+            return "none"
+
+        parts = [
+            cls._summarize_history_message(message)
+            for message in delta[:max_messages]
+        ]
+        if len(delta) > max_messages:
+            parts.append(f"+{len(delta) - max_messages} more")
+        return "; ".join(parts)
+
+    @classmethod
+    def _summarize_history_tail(
+        cls,
+        history: list[yuullm.Message],
+        *,
+        limit: int = 3,
+    ) -> str:
+        if not history:
+            return "empty"
+        tail = history[-limit:]
+        parts = [cls._summarize_history_message(message) for message in tail]
+        if len(history) > limit:
+            parts.insert(0, f"... {len(history) - limit} earlier")
+        return "; ".join(parts)
+
+    @staticmethod
+    def _format_usage(usage: yuullm.Usage | None) -> str:
+        if usage is None:
+            return "none"
+        parts = [
+            f"in={int(getattr(usage, 'input_tokens', 0) or 0)}",
+            f"out={int(getattr(usage, 'output_tokens', 0) or 0)}",
+            f"total={int(getattr(usage, 'total_tokens', 0) or 0)}",
+        ]
+        cache_read = int(getattr(usage, "cache_read_tokens", 0) or 0)
+        cache_write = int(getattr(usage, "cache_write_tokens", 0) or 0)
+        if cache_read:
+            parts.append(f"cache_read={cache_read}")
+        if cache_write:
+            parts.append(f"cache_write={cache_write}")
+        return " ".join(parts)
 
     def _register_active_run(
         self,
@@ -428,9 +533,18 @@ class AgentRunner:
             tool_names=tool_names,
             delegate_depth=delegate_depth,
         )
+        llm = wrap_llm_client(
+            await self._make_llm(turn.agent_name),
+            trace=LLMTraceContext(
+                ctx_id=turn.message.ctx_id or None,
+                runtime_id=runtime_id,
+                task_id=task_id,
+                agent_name=turn.agent_name,
+            ),
+        )
         launch = AgentLaunch.from_run_context(
             run_ctx,
-            llm=await self._make_llm(turn.agent_name),
+            llm=llm,
             basin=self._basin,
             spawn_agent=self._make_spawn_agent(run_ctx),
         )
@@ -506,6 +620,7 @@ class AgentRunner:
             max_steps,
         )
         t0 = asyncio.get_running_loop().time()
+        history_snapshot = self._snapshot_history(session.history)
 
         try:
             timeout_ctx = asyncio.timeout(timeout) if timeout else contextlib.nullcontext()
@@ -513,23 +628,42 @@ class AgentRunner:
                 async with aclosing(session.agent.steps()) as gen:
                     async for step in gen:
                         step_count += 1
+                        current_history = session.history
+                        history_delta = self._summarize_history_delta(
+                            history_snapshot,
+                            current_history,
+                        )
+                        logger.debug(
+                            "Step loop event: ctx={} runtime_id={} step={} rounds={} done={} usage={} delta={}",
+                            ctx_id,
+                            session.runtime_id,
+                            step_count,
+                            getattr(step, "rounds", "?"),
+                            step.done,
+                            self._format_usage(session.last_usage),
+                            history_delta,
+                        )
+                        history_snapshot = self._snapshot_history(current_history)
                         if step.done:
                             session.status = AgentStatus.DONE
                             session.flow.state = FlowState.DONE
                             logger.debug(
-                                "Step loop done (natural): ctx={} runtime_id={} steps={}",
+                                "Step loop done (natural): ctx={} runtime_id={} steps={} last_assistant={} history_tail={}",
                                 ctx_id,
                                 session.runtime_id,
                                 step_count,
+                                bool(self._last_assistant_text(session)),
+                                self._summarize_history_tail(current_history),
                             )
                             return stop_reason
                         if max_steps and step.rounds >= max_steps:
                             stop_reason = "max_steps"
                             logger.info(
-                                "Step loop done (max_steps): ctx={} runtime_id={} steps={}",
+                                "Step loop done (max_steps): ctx={} runtime_id={} steps={} history_tail={}",
                                 ctx_id,
                                 session.runtime_id,
                                 step_count,
+                                self._summarize_history_tail(current_history),
                             )
                             await self._interrupt_session(session)
                             session.status = AgentStatus.CANCELLED
@@ -574,16 +708,31 @@ class AgentRunner:
                 session.runtime_id,
             )
             raise
+        else:
+            return stop_reason
         finally:
             elapsed = asyncio.get_running_loop().time() - t0
+            final_history = session.history
+            final_assistant = self._last_assistant_text(session)
             logger.info(
-                "Step loop ended: ctx={} runtime_id={} reason={} steps={} elapsed={:.1f}s",
+                "Step loop ended: ctx={} runtime_id={} reason={} steps={} elapsed={:.1f}s history_messages={} final_assistant={} usage={}",
                 ctx_id,
                 session.runtime_id,
                 stop_reason,
                 step_count,
                 elapsed,
+                len(final_history),
+                bool(final_assistant),
+                self._format_usage(session.last_usage),
             )
+            if not final_assistant:
+                logger.warning(
+                    "Step loop ended without final assistant text: ctx={} runtime_id={} reason={} history_tail={}",
+                    ctx_id,
+                    session.runtime_id,
+                    stop_reason,
+                    self._summarize_history_tail(final_history),
+                )
 
     async def _launch(
         self,

@@ -16,10 +16,10 @@ from yuubot.config import load_config
 from yuubot.core.db import init_db, close_db
 from yuubot.daemon.agent_runner import AgentRunner
 from yuubot.daemon.dispatcher import Dispatcher
-from yuubot.daemon.scheduler import Scheduler
 from yuubot.daemon.conversation import ConversationManager
 from yuubot.daemon.ws_client import WSClient
 from yuubot.log import setup as setup_logging
+from yuubot.scheduler import Scheduler
 
 
 def _init_tracing() -> None:
@@ -54,7 +54,7 @@ async def run_daemon(config_path: str | None = None) -> None:
     )
     root = build_command_tree(cfg.bot.entries, llm_executor=llm_exec)
 
-    deps = {
+    deps: dict[str, object] = {
         "role_mgr": role_mgr,
         "entry_mgr": entry_mgr,
         "root": root,

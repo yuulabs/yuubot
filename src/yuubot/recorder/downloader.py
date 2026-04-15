@@ -5,16 +5,20 @@ import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
 
-import httpx
-
 from loguru import logger
+
+from yuubot.core.http_client import build_async_client
 
 
 class MediaDownloader:
-    def __init__(self, media_dir: str) -> None:
+    def __init__(self, media_dir: str, *, qq_direct: bool = False) -> None:
         self.media_dir = Path(media_dir).expanduser()
         self.media_dir.mkdir(parents=True, exist_ok=True)
-        self.client = httpx.AsyncClient(timeout=30, follow_redirects=True)
+        self.client = build_async_client(
+            qq_direct=qq_direct,
+            timeout=30,
+            follow_redirects=True,
+        )
 
     async def close(self) -> None:
         await self.client.aclose()

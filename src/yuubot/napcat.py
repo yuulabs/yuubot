@@ -1,5 +1,6 @@
 """NapCat lifecycle management — detect, start, stop."""
 
+import os
 import json
 import re
 import subprocess
@@ -22,6 +23,16 @@ INSTALLER_CMD = (
     "&& bash napcat.sh"
 )
 
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+_LOCAL_NO_PROXY = ("localhost", "127.0.0.1", "::1")
+
 
 def is_installed() -> bool:
     return NAPCAT_QQ_BIN.exists()
@@ -36,7 +47,24 @@ def is_running() -> bool:
     return SCREEN_SESSION in r.stdout
 
 
-def start() -> None:
+def _build_launch_env(*, qq_direct: bool) -> dict[str, str]:
+    env = os.environ.copy()
+    if not qq_direct:
+        return env
+
+    for key in _PROXY_ENV_VARS:
+        env.pop(key, None)
+
+    existing = [part.strip() for part in env.get("NO_PROXY", "").split(",") if part.strip()]
+    for host in _LOCAL_NO_PROXY:
+        if host not in existing:
+            existing.append(host)
+    env["NO_PROXY"] = ",".join(existing)
+    env["no_proxy"] = env["NO_PROXY"]
+    return env
+
+
+def start(*, qq_direct: bool = False) -> None:
     """Start napcat in a detached screen session with boot log capture."""
     if is_running():
         logger.info("NapCat already running in screen session '{}'", SCREEN_SESSION)
@@ -50,6 +78,7 @@ def start() -> None:
     subprocess.run(
         ["screen", "-dmS", SCREEN_SESSION, "bash", "-c", cmd],
         check=True,
+        env=_build_launch_env(qq_direct=qq_direct),
     )
     logger.info("NapCat started in screen session '{}'", SCREEN_SESSION)
 

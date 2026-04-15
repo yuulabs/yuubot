@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from yuubot.capabilities import CapabilityContext, execute
 from yuubot.capabilities.im.query import recent_messages
-from yuubot.core.models import Context, MessageRecord, TextSegment, segments_to_json
+from yuubot.core.models import Context, ImageSegment, MessageRecord, TextSegment, segments_to_json
 
 
 async def test_im_browse_accepts_numeric_qq_argument(monkeypatch):
@@ -61,3 +61,34 @@ async def test_im_recent_returns_messages_after_anchor(db):
     )
     assert "第二条" in result[0]["text"]
     assert "第一条" not in result[0]["text"]
+
+
+async def test_im_recent_falls_back_to_remote_image_url_when_local_media_missing(db):
+    ctx = await Context.create(type="group", target_id=1001)
+    now = datetime.now(timezone.utc)
+    image_url = "https://multimedia.nt.qq.com.cn/download?fileid=test"
+    await MessageRecord.create(
+        message_id=102,
+        ctx_id=ctx.id,
+        user_id=3,
+        nickname="Carol",
+        display_name="",
+        content="[图片]",
+        raw_message=segments_to_json([
+            ImageSegment(
+                url=image_url,
+                file="test.jpg",
+                local_path="",
+            )
+        ]),
+        timestamp=now,
+        media_files=[],
+    )
+
+    result = await execute(
+        f"im recent --ctx {ctx.id} --limit 10",
+        context=CapabilityContext(ctx_id=ctx.id),
+    )
+
+    assert image_url in result[0]["text"]
+    assert 'file://[' not in result[0]["text"]
