@@ -5,8 +5,10 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 
 import click
+import httpx
 
 
 def _in_bot() -> bool:
@@ -38,6 +40,32 @@ def _screen_exists(name: str) -> bool:
 
 def _screen_quit(name: str) -> None:
     subprocess.run(["screen", "-S", name, "-X", "quit"], check=False)
+
+
+def _daemon_api_alive(api: str) -> bool:
+    try:
+        httpx.get(f"{api}/health", timeout=1)
+    except httpx.RequestError:
+        return False
+    return True
+
+
+def _wait_for_daemon_stop(
+    api: str,
+    *,
+    timeout: float = 30.0,
+    poll_interval: float = 0.2,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    wait_for_screen = _screen_exists(DAEMON_SESSION)
+
+    while time.monotonic() < deadline:
+        api_alive = _daemon_api_alive(api)
+        screen_alive = wait_for_screen and _screen_exists(DAEMON_SESSION)
+        if not api_alive and not screen_alive:
+            return True
+        time.sleep(poll_interval)
+    return False
 
 
 async def _run_capability_cli(
@@ -291,7 +319,6 @@ def _recorder(ctx: click.Context) -> None:
 @click.pass_context
 def shutdown(ctx: click.Context, recorder_only: bool) -> None:
     """Stop Recorder + NapCat."""
-    import httpx
     from yuubot.config import load_config
 
     cfg = load_config(ctx.obj["config_path"])
@@ -359,7 +386,6 @@ def up(ctx: click.Context, detach: bool) -> None:
 @click.pass_context
 def down(ctx: click.Context) -> None:
     """Stop yuubot daemon."""
-    import httpx
     from yuubot.config import load_config
 
     cfg = load_config(ctx.obj["config_path"])
@@ -367,6 +393,9 @@ def down(ctx: click.Context) -> None:
     try:
         r = httpx.post(f"{api}/shutdown", timeout=5)
         click.echo(f"Daemon shutdown: {r.status_code}")
+        if not _wait_for_daemon_stop(api):
+            raise click.ClickException("Timed out waiting for daemon to stop.")
+        click.echo("Daemon stopped.")
     except httpx.ConnectError:
         click.echo("Daemon not running.")
 

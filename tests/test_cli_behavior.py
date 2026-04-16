@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import attrs
 from click.testing import CliRunner
+import httpx
 
 from yuubot.cli import cli
 
@@ -18,6 +19,22 @@ def _fake_config():
                     {
                         "path": attrs.field(default=":memory:"),
                         "simple_ext": attrs.field(default=""),
+                    },
+                )()
+            ),
+            "daemon": attrs.field(
+                default=attrs.make_class(
+                    "DaemonCfg",
+                    {
+                        "api": attrs.field(
+                            default=attrs.make_class(
+                                "DaemonApiCfg",
+                                {
+                                    "host": attrs.field(default="127.0.0.1"),
+                                    "port": attrs.field(default=8780),
+                                },
+                            )()
+                        ),
                     },
                 )()
             ),
@@ -151,3 +168,42 @@ def test_mem_restore_accepts_multiple_ids(monkeypatch):
     assert result.exit_code == 0
     assert restored["ids"] == [1, 2, 3]
     assert "已恢复 3 条记忆 (ID: 1, 2, 3)" in result.output
+
+
+def test_down_waits_until_daemon_api_stops_responding(monkeypatch):
+    health_checks: list[str] = []
+    clock = {"now": 0.0}
+
+    class _Response:
+        status_code = 200
+
+    def fake_post(url, timeout):
+        assert url == "http://127.0.0.1:8780/shutdown"
+        assert timeout == 5
+        return _Response()
+
+    def fake_get(url, timeout):
+        assert url == "http://127.0.0.1:8780/health"
+        assert timeout == 1
+        health_checks.append(url)
+        if len(health_checks) < 3:
+            return _Response()
+        raise httpx.ConnectError("daemon stopped")
+
+    def fake_sleep(interval):
+        clock["now"] += interval
+
+    monkeypatch.setattr("yuubot.config.load_config", lambda _path: _fake_config())
+    monkeypatch.setattr("yuubot.cli.httpx.post", fake_post)
+    monkeypatch.setattr("yuubot.cli.httpx.get", fake_get)
+    monkeypatch.setattr("yuubot.cli._screen_exists", lambda _name: False)
+    monkeypatch.setattr("yuubot.cli.time.monotonic", lambda: clock["now"])
+    monkeypatch.setattr("yuubot.cli.time.sleep", fake_sleep)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["down"])
+
+    assert result.exit_code == 0
+    assert len(health_checks) == 3
+    assert "Daemon shutdown: 200" in result.output
+    assert "Daemon stopped." in result.output
