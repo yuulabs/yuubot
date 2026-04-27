@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
+from yuubot.auth import is_master_user
 from yuubot.commands.tree import RootCommand
 from yuubot.core.models import AtSegment, ReplySegment, segments_to_plain
 from yuubot.core.types import CommandRoute, InboundMessage, Route
@@ -12,15 +11,17 @@ from yuubot.core.types import CommandRoute, InboundMessage, Route
 def resolve_route(
     msg: InboundMessage,
     root: RootCommand,
-    is_auto: Callable[[int], bool],
     bot_qq: int,
+    master_id: int,
 ) -> Route | None:
     """Determine how to handle an inbound message.
 
     Pure function: no IO, no side effects. Returns:
     - CommandRoute if a command-tree node matched
     - CommandRoute(command_path=("llm",), remaining="continue <text>", entry="@")
-      if @bot or auto mode should trigger the LLM
+      if @bot should trigger the Group LLM
+    - CommandRoute(command_path=("llm",), remaining="continue <text>", entry="master")
+      if a Master private message should trigger the Master LLM
     - None if the message should be ignored
     """
     bot_qq_str = str(bot_qq)
@@ -53,19 +54,19 @@ def resolve_route(
             entry=cmd_match.entry,
         )
 
-    # 2. @bot with no command → llm continue
-    if at_bot:
-        llm_cmd = root.find(["llm"])
+    llm_cmd = root.find(["llm"])
+
+    # 2. Master private bare text → llm continue
+    if msg.chat_type == "private" and is_master_user(msg.sender.user_id, master_id) and plain:
         if llm_cmd and llm_cmd.executor is not None:
             return CommandRoute(
                 command_path=("llm",),
                 remaining="continue " + plain,
-                entry="@",
+                entry="master",
             )
 
-    # 3. Auto mode (private only) bare text → llm continue
-    if msg.chat_type == "private" and is_auto(msg.ctx_id):
-        llm_cmd = root.find(["llm"])
+    # 3. @bot with no command → llm continue
+    if at_bot:
         if llm_cmd and llm_cmd.executor is not None:
             return CommandRoute(
                 command_path=("llm",),

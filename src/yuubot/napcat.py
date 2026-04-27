@@ -215,12 +215,15 @@ def onebot_config_path(qq: int) -> Path:
     return NAPCAT_CONFIG_DIR / f"onebot11_{qq}.json"
 
 
-def write_onebot_config(qq: int, ws_port: int, http_port: int) -> Path:
-    """Write NapCat OneBot11 config so it connects to Recorder correctly.
-
-    Returns the path written to.
-    """
-    cfg = {
+def onebot_config_payload(
+    qq: int,
+    *,
+    ws_port: int,
+    http_port: int,
+    ws_host: str = "127.0.0.1",
+) -> dict:
+    del qq
+    return {
         "network": {
             "httpServers": [
                 {
@@ -241,7 +244,7 @@ def write_onebot_config(qq: int, ws_port: int, http_port: int) -> Path:
                 {
                     "name": "yuubotWS",
                     "enable": True,
-                    "url": f"ws://127.0.0.1:{ws_port}",
+                    "url": f"ws://{ws_host}:{ws_port}",
                     "messagePostFormat": "array",
                     "reportSelfMessage": False,
                     "reconnectInterval": 5000,
@@ -255,6 +258,14 @@ def write_onebot_config(qq: int, ws_port: int, http_port: int) -> Path:
         "enableLocalFile2Url": True,
         "parseMultMsg": False,
     }
+
+
+def write_onebot_config(qq: int, ws_port: int, http_port: int) -> Path:
+    """Write NapCat OneBot11 config so it connects to Recorder correctly.
+
+    Returns the path written to.
+    """
+    cfg = onebot_config_payload(qq, ws_port=ws_port, http_port=http_port)
     path = onebot_config_path(qq)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))

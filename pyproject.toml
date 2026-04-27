@@ -24,6 +24,7 @@ dependencies = [
     "yuullm>=0.6.0",
     "yuutools>=0.2.0",
     "yuutrace>=0.2.0",
+    "restrictedpython>=8.1",
 ]
 
 [project.optional-dependencies]

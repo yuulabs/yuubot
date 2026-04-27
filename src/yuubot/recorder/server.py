@@ -183,7 +183,13 @@ async def run_recorder(config_path: str | None = None) -> None:
         qq_direct=cfg.network.qq_direct,
     )
     forward_resolver = ForwardResolver(cfg.recorder.napcat_http)
-    store = Store(ctx_mgr=ctx_mgr, downloader=downloader, forward_resolver=forward_resolver)
+    store = Store(
+        ctx_mgr=ctx_mgr,
+        downloader=downloader,
+        forward_resolver=forward_resolver,
+        bot_qq=cfg.bot.qq,
+        napcat_http=cfg.recorder.napcat_http,
+    )
     relay = RelayServer()
     napcat_ws = NapCatWSServer(
         store=store, relay=relay, muted_ctxs=muted_ctxs, entries=cfg.bot.entries,

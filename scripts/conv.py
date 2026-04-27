@@ -13,7 +13,11 @@ Usage:
     python scripts/conv.py --agent main           # filter list by agent
     python scripts/conv.py --limit 10             # show last N conversations
 
-Reads from ~/.yagents/traces.db (yuuagents tracing DB).
+Database paths:
+  Dev/bare-machine:  ~/.yagents/traces.db  (default)
+  Docker deployment: ~/.local/share/yuubot-docker/data/yuubot/traces.db
+                     pass --db to override, e.g.:
+                     python scripts/conv.py --db ~/.local/share/yuubot-docker/data/yuubot/traces.db -l
 """
 
 import argparse

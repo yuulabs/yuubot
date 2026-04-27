@@ -1,7 +1,4 @@
-"""BotInfo — cached bot identity and group name resolution.
-
-Extracted from AgentRunner._get_bot_name() and _resolve_group_name().
-"""
+"""BotInfo — cached bot identity and group name resolution."""
 
 from __future__ import annotations
 

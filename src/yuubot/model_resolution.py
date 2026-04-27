@@ -16,6 +16,9 @@ from loguru import logger
 from yuubot.config import Config, _find_config
 
 _BAD_TOKENS = ("preview", "beta", "search", "web", "tool", "thinking", "reasoning")
+_EFFORT_LEVELS = frozenset({"none", "low", "medium", "high", "xhigh", "max"})
+_pricing_cache: dict[tuple[str, str], dict[str, float]] = {}
+
 # Built-in fallback families — overridden by 'families:' in llm.yaml
 _FAMILY_VISION: dict[str, bool] = {
     "claude": True,
@@ -37,6 +40,46 @@ def split_llm_ref(ref: str) -> tuple[str, str]:
     return provider, model
 
 
+def parse_effort_suffix(model: str) -> tuple[str, str | None]:
+    """Split 'v4-flash:high' → ('v4-flash', 'high'). Returns (model, None) if no effort suffix."""
+    if ":" in model:
+        base, suffix = model.rsplit(":", 1)
+        if suffix.lower() in _EFFORT_LEVELS:
+            return base, suffix.lower()
+    return model, None
+
+
+async def load_model_pricing() -> None:
+    """Populate the in-memory pricing cache from the DB. Called once at daemon startup."""
+    from tortoise import connections
+    conn = connections.get("default")
+    _, rows = await conn.execute_query(
+        "SELECT provider, model, key, value_real FROM model_pricing"
+    )
+    _pricing_cache.clear()
+    for row in rows:
+        provider, model, key, value = row
+        _pricing_cache.setdefault((provider, model), {})[key] = float(value)
+
+
+async def set_model_price(provider: str, model: str, prices: dict[str, float]) -> None:
+    """Persist per-model pricing to DB and update the in-memory cache immediately."""
+    from tortoise import connections
+    conn = connections.get("default")
+    for key, value in prices.items():
+        await conn.execute_query(
+            "INSERT OR REPLACE INTO model_pricing (provider, model, key, value_real) VALUES (?, ?, ?, ?)",
+            [provider, model, key, value],
+        )
+    _pricing_cache[(provider, model)] = dict(prices)
+
+
+def _build_price_calculator() -> yuullm.PriceCalculator:
+    calc = yuullm.PriceCalculator()
+    calc._yaml_prices.update(_pricing_cache)
+    return calc
+
+
 def detect_family(model: str, families: dict[str, Any] | None = None) -> str:
     """Return the family name that appears as a substring in *model*.
 
@@ -53,16 +96,100 @@ def detect_family(model: str, families: dict[str, Any] | None = None) -> str:
 
 
 def family_supports_vision(family: str, families: dict[str, Any] | None = None) -> bool:
-    """Return True if *family* is known to support vision.
-
-    Consults *families* from config first; falls back to ``_FAMILY_VISION``.
-    """
     if families:
         cfg = families.get(family, {})
         if isinstance(cfg, dict):
             return bool(cfg.get("vision", False))
         return False
     return _FAMILY_VISION.get(family, False)
+
+
+# ── Model Capabilities ───────────────────────────────────────────
+
+
+_CAP_FIELDS = frozenset({"vision", "tool_use", "reasoning", "ctx"})
+
+
+@attrs.define(frozen=True)
+class ModelCapabilities:
+    vision: bool = True
+    tool_use: bool = True
+    reasoning: bool = True
+    ctx: int = 128000
+
+    def apply(self, delta: dict[str, Any]) -> "ModelCapabilities":
+        known = {k: v for k, v in delta.items() if k in _CAP_FIELDS}
+        return attrs.evolve(self, **known) if known else self
+
+
+def parse_capability_delta(value: Any) -> dict[str, Any]:
+    """Parse a capability delta from string DSL or plain dict.
+
+    String format: space-separated tokens.
+      ``vision``         → vision=True
+      ``-tool_use``      → tool_use=False
+      ``ctx=200000``     → ctx=200000
+    """
+    if isinstance(value, dict):
+        return {str(k): v for k, v in value.items()}
+    if not isinstance(value, str):
+        return {}
+    result: dict[str, Any] = {}
+    for token in value.split():
+        if token.startswith("-"):
+            result[token[1:]] = False
+        elif "=" in token:
+            key, val = token.split("=", 1)
+            try:
+                result[key] = int(val)
+            except ValueError:
+                result[key] = val
+        else:
+            result[token] = True
+    return result
+
+
+def resolve_model_capabilities(
+    provider: str,
+    selector: str,
+    capabilities_cfg: dict[str, Any],
+) -> ModelCapabilities:
+    """Resolve ModelCapabilities for a provider/selector pair.
+
+    Applies patterns from *capabilities_cfg* top-to-bottom (later entries
+    override earlier ones).  Pattern keys are glob strings; an optional
+    ``provider/`` prefix restricts a pattern to a specific provider.
+    """
+    defaults_raw = capabilities_cfg.get("defaults", {})
+    if isinstance(defaults_raw, dict):
+        caps = ModelCapabilities(
+            vision=bool(defaults_raw.get("vision", True)),
+            tool_use=bool(defaults_raw.get("tool_use", True)),
+            reasoning=bool(defaults_raw.get("reasoning", True)),
+            ctx=int(defaults_raw.get("ctx", 128000)),
+        )
+    else:
+        caps = ModelCapabilities()
+    patterns = capabilities_cfg.get("patterns", {})
+    if not isinstance(patterns, dict):
+        return caps
+    selector_l = selector.lower()
+    provider_l = provider.lower()
+    for pattern, value in patterns.items():
+        delta = parse_capability_delta(value)
+        if not delta:
+            continue
+        if "/" in pattern:
+            pat_provider, pat_selector = pattern.split("/", 1)
+            if not fnmatchcase(provider_l, pat_provider.lower()):
+                continue
+            if not fnmatchcase(selector_l, pat_selector.lower()):
+                continue
+        else:
+            if not fnmatchcase(selector_l, pattern.lower()):
+                continue
+        caps = caps.apply(delta)
+    return caps
 
 
 def _default_alias_store_path() -> Path:
@@ -136,6 +263,21 @@ class RoleOverride:
         return not self.provider and not self.selector
 
 
+class _EffortClient:
+    """Thin wrapper that injects reasoning_effort into every stream call."""
+
+    def __init__(self, client: yuullm.YLLMClient, effort: str) -> None:
+        self._client = client
+        self._effort = effort
+
+    async def stream(self, messages, **kwargs):
+        kwargs.setdefault("reasoning_effort", self._effort)
+        return await self._client.stream(messages, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._client, name)
+
+
 def build_provider(provider_name: str, config: Config) -> yuullm.Provider:
     providers = config.yuuagents.get("providers", {})
     provider_cfg = providers.get(provider_name, {})
@@ -185,21 +327,21 @@ def build_llm_client(
     return yuullm.YLLMClient(
         provider=provider,
         default_model=default_model,
-        price_calculator=yuullm.PriceCalculator(),
+        price_calculator=_build_price_calculator(),
     )
 
 
-def _collect_text(item: Any) -> str:
-    if isinstance(item, dict):
-        if item.get("type") == "text":
-            return str(item.get("text", ""))
-        return ""
-    value = getattr(item, "item", item)
-    if isinstance(value, dict):
-        if value.get("type") == "text":
-            return str(value.get("text", ""))
-    if hasattr(value, "text"):
-        return str(getattr(value, "text"))
+def _collect_text(item: yuullm.StreamItem) -> str:
+    if isinstance(item, yuullm.Response):
+        return _collect_content_text(item.item)
+    if isinstance(item, yuullm.Reasoning):
+        return _collect_content_text(item.item)
+    return ""
+
+
+def _collect_content_text(item: yuullm.ContentItem) -> str:
+    if isinstance(item, yuullm.TextItem):
+        return item.text
     return ""
 
 
@@ -241,12 +383,17 @@ class ResolvedModel:
     selector: str
     resolved_model: str
     family: str
-    supports_vision: bool
+    capabilities: ModelCapabilities
     source: str
+    effort: str | None = None
 
     @property
     def resolved_ref(self) -> str:
         return f"{self.resolved_provider}/{self.resolved_model}"
+
+    @property
+    def supports_vision(self) -> bool:
+        return self.capabilities.vision
 
 
 @attrs.define
@@ -377,25 +524,29 @@ class ModelResolver:
         )
         self.provider_priorities = _merge_provider_priorities(
             _normalize_int_mapping(self.config.yuuagents.get("provider_priorities")),
-            _normalize_int_mapping(getattr(self.config, "provider_priorities", {})),
+            _normalize_int_mapping(self.config.provider_priorities),
         )
         self.provider_affinity = _merge_provider_affinity(
             _normalize_nested_int_mapping(
                 self.config.yuuagents.get("provider_affinity")
             ),
             _normalize_nested_int_mapping(
-                getattr(self.config, "provider_affinity", {})
+                self.config.provider_affinity
             ),
         )
         self.llm_roles = _merge_llm_roles(
             self._llm_roles_from(self.config.yuuagents.get("llm_roles")),
-            self._llm_roles_from(getattr(self.config, "llm_roles", {})),
+            self._llm_roles_from(self.config.llm_roles),
         )
-        families_raw = getattr(self.config, "families", {}) or {}
+        families_raw: dict[str, Any] = self.config.families or {}
         self._families: dict[str, Any] = (
             families_raw if isinstance(families_raw, dict) else {}
         )
-        selectors_raw = getattr(self.config, "selectors", []) or []
+        capabilities_raw: dict[str, Any] = self.config.capabilities or {}
+        self._capabilities_cfg: dict[str, Any] = (
+            capabilities_raw if isinstance(capabilities_raw, dict) else {}
+        )
+        selectors_raw: list[str] = self.config.selectors or []
         self._selectors: list[str] = (
             [str(s) for s in selectors_raw if s]
             if isinstance(selectors_raw, list)
@@ -544,6 +695,7 @@ class ModelResolver:
         allow_llm_choice: bool = True,
     ) -> ResolvedModel | None:
         provider = self.resolve_provider(provider)
+        selector, _ = parse_effort_suffix(selector)  # effort handled by callers
         selector = selector.strip()
         logger.info(
             "Model resolution: trying provider={} selector={} requested_provider={} refresh={}",
@@ -604,7 +756,7 @@ class ModelResolver:
                 selector,
                 exact.id,
                 "direct",
-                supports_vision=exact.supports_vision,
+                api_vision=exact.supports_vision,
             )
 
         filtered = [
@@ -639,7 +791,7 @@ class ModelResolver:
                 selector,
                 filtered[0].id,
                 "auto",
-                supports_vision=filtered[0].supports_vision,
+                api_vision=filtered[0].supports_vision,
             )
         if allow_llm_choice:
             try:
@@ -682,7 +834,7 @@ class ModelResolver:
             selector,
             actual_model,
             "auto",
-            supports_vision=chosen.supports_vision,
+            api_vision=chosen.supports_vision,
         )
 
     async def resolve_role(
@@ -700,11 +852,13 @@ class ModelResolver:
             provider_override=provider_override,
             selector_override=selector_override,
         )
+        selector, effort = parse_effort_suffix(selector)
         sticky_provider = self._role_sticky_providers.get(role_name)
         logger.info(
-            "Model resolution: resolve_role role={} selector={} provider_hint={} sticky={} refresh={}",
+            "Model resolution: resolve_role role={} selector={} effort={} provider_hint={} sticky={} refresh={}",
             role_name,
             selector,
+            effort or "(none)",
             provider_hint or "(auto)",
             sticky_provider or "(none)",
             refresh,
@@ -721,7 +875,7 @@ class ModelResolver:
                 raise self._selector_resolution_error(provider_hint, selector)
             if update_sticky:
                 self._role_sticky_providers[role_name] = resolved.resolved_provider
-            return resolved
+            return attrs.evolve(resolved, effort=effort) if effort else resolved
 
         ordered = self._ordered_providers(selector, sticky_provider=sticky_provider)
         logger.info(
@@ -742,7 +896,7 @@ class ModelResolver:
                 continue
             if update_sticky:
                 self._role_sticky_providers[role_name] = resolved.resolved_provider
-            return resolved
+            return attrs.evolve(resolved, effort=effort) if effort else resolved
         if ordered:
             raise self._selector_resolution_error(ordered[0], selector)
         raise self._selector_resolution_error("", selector)
@@ -765,9 +919,10 @@ class ModelResolver:
             update_sticky=update_sticky,
             allow_llm_choice=allow_llm_choice,
         )
-        return build_llm_client(
-            resolved.resolved_provider, resolved.resolved_model, self.config
-        ), resolved
+        client = build_llm_client(resolved.resolved_provider, resolved.resolved_model, self.config)
+        if resolved.effort:
+            client = _EffortClient(client, resolved.effort)
+        return client, resolved
 
     def _provider_priority(self, provider: str, selector: str) -> int:
         score = int(self.provider_priorities.get(provider, 0))
@@ -801,28 +956,7 @@ class ModelResolver:
         return ordered
 
     def get_agent_llm_ref(self, agent_name: str) -> str:
-        agent_llm_ref = getattr(self.config, "agent_llm_ref", None)
-        if callable(agent_llm_ref):
-            return agent_llm_ref(agent_name)
-
-        ref = str(
-            getattr(self.config, "agent_llm_refs", {}).get(agent_name, "") or ""
-        ).strip()
-        if ref:
-            return ref
-
-        from yuubot.characters import CHARACTER_REGISTRY
-
-        char = CHARACTER_REGISTRY.get(agent_name)
-        if char is not None:
-            llm_ref = str(getattr(char, "llm_ref", "") or "").strip()
-            if llm_ref:
-                return llm_ref
-            provider = str(getattr(char, "provider", "") or "").strip()
-            model = str(getattr(char, "model", "") or "").strip()
-            if provider and model:
-                return f"{provider}/{model}"
-        raise ValueError(f"agent {agent_name!r} has no llm ref configured")
+        return self.config.agent_llm_ref(agent_name)
 
     async def resolve_agent(
         self, agent_name: str, *, refresh: bool = False
@@ -835,12 +969,14 @@ class ModelResolver:
         self, llm_ref: str, *, refresh: bool = False
     ) -> ResolvedModel:
         provider_raw, model_part = split_llm_ref(llm_ref)
+        model_part, effort = parse_effort_suffix(model_part)
         provider = self.resolve_provider(provider_raw)
         logger.info(
-            "Model resolution: resolve_ref ref={} provider={} selector={} refresh={}",
+            "Model resolution: resolve_ref ref={} provider={} selector={} effort={} refresh={}",
             llm_ref,
             provider,
             model_part,
+            effort or "(none)",
             refresh,
         )
         resolved = await self._resolve_selector_on_provider(
@@ -851,7 +987,7 @@ class ModelResolver:
         )
         if resolved is None:
             raise self._selector_resolution_error(provider, model_part)
-        return resolved
+        return attrs.evolve(resolved, effort=effort) if effort else resolved
 
     def _make_resolved(
         self,
@@ -861,23 +997,23 @@ class ModelResolver:
         actual_model: str,
         source: str,
         *,
-        supports_vision: bool | None = None,
+        api_vision: bool | None = None,
     ) -> ResolvedModel:
-        fam = self._families or None
-        family = detect_family(actual_model, fam)
-        if supports_vision is None:
-            supports_vision = family_supports_vision(family, fam)
+        family = detect_family(actual_model, self._families or None)
+        caps = resolve_model_capabilities(provider, selector, self._capabilities_cfg)
+        if api_vision is not None:
+            caps = caps.apply({"vision": api_vision})
         if source == "auto":
             self.store.set_auto_cache(selector, provider, actual_model, family)
         logger.info(
-            "Model resolution: resolved requested_provider={} provider={} selector={} model={} source={} family={} vision={}",
+            "Model resolution: resolved requested_provider={} provider={} selector={} model={} source={} family={} caps={}",
             requested_provider,
             provider,
             selector,
             actual_model,
             source,
             family or "(unknown)",
-            bool(supports_vision),
+            attrs.asdict(caps),
         )
         return ResolvedModel(
             requested_provider=requested_provider,
@@ -885,7 +1021,7 @@ class ModelResolver:
             selector=selector,
             resolved_model=actual_model,
             family=family,
-            supports_vision=bool(supports_vision),
+            capabilities=caps,
             source=source,
         )
 
@@ -966,7 +1102,7 @@ class ModelResolver:
             selector=selector,
             resolved_model=resolved.resolved_model,
             family=resolved.family,
-            supports_vision=resolved.supports_vision,
+            capabilities=resolved.capabilities,
             source="manual",
         )
 

@@ -264,6 +264,8 @@ bot:
     - "/y"
     - "/yuu"
 
+timezone: "Asia/Shanghai"
+
 recorder:
   napcat_ws:
     host: "0.0.0.0"

@@ -13,7 +13,7 @@ from yuubot.scheduler.core import CatchupLimiter, advance_due_fire_time, detect_
 from yuubot.scheduler.service import Scheduler
 
 
-class FakeAgentRunner:
+class FakeScheduledDispatcher:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int | None, str, float]] = []
         self._gate = asyncio.Event()
@@ -87,7 +87,7 @@ def test_catchup_limiter_staggers_delayed_runs() -> None:
 
 @pytest.mark.asyncio
 async def test_scheduler_disables_one_shot_tasks_after_delayed_run(db) -> None:
-    runner = FakeAgentRunner()
+    runner = FakeScheduledDispatcher()
     scheduler = Scheduler(
         Config(
             database=DatabaseConfig(path=db),
@@ -104,7 +104,7 @@ async def test_scheduler_disables_one_shot_tasks_after_delayed_run(db) -> None:
     task = await ScheduledTask.create(
         cron="0 0 1 1 *",
         task="send delayed reminder",
-        agent="main",
+        agent="yuu",
         ctx_id=42,
         once=True,
     )
@@ -121,14 +121,14 @@ async def test_scheduler_disables_one_shot_tasks_after_delayed_run(db) -> None:
 
         refreshed = await ScheduledTask.get(id=task.id)
         assert refreshed.enabled is False
-        assert runner.calls[0][:3] == ("send delayed reminder", 42, "main")
+        assert runner.calls[0][:3] == ("send delayed reminder", 42, "yuu")
     finally:
         await scheduler.stop()
 
 
 @pytest.mark.asyncio
 async def test_scheduler_staggers_multiple_delayed_tasks(db) -> None:
-    runner = FakeAgentRunner()
+    runner = FakeScheduledDispatcher()
     scheduler = Scheduler(
         Config(
             database=DatabaseConfig(path=db),
@@ -145,13 +145,13 @@ async def test_scheduler_staggers_multiple_delayed_tasks(db) -> None:
     first = await ScheduledTask.create(
         cron="0 0 1 1 *",
         task="first backlog task",
-        agent="main",
+        agent="yuu",
         once=True,
     )
     second = await ScheduledTask.create(
         cron="0 0 1 1 *",
         task="second backlog task",
-        agent="main",
+        agent="yuu",
         once=True,
     )
 
@@ -178,7 +178,7 @@ async def test_scheduler_staggers_multiple_delayed_tasks(db) -> None:
 
 @pytest.mark.asyncio
 async def test_scheduler_waits_for_deadline_not_tick_interval(db) -> None:
-    runner = FakeAgentRunner()
+    runner = FakeScheduledDispatcher()
     scheduler = Scheduler(
         Config(
             database=DatabaseConfig(path=db),
@@ -195,7 +195,7 @@ async def test_scheduler_waits_for_deadline_not_tick_interval(db) -> None:
     task = await ScheduledTask.create(
         cron="0 0 1 1 *",
         task="deadline driven task",
-        agent="main",
+        agent="yuu",
         ctx_id=7,
         once=True,
     )

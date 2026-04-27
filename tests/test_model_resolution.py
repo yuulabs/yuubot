@@ -48,7 +48,7 @@ async def test_selector_manual_binding_wins_and_refresh_clears_cache(
 async def test_agent_resolution_uses_agent_llm_refs(yuubot_config) -> None:
     resolver = ModelResolver(yuubot_config)
 
-    resolved = await resolver.resolve_agent("main")
+    resolved = await resolver.resolve_agent("yuu")
     assert resolved.resolved_provider == "test"
     assert resolved.resolved_model == "test-model"
 

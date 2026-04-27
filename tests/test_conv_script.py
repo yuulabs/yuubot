@@ -63,7 +63,7 @@ def _insert_conversation(
             sort_key,
             json.dumps(
                 {
-                    "yuu.agent": "main",
+                    "yuu.agent": "yuu",
                     "yuu.conversation.model": "test-model",
                 }
             ),

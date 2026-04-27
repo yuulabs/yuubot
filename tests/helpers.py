@@ -14,7 +14,6 @@ def build_im_send_argv(
     uid: int | None = None,
     gid: int | None = None,
 ) -> str:
-    """Build an `execute_skill_cli` command for a real `ybot im send` call."""
     del config_path
     message = json.dumps([{"type": "text", "text": text}], ensure_ascii=False)
     parts = ["ybot", "im", "send"]
@@ -36,13 +35,38 @@ def sent_texts(sent: list[dict]) -> list[str]:
     return texts
 
 
+def llm_system_prompt(calls: list) -> str:
+    """Extract concatenated system role text from the first LLM call."""
+    if not calls:
+        return ""
+    for msg in calls[0].get("messages", []):
+        if msg.get("role") == "system":
+            content = msg.get("content", [])
+            return "\n".join(
+                item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
+            )
+    return ""
+
+
+def llm_user_texts(calls: list) -> list[str]:
+    """Extract all user-role text from the first LLM call."""
+    if not calls:
+        return []
+    texts: list[str] = []
+    for msg in calls[0].get("messages", []):
+        if msg.get("role") == "user":
+            content = msg.get("content", [])
+            texts.append("\n".join(
+                item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
+            ))
+    return texts
+
+
 def history_text(history: list) -> str:
-    """Flatten session history into a string for behavior assertions."""
     return "\n".join(str(item) for item in history)
 
 
 async def wait_worker(dispatcher, key: str, timeout: float = 5.0) -> None:
-    """Wait until a dispatcher worker drains its queue."""
     worker = dispatcher._workers.get(key)
     if worker:
         await asyncio.wait_for(worker.queue.join(), timeout=timeout)

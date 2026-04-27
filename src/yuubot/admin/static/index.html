@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>yuubot admin</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { display: flex; flex-direction: column; }
+
+    header {
+      display: flex; align-items: center; gap: 16px;
+      padding: 0 16px; height: 44px; min-height: 44px;
+      background: #161b22; border-bottom: 1px solid #30363d;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 14px; font-weight: 600; color: #58a6ff; letter-spacing: .5px; }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #3fb950; margin-left: auto; flex-shrink: 0;
+      transition: background .3s;
+    }
+    .status-dot.offline { background: #f85149; }
+    .status-dot.connecting { background: #d29922; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    #status-text { font-size: 12px; color: #8b949e; }
+
+    #reconnect-btn {
+      display: none; padding: 4px 10px; font-size: 12px;
+      background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+      border-radius: 6px; cursor: pointer;
+    }
+    #reconnect-btn:hover { background: #30363d; }
+
+    #term-wrap {
+      flex: 1; padding: 6px;
+      overflow: hidden; display: flex;
+    }
+    #terminal { flex: 1; min-height: 0; }
+
+    .xterm { height: 100%; }
+    .xterm-viewport { overflow-y: auto !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>yuubot admin</h1>
+    <span id="status-text">connecting…</span>
+    <div id="status-dot" class="status-dot connecting"></div>
+    <button id="reconnect-btn" onclick="connect()">Reconnect</button>
+  </header>
+  <div id="term-wrap">
+    <div id="terminal"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script>
+    const term = new Terminal({
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: {
+        background:   '#0d1117',
+        foreground:   '#c9d1d9',
+        cursor:       '#58a6ff',
+        cursorAccent: '#0d1117',
+        selection:    'rgba(88,166,255,0.25)',
+        black:        '#484f58',
+        red:          '#ff7b72',
+        green:        '#3fb950',
+        yellow:       '#d29922',
+        blue:         '#58a6ff',
+        magenta:      '#bc8cff',
+        cyan:         '#39c5cf',
+        white:        '#b1bac4',
+        brightBlack:  '#6e7681',
+        brightRed:    '#ffa198',
+        brightGreen:  '#56d364',
+        brightYellow: '#e3b341',
+        brightBlue:   '#79c0ff',
+        brightMagenta:'#d2a8ff',
+        brightCyan:   '#56d4dd',
+        brightWhite:  '#f0f6fc',
+      },
+      allowProposedApi: true,
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+
+    const dot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const reconnectBtn = document.getElementById('reconnect-btn');
+
+    let ws = null;
+    const enc = new TextEncoder();
+
+    function setStatus(state) {
+      dot.className = 'status-dot ' + (state === 'open' ? '' : state);
+      statusText.textContent = state === 'open' ? 'connected' : state === 'connecting' ? 'connecting…' : 'disconnected';
+      reconnectBtn.style.display = (state === 'offline') ? 'inline-block' : 'none';
+    }
+
+    function sendResize() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    }
+
+    function connect() {
+      if (ws) { ws.onclose = null; ws.onerror = null; ws.close(); ws = null; }
+      setStatus('connecting');
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(proto + '//' + location.host + '/terminal/ws');
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        setStatus('open');
+        sendResize();
+      };
+
+      ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          term.write(new Uint8Array(e.data));
+        } else {
+          term.write(e.data);
+        }
+      };
+
+      ws.onclose = () => {
+        setStatus('offline');
+        term.write('\r\n\x1b[2m[connection closed]\x1b[0m\r\n');
+      };
+
+      ws.onerror = () => {
+        setStatus('offline');
+      };
+    }
+
+    // Terminal input → PTY
+    term.onData((data) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(enc.encode(data));
+      }
+    });
+
+    // Auto-copy on selection change
+    term.onSelectionChange(() => {
+      const sel = term.getSelection();
+      if (sel && navigator.clipboard) {
+        navigator.clipboard.writeText(sel).catch(() => {});
+      }
+    });
+
+    // Ctrl+V or Ctrl+Shift+V → paste from clipboard
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && e.ctrlKey && (e.key === 'v' || e.key === 'V')) {
+        if (navigator.clipboard) {
+          navigator.clipboard.readText().then((text) => {
+            if (ws && ws.readyState === WebSocket.OPEN && text) {
+              ws.send(enc.encode(text));
+            }
+          }).catch(() => {});
+        }
+        return false;
+      }
+      return true;
+    });
+
+    // DOM paste event (right-click paste, Ctrl+V in some browsers)
+    document.getElementById('terminal').addEventListener('paste', (e) => {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData).getData('text');
+      if (text && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(enc.encode(text));
+      }
+    });
+
+    // Resize
+    const resizeObserver = new ResizeObserver(() => {
+      fitAddon.fit();
+      sendResize();
+    });
+    resizeObserver.observe(document.getElementById('term-wrap'));
+
+    connect();
+  </script>
+</body>
+</html>

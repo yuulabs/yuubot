@@ -1,411 +1,193 @@
-"""Prompt management — Character × AgentSpec → PromptSpec.
+"""RFC2 character and prompt definitions for yuubot.
 
-Core data structures for building agent system prompts in a transparent,
-inspectable way. All prompt assembly goes through build_prompt_spec() →
-build_system_prompt(), eliminating scattered ad-hoc construction.
+System prompts are assembled from an explicit ``prompt_sections`` tuple on
+``AgentSpec``.  Every piece of the final prompt is declared at definition time;
+``render_system_prompt`` is a mechanical renderer with no hidden insertions.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Iterable
 from pathlib import Path
-from typing import cast
+from typing import Literal, Union
 
 import attrs
-from loguru import logger
+import yuuagents as ya
+
+from yuubot.daemon.restricted_python import _ALLOWED_IMPORTS as _RESTRICTED_ALLOWED_IMPORTS
 
 
-@attrs.define
-class FileRef:
-    """Lazy file content loader — re-reads on every resolve() for hot-reload."""
+# ── Prompt section types ──────────────────────────────────────────────────────
 
-    path: str
+@attrs.define(frozen=True)
+class FileSection:
+    """Load a .md file from the yuubot/prompts/ directory."""
 
-    def resolve(self) -> str:
-        p = Path(self.path)
-        if not p.is_absolute():
-            # Resolve relative to the yuubot package root (src/yuubot/)
-            pkg_root = Path(__file__).parent
-            p = pkg_root / self.path
-        return p.read_text(encoding="utf-8")
-
-
-@attrs.define
-class Section:
-    """A named content block in the system prompt."""
-
-    name: str
-    content: str | FileRef | Callable[[], str]
-
-    def resolve(self) -> str:
-        if isinstance(self.content, FileRef):
-            return self.content.resolve()
-        if callable(self.content):
-            return cast(Callable[[], str], self.content)()
-        return self.content
-
-
-@attrs.define
-class AgentSpec:
-    """Capability specification — tools + sections + constraints."""
-
-    tools: list[str] = attrs.Factory(list)
-    sections: list[Section] = attrs.Factory(list)
-    # Caps: built-in capabilities (im, mem, web, etc.) — in-process execution
-    caps: list[str] = attrs.Factory(list)
-    expand_caps: list[str] = attrs.Factory(list)
-    cap_visibility: dict[str, "CapVisibility"] = attrs.Factory(dict)
-    cap_actions: dict[str, list[str]] = attrs.Factory(dict)
-    # External skills: third-party capabilities — subprocess execution
-    ext_skills: list[str] = attrs.Factory(list)
-    expand_ext_skills: list[str] = attrs.Factory(list)
-    subagents: list[str] = attrs.Factory(list)  # allowed delegate targets
-    max_steps: int = 16
-    soft_timeout: float | None = None
-    silence_timeout: float | None = None
-    tool_batch_timeout: float = 120.0
-
-
-@attrs.define
-class RuntimeInfo:
-    """Provider/model info derived from config at dispatch time."""
-
-    provider: str
-    model: str
-    supports_vision: bool = False
+    path: str  # relative to prompts/, e.g. "main/persona.md"
 
 
 @attrs.define(frozen=True)
-class CapVisibility:
-    """Action visibility for one capability."""
+class InlineSection:
+    """Literal text embedded directly in the spec definition."""
 
-    mode: str = "all"  # "all" | "include" | "exclude"
-    actions: tuple[str, ...] = ()
+    content: str
 
 
-@attrs.define
+@attrs.define(frozen=True)
+class DelegatesSection:
+    """Descriptions of delegatable agents, resolved from delegate_policy at render time."""
+
+
+@attrs.define(frozen=True)
+class PythonWorkerSection:
+    """Python execution backend description.
+
+    Resolved at build_definition() time via the python_backend parameter:
+    - "kernel"     → long-lived PythonSession, top-level await, cross-turn state
+    - "restricted" → sandboxed per-turn worker, sync-only, no file/net/process access
+    - ""           → rendered as nothing (e.g. when previewing without a bot_kind)
+    """
+
+
+@attrs.define(frozen=True)
+class ExpandFunctionsSection:
+    """Resolved import docs injected as a system-prompt section.
+
+    Rendered from the ResolvedPythonRuntime passed to render_system_prompt().
+    Replaces the legacy tool-description injection so function docs are visible
+    as plain text in traces rather than buried inside a JSON tool spec.
+    """
+
+
+PromptSection = Union[FileSection, InlineSection, DelegatesSection, PythonWorkerSection, ExpandFunctionsSection]
+
+# Shared: Python session runtime instructions for any execute_python agent.
+PYTHON_RUNTIME_SECTION = InlineSection(
+    content=(
+        "你可以通过 execute_python 使用持久 Python session 处理需要工具的任务。每一段code类似于jupyter cell，将会持续活跃，直至session被关闭。\n"
+        "业务函数已作为可 import 模块注入（见下方函数文档）；使用前必须先 `import 模块名`，例如 `import yb`，再调用 `yb.*`。\n"
+        "\n"
+        "SESSION_STATE 是一个 msgspec.Struct 对象，通过属性访问（如 SESSION_STATE.ctx_id），"
+        "不可 json.dumps；包含字段：bot_kind、ctx_id、chat_type、group_id、user_id、"
+        "conversation_id、agent_name、character_name、agent_id、task_id、bot_id、bot_name、"
+        "workspace_root、recorder_base_url、daemon_base_url、delegate_depth、"
+        "token、python_backend、supports_vision。\n"
+        "TASKS 是当前 Python session 中用于长期 asyncio task 的字典，你可用它来保存长期任务\n"
+        "；session 关闭后不会保留。"
+    )
+)
+
+
+# ── DelegatePolicy ────────────────────────────────────────────────────────────
+
+@attrs.define(frozen=True)
+class DelegatePolicy:
+    """Static delegate-policy skeleton rendered into prompts and checked later."""
+
+    allowed_agents: tuple[str, ...] = ()
+    max_depth: int = 0
+    max_concurrency: int = 0
+    timeout_s: float | None = None
+
+
+# ── AgentSpec ─────────────────────────────────────────────────────────────────
+
+@attrs.define(frozen=True)
+class AgentSpec:
+    """RFC2 runtime metadata for one yuubot character."""
+
+    tools: tuple[str, ...]
+    prompt_sections: tuple[PromptSection, ...] = ()
+    import_modules: tuple[ya.PythonImport | str, ...] = ()
+    expand_functions: tuple[str, ...] = ("*",)
+    startup_code: str = ""
+    delegate_policy: DelegatePolicy | None = None
+    max_turns: int | None = 1
+    inactivity_timeout_s: float | None = None
+    max_context_tokens: int | None = None
+    facade_module: str = ""  # kept for backward compat; prefer import_modules
+
+    def resolved_imports(self) -> tuple[ya.PythonImport, ...]:
+        if self.import_modules:
+            return tuple(
+                item if isinstance(item, ya.PythonImport) else ya.PythonImport(str(item))
+                for item in self.import_modules
+            )
+        if self.facade_module:
+            return (ya.PythonImport(self.facade_module, alias="yb"),)
+        return ()
+
+
+# ── Character ─────────────────────────────────────────────────────────────────
+
+@attrs.define(frozen=True)
 class Character:
-    """A persona with a single AgentSpec."""
+    """A yuubot character that derives yuuagents definition/runtime skeletons."""
 
     name: str
     description: str
-    min_role: str
-    persona: str | FileRef
     spec: AgentSpec
-    max_tokens: int = 60000  # compression threshold in input tokens
-    llm_ref: str = ""  # runtime-mutable, canonical provider/model ref
-    provider: str = ""  # runtime-mutable, populated from YAML at startup
-    model: str = ""     # runtime-mutable, populated from YAML at startup
-    render_policy: object | None = None  # RenderPolicy from daemon.render, optional
+    bot_kind: Literal["master", "group"]
 
-    def resolve_persona(self) -> str:
-        if isinstance(self.persona, FileRef):
-            return self.persona.resolve()
-        return self.persona
+    def supports_bot_kind(self, bot_kind: str) -> bool:
+        return self.bot_kind == bot_kind
 
 
-@attrs.define
-class PromptSpec:
-    """Fully resolved, inspectable prompt structure."""
+# ── Rendering ─────────────────────────────────────────────────────────────────
 
-    character_name: str
-    agent_spec: AgentSpec
-    runtime: RuntimeInfo
-    resolved_sections: list[tuple[str, str]]  # [(name, content)]
-    tools: list[str]
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
-_CONTROL_TOOLS = frozenset({
-    "sleep",
-    "inspect_background",
-    "cancel_background",
-    "input_background",
-    "defer_background",
-    "wait_background",
-})
+def _load_file(path: str) -> str:
+    return (_PROMPTS_DIR / path).read_text(encoding="utf-8").strip()
 
 
-def _render_control_tools_section(tools: list[str]) -> str:
-    present = _CONTROL_TOOLS & set(tools)
-    if not present:
-        return ""
-
-    lines = [
-        "<control_tools>",
-        "你拥有一组用于管理长时间运行任务的控制工具。",
-        "当工具因为 defer 被移到后台后，不要盲目等待；先检查，再决定是继续等待、发送输入、催促 delegate，还是取消。",
-        "工作流建议：",
-        "1. 需要了解后台进展时，调用 inspect_background。优先检查，而不是猜测。",
-        "2. 需要最终结果时，调用 wait_background 等待一个或多个后台 run 完成。",
-        "3. 交互式 bash 在后台等待输入时，调用 input_background 发送输入；这相当于写 stdin。",
-        "4. 后台 run 是 delegate 时，input_background 相当于给该 agent 发送一条新消息。",
-        "5. 后台 delegate 长时间卡住时，先 inspect_background；必要时再用 defer_background 催它先停止前台等待并汇报进展。",
-        "6. sleep 和 wait_background 本身也是长工具，外部仍可能再次 defer 它们；这不是错误。",
-        "</control_tools>",
-    ]
-    if "delegate" in tools:
-        lines.insert(
-            -1,
-            "7. 如果你把 delegate defer 到后台，后续应把它当作普通后台 run 管理：inspect / input / defer / wait 都可以配合使用。",
-        )
-    return "\n".join(lines)
+_KERNEL_WORKER_TEXT = (
+    "当前是 master 私聊：execute_python 使用完整、长生命周期 Python kernel。"
+    "可以使用 top-level await，变量和 TASKS 会跨 agent 会话尽量保留。例如，当你可能执行一个长时间任务时，请使用 `TASK['x'] = asyncio.create_task(...)`, 然后使用asyncio.wait配合timeout等待结果，以避免长时间等待。"
+)
+_RESTRICTED_WORKER_TEXT = (
+    "当前是群聊/非 master 场景：execute_python 使用受限 Python worker。"
+    "业务模块（im、mem、web、vision 等）已预注入命名空间，无需 import，直接 `await im.send_message(...)` 即可。"
+    "支持 top-level await，异步函数需用 await 调用。"
+    f"可 import 的标准库白名单：{', '.join(sorted(_RESTRICTED_ALLOWED_IMPORTS))}。"
+    "不要执行文件、网络、进程、反射或 import 白名单外的模块；while 循环不可用。"
+    "如果 worker 超时或崩溃，本次工具调用会失败并可能重启 worker。"
+)
 
 
-def _render_caps_summary(
-    cap_names: list[str],
-    cap_visibility: dict[str, CapVisibility],
+def render_system_prompt(
+    character: Character,
+    *,
+    delegate_descriptions: Iterable[tuple[str, str]] = (),
+    python_backend: str = "",
+    python_runtime: ya.ResolvedPythonRuntime | None = None,
 ) -> str:
-    """Render compact capability summary for on-demand capabilities."""
-    if not cap_names:
-        return ""
-    from yuubot.capabilities import capability_summary
+    """Render the system prompt from prompt_sections; no hidden insertions."""
+    delegate_list = list(delegate_descriptions)
+    parts: list[str] = []
 
-    lines = ["<caps>"]
-    lines.append(
-        "Capability 是你的内置能力，每个 capability 提供一组子命令。"
-        "你通过 call_cap_cli('cap_name subcommand --flags ...') 调用它们。"
-    )
-    lines.append(
-        "⚠️ 重要：每个 capability 的参数格式各不相同，你无法猜到正确的参数。"
-        "首次使用某个 capability 前，必须先调用 read_cap_doc('<name>') 阅读文档。"
-        "传错参数会直接报错。"
-    )
-    lines.append("")
-    lines.append("可用 capability 列表：")
-    for name in cap_names:
-        visibility = cap_visibility.get(name)
-        desc = capability_summary(name)
-        if desc:
-            lines.append(f"<{name}>{desc}</{name}>")
-        else:
-            lines.append(f"<{name}>(no description)</{name}>")
-        if visibility and visibility.mode != "all":
-            label = "allowed_actions" if visibility.mode == "include" else "blocked_actions"
-            lines.append(f"<{name}_{label}>{', '.join(visibility.actions)}</{name}_{label}>")
-    lines.append("</caps>")
-    return "\n".join(lines)
+    for section in character.spec.prompt_sections:
+        if isinstance(section, FileSection):
+            parts.append(_load_file(section.path))
+        elif isinstance(section, InlineSection):
+            parts.append(section.content.strip())
+        elif isinstance(section, DelegatesSection):
+            if delegate_list:
+                lines = ["当前 policy 引导下可考虑委派的 agent："]
+                lines.extend(f"- {name}: {desc}" for name, desc in delegate_list)
+                parts.append("\n".join(lines))
+            else:
+                parts.append("当前未向你暴露可委派 agent；不要自行猜测可委派目标。")
+        elif isinstance(section, PythonWorkerSection):
+            if python_backend == "kernel":
+                parts.append(_KERNEL_WORKER_TEXT)
+            elif python_backend == "restricted":
+                parts.append(_RESTRICTED_WORKER_TEXT)
+        elif isinstance(section, ExpandFunctionsSection):
+            if python_runtime is not None:
+                text = python_runtime.render_import_docs()
+                if text:
+                    parts.append(text)
 
-
-def _load_cap_docs(
-    caps: list[str],
-    expand_caps: list[str],
-    cap_visibility: dict[str, CapVisibility],
-) -> list[tuple[str, str]]:
-    """Load capability docs and return (name, content) section pairs.
-
-    Expanded capabilities get full doc inlined. Others get a summary.
-    """
-    from yuubot.capabilities import load_capability_doc, registered_capabilities
-    from yuubot.capabilities.contract import ActionFilter
-
-    available = set(registered_capabilities())
-    expand_names = set(expand_caps)
-
-    if "*" in caps:
-        cap_list = sorted(available)
-    else:
-        cap_list = [a for a in caps if a in available]
-
-    expanded = []
-    remaining = []
-    for name in cap_list:
-        if name in expand_names:
-            expanded.append(name)
-        else:
-            remaining.append(name)
-
-    result: list[tuple[str, str]] = []
-
-    # Summary for on-demand capabilities
-    if remaining:
-        summary = _render_caps_summary(remaining, cap_visibility)
-        if summary:
-            result.append(("caps_summary", summary))
-
-    # Full doc for expanded capabilities
-    for name in expanded:
-        try:
-            visibility = cap_visibility.get(name)
-            af = ActionFilter(mode=visibility.mode, actions=frozenset(visibility.actions)) if visibility else None
-            content = load_capability_doc(name, action_filter=af)
-            result.append((
-                f"expanded_cap:{name}",
-                f'<cap_doc name="{name}">\n{content}\n</cap_doc>',
-            ))
-        except FileNotFoundError:
-            logger.warning("No documentation for capability {}", name)
-            remaining_fallback = _render_caps_summary([name], cap_visibility)
-            if remaining_fallback:
-                result.append(("caps_summary", remaining_fallback))
-
-    return result
-
-
-def _render_skills_summary(skills) -> str:
-    """Render compact skills summary without exposing file paths."""
-    if not skills:
-        return ""
-    lines = ["<skills>"]
-    for s in skills:
-        lines.append(f"<{s.name}>{s.description}</{s.name}>")
-    lines.append("</skills>")
-    lines.append(
-        "\n使用 execute_skill_cli 工具执行上述 Skill 提供的 CLI 命令。\n"
-        "⚠️ 首次调用某个 Skill 的命令前，必须先用 read_skill('<name>') 阅读其文档，"
-        "确认参数格式后再调用。不要猜测参数。"
-    )
-    return "\n".join(lines)
-
-
-def _load_skills_docs(
-    skill_paths: list[str],
-    ext_skills: list[str],
-    expand_ext_skills: list[str],
-) -> list[tuple[str, str]]:
-    """Load skill docs and return (name, content) section pairs.
-
-    Returns up to two sections: skills_summary and expanded skill docs.
-    """
-    try:
-        from yuuagents.skills import scan  # type: ignore[unresolved-import]
-    except ImportError:
-        return []
-
-    all_skills = scan(skill_paths)
-    if not all_skills:
-        return []
-
-    # Filter to agent's allowed skills
-    expand_names = set(expand_ext_skills)
-    if "*" not in ext_skills:
-        allowed = set(ext_skills)
-        all_skills = [s for s in all_skills if s.name in allowed]
-
-    expanded = []
-    remaining = []
-    for s in all_skills:
-        if s.name in expand_names:
-            expanded.append(s)
-        else:
-            remaining.append(s)
-
-    result: list[tuple[str, str]] = []
-
-    # Summary for non-expanded skills
-    summary = _render_skills_summary(remaining)
-    if summary:
-        result.append(("skills_summary", summary))
-
-    # Full SKILL.md for expanded skills
-    for s in expanded:
-        try:
-            content = Path(s.location).read_text(encoding="utf-8")
-            result.append((
-                f"expanded:{s.name}",
-                f'<skill_doc name="{s.name}">\n{content}\n</skill_doc>',
-            ))
-        except Exception:
-            logger.warning("Failed to read SKILL.md for {} at {}", s.name, s.location)
-            fallback = _render_skills_summary([s])
-            if fallback:
-                result.append(("skills_summary", fallback))
-
-    return result
-
-
-def build_prompt_spec(
-    char: Character,
-    runtime: RuntimeInfo,
-    skill_paths: list[str] | None = None,
-) -> PromptSpec:
-    """Character × Runtime → PromptSpec. Deterministic derivation."""
-    spec = char.spec
-    cap_visibility = resolve_cap_visibility(spec)
-
-    sections: list[tuple[str, str]] = []
-
-    # [1] persona — always first
-    persona_text = char.resolve_persona()
-    sections.append(("persona", persona_text))
-
-    # [2..N] agent spec sections
-    for s in spec.sections:
-        content = s.resolve()
-        if content:
-            sections.append((s.name, content))
-
-    # [N+1..] capabilities
-    if spec.caps or spec.expand_caps:
-        cap_sections = _load_cap_docs(spec.caps, spec.expand_caps, cap_visibility)
-        sections.extend(cap_sections)
-
-    # [N+M..] external skills (third-party)
-    if skill_paths and (spec.ext_skills or spec.expand_ext_skills):
-        skill_sections = _load_skills_docs(
-            skill_paths,
-            spec.ext_skills,
-            spec.expand_ext_skills,
-        )
-        sections.extend(skill_sections)
-
-    # Resolve tool list (add view_image if vision-capable)
-    tools = list(spec.tools)
-    if runtime.supports_vision and "view_image" not in tools:
-        tools.append("view_image")
-
-    control_section = _render_control_tools_section(tools)
-    if control_section:
-        sections.append(("control_tools", control_section))
-
-    return PromptSpec(
-        character_name=char.name,
-        agent_spec=spec,
-        runtime=runtime,
-        resolved_sections=sections,
-        tools=tools,
-    )
-
-
-def resolve_cap_visibility(spec: AgentSpec) -> dict[str, CapVisibility]:
-    """Normalize capability action visibility, keeping legacy cap_actions working."""
-    result = dict(getattr(spec, "cap_visibility", {}))
-    for name, actions in getattr(spec, "cap_actions", {}).items():
-        result.setdefault(
-            name,
-            CapVisibility(mode="include", actions=tuple(actions)),
-        )
-    return result
-
-
-def build_system_prompt(spec: PromptSpec) -> str:
-    """PromptSpec → plain system prompt string."""
-    return "\n\n".join(content for _name, content in spec.resolved_sections)
-
-
-def format_prompt_spec(spec: PromptSpec) -> str:
-    """Human-readable summary of a PromptSpec (for /yshow prompt)."""
-    lines = [
-        f"Character: {spec.character_name}",
-        f"Provider: {spec.runtime.provider}/{spec.runtime.model}",
-        f"Vision: {spec.runtime.supports_vision}",
-        "",
-        "System Prompt Sections:",
-    ]
-    for i, (name, content) in enumerate(spec.resolved_sections, 1):
-        size = len(content)
-        if size < 1024:
-            lines.append(f"  [{i}] {name:<24} ({size} chars)")
-        else:
-            lines.append(f"  [{i}] {name:<24} ({size / 1024:.1f}k chars)")
-
-    lines.append("")
-    lines.append(f"Tools: {', '.join(spec.tools)}")
-
-    agent = spec.agent_spec
-    lines.append(f"Max steps: {agent.max_steps}")
-    if agent.soft_timeout:
-        lines.append(f"Soft timeout: {agent.soft_timeout}s")
-    if agent.silence_timeout:
-        lines.append(f"Silence timeout: {agent.silence_timeout}s")
-
-    return "\n".join(lines)
+    return "\n\n".join(parts)

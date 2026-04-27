@@ -1,243 +1,313 @@
-"""Runtime services shared by agent runs."""
+"""RFC2 yuuagents runtime factories for yuubot."""
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from typing import Any
+import time
 import uuid
-from functools import lru_cache
-from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from yuuagents.context import DockerExecutor
-    from yuuagents.daemon.docker import DockerManager
+import attrs
+import yuullm
+import yuuagents as ya
+from yuuagents.python_runtime import resolve_agent_runtime
 
-import yuutools as yt
-from loguru import logger
-from yuuagents import tools as agent_tools
-
-from yuubot.capabilities.contract import ActionFilter
-from yuubot.characters import CHARACTER_REGISTRY, get_character
+from yuubot.characters import CHARACTER_REGISTRY
 from yuubot.config import Config
 from yuubot.core import env
-from yuubot.daemon.llm_factory import make_llm
-from yuubot.model_resolution import ModelResolver, build_llm_client
-from yuubot.prompt import RuntimeInfo, build_prompt_spec, build_system_prompt
+from yuubot.core.types import InboundMessage
+from yuubot.daemon.file_tools import EditFileTool, ReadChatFileTool, ReadFileTool
+from yuubot.daemon.observability import YuubotBillingSink, YuubotRuntimeObserver
+from yuubot.prompt import Character, render_system_prompt
 
 
-def _set_or_pop(values: dict[str, str], key: str, value: str) -> None:
-    if value:
-        values[key] = value
-    else:
-        values.pop(key, None)
+@attrs.define(frozen=True)
+class KernelTokenBinding:
+    token: str
+    agent_id: str
+    bot_kind: str
+    ctx_id: int
+    group_id: int
+    user_id: int
+    conversation_id: str
+    character_name: str
+    task_id: str
+    expires_at: float
 
 
-@lru_cache(maxsize=1)
-def get_capability_tools() -> dict[str, Any]:
-    """Load capability tools once."""
-    from yuubot.capabilities.tools import call_cap_cli, read_cap_doc
-    from yuubot.sandbox.tool import sandbox_python
-
-    return {
-        "call_cap_cli": call_cap_cli,
-        "read_cap_doc": read_cap_doc,
-        "sandbox_python": sandbox_python,
-    }
+_TOKEN_BINDINGS: dict[str, KernelTokenBinding] = {}
+_TOKEN_TTL_S = 60 * 60 * 24
 
 
-DOCKER_TOOLS = {"execute_bash", "read_file", "edit_file", "delete_file"}
+def issue_kernel_token(
+    *,
+    bot_kind: str,
+    ctx_id: int,
+    group_id: int,
+    user_id: int,
+    conversation_id: str,
+    character_name: str,
+    task_id: str,
+) -> str:
+    """Issue an opaque token binding kernel calls to a yuubot session."""
+
+    token = f"rfc2.{ctx_id}.{character_name}.{task_id}.{uuid.uuid4().hex}"
+    _TOKEN_BINDINGS[token] = KernelTokenBinding(
+        token=token,
+        agent_id="",
+        bot_kind=bot_kind,
+        ctx_id=ctx_id,
+        group_id=group_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        character_name=character_name,
+        task_id=task_id,
+        expires_at=time.time() + _TOKEN_TTL_S,
+    )
+    _prune_kernel_tokens()
+    return token
 
 
-class AgentRuntime:
-    """Owns prompt/env/tool construction and runtime initialization."""
+def resolve_kernel_token(token: str) -> KernelTokenBinding | None:
+    binding = _TOKEN_BINDINGS.get(token)
+    if binding is None:
+        return None
+    if binding.expires_at < time.time():
+        _TOKEN_BINDINGS.pop(token, None)
+        return None
+    return binding
 
-    def __init__(self, config: Config) -> None:
-        self.config = config
-        self.initialized = False
-        self.docker: DockerManager | None = None
-        self.model_resolver = ModelResolver(config)
 
-    @property
-    def docker_executor(self) -> DockerExecutor | None:
-        """Return docker as DockerExecutor protocol for AgentContext injection."""
-        return self.docker
+def revoke_kernel_token(token: str) -> None:
+    _TOKEN_BINDINGS.pop(token, None)
 
-    def build_tool_manager(self, tool_names: list[str]) -> Any:
-        cap_tools = get_capability_tools()
-        tool_manager = yt.ToolManager()
 
-        builtin_names = [name for name in tool_names if name not in cap_tools]
-        cap_names = [name for name in tool_names if name in cap_tools]
+def bind_kernel_agent_id(
+    *,
+    ctx_id: int,
+    conversation_id: str,
+    character_name: str,
+    task_id: str,
+    agent_id: str,
+) -> None:
+    for token, binding in list(_TOKEN_BINDINGS.items()):
+        if (
+            binding.ctx_id == ctx_id
+            and binding.conversation_id == conversation_id
+            and binding.character_name == character_name
+            and binding.task_id == task_id
+        ):
+            _TOKEN_BINDINGS[token] = attrs.evolve(binding, agent_id=agent_id)
 
-        for tool in agent_tools.get(builtin_names):
-            tool_manager.register(tool)
-        for name in cap_names:
-            tool_manager.register(cap_tools[name])
-        return tool_manager
 
-    def build_capability_context(
-        self,
-        *,
-        ctx_id: int | str = "",
-        user_id: int | str = "",
-        user_role: str = "",
-        agent_name: str = "",
-        task_id: str = "",
-        bot_name: str = "",
-        allowed_caps: frozenset[str] | None = None,
-        action_filters: dict[str, ActionFilter] | None = None,
-        docker_host_mount: str = "",
-        docker_home_host_dir: str = "",
-        docker_home_dir: str = "",
-    ) -> Any:
-        from yuubot.capabilities import CapabilityContext
+def _prune_kernel_tokens() -> None:
+    now = time.time()
+    for token, binding in list(_TOKEN_BINDINGS.items()):
+        if binding.expires_at < now:
+            _TOKEN_BINDINGS.pop(token, None)
 
-        return CapabilityContext(
-            config=self.config,
-            model_resolver=self.model_resolver,
-            ctx_id=int(ctx_id) if ctx_id else None,
-            user_id=int(user_id) if user_id else None,
-            user_role=user_role,
-            agent_name=agent_name,
-            task_id=task_id,
-            bot_name=bot_name,
-            allowed_caps=allowed_caps,
-            action_filters=action_filters,
-            docker_host_mount=docker_host_mount,
-            docker_home_host_dir=docker_home_host_dir,
-            docker_home_dir=docker_home_dir,
+
+def python_backend_for_bot_kind(bot_kind: str) -> str:
+    if bot_kind == "master":
+        return "kernel"
+    return "restricted"
+
+
+@attrs.define
+class YuubotRuntimeFactory:
+    config: Config
+    runtime_observer: YuubotRuntimeObserver = attrs.field(factory=YuubotRuntimeObserver)
+    billing_sink: YuubotBillingSink = attrs.field(factory=YuubotBillingSink)
+
+    def create_engine(self) -> ya.Engine:
+        return ya.Engine(
+            tools=[ReadFileTool(), EditFileTool(), ReadChatFileTool()],
+            python=ya.PythonRuntime(config=self._base_python_config()),
+            observers=[
+                ya.YuuTraceObserver(default_model="unknown", tags=("yuubot", "rfc2")),
+                self.runtime_observer,
+            ],
+            billing=self.billing_sink,
         )
 
-    @staticmethod
-    def new_task_id() -> str:
-        return uuid.uuid4().hex
-
-    def build_agent_env(
+    def build_definition(
         self,
+        character: Character,
+        llm: yuullm.YLLMClient,
         *,
+        bot_kind: str = "",
+        supports_vision: bool = False,
+    ) -> ya.AgentDefinition:
+        delegates = self._delegate_descriptions(character)
+        python_backend = python_backend_for_bot_kind(bot_kind) if bot_kind else ""
+        resolved_runtime = resolve_agent_runtime(
+            ya.PythonRuntime(config=self._base_python_config()),
+            None,
+            import_modules=character.spec.resolved_imports(),
+            expand_functions=character.spec.expand_functions,
+        )
+        system_prompt = render_system_prompt(
+            character,
+            delegate_descriptions=delegates,
+            python_backend=python_backend,
+            python_runtime=resolved_runtime.python,
+        )
+        if not supports_vision:
+            system_prompt += (
+                "\n\n消息中 <img src=\"...\"> 标签所指向的图片，"
+                "你无法直接查看。请用 execute_python 调用可用的 "
+                "`yb.describe_image(path)` 或 `vision.describe_image(path)` "
+                "获取图片的文字描述后再作回应。"
+            )
+        return ya.AgentDefinition(
+            name=character.name,
+            llm=llm,
+            system_prompt=system_prompt,
+            tools=character.spec.tools,
+            import_modules=character.spec.resolved_imports(),
+            expand_functions=(),  # docs are now in system prompt via ExpandFunctionsSection
+        )
+
+    def build_runtime(
+        self,
+        character: Character,
+        message: InboundMessage,
+        *,
+        conversation_id: str,
         task_id: str,
-        ctx_id: int | str = "",
-        user_id: int | str = "",
-        user_role: str = "",
-        agent_name: str = "",
-        docker_mount: str = "",
-        docker_home: str = "",
-        docker_home_dir: str = "",
-    ) -> dict[str, str]:
-        import os
-
-        values = {key: str(value) for key, value in os.environ.items()}
-        values[env.TASK_ID] = task_id
-        values[env.IN_BOT] = "1"
-        _set_or_pop(values, env.BOT_CTX, str(ctx_id) if ctx_id else "")
-        _set_or_pop(values, env.USER_ID, str(user_id) if user_id else "")
-        _set_or_pop(values, env.USER_ROLE, user_role)
-        _set_or_pop(values, env.AGENT_NAME, agent_name)
-        _set_or_pop(values, env.DOCKER_HOST_MOUNT, docker_mount)
-        _set_or_pop(values, env.DOCKER_HOME_HOST_DIR, docker_home)
-        _set_or_pop(values, env.DOCKER_HOME_DIR, docker_home_dir)
-        return values
-
-    async def ensure_init(self) -> None:
-        if self.initialized:
-            return
-        try:
-            import msgspec
-            from yuuagents.config import Config as YuuagentsConfig
-            from yuuagents.init import setup
-
-            cfg = msgspec.convert(self.config.build_yuuagents_config(), YuuagentsConfig)
-            await setup(cfg)
-            self.initialized = True
-
-            if not self.any_agent_needs_docker():
-                logger.info(
-                    "No agent uses docker tools, skipping Docker initialization"
-                )
-                return
-
-            try:
-                from yuuagents.daemon.docker import DockerManager
-
-                self.docker = DockerManager(image=cfg.docker.image)
-                await self.docker.start()
-                logger.info("Docker initialized for AgentRunner")
-            except Exception:
-                logger.opt(exception=True).warning(
-                    "Docker not available, execute_bash will not work",
-                )
-                self.docker = None
-        except ImportError:
-            logger.warning("yuuagents not installed, agent features disabled")
-        except Exception:
-            logger.exception("Failed to initialize yuuagents")
-
-    async def stop(self) -> None:
-        if self.docker is not None:
-            await self.docker.stop()
-            self.docker = None
-
-    async def resolve_docker(self, task_id: str) -> tuple[str, str]:
-        if self.docker is not None:
-            container_id = await self.docker.resolve(task_id=task_id)
-            return self.docker.workdir, container_id
-        from pathlib import Path
-
-        return str(Path.home()), ""
-
-    async def docker_home_info(self, container_id: str) -> tuple[str, str, str]:
-        if self.docker is None or not container_id:
-            return "", "", ""
-
-        docker_mount = "/mnt/host"
-        container_home = self.docker.container_home
-        host_home_dir = await self.docker.host_home_dir(container_id)
-        return docker_mount, host_home_dir, container_home
-
-    async def get_runtime(self, agent_name: str) -> RuntimeInfo:
-        resolved = await self.model_resolver.resolve_agent(agent_name)
-        return RuntimeInfo(
-            provider=resolved.resolved_provider,
-            model=resolved.resolved_model,
-            supports_vision=resolved.supports_vision,
+        bot_kind: str,
+        supports_vision: bool = False,
+    ) -> ya.AgentRuntime:
+        workspace_root = self._workspace_root(message.ctx_id)
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        python_backend = python_backend_for_bot_kind(bot_kind)
+        token = issue_kernel_token(
+            bot_kind=bot_kind,
+            ctx_id=message.ctx_id,
+            group_id=message.group_id,
+            user_id=message.sender.user_id,
+            conversation_id=conversation_id,
+            character_name=character.name,
+            task_id=task_id,
+        )
+        state = {
+            "bot_kind": bot_kind,
+            "supports_vision": supports_vision,
+            "ctx_id": message.ctx_id,
+            "chat_type": message.chat_type,
+            "group_id": message.group_id,
+            "user_id": message.sender.user_id,
+            "conversation_id": conversation_id,
+            "agent_name": character.name,
+            "character_name": character.name,
+            "task_id": task_id,
+            "bot_id": self.config.bot.qq,
+            "workspace_root": str(workspace_root),
+            "recorder_base_url": self.config.daemon.recorder_api,
+            "daemon_base_url": f"http://{self.config.daemon.api.host}:{self.config.daemon.api.port}",
+            "delegate_depth": 0,
+            "token": token,
+            "python_backend": python_backend,
+        }
+        return ya.AgentRuntime(
+            python=ya.PythonRuntimeOverride(
+                cwd=str(workspace_root),
+                inherit_envs=self._python_inherit_envs(),
+                env_allowlist=self._python_env_allowlist(),
+                extra_envs={
+                    "YUUBOT_RECORDER_URL": self.config.daemon.recorder_api,
+                    "YUUBOT_DAEMON_URL": state["daemon_base_url"],
+                    "YUUBOT_AGENT_TOKEN": token,
+                    **self._python_extra_envs(),
+                },
+                sys_path=self._python_sys_path(),
+                startup_code=character.spec.startup_code,
+                state=state,
+            )
         )
 
-    async def has_vision(self, agent_name: str) -> bool:
-        return (await self.get_runtime(agent_name)).supports_vision
-
-    async def make_role_llm(
+    def bind_agent_metadata(
         self,
-        role_name: str,
+        agent_id: str,
         *,
-        provider_override: str | None = None,
-        selector_override: str | None = None,
-        refresh: bool = False,
-    ) -> Any:
-        resolved = await self.model_resolver.resolve_role(
-            role_name,
-            provider_override=provider_override,
-            selector_override=selector_override,
-            refresh=refresh,
-            update_sticky=True,
+        message: InboundMessage,
+        conversation_id: str,
+        character_name: str = "",
+        task_id: str,
+    ) -> None:
+        self.runtime_observer.bind_agent(
+            agent_id,
+            {
+                "ctx_id": message.ctx_id,
+                "conversation_id": conversation_id,
+                "task_id": task_id,
+                "user_id": message.sender.user_id,
+            },
         )
-        return build_llm_client(
-            resolved.resolved_provider, resolved.resolved_model, self.config
+        bind_kernel_agent_id(
+            ctx_id=message.ctx_id,
+            conversation_id=conversation_id,
+            character_name=character_name,
+            task_id=task_id,
+            agent_id=agent_id,
         )
 
-    async def build_prompt(self, agent_name: str) -> tuple[Any, Any]:
-        char = get_character(agent_name)
-        runtime = await self.get_runtime(agent_name)
-        prompt_spec = build_prompt_spec(char, runtime, self.config.skill_paths)
-        system_prompt = build_system_prompt(prompt_spec)
-        return prompt_spec, system_prompt
+    def _delegate_descriptions(self, character: Character) -> list[tuple[str, str]]:
+        policy = character.spec.delegate_policy
+        if policy is None:
+            return []
+        result: list[tuple[str, str]] = []
+        for name in policy.allowed_agents:
+            candidate = CHARACTER_REGISTRY.get(name)
+            if candidate is not None:
+                result.append((name, candidate.description))
+        return result
 
-    @staticmethod
-    def needs_docker(tools: list[str]) -> bool:
-        return bool(DOCKER_TOOLS & set(tools))
+    def _base_python_config(self) -> ya.PythonKernelConfig:
+        return ya.PythonKernelConfig(
+            sys_path=self._python_sys_path(),
+            inherit_envs=self._python_inherit_envs(),
+            env_allowlist=self._python_env_allowlist(),
+            extra_envs=self._python_extra_envs(),
+        )
 
-    def any_agent_needs_docker(self) -> bool:
-        for char in CHARACTER_REGISTRY.values():
-            if DOCKER_TOOLS & set(char.spec.tools):
-                return True
-        return False
+    def _python_config_raw(self) -> dict[str, Any]:
+        raw = self.config.yuuagents.get("python", {})
+        return raw if isinstance(raw, dict) else {}
 
-    async def make_llm(self, agent_name: str = "main") -> Any:
-        return await make_llm(agent_name, self.config)
+    def _python_sys_path(self) -> tuple[str, ...]:
+        raw = self._python_config_raw()
+        configured = raw.get("sys_path", ())
+        if isinstance(configured, str):
+            configured_paths = (configured,)
+        else:
+            configured_paths = tuple(str(item) for item in configured or ())
+        yuubot_src = str(Path(__file__).resolve().parents[2])
+        return tuple(dict.fromkeys((yuubot_src, *configured_paths)))
+
+    def _python_inherit_envs(self) -> bool:
+        raw = self._python_config_raw()
+        return bool(raw.get("inherit_envs", True))
+
+    def _python_env_allowlist(self) -> tuple[str, ...] | None:
+        raw = self._python_config_raw()
+        value = raw.get("env_allowlist")
+        if value is None:
+            return None
+        return tuple(str(item) for item in value)
+
+    def _python_extra_envs(self) -> dict[str, str]:
+        raw = self._python_config_raw()
+        extra = raw.get("extra_envs", {})
+        if not isinstance(extra, dict):
+            return {}
+        return {str(key): str(value) for key, value in extra.items()}
+
+    def _workspace_root(self, ctx_id: int) -> Path:
+        raw = (
+            self.config.yuuagents.get("workspace_root")
+            or os.environ.get(env.WORKSPACE_ROOT)
+        )
+        base = Path(str(raw)).expanduser() if raw else Path.home() / ".yuubot" / "workspaces"
+        return base / f"ctx-{ctx_id}"

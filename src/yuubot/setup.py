@@ -307,12 +307,10 @@ def run_setup(config_path: str | None = None) -> None:
     cfg_path = _step_generate_config(qq, master, config_path)
 
     # Load config to get the correct ports
-    from yuubot.config import load_config, write_yagents_config
+    from yuubot.config import load_config
 
     cfg = load_config(str(cfg_path))
-    yagents_path = write_yagents_config(cfg)
-    click.echo(f"✓ 已生成 yuuagents 运行配置: {yagents_path}")
-    click.echo("  该文件由 yuubot 自动维护，不需要手动编辑。")
+    click.echo("✓ 已加载 yuubot 配置")
     _step_write_napcat_config(
         qq,
         ws_port=cfg.recorder.napcat_ws.port,

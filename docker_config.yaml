@@ -1,0 +1,29 @@
+database:
+  path: /data/yuubot/yuubot.db
+log_dir: /data/yuubot/logs
+recorder:
+  media_dir: /data/yuubot/media
+  napcat_http: http://napcat:3000
+  napcat_ws:
+    host: 0.0.0.0
+  relay_ws:
+    host: 127.0.0.1
+  api:
+    host: 0.0.0.0
+daemon:
+  recorder_ws: ws://127.0.0.1:8766
+  recorder_api: http://127.0.0.1:8767
+  api:
+    host: 0.0.0.0
+  self_url: http://yuubot:8780
+web:
+  browser_profile: /data/yuubot/browser_profile
+  download_dir: /data/yuubot/downloads
+network:
+  qq_direct: true
+yuuagents:
+  yuutrace:
+    db_path: /data/yuubot/traces.db
+  workspace_root: /workspace
+docker:
+  traces_ui_port: 8782  # host port for the ytrace WebUI (http://host:8782)

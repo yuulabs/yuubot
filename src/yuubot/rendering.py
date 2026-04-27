@@ -4,6 +4,55 @@
 调用者直接 import 对应的类，按约定调用方法，无需额外基类或注册机制。
 """
 
+import html as _html
+from datetime import datetime
+class MessageList(list):
+    """list[dict] that renders as XML when printed.
+
+    ``print(msgs)`` outputs all ``rendered`` fields joined by newlines.
+    Supports all standard list/dict operations for filtering and inspection.
+    """
+
+    def __str__(self) -> str:
+        return "\n".join(m["rendered"] for m in self)
+
+    __repr__ = __str__
+
+
+def render_message_xml(
+    *,
+    uid: int | str,
+    name: str,
+    display_name: str,
+    time: str | int,
+    segments: list,
+    message_id: int | str | None = None,
+) -> str:
+    """Render a single QQ message as a ``<msg ...>body</msg>`` XML element.
+
+    ``segments`` is a ``Message`` (list of Segment objects from ``core/models``).
+    ``time`` is either a Unix timestamp (int) or an ISO/display string.
+    Images in the body render as ``<img src="file:///...">`` via
+    ``segments_to_xml_body()``, so the LLM sees paths rather than raw image data.
+    ``message_id`` is the QQ message_id (used for reactions and references).
+    """
+    from yuubot.core.models import segments_to_xml_body
+
+    if isinstance(time, int):
+        time_str = datetime.fromtimestamp(time).astimezone().strftime("%H:%M:%S") if time > 0 else ""
+    else:
+        time_str = str(time)
+
+    body = segments_to_xml_body(segments)
+    attrs = f'uid="{uid}" name="{_html.escape(str(name), quote=True)}"'
+    if display_name:
+        attrs += f' display_name="{_html.escape(str(display_name), quote=True)}"'
+    if time_str:
+        attrs += f' time="{_html.escape(time_str, quote=True)}"'
+    if message_id is not None:
+        attrs += f' message_id="{_html.escape(str(message_id), quote=True)}"'
+    return f"<msg {attrs}>{body}</msg>"
+
 
 def render_system(*, persona: str, addon_docs: str) -> str:
     return f"{persona}\n\n{addon_docs}" if addon_docs else persona

@@ -14,7 +14,7 @@ class ScheduleSpec:
     cron: str
     task: str
     ctx_id: int | None
-    agent_name: str = "main"
+    agent_name: str = "yuu"
     once: bool = False
     db_id: int | None = None
 

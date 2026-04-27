@@ -2,10 +2,15 @@
 
 from datetime import datetime, timezone
 
+import httpx
+from loguru import logger
+
 from yuubot.core.context import ContextManager
 from yuubot.core.models import (
+    AtSegment,
     ForwardSegment,
     ImageSegment,
+    Message,
     MessageEvent,
     MessageRecord,
     segments_to_plain,
@@ -22,10 +27,15 @@ class Store:
         ctx_mgr: ContextManager,
         downloader: MediaDownloader,
         forward_resolver: ForwardResolver | None = None,
+        bot_qq: int = 0,
+        napcat_http: str = "",
     ) -> None:
         self.ctx_mgr = ctx_mgr
         self.downloader = downloader
         self.forward_resolver = forward_resolver
+        self._bot_qq_str = str(bot_qq) if bot_qq else ""
+        self._napcat_http = napcat_http.rstrip("/") if napcat_http else ""
+        self._bot_name: str = ""
 
     async def save(self, event: MessageEvent) -> tuple[int, list[str], list[dict]]:
         """Parse and persist a message event.
@@ -33,8 +43,11 @@ class Store:
         Returns (ctx_id, media_local_paths, forward_logs) — one local path per image
         segment, in order, so the caller can enrich the raw event.
         """
+        if not self._bot_name and self._napcat_http:
+            await self._try_fetch_bot_name()
         ctx_id = await self.ctx_mgr.get_or_create(event.ctx_type, event.target_id)
         segments = parse_segments(event.message)
+        self._enrich_bot_at(segments)
 
         # Download media files
         media_files: list[str] = []
@@ -78,3 +91,24 @@ class Store:
             media_files=media_files,
         )
         return ctx_id, media_files, forward_logs
+
+    async def _try_fetch_bot_name(self) -> None:
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                r = await client.get(f"{self._napcat_http}/get_login_info")
+                data = r.json().get("data", r.json())
+                if isinstance(data, dict):
+                    nickname = data.get("nickname", "")
+                    if nickname:
+                        self._bot_name = nickname
+                        logger.info("Recorder: bot name fetched: {}", nickname)
+        except Exception:
+            pass
+
+    def _enrich_bot_at(self, segments: Message) -> None:
+        if not self._bot_qq_str or not self._bot_name:
+            return
+        for seg in segments:
+            if isinstance(seg, AtSegment) and seg.qq == self._bot_qq_str:
+                if not seg.name or seg.name == self._bot_qq_str:
+                    seg.name = self._bot_name

@@ -4,7 +4,7 @@ Wire-format models use msgspec.Struct.
 Database models use tortoise.Model.
 """
 
-from enum import IntEnum
+import html as _html
 from typing import Literal
 
 import json as _json
@@ -29,10 +29,12 @@ class ImageSegment(msgspec.Struct, tag="image"):
 
 class AtSegment(msgspec.Struct, tag="at"):
     qq: str
+    name: str = ""
 
 
 class ReplySegment(msgspec.Struct, tag="reply"):
     id: str
+    content: str = ""
 
 
 class ForwardSegment(msgspec.Struct, tag="forward"):
@@ -99,11 +101,11 @@ def segments_to_plain(segments: Message) -> str:
         if isinstance(seg, TextSegment):
             parts.append(seg.text)
         elif isinstance(seg, AtSegment):
-            parts.append(f"@{seg.qq}")
+            parts.append(f"@{seg.name or seg.qq}")
         elif isinstance(seg, ImageSegment):
             parts.append("[图片]")
         elif isinstance(seg, ReplySegment):
-            parts.append(f"[回复:{seg.id}]")
+            parts.append(f"[引用:{seg.id} {seg.content}]" if seg.content else f"[引用:{seg.id}]")
         elif isinstance(seg, ForwardSegment):
             summary = f":{seg.summary}" if seg.summary else ""
             parts.append(f"[合并转发:{seg.id}{summary}]")
@@ -115,6 +117,99 @@ def segments_to_plain(segments: Message) -> str:
         elif isinstance(seg, ReactSegment):
             parts.append(f"[表情回应:{seg.emoji_id} -> 消息{seg.message_id}]")
     return "".join(parts)
+
+
+def _image_content_text(seg: ImageSegment) -> str:
+    ref = seg.local_path or seg.url or seg.file
+    return f"[图片:{ref}]" if ref else "[图片]"
+
+
+def _img_src(seg: ImageSegment) -> str:
+    if seg.local_path:
+        return f"file://{seg.local_path}"
+    if seg.file.startswith("/") or seg.file.startswith("file://"):
+        return seg.file if seg.file.startswith("file://") else f"file://{seg.file}"
+    return seg.url or seg.file
+
+
+def segments_to_xml_body(segments: Message) -> str:
+    """Render message segments as XML body text.
+
+    Text is XML-escaped. Images become ``<img src="file:///...">`` (local path
+    preferred) or ``<img src="https://...">`` when only a CDN URL is available.
+    Other segment types render as inline text, matching segments_to_plain().
+    """
+    parts: list[str] = []
+    for seg in segments:
+        if isinstance(seg, TextSegment):
+            parts.append(_html.escape(seg.text))
+        elif isinstance(seg, ImageSegment):
+            src = _img_src(seg)
+            parts.append(f'<img src="{_html.escape(src, quote=True)}">' if src else "[图片]")
+        elif isinstance(seg, AtSegment):
+            parts.append(f"@{seg.name or seg.qq}")
+        elif isinstance(seg, ReplySegment):
+            if seg.content:
+                parts.append(f'<quote message_id="{_html.escape(seg.id, quote=True)}">{_html.escape(seg.content)}</quote>')
+            else:
+                parts.append(f"[引用:{seg.id}]")
+        elif isinstance(seg, ForwardSegment):
+            summary = f":{seg.summary}" if seg.summary else ""
+            parts.append(f"[合并转发:{seg.id}{summary}]")
+        elif isinstance(seg, JsonSegment):
+            parts.append(_json_card_plain(seg.data))
+        elif isinstance(seg, PokeSegment):
+            suffix = f" {seg.suffix}" if seg.suffix else ""
+            parts.append(f"[{seg.sender_qq} {seg.action} {seg.target_qq}{suffix}]")
+        elif isinstance(seg, ReactSegment):
+            parts.append(f"[表情回应:{seg.emoji_id} -> 消息{seg.message_id}]")
+    return "".join(parts)
+
+
+def segments_to_content(segments: Message, *, include_images: bool = True) -> list:
+    """Convert message segments to a yuullm Content list (multimodal content items).
+
+    ImageSegments with a URL become ImageItems when include_images is true.
+    Otherwise they fall back to text with a media reference so text-only models
+    can still ask a vision helper to inspect the image.
+    All other non-text segments are rendered as inline text, matching segments_to_plain().
+    """
+    import yuullm
+
+    result: list = []
+    text_buf: list[str] = []
+
+    def flush() -> None:
+        if text_buf:
+            result.append(yuullm.TextItem(type="text", text="".join(text_buf)))
+            text_buf.clear()
+
+    for seg in segments:
+        if isinstance(seg, TextSegment):
+            text_buf.append(seg.text)
+        elif isinstance(seg, ImageSegment):
+            if include_images and seg.url:
+                flush()
+                result.append(yuullm.ImageItem(type="image_url", image_url={"url": seg.url}))
+            else:
+                text_buf.append(_image_content_text(seg))
+        elif isinstance(seg, AtSegment):
+            text_buf.append(f"@{seg.name or seg.qq}")
+        elif isinstance(seg, ReplySegment):
+            text_buf.append(f"[引用:{seg.id} {seg.content}]" if seg.content else f"[引用:{seg.id}]")
+        elif isinstance(seg, ForwardSegment):
+            summary = f":{seg.summary}" if seg.summary else ""
+            text_buf.append(f"[合并转发:{seg.id}{summary}]")
+        elif isinstance(seg, JsonSegment):
+            text_buf.append(_json_card_plain(seg.data))
+        elif isinstance(seg, PokeSegment):
+            suffix = f" {seg.suffix}" if seg.suffix else ""
+            text_buf.append(f"[{seg.sender_qq} {seg.action} {seg.target_qq}{suffix}]")
+        elif isinstance(seg, ReactSegment):
+            text_buf.append(f"[表情回应:{seg.emoji_id} -> 消息{seg.message_id}]")
+
+    flush()
+    return result
 
 
 def segments_to_json(segments: Message) -> str:
@@ -185,16 +280,6 @@ class CtxInfo(msgspec.Struct):
     ctx_id: int
     type: str  # 'private' | 'group'
     target_id: int
-
-
-# ── Role ─────────────────────────────────────────────────────────
-
-
-class Role(IntEnum):
-    DENY = 0
-    FOLK = 1
-    MOD = 2
-    MASTER = 3
 
 
 # ── Tortoise ORM Models ─────────────────────────────────────────
@@ -285,21 +370,9 @@ class MemoryRecallTerm(Model):
         unique_together = (("memory", "term"),)
 
 
-class RoleRecord(Model):
-    id = fields.IntField(primary_key=True)
-    user_id = fields.BigIntField()
-    role = fields.IntField()
-    scope = fields.CharField(max_length=32)
-
-    class Meta:
-        table = "roles"
-        unique_together = (("user_id", "scope"),)
-
-
 class GroupSetting(Model):
     group_id = fields.BigIntField(primary_key=True)
     bot_enabled = fields.BooleanField(default=True)
-    response_mode = fields.CharField(max_length=16, default="at")
     updated_at = fields.DatetimeField(auto_now=True)
 
     class Meta:
@@ -362,15 +435,6 @@ class ScheduledTask(Model):
 
     class Meta:
         table = "scheduled_tasks"
-
-
-class AutoModeSetting(Model):
-    """Persisted auto-mode state: which ctx has auto mode on, and which agent is selected."""
-    ctx_id = fields.IntField(primary_key=True)
-    current_agent = fields.CharField(max_length=64, default="")
-
-    class Meta:
-        table = "auto_mode"
 
 
 class UserAlias(Model):

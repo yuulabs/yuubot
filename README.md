@@ -225,6 +225,21 @@ git pull && uv sync
 ybot down && ybot up
 ```
 
+Docker 源码部署时，在 `config.yaml` 固定部署目录：
+
+```yaml
+docker:
+  deploy_dir: "~/.local/share/yuubot-docker"
+  source_root: "~/.local/share/yuubot-kit"
+```
+
+更新当前源码并只替换 yuubot 容器（不重启 NapCat，不删除数据卷）：
+
+```bash
+git pull
+ybot docker update
+```
+
 ---
 
 遇到问题或有功能建议：https://github.com/yuulabs/yuubot/issues

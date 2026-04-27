@@ -13,34 +13,26 @@ class MediaPathError(ValueError):
 
 @dataclass(frozen=True)
 class MediaPathContext:
-    docker_host_mount: str
-    host_home_dir: str
-    container_home_dir: str
-
-    @property
-    def in_docker(self) -> bool:
-        return bool(self.docker_host_mount)
+    workspace_root: str = ""
+    deployment_mode: str = ""
 
     @classmethod
     def from_env(cls) -> "MediaPathContext":
         return cls(
-            docker_host_mount=env.get(env.DOCKER_HOST_MOUNT),
-            host_home_dir=env.get(env.DOCKER_HOME_HOST_DIR),
-            container_home_dir=env.get(env.DOCKER_HOME_DIR),
+            workspace_root=env.get(env.WORKSPACE_ROOT),
+            deployment_mode=env.get(env.DEPLOYMENT_MODE),
         )
 
     @classmethod
     def from_values(
         cls,
         *,
-        docker_host_mount: str = "",
-        host_home_dir: str = "",
-        container_home_dir: str = "",
+        workspace_root: str = "",
+        deployment_mode: str = "",
     ) -> "MediaPathContext":
         return cls(
-            docker_host_mount=docker_host_mount,
-            host_home_dir=host_home_dir,
-            container_home_dir=container_home_dir,
+            workspace_root=workspace_root,
+            deployment_mode=deployment_mode,
         )
 
 
@@ -57,40 +49,17 @@ def to_file_uri(path: str) -> str:
 
 
 def host_to_runtime(path: str, *, ctx: MediaPathContext | None = None) -> str:
-    """Project a host path into the agent-visible runtime path."""
-    ctx = ctx or MediaPathContext.from_env()
+    """Return the real runtime-visible path in the active deployment."""
+    del ctx
     raw = strip_file_uri(path)
-    if not raw or not raw.startswith("/"):
-        return raw
-    if not ctx.in_docker:
-        return raw
-    if raw.startswith(ctx.docker_host_mount.rstrip("/") + "/") or raw == ctx.docker_host_mount:
-        return raw
-    return f"{ctx.docker_host_mount.rstrip('/')}{raw}"
+    return raw
 
 
 def runtime_to_host(path: str, *, ctx: MediaPathContext | None = None) -> str:
-    """Convert an agent-visible path back to a host path."""
-    ctx = ctx or MediaPathContext.from_env()
+    """Normalize an agent-visible path to the local runtime filesystem."""
+    del ctx
     raw = strip_file_uri(path)
-    if not raw or not raw.startswith("/"):
-        return raw
-
-    mount = ctx.docker_host_mount.rstrip("/")
-    if mount and (raw == mount or raw.startswith(mount + "/")):
-        suffix = raw[len(mount):]
-        return suffix or "/"
-
-    if not ctx.in_docker:
-        return raw
-
-    container_home = ctx.container_home_dir.rstrip("/")
-    host_home = ctx.host_home_dir.rstrip("/")
-    if container_home and host_home and (raw == container_home or raw.startswith(container_home + "/")):
-        suffix = raw[len(container_home):]
-        return f"{host_home}{suffix}"
-
-    raise MediaPathError("无法发送该图片：路径不在共享目录 ~/ 下。请先将图片保存到 ~/ 下再发送。")
+    return raw
 
 
 def input_to_host(path_or_uri: str, *, ctx: MediaPathContext | None = None) -> str:

@@ -1,7 +1,8 @@
 """OneBot V11 message parsing and construction."""
 
-
+import base64
 import msgspec
+from pathlib import Path
 
 from yuubot.core.models import (
     AtSegment,
@@ -48,7 +49,7 @@ def parse_segments(raw_segments: list[dict]) -> Message:
                 local_path=data.get("local_path", ""),
             ))
         elif t == "at":
-            result.append(AtSegment(qq=str(data.get("qq", ""))))
+            result.append(AtSegment(qq=str(data.get("qq", "")), name=str(data.get("name", "") or "")))
         elif t == "reply":
             result.append(ReplySegment(id=str(data.get("id", ""))))
         elif t in {"forward", "node"} and data.get("id"):
@@ -80,7 +81,12 @@ def segments_to_onebot(segments: Message) -> list[dict]:
             if seg.url:
                 d["url"] = seg.url
             if seg.file:
-                d["file"] = seg.file
+                file_ref = seg.file
+                if file_ref.startswith("file:///"):
+                    local = Path(file_ref[7:])  # strip "file://"
+                    if local.is_file():
+                        file_ref = "base64://" + base64.b64encode(local.read_bytes()).decode()
+                d["file"] = file_ref
             result.append({"type": "image", "data": d})
         elif isinstance(seg, AtSegment):
             result.append({"type": "at", "data": {"qq": seg.qq}})

@@ -54,6 +54,7 @@ class DaemonConfig(msgspec.Struct):
     recorder_api: str = "http://127.0.0.1:8767"
     api: DaemonApiConfig = msgspec.field(default_factory=DaemonApiConfig)
     agent_timeout: float = 300.0
+    self_url: str = "http://127.0.0.1:8780"
 
 
 class DatabaseConfig(msgspec.Struct):
@@ -96,11 +97,27 @@ class NetworkConfig(msgspec.Struct):
 
 
 class SessionConfig(msgspec.Struct):
-    ttl: int = 300  # seconds before session expires
+    ttl: int = 300          # seconds before group session expires
+    master_ttl: int = 3600  # seconds before master session expires
     max_tokens: int = 60000  # context window token limit
     summarize_steps_span: int = (
         8  # steps to look back when generating compression summary
     )
+
+
+class DockerConfig(msgspec.Struct):
+    deploy_dir: str = "~/.local/share/yuubot-docker"
+    source_root: str = ""
+    health_timeout: int = 60
+    traces_ui_port: int = 8782
+
+
+class AdminConfig(msgspec.Struct):
+    host: str = "0.0.0.0"
+    port: int = 8781
+    enabled: bool = True
+    persistent_paths: list[str] = msgspec.field(default_factory=list)
+    persist_base: str = ""  # defaults to "data/yuubot/persist" at runtime
 
 
 class Config(msgspec.Struct):
@@ -108,12 +125,14 @@ class Config(msgspec.Struct):
     recorder: RecorderConfig = msgspec.field(default_factory=RecorderConfig)
     daemon: DaemonConfig = msgspec.field(default_factory=DaemonConfig)
     database: DatabaseConfig = msgspec.field(default_factory=DatabaseConfig)
+    timezone: str = "Asia/Shanghai"
     log_dir: str = "~/.yuubot/logs"
     yuuagents: dict[str, Any] = msgspec.field(default_factory=dict)
     provider_priorities: dict[str, int] = msgspec.field(default_factory=dict)
     provider_affinity: dict[str, dict[str, int]] = msgspec.field(default_factory=dict)
     llm_roles: dict[str, str] = msgspec.field(default_factory=dict)
     agent_llm_refs: dict[str, str] = msgspec.field(default_factory=dict)
+    capabilities: dict[str, Any] = msgspec.field(default_factory=dict)
     families: dict[str, Any] = msgspec.field(default_factory=dict)
     selectors: list[str] = msgspec.field(default_factory=list)
     api_keys: dict[str, str] = msgspec.field(default_factory=dict)
@@ -124,57 +143,8 @@ class Config(msgspec.Struct):
     network: NetworkConfig = msgspec.field(default_factory=NetworkConfig)
     schedule: ScheduleConfig = msgspec.field(default_factory=ScheduleConfig)
     session: SessionConfig = msgspec.field(default_factory=SessionConfig)
-
-    def agent_min_role(self, agent_name: str):
-        """Return the minimum Role required to invoke the given agent."""
-        from yuubot.core.models import Role
-
-        _role_map = {
-            "master": Role.MASTER,
-            "mod": Role.MOD,
-            "folk": Role.FOLK,
-            "deny": Role.DENY,
-        }
-
-        from yuubot.characters import CHARACTER_REGISTRY
-
-        char = CHARACTER_REGISTRY.get(agent_name)
-        if char is not None:
-            return _role_map.get(char.min_role.lower(), Role.FOLK)
-        return Role.FOLK
-
-    def validate_agent_permissions(self) -> None:
-        """Ensure parent min_role >= every subagent's min_role."""
-        from yuubot.characters import CHARACTER_REGISTRY
-
-        for name, char in CHARACTER_REGISTRY.items():
-            parent_role = self.agent_min_role(name)
-            for sub_name in char.spec.subagents:
-                sub_role = self.agent_min_role(sub_name)
-                if parent_role < sub_role:
-                    raise ValueError(
-                        f"Privilege escalation: agent {name!r} (min_role={parent_role.name}) "
-                        f"can delegate to {sub_name!r} (min_role={sub_role.name}). "
-                        f"Parent min_role must be >= subagent min_role."
-                    )
-
-    def validate_subagent_tools(self) -> None:
-        """Ensure agents with subagents have delegate tool configured."""
-        from yuubot.characters import CHARACTER_REGISTRY
-
-        for name, char in CHARACTER_REGISTRY.items():
-            if char.spec.subagents and "delegate" not in char.spec.tools:
-                raise ValueError(
-                    f"Agent {name!r} has subagents {char.spec.subagents!r} but 'delegate' "
-                    f"tool is not configured. Add 'delegate' to tools list."
-                )
-
-    @property
-    def persona(self) -> str:
-        from yuubot.characters import get_character
-
-        char = get_character("main")
-        return char.resolve_persona()
+    docker: DockerConfig = msgspec.field(default_factory=DockerConfig)
+    admin: AdminConfig = msgspec.field(default_factory=AdminConfig)
 
     @property
     def skill_paths(self) -> list[str]:
@@ -189,33 +159,17 @@ class Config(msgspec.Struct):
         if ref:
             return ref
 
-        from yuubot.characters import CHARACTER_REGISTRY
-
-        char = CHARACTER_REGISTRY.get(agent_name)
-        if char is not None:
-            llm_ref = str(getattr(char, "llm_ref", "") or "").strip()
-            if llm_ref:
-                return llm_ref
-            provider = str(getattr(char, "provider", "") or "").strip()
-            model = str(getattr(char, "model", "") or "").strip()
-            if provider and model:
-                return f"{provider}/{model}"
-
         agents_obj = self.yuuagents.get("agents")
         agents = agents_obj if isinstance(agents_obj, dict) else {}
-        agent_cfg = agents.get(agent_name, agents.get("main", {}))
+        agent_cfg = agents.get(agent_name, agents.get("yuu", {}))
         if isinstance(agent_cfg, dict):
             provider = str(agent_cfg.get("provider", "") or "").strip()
             model = str(agent_cfg.get("model", "") or "").strip()
             if provider and model:
                 return f"{provider}/{model}"
-        if agent_name != "main":
-            return self.agent_llm_ref("main")
+        if agent_name != "yuu":
+            return self.agent_llm_ref("yuu")
         raise ValueError(f"agent {agent_name!r} has no llm ref configured")
-
-    def build_yuuagents_config(self) -> dict[str, Any]:
-        return build_yuuagents_config(self)
-
 
 # ── Loading Logic ────────────────────────────────────────────────
 
@@ -254,12 +208,16 @@ def _walk_expand_paths(obj: Any, path_keys: set[str] | None = None) -> Any:
         "download_dir",
         "media_dir",
         "log_dir",
+        "deploy_dir",
+        "source_root",
+        "db_path",
+        "workspace_root",
     }
     if isinstance(obj, dict):
         return {
             k: (
                 _expand_path(v)
-                if k in _path_keys and isinstance(v, str)
+                if k in _path_keys and isinstance(v, str) and v
                 else _walk_expand_paths(v, _path_keys)
             )
             for k, v in obj.items()
@@ -269,11 +227,11 @@ def _walk_expand_paths(obj: Any, path_keys: set[str] | None = None) -> Any:
     return obj
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+def deep_merge(base: dict, override: dict) -> dict:
     result = deepcopy(base)
     for k, v in override.items():
         if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = _deep_merge(result[k], v)
+            result[k] = deep_merge(result[k], v)
         else:
             result[k] = deepcopy(v)
     return result
@@ -338,18 +296,6 @@ def _strip_provider_model_catalogs(raw_yuuagents: dict[str, Any]) -> dict[str, i
     return removed
 
 
-def _split_llm_ref(ref: str) -> tuple[str, str]:
-    ref = ref.strip()
-    if "/" not in ref:
-        raise ValueError(f"invalid llm ref: {ref!r}")
-    provider, model = ref.split("/", 1)
-    provider = provider.strip()
-    model = model.strip()
-    if not provider or not model:
-        raise ValueError(f"invalid llm ref: {ref!r}")
-    return provider, model
-
-
 def load_config(path: str | None = None) -> Config:
     """Load, resolve env vars, expand paths, and return Config."""
     config_path = _find_config(path)
@@ -363,7 +309,7 @@ def load_config(path: str | None = None) -> Config:
         llm_raw = yaml.safe_load(llm_path.read_text(encoding="utf-8")) or {}
         if isinstance(llm_raw, dict):
             raw = llm_raw
-    raw = _deep_merge(raw, yaml.safe_load(config_path.read_text()) or {})
+    raw = deep_merge(raw, yaml.safe_load(config_path.read_text()) or {})
     raw_yuuagents = raw.get("yuuagents") or {}
     if raw_yuuagents and not isinstance(raw_yuuagents, dict):
         raise TypeError("config.yaml key 'yuuagents' must be a mapping if present")
@@ -384,41 +330,4 @@ def load_config(path: str | None = None) -> Config:
     raw = _walk_resolve(raw)
     raw = _walk_expand_paths(raw)
     cfg = msgspec.convert(raw, Config)
-    cfg.yuuagents = build_yuuagents_config(cfg)
-    cfg.validate_agent_permissions()
-    cfg.validate_subagent_tools()
     return cfg
-
-
-def build_yuuagents_config(cfg: Config) -> dict[str, Any]:
-    """Build the yuuagents-compatible config payload from yuubot config."""
-    payload = deepcopy(cfg.yuuagents)
-    _strip_provider_model_catalogs(payload)
-    from yuubot.characters import CHARACTER_REGISTRY
-
-    payload["agents"] = {
-        name: {
-            "description": char.description,
-            "provider": provider,
-            "model": model,
-            "persona": char.resolve_persona(),
-            "subagents": list(char.spec.subagents),
-            "tools": list(char.spec.tools),
-        }
-        for name, char in CHARACTER_REGISTRY.items()
-        for provider, model in [_split_llm_ref(cfg.agent_llm_ref(name))]
-    }
-    return payload
-
-
-def write_yagents_config(cfg: Config, path: Path | None = None) -> Path:
-    """Write the generated yuuagents config to the installed runtime location."""
-    target = path or (Path.home() / ".yagents" / "config.yaml")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        yaml.safe_dump(
-            cfg.build_yuuagents_config(), allow_unicode=True, sort_keys=False
-        ),
-        encoding="utf-8",
-    )
-    return target

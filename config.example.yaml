@@ -9,6 +9,8 @@ bot:
     - "/y"
     - "/yuu"
 
+timezone: "Asia/Shanghai"
+
 recorder:
   napcat_ws:
     host: "0.0.0.0"
@@ -32,6 +34,14 @@ daemon:
 database:
   path: "~/.yuubot/yuubot.db"
 
+docker:
+  # ybot docker init/install/up/down/update 默认读取这里。
+  deploy_dir: "~/.local/share/yuubot-docker"
+  # 源码根目录；留空时自动使用当前 ybot 所在的 monorepo 根目录。
+  source_root: ""
+  health_timeout: 60
+  traces_ui_port: 8782
+
 # LLM provider config (families, providers, roles, priorities, agent refs)
 # lives in llm.yaml — see llm.example.yaml.
 
@@ -42,7 +52,7 @@ yuuagents:
     url: "sqlite+aiosqlite:///~/.yagents/tasks.sqlite3"
   yuutrace:
     db_path: "~/.yagents/traces.db"
-    ui_port: 8080
+    ui_port: 8081
     server_port: 4318
   docker:
     image: "yuuagents-runtime:latest"
@@ -82,6 +92,7 @@ network:
 
 # Session: multi-turn conversation settings.
 session:
-  ttl: 300            # seconds before session expires (default 5 min)
+  ttl: 300            # seconds before group session expires (default 5 min)
+  master_ttl: 3600    # seconds before master session expires (default 1 h)
   max_tokens: 60000   # single-turn token threshold for context rollover
   summarize_steps_span: 8

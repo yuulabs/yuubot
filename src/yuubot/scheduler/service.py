@@ -25,14 +25,14 @@ from yuubot.scheduler.core import (
 _DB_PREFIX = "dbtask-"
 
 
-class _AgentRunner(Protocol):
+class _ScheduledAgentDispatcher(Protocol):
     async def run_scheduled(
-        self, task: str, ctx_id: int | None, *, agent_name: str = "main",
+        self, task: str, ctx_id: int | None, *, agent_name: str = "yuu",
     ) -> None: ...
 
 
 class Scheduler:
-    def __init__(self, config: Config, agent_runner: _AgentRunner) -> None:
+    def __init__(self, config: Config, agent_runner: _ScheduledAgentDispatcher) -> None:
         self.config = config
         self.agent_runner = agent_runner
         self._entries: dict[str, ScheduleEntry] = {}

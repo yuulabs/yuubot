@@ -71,17 +71,17 @@ class _StreamItemStats:
 class TracedLLMClient:
     """Wrap a yuullm-compatible client and emit request lifecycle logs."""
 
-    client: Any
+    client: yuullm.YLLMClient
     trace: LLMTraceContext
     _call_seq: int = 0
 
     @property
     def default_model(self) -> str:
-        return str(getattr(self.client, "default_model", "") or "")
+        return self.client.default_model or ""
 
     @property
-    def provider(self) -> Any:
-        return getattr(self.client, "provider", None)
+    def provider(self) -> yuullm.Provider | None:
+        return self.client.provider
 
     async def list_models(self) -> list[yuullm.ProviderModel]:
         return await self.client.list_models()
@@ -215,7 +215,7 @@ class TracedLLMClient:
                     stream_stats.tool_calls,
                     stream_stats.ticks,
                     _format_usage(usage),
-                    (getattr(usage, "request_id", None) or raw_stats.request_id or "-"),
+                    (usage.request_id if usage else None) or raw_stats.request_id or "-",
                 )
                 if status == "completed" and stream_stats.response_items == 0 and stream_stats.tool_calls == 0:
                     logger.warning(
@@ -240,21 +240,25 @@ class TracedLLMClient:
         return getattr(self.client, name)
 
 
-def wrap_llm_client(client: Any, *, trace: LLMTraceContext) -> Any:
+def wrap_llm_client(client: yuullm.YLLMClient, *, trace: LLMTraceContext) -> TracedLLMClient:
     if isinstance(client, TracedLLMClient):
         return client
     return TracedLLMClient(client=client, trace=trace)
 
 
-def _provider_name(provider: Any) -> str:
-    value = getattr(provider, "provider", None)
+def _provider_name(provider: yuullm.Provider | None) -> str:
+    if provider is None:
+        return "unknown"
+    value = provider.provider
     if isinstance(value, str) and value:
         return value
-    return type(provider).__name__ if provider is not None else "unknown"
+    return type(provider).__name__
 
 
-def _provider_api_type(provider: Any) -> str:
-    value = getattr(provider, "api_type", None)
+def _provider_api_type(provider: yuullm.Provider | None) -> str:
+    if provider is None:
+        return "unknown"
+    value = provider.api_type
     if isinstance(value, str) and value:
         return value
     return "unknown"
@@ -304,16 +308,18 @@ def _finish_reasons_text(finish_reasons: list[str]) -> str:
     return ",".join(finish_reasons) if finish_reasons else "-"
 
 
-def _item_text(item: Any) -> str:
+def _item_text(item: yuullm.ContentItem) -> str:
     if isinstance(item, dict) and item.get("type") == "text":
         return str(item.get("text", ""))
+    if isinstance(item, yuullm.TextItem):
+        return item.text
     return ""
 
 
 def _summarize_message_roles(messages: list[yuullm.Message], *, limit: int = 4) -> str:
     if not messages:
         return "empty"
-    roles = [message[0] for message in messages[-limit:]]
+    roles = [message.role for message in messages[-limit:]]
     summary = ",".join(roles)
     if len(messages) > limit:
         return f"+{len(messages) - limit},{summary}"
@@ -323,23 +329,21 @@ def _summarize_message_roles(messages: list[yuullm.Message], *, limit: int = 4) 
 def _history_ends_with_tool_result(messages: list[yuullm.Message]) -> bool:
     if not messages:
         return False
-    return messages[-1][0] == "tool"
+    return messages[-1].role == "tool"
 
 
 def _format_usage(usage: yuullm.Usage | None) -> str:
     if usage is None:
         return "none"
     parts = [
-        f"in={int(getattr(usage, 'input_tokens', 0) or 0)}",
-        f"out={int(getattr(usage, 'output_tokens', 0) or 0)}",
-        f"total={int(getattr(usage, 'total_tokens', 0) or 0)}",
+        f"in={usage.input_tokens or 0}",
+        f"out={usage.output_tokens or 0}",
+        f"total={usage.total_tokens or 0}",
     ]
-    cache_read = int(getattr(usage, "cache_read_tokens", 0) or 0)
-    cache_write = int(getattr(usage, "cache_write_tokens", 0) or 0)
-    if cache_read:
-        parts.append(f"cache_read={cache_read}")
-    if cache_write:
-        parts.append(f"cache_write={cache_write}")
+    if usage.cache_read_tokens:
+        parts.append(f"cache_read={usage.cache_read_tokens}")
+    if usage.cache_write_tokens:
+        parts.append(f"cache_write={usage.cache_write_tokens}")
     return " ".join(parts)
 
 

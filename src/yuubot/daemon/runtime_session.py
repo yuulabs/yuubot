@@ -1,103 +1,55 @@
-"""Runtime session wrapper around the simplified yuuagents Agent API."""
+"""Thin yuubot wrapper around a live yuuagents Agent."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from typing import Literal
+import uuid
 
 import attrs
 import yuullm
-from yuuagents.core.flow import Agent, Flow
-from yuuagents.types import AgentStatus
+import yuuagents as ya
 
-if TYPE_CHECKING:
-    from yuuagents.agent import AgentConfig
-    from yuuagents.context import AgentContext
 
-    from yuubot.capabilities import CapabilityContext
+RuntimeSessionStatus = Literal["idle", "running", "closed", "error", "timeout"]
 
 
 @attrs.define
 class RuntimeSession:
-    """Small compatibility layer for yuubot's conversation/runtime logic."""
-
-    task_id: str
-    runtime_id: str
+    agent: ya.Agent
+    conversation_id: str
     agent_name: str
-    agent: Agent
-    capability_context: CapabilityContext | None = None
+    supports_vision: bool = False
+    task_id: str = attrs.field(factory=lambda: uuid.uuid4().hex[:12])
+    status: RuntimeSessionStatus = "idle"
+    final_text: str = ""
+    total_tokens: int = 0
+    last_usage: yuullm.Usage | None = None
+    snapshot: ya.AgentSnapshot | None = None
     stop_reason: str = "natural"
-    status: AgentStatus = AgentStatus.RUNNING
-
-    @property
-    def agent_id(self) -> str:
-        return self.runtime_id
-
-    @property
-    def config(self) -> AgentConfig:
-        return self.agent.config
-
-    @property
-    def context(self) -> AgentContext:
-        return self.agent.ctx
-
-    @property
-    def flow(self) -> Flow[Any, Any]:
-        return self.agent.flow
+    steps: list[ya.AgentStep] = attrs.field(factory=list)
 
     @property
     def history(self) -> list[yuullm.Message]:
-        return list(self.agent.messages)
+        return list(self.agent.history)
 
     @property
-    def total_tokens(self) -> int:
-        return self.agent.total_tokens
+    def closed(self) -> bool:
+        return self.agent.closed
 
-    @property
-    def last_usage(self) -> yuullm.Usage | None:
-        return self.agent.last_usage
+    async def close(self) -> None:
+        self.status = "closed"
+        await self.agent.close()
 
-    @property
-    def conversation_id(self) -> UUID:
-        return self.agent.conversation_id_value
-
-    def send(
-        self,
-        content: str | yuullm.Item | list[yuullm.Item] | yuullm.Message,
-        *,
-        defer_tools: bool = False,
-    ) -> None:
-        self.agent.send(content, defer_tools=defer_tools)
-
-    def cancel(self) -> None:
-        self.agent.flow.cancel()
-
-    async def kill(self) -> None:
-        await self.agent.kill()
-
-    async def wait(self) -> None:
-        await self.agent.flow.wait()
-
-    def find_flow(self, flow_id: str) -> Flow[Any, Any] | None:
-        return self.agent.flow.find(flow_id)
-
-    def has_tool_call(
-        self,
-        name: str,
-        *,
-        argument_contains: str | None = None,
-    ) -> bool:
-        for role, items in self.agent.messages:
-            if role != "assistant":
-                continue
-            for item in items:
-                if item.get("type") != "tool_call":
-                    continue
-                if item.get("name") != name:
-                    continue
-                if argument_contains is None:
-                    return True
-                arguments = item.get("arguments", "")
-                if isinstance(arguments, str) and argument_contains in arguments:
-                    return True
-        return False
+    def update_usage(self, usage: yuullm.Usage | None) -> None:
+        if usage is None:
+            return
+        self.last_usage = usage
+        if usage.total_tokens is not None:
+            self.total_tokens = int(usage.total_tokens)
+        else:
+            self.total_tokens += (
+                int(usage.input_tokens or 0)
+                + int(usage.cache_read_tokens or 0)
+                + int(usage.cache_write_tokens or 0)
+                + int(usage.output_tokens or 0)
+            )

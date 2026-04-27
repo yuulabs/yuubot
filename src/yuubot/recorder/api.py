@@ -18,7 +18,7 @@ from yuubot.core.onebot import parse_segments
 from loguru import logger
 
 
-async def _log_bot_msg(body: dict, resp: dict, ctx_mgr: ContextManager, bot_qq: int) -> None:
+async def _log_bot_msg(body: dict, resp: dict, ctx_mgr: ContextManager, bot_qq: int, bot_name: str = "bot") -> None:
     """Log the bot's own sent message into the message store."""
     try:
         msg_type = body.get("message_type", "private")
@@ -34,8 +34,8 @@ async def _log_bot_msg(body: dict, resp: dict, ctx_mgr: ContextManager, bot_qq: 
             message_id=message_id,
             ctx_id=ctx_id,
             user_id=bot_qq,
-            nickname="bot",
-            display_name="bot",
+            nickname=bot_name,
+            display_name=bot_name,
             content=plain,
             raw_message=raw_json,
             timestamp=datetime.now(tz=timezone.utc),
@@ -52,6 +52,7 @@ async def _log_bot_action(
     bot_qq: int,
     segments: list,
     message_id: int | None = None,
+    bot_name: str = "bot",
 ) -> None:
     """Log a synthetic bot-side action into the message store."""
     try:
@@ -59,8 +60,8 @@ async def _log_bot_action(
             message_id=message_id,
             ctx_id=ctx_id,
             user_id=bot_qq,
-            nickname="bot",
-            display_name="bot",
+            nickname=bot_name,
+            display_name=bot_name,
             content=segments_to_plain(segments),
             raw_message=segments_to_json(segments),
             timestamp=datetime.now(tz=timezone.utc),
@@ -76,6 +77,7 @@ async def _send_via_pipeline(
     body: dict,
     ctx_mgr: ContextManager,
     bot_qq: int,
+    bot_name: str = "bot",
 ) -> tuple[dict, int]:
     """Send outbound actions, extracting synthetic segments handled by recorder."""
     raw_segments = body.get("message", [])
@@ -93,7 +95,7 @@ async def _send_via_pipeline(
         last_status = r.status_code
         last_data = r.json()
         if r.status_code == 200:
-            await _log_bot_msg(normal_body, last_data, ctx_mgr, bot_qq)
+            await _log_bot_msg(normal_body, last_data, ctx_mgr, bot_qq, bot_name)
         else:
             return last_data, last_status
 
@@ -112,7 +114,7 @@ async def _send_via_pipeline(
         if bot_qq:
             record = await MessageRecord.filter(message_id=react_body["message_id"]).order_by("-id").first()
             if record is not None:
-                record_ctx_id = int(getattr(record, "ctx_id", 0))
+                record_ctx_id = record.ctx_id
                 await _log_bot_action(
                     ctx_id=record_ctx_id,
                     bot_qq=bot_qq,
@@ -120,6 +122,7 @@ async def _send_via_pipeline(
                         message_id=str(react_body["message_id"]),
                         emoji_id=str(react_body["emoji_id"]),
                     )],
+                    bot_name=bot_name,
                 )
 
     return last_data, last_status
@@ -130,9 +133,11 @@ def create_api(
     ctx_mgr: ContextManager,
     shutdown_event,
     bot_qq: int = 0,
+    bot_name: str = "",
     master_qq: int = 0,
     muted_ctxs: set[int] | None = None,
 ) -> FastAPI:
+    _bot_name = bot_name or str(bot_qq) or "bot"
     client = httpx.AsyncClient(base_url=napcat_http, timeout=30)
 
     @asynccontextmanager
@@ -204,13 +209,13 @@ def create_api(
                 )
 
             data, status_code = await _send_via_pipeline(
-                client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq,
+                client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq, bot_name=_bot_name,
             )
             data["remaining"] = remaining
             return JSONResponse(data, status_code=status_code)
 
         data, status_code = await _send_via_pipeline(
-            client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq,
+            client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq, bot_name=_bot_name,
         )
         return JSONResponse(data, status_code=status_code)
 
@@ -254,6 +259,7 @@ def create_api(
                 ctx_id=await ctx_mgr.get_or_create("group", int(gid)),
                 bot_qq=bot_qq,
                 segments=[PokeSegment(sender_qq=str(bot_qq), target_qq=str(body.get("user_id", 0)))],
+                bot_name=_bot_name,
             )
         return JSONResponse(data, status_code=r.status_code)
 
@@ -292,7 +298,7 @@ def create_api(
                     # Send the message via internal send_msg logic (skip rate limit)
                     body = item["body"]
                     data, status_code = await _send_via_pipeline(
-                        client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq,
+                        client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq, bot_name=_bot_name,
                     )
                     data["remaining"] = remaining
                     logger.debug("Guaranteed msg sent: gid={} remaining={}", gid, remaining)
@@ -357,7 +363,7 @@ def create_api(
         # Private messages — send immediately, no queue
         if body.get("message_type") != "group":
             data, status_code = await _send_via_pipeline(
-                client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq,
+                client=client, body=body, ctx_mgr=ctx_mgr, bot_qq=bot_qq, bot_name=_bot_name,
             )
             return JSONResponse(data, status_code=status_code)
 

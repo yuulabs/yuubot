@@ -8,8 +8,25 @@ from tortoise import Tortoise, connections
 from loguru import logger
 
 # ── FTS5 schemas ─────────────────────────────────────────────────
-# Messages FTS uses default tokenizer (mostly ASCII/mixed content).
-FTS_SQL = """
+_MESSAGES_FTS_SIMPLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content,
+    content='messages',
+    content_rowid='id',
+    tokenize='simple'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts(messages_fts, rowid, content)
+    VALUES ('delete', old.id, old.content);
+END;
+"""
+
+_MESSAGES_FTS_DEFAULT = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     content='messages',
@@ -112,9 +129,23 @@ END;
 
 SEED_SQL = "INSERT OR IGNORE INTO memory_config (key, value) VALUES ('forget_days', '90');"
 
+_MODEL_PRICING_SQL = """
+CREATE TABLE IF NOT EXISTS model_pricing (
+    provider    TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value_real  REAL NOT NULL,
+    PRIMARY KEY (provider, model, key)
+);
+"""
+
 # Rebuild FTS index from source table after tokenizer change.
 _REBUILD_MEMORY_FTS = """
 INSERT INTO memories_fts(memories_fts) VALUES ('rebuild');
+"""
+
+_REBUILD_MESSAGES_FTS = """
+INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
 """
 
 # ── Schema migrations ────────────────────────────────────────────
@@ -236,6 +267,32 @@ async def _migrate_memory_fts(conn, simple_available: bool) -> None:
     _fts_rebuilt = True
 
 
+async def _migrate_messages_fts(conn, simple_available: bool) -> None:
+    """Drop messages_fts if its tokenizer doesn't match the desired one."""
+    _, rows = await conn.execute_query(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+    )
+    if not rows:
+        return
+
+    current_sql = rows[0][0] if rows[0] else ""
+    has_simple_tokenizer = "simple" in current_sql.lower()
+
+    if simple_available == has_simple_tokenizer:
+        return
+
+    logger.info(
+        "Migrating messages_fts: %s → %s tokenizer",
+        "simple" if has_simple_tokenizer else "default",
+        "simple" if simple_available else "default",
+    )
+    await conn.execute_script(
+        "DROP TRIGGER IF EXISTS messages_ai;"
+        "DROP TRIGGER IF EXISTS messages_ad;"
+        "DROP TABLE IF EXISTS messages_fts;"
+    )
+
+
 async def init_db(db_path: str, *, simple_ext: str = "") -> None:
     """Init Tortoise ORM, create schema, enable WAL, setup FTS5.
 
@@ -272,20 +329,36 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
     # Load simple tokenizer for Chinese FTS5 support
     has = await _load_simple_ext(conn, simple_ext)
     memory_fts_sql = _MEMORY_FTS_SIMPLE if has else _MEMORY_FTS_DEFAULT
+    messages_fts_sql = _MESSAGES_FTS_SIMPLE if has else _MESSAGES_FTS_DEFAULT
 
-    # Migrate memories_fts tokenizer: drop old table if tokenizer changed
+    # Migrate FTS tokenizers: drop old tables if tokenizer changed
     await _migrate_memory_fts(conn, has)
+    await _migrate_messages_fts(conn, has)
 
     images_fts_sql = _IMAGES_FTS_SIMPLE if has else _IMAGES_FTS_DEFAULT
 
-    await conn.execute_script(FTS_SQL)
+    await conn.execute_script(messages_fts_sql)
     await conn.execute_script(memory_fts_sql)
     await conn.execute_script(images_fts_sql)
+    await conn.execute_script(_MODEL_PRICING_SQL)
 
     # Rebuild FTS index if table was just (re)created with new tokenizer
     if _fts_rebuilt:
         logger.info("Rebuilding memories_fts index after tokenizer change")
         await conn.execute_script(_REBUILD_MEMORY_FTS)
+
+    # Rebuild messages_fts if the index is empty but messages exist.
+    # External content FTS5 tables are not auto-populated on creation.
+    _, nrow_rows = await conn.execute_query(
+        "SELECT v FROM messages_fts_config WHERE k = 'nrow'"
+    )
+    nrow = int(nrow_rows[0][0]) if nrow_rows else 0
+    if nrow == 0:
+        _, msg_rows = await conn.execute_query("SELECT COUNT(*) FROM messages LIMIT 1")
+        msg_count = msg_rows[0][0] if msg_rows else 0
+        if msg_count > 0:
+            logger.info("Rebuilding messages_fts index ({} messages unindexed)", msg_count)
+            await conn.execute_script(_REBUILD_MESSAGES_FTS)
 
     await conn.execute_script(SEED_SQL)
 

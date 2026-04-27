@@ -1,11 +1,14 @@
 """Tree-based command matching."""
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import attrs
 
+from yuubot.auth import is_master_user
 from yuubot.core.types import InboundMessage
-from yuubot.core.models import Role
+
+
+CommandScope = Literal["group", "master"]
 
 
 @attrs.define
@@ -30,7 +33,7 @@ class Command:
     prefix: str
     subs: list[Command] = attrs.field(factory=list)
     executor: Callable[[CommandRequest], Awaitable[str | None]] | None = None
-    min_role: Role = Role.FOLK
+    scope: CommandScope = "group"
     help_text: str = ""
     interactive: bool = False  # True → queued in per-ctx worker (e.g. LLM), False → inline
 
@@ -52,16 +55,16 @@ class Command:
             return MatchResult(command=self, command_path=path, remaining=text, entry="")
         return None
 
-    def check_permission(self, role: Role) -> bool:
-        return role >= self.min_role
+    def is_accessible_to(self, message: InboundMessage, master_id: int) -> bool:
+        return self.scope == "group" or is_master_user(message.sender.user_id, master_id)
 
-    def is_visible_to(self, role: Role) -> bool:
-        """Whether this command should be exposed in help output for *role*."""
-        if not self.check_permission(role):
+    def is_visible_to(self, message: InboundMessage, master_id: int) -> bool:
+        """Whether this command should be exposed in help output."""
+        if not self.is_accessible_to(message, master_id):
             return False
         if self.executor is not None:
             return True
-        return any(sub.is_visible_to(role) for sub in self.subs)
+        return any(sub.is_visible_to(message, master_id) for sub in self.subs)
 
     def find(self, route: list[str]) -> Command | None:
         """Walk the tree by route segments, return the target node or None."""
@@ -73,13 +76,17 @@ class Command:
                 return sub.find(route[1:])
         return None
 
-    def help(self, role: Role | None = None) -> str:
+    def help(self, message: InboundMessage | None = None, master_id: int = 0) -> str:
         """Show this command's details + one-level sub-command summaries."""
         lines: list[str] = []
         if self.prefix:
             lines.append(f"[{self.prefix}] {self.help_text}" if self.help_text else f"[{self.prefix}]")
-            lines.append(f"  权限: {self.min_role.name}")
-        visible_subs = self.subs if role is None else [sub for sub in self.subs if sub.is_visible_to(role)]
+            lines.append(f"  范围: {'Master' if self.scope == 'master' else 'Group'}")
+        visible_subs = (
+            self.subs
+            if message is None
+            else [sub for sub in self.subs if sub.is_visible_to(message, master_id)]
+        )
         if visible_subs:
             if lines:
                 lines.append("")

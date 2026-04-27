@@ -1,4 +1,4 @@
-"""Message dispatcher — thin router: ingress → route → execute."""
+"""Message dispatcher — ingress → route → command/agent execution."""
 
 from __future__ import annotations
 
@@ -7,40 +7,21 @@ import time
 from collections.abc import Awaitable, Callable
 
 import httpx
+from loguru import logger
 
-from yuubot.commands.roles import RoleManager
 from yuubot.commands.tree import Command, CommandRequest, RootCommand
 from yuubot.config import Config
-from yuubot.core.models import AtSegment, ReplySegment, segments_to_plain
+from yuubot.core.models import AtSegment, Message, ReplySegment, TextSegment, segments_to_plain
 from yuubot.core.onebot import build_send_msg, to_inbound_message
 from yuubot.core.types import CommandRoute, InboundMessage, Route
-from yuubot.capabilities.im.query import resolve_message_db_id
-from yuubot.daemon.routing import resolve_route
 from yuubot.daemon.conversation import ConversationManager, conversation_worth_curating
-
-from loguru import logger
+from yuubot.daemon.routing import resolve_route
 
 
 def _ctx_key(message: InboundMessage) -> str:
-    """Derive a context key from an inbound message for per-ctx queuing."""
     if message.chat_type == "group":
         return f"group:{message.group_id}"
     return f"private:{message.sender.user_id}"
-
-
-class RoutedCommand:
-    def __init__(
-        self,
-        *,
-        route: Route,
-        message: InboundMessage,
-        command: Command,
-        execute: Callable[[], Awaitable[str | None]],
-    ) -> None:
-        self.route = route
-        self.message = message
-        self.command = command
-        self.execute = execute
 
 
 def _mentions_bot(message: InboundMessage, bot_qq: int) -> bool:
@@ -48,10 +29,10 @@ def _mentions_bot(message: InboundMessage, bot_qq: int) -> bool:
 
 
 def _command_text(message: InboundMessage, bot_qq: int) -> str:
-    """Return message text normalized for command matching."""
     replies = [seg for seg in message.segments if isinstance(seg, ReplySegment)]
     others = [
-        seg for seg in message.segments
+        seg
+        for seg in message.segments
         if not isinstance(seg, ReplySegment)
         and not (isinstance(seg, AtSegment) and seg.qq == str(bot_qq))
     ]
@@ -69,14 +50,27 @@ def _message_preview(message: InboundMessage, max_chars: int = 160) -> str:
     return text[: max_chars - 3].rstrip() + "..."
 
 
-class _CtxWorker:
-    """Per-ctx sequential worker. One context, one agent at a time."""
+class RoutedCommand:
+    def __init__(
+        self,
+        *,
+        route: Route,
+        message: InboundMessage,
+        command: Command,
+        execute: Callable[[], Awaitable[str | None]],
+    ) -> None:
+        self.route = route
+        self.message = message
+        self.command = command
+        self.execute = execute
 
-    def __init__(self, key: str, dispatcher: "Dispatcher") -> None:
+
+class _CtxWorker:
+    def __init__(self, key: str, dispatcher: Dispatcher) -> None:
         self.key = key
         self.dispatcher = dispatcher
-        self.queue: asyncio.Queue = asyncio.Queue()
-        self._task: asyncio.Task | None = None
+        self.queue: asyncio.Queue[RoutedCommand] = asyncio.Queue()
+        self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -91,128 +85,75 @@ class _CtxWorker:
 
     async def _loop(self) -> None:
         while True:
+            routed = await self.queue.get()
             try:
-                first: RoutedCommand = await self.queue.get()
-                # Drain queued items to debounce consecutive continuations
-                batch = [first]
-                while not self.queue.empty():
-                    batch.append(self.queue.get_nowait())
-
-                groups = _group_batch(batch)
-                for group in groups:
-                    item = group[0]
-                    if item.command.interactive and len(group) > 1:
-                        item.message.extra_messages.extend(peer.message for peer in group[1:])
-                    try:
-                        await self.dispatcher._handle(item)
-                    except Exception:
-                        logger.exception("Error handling command in ctx={}", self.key)
-
-                for _ in batch:
-                    self.queue.task_done()
+                await self.dispatcher._wait_until_runnable(routed)
+                await self.dispatcher._handle(routed)
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Worker loop error in ctx={}", self.key)
-
-
-def _group_batch(batch: list[RoutedCommand]) -> list[list[RoutedCommand]]:
-    """Group consecutive items with the same match prefix for debouncing."""
-    groups: list[list[RoutedCommand]] = []
-    current = [batch[0]]
-    for item in batch[1:]:
-        prev = current[0]
-        if (
-            item.command.interactive
-            and prev.command.interactive
-            and item.command.prefix == prev.command.prefix
-        ):
-            current.append(item)
-        else:
-            groups.append(current)
-            current = [item]
-    groups.append(current)
-    return groups
+                logger.exception("Error handling command in ctx={}", self.key)
+            finally:
+                self.queue.task_done()
 
 
 class Dispatcher:
-    """Receives events, matches commands, dispatches to executors or agent."""
-
     def __init__(
         self,
         config: Config,
         root: RootCommand,
-        role_mgr: RoleManager,
         deps: dict,
         agent_runner,
         conv_mgr: ConversationManager | None = None,
     ) -> None:
         self.config = config
         self.root = root
-        self.role_mgr = role_mgr
         self.deps = deps
         self.agent_runner = agent_runner
         self.conv_mgr = conv_mgr or ConversationManager()
         self._workers: dict[str, _CtxWorker] = {}
-        self._group_settings_cache: dict[int, object] = {}  # group_id → GroupSetting
-        self._group_settings_loaded_at: float = 0.0
-        self._group_settings_ttl: float = 60.0  # seconds
+        self._group_settings_cache: dict[int, object] = {}
+        self._group_settings_loaded_at = 0.0
+        self._group_settings_ttl = 60.0
 
     def start(self) -> None:
-        pass  # workers are created lazily on first message per ctx
+        pass
 
     async def stop(self) -> None:
-        for w in list(self._workers.values()):
-            await w.stop()
+        for worker in list(self._workers.values()):
+            await worker.stop()
         self._workers.clear()
 
     async def dispatch(self, event: dict) -> None:
-        """Called by WS client for each incoming event."""
         if event.get("post_type") != "message":
             return
-
-        # Lazily collect expired sessions and trigger curator for substantial ones
         for expired in self.conv_mgr.collect_expired():
             if conversation_worth_curating(expired):
-                asyncio.create_task(self.agent_runner.curate(expired))
+                logger.info("Expired conversation is worth curating; curator is phase-3 behavior")
 
-        user_id = event.get("user_id", 0)
-        group_id = event.get("group_id", 0)
-        msg_type = event.get("message_type", "unknown")
-        ctx_id = event.get("ctx_id", 0)
-
-        logger.debug("event: type={} user={} group={} ctx={}", msg_type, user_id, group_id, ctx_id)
-
-        if user_id == self.config.bot.qq:
+        if event.get("user_id", 0) == self.config.bot.qq:
             return
 
-        # Route the message using pure routing logic
         inbound = to_inbound_message(event)
-        inbound.db_id = await resolve_message_db_id(
-            message_id=inbound.message_id,
-            ctx_id=ctx_id or None,
-            user_id=user_id or None,
-        )
-        if ctx_id and inbound.db_id:
-            self.conv_mgr.observe_message(ctx_id, inbound.db_id)
+        self.conv_mgr.observe_message(inbound.ctx_id, inbound.db_id)
         preview = _message_preview(inbound)
         logger.info(
             "Received: type={} user={} group={} ctx={} text={}",
-            msg_type,
-            user_id,
-            group_id,
-            ctx_id,
+            inbound.chat_type,
+            inbound.sender.user_id,
+            inbound.group_id,
+            inbound.ctx_id,
             preview,
         )
+
         route = resolve_route(
             inbound,
             self.root,
-            is_auto=self.conv_mgr.is_auto,
             bot_qq=self.config.bot.qq,
+            master_id=self.config.bot.master,
         )
         if route is None:
             route = await self._resolve_dynamic_entry_route(inbound)
-
         if route is None:
             return
 
@@ -220,89 +161,59 @@ class Dispatcher:
         if routed is None:
             return
 
-        should_respond = await self._should_respond(inbound)
-        if not should_respond:
+        if not routed.command.is_accessible_to(inbound, self.config.bot.master):
             logger.info(
-                "Message ignored: user={} group={} type={} ctx={} reason=should_respond_false cmd={} text={}",
-                user_id,
-                group_id,
-                msg_type,
-                ctx_id,
+                "Command denied by scope: ctx={} user={} cmd={}",
+                inbound.ctx_id,
+                inbound.sender.user_id,
                 routed.command.prefix,
-                preview,
             )
             return
 
-        scope = str(inbound.group_id or "global")
-        role = await self.role_mgr.get(inbound.sender.user_id, scope)
-        if not routed.command.check_permission(role):
-            logger.info(
-                "Permission denied: user={} group={} type={} ctx={} role={} cmd={} text={}",
-                user_id,
-                group_id,
-                msg_type,
-                ctx_id,
-                role,
-                routed.command.prefix,
-                preview,
-            )
+        if not _bypasses_response_policy(route) and not await self._should_handle_route(route, inbound):
+            logger.info("Message ignored by response policy: ctx={} text={}", inbound.ctx_id, preview)
             return
-
-        logger.info(
-            "Command accepted: user={} group={} type={} ctx={} cmd={} text={}",
-            user_id,
-            group_id,
-            msg_type,
-            ctx_id,
-            routed.command.prefix,
-            preview,
-        )
 
         if routed.command.interactive:
             await self._enqueue_or_pending(routed)
-        else:
-            try:
-                reply = await routed.execute()
-                if reply:
-                    await self._send_reply(inbound, reply)
-            except Exception:
-                logger.exception("Error executing command: {}", routed.command.prefix)
+            return
 
-    async def _resolve_dynamic_entry_route(
-        self,
-        message: InboundMessage,
-    ) -> CommandRoute | None:
+        try:
+            reply = await routed.execute()
+            if reply:
+                await self._send_reply(inbound, reply)
+        except Exception:
+            logger.exception("Error executing command: {}", routed.command.prefix)
+
+    async def _resolve_dynamic_entry_route(self, message: InboundMessage) -> CommandRoute | None:
         entry_mgr = self.deps.get("entry_mgr")
         if entry_mgr is None:
             return None
-
         cmd_text = _command_text(message, self.config.bot.qq)
         if not cmd_text.startswith("/"):
             return None
-
         parts = cmd_text.split(None, 1)
         entry = parts[0]
         remaining = parts[1] if len(parts) > 1 else ""
-        scope = str(message.group_id or "global")
-        route = await entry_mgr.get_route(entry, scope)
+        try:
+            route = await entry_mgr.get_route(entry, str(message.group_id or "global"))
+        except Exception:
+            logger.debug("Dynamic entry mapping unavailable")
+            return None
         if not route:
             return None
-
-        return CommandRoute(
-            command_path=tuple(route.split()),
-            remaining=remaining,
-            entry=entry,
-        )
+        return CommandRoute(command_path=tuple(route.split()), remaining=remaining, entry=entry)
 
     def _build_routed_command(self, route: Route, message: InboundMessage) -> RoutedCommand | None:
         command = self.root.find(list(route.command_path))
         if command is None or command.executor is None:
             return None
+        executor = command.executor
         return RoutedCommand(
             route=route,
             message=message,
             command=command,
-            execute=lambda: command.executor(
+            execute=lambda: executor(
                 CommandRequest(
                     remaining=route.remaining,
                     message=message,
@@ -313,111 +224,104 @@ class Dispatcher:
             ),
         )
 
-    def _enqueue(self, routed: RoutedCommand) -> None:
-        """Put a routed command into the per-ctx worker queue."""
-        key = _ctx_key(routed.message)
-        if key not in self._workers:
-            w = _CtxWorker(key, self)
-            self._workers[key] = w
-            w.start()
-        self._workers[key].queue.put_nowait(routed)
-
     async def _enqueue_or_pending(self, routed: RoutedCommand) -> None:
-        """If conversation is running, enqueue as signal; otherwise enqueue for worker."""
-        ctx_id = routed.message.ctx_id
-        conv = self.conv_mgr.get(ctx_id)
+        conv = self.conv_mgr.get(routed.message.ctx_id)
         if conv is not None and conv.state == "running":
-            active = self.agent_runner.get_active_run(ctx_id)
-            if active is not None:
-                upto_row_id = conv.latest_ctx_row_id or routed.message.db_id
-                rendered = await self.agent_runner.render_signal(
-                    routed.message,
-                    upto_row_id=upto_row_id,
-                )
-                if rendered:
-                    self.agent_runner.enqueue_signal(active.runtime_id, rendered)
             self.conv_mgr.touch(conv)
-            running_since = time.monotonic() - conv.created_at
             logger.info(
-                "Enqueued signal for running conv ctx={} agent={} runtime_id={} running_for={:.0f}s",
-                ctx_id,
-                conv.agent_name,
-                active.runtime_id if active else "?",
-                running_since,
+                "Interactive message queued behind running conversation: ctx={} text={}",
+                routed.message.ctx_id,
+                _message_preview(routed.message),
             )
-            return
-        self._enqueue(routed)
+        key = _ctx_key(routed.message)
+        worker = self._workers.get(key)
+        if worker is None:
+            worker = _CtxWorker(key, self)
+            self._workers[key] = worker
+            worker.start()
+        worker.queue.put_nowait(routed)
+
+    async def _wait_until_runnable(self, routed: RoutedCommand) -> None:
+        while True:
+            ctx_id = routed.message.ctx_id
+            conv = self.conv_mgr.get(ctx_id)
+            active = self.agent_runner.get_active_run(ctx_id)
+            if active is None and (conv is None or conv.state != "running"):
+                return
+            await asyncio.sleep(0.05)
 
     async def _handle(self, routed: RoutedCommand) -> None:
-        """Execute a queued command. Always called from within a _CtxWorker."""
         reply = await routed.execute()
         if reply:
             await self._send_reply(routed.message, reply)
 
     async def _send_reply(self, message: InboundMessage, text: str) -> None:
-        """Send a text reply back to the source context using guaranteed delivery."""
-        from yuubot.core.models import Message, TextSegment
         segments: Message = [TextSegment(text=text)]
         target_id = message.group_id if message.chat_type == "group" else message.sender.user_id
         body = build_send_msg(message.chat_type, target_id, segments)
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                # Use guaranteed endpoint for operational commands — never returns 429
                 await client.post(f"{self.config.daemon.recorder_api}/send_msg_guaranteed", json=body)
         except Exception:
-            logger.exception("Failed to send reply")
+            logger.exception("Failed to send command reply")
 
     async def _should_respond(self, message: InboundMessage) -> bool:
-        """Check response mode (at/free) and DM whitelist."""
-        msg_type = message.chat_type
-        user_id = message.sender.user_id
-
-        if user_id == self.config.bot.qq:
+        if message.sender.user_id == self.config.bot.qq:
             return False
-        if user_id == self.config.bot.master:
+        if message.sender.user_id == self.config.bot.master:
             return True
-
-        # Active session: respond to continue it
-        ctx_id = message.ctx_id
-        if ctx_id and self.conv_mgr.get(ctx_id) is not None:
-            if msg_type == "private":
-                return True
-            # Fall through to normal group logic below (handles bot_enabled + free mode)
-
-        if msg_type == "private":
-            return user_id in self.config.response.dm_whitelist
-
-        if msg_type == "group":
-            gid = message.group_id
-            setting = await self._get_group_setting(gid)
-            if setting:
+        if message.ctx_id and self.conv_mgr.get(message.ctx_id) is not None:
+            return message.chat_type == "private" or _mentions_bot(message, self.config.bot.qq)
+        if message.chat_type == "private":
+            return message.sender.user_id in self.config.response.dm_whitelist
+        if message.chat_type == "group":
+            setting = await self._get_group_setting(message.group_id)
+            if setting is not None:
                 if not setting.bot_enabled:
                     return False
-                if setting.response_mode == "free":
-                    return True
-
             return _mentions_bot(message, self.config.bot.qq)
+        return False
 
+    async def _should_handle_route(self, route: Route, message: InboundMessage) -> bool:
+        if _is_explicit_non_llm_command(route):
+            return await self._should_handle_explicit_command(message)
+        return await self._should_respond(message)
+
+    async def _should_handle_explicit_command(self, message: InboundMessage) -> bool:
+        if message.sender.user_id == self.config.bot.qq:
+            return False
+        if message.sender.user_id == self.config.bot.master:
+            return True
+        if message.chat_type == "private":
+            return message.sender.user_id in self.config.response.dm_whitelist
+        if message.chat_type == "group":
+            setting = await self._get_group_setting(message.group_id)
+            return setting is None or bool(setting.bot_enabled)
         return False
 
     def invalidate_group_settings_cache(self) -> None:
-        """Force next _get_group_setting call to reload from DB."""
         self._group_settings_loaded_at = 0.0
 
     async def _get_group_setting(self, group_id: int):
-        """Return cached GroupSetting for a group, refreshing if TTL expired."""
         now = time.monotonic()
-        if now - self._group_settings_loaded_at > self._group_settings_ttl:
-            await self._reload_group_settings()
+        if now - self._group_settings_loaded_at <= self._group_settings_ttl:
+            return self._group_settings_cache.get(group_id)
+        try:
+            from yuubot.core.models import GroupSetting
+
+            settings = await GroupSetting.all()
+            self._group_settings_cache = {int(setting.group_id): setting for setting in settings}
+            self._group_settings_loaded_at = now
+        except Exception:
+            logger.debug("Group settings unavailable; falling back to mention-only mode")
+            self._group_settings_cache = {}
+            self._group_settings_loaded_at = now
         return self._group_settings_cache.get(group_id)
 
-    async def _reload_group_settings(self) -> None:
-        """Load all GroupSettings into the in-memory cache."""
-        from yuubot.core.models import GroupSetting
 
-        try:
-            settings = await GroupSetting.all()
-            self._group_settings_cache = {s.group_id: s for s in settings}
-            self._group_settings_loaded_at = time.monotonic()
-        except Exception:
-            logger.exception("Failed to reload GroupSettings cache")
+def _bypasses_response_policy(route: Route) -> bool:
+    return route.command_path == ("bot", "on")
+
+
+def _is_explicit_non_llm_command(route: Route) -> bool:
+    return bool(route.entry) and route.entry not in {"@", "master"}
