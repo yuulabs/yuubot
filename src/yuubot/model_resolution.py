@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import re
+import asyncio
 import os
+import re
+from collections.abc import Mapping
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import attrs
+import openai
 import yaml
 import yuullm
 from loguru import logger
@@ -211,7 +214,7 @@ def _normalize_int_mapping(raw: Any) -> dict[str, int]:
     for key, value in raw.items():
         try:
             result[str(key).strip()] = int(value)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             continue
     return result
 
@@ -271,8 +274,73 @@ class _EffortClient:
         self._effort = effort
 
     async def stream(self, messages, **kwargs):
-        kwargs.setdefault("reasoning_effort", self._effort)
+        provider = str(getattr(getattr(self._client, "provider", None), "provider", ""))
+        if provider == "deepseek":
+            thinking = _pop_deepseek_thinking(kwargs)
+            if self._effort == "none":
+                kwargs.pop("reasoning_effort", None)
+                _set_extra_body_thinking(kwargs, thinking or {"type": "disabled"})
+            else:
+                _set_extra_body_thinking(kwargs, thinking or {"type": "enabled"})
+                kwargs.setdefault("reasoning_effort", self._effort)
+        else:
+            kwargs.setdefault("reasoning_effort", self._effort)
         return await self._client.stream(messages, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._client, name)
+
+
+def _pop_deepseek_thinking(kwargs: dict[str, Any]) -> Any:
+    """Accept legacy top-level DeepSeek thinking, but don't send it to OpenAI SDK."""
+    return kwargs.pop("thinking", None)
+
+
+def _set_extra_body_thinking(kwargs: dict[str, Any], thinking: Any) -> None:
+    extra_body = kwargs.get("extra_body")
+    if isinstance(extra_body, Mapping):
+        extra_body = dict(extra_body)
+    elif extra_body is None:
+        extra_body = {}
+    else:
+        return
+    extra_body.setdefault("thinking", thinking)
+    kwargs["extra_body"] = extra_body
+
+
+_RETRY_BACKOFF_S: tuple[float, ...] = (1.0, 3.0, 8.0)
+
+
+class _RetryClient:
+    """Retry transient connection/timeout errors on stream() with exponential backoff.
+
+    Only retries the initial request (before the iterator is consumed) — mid-stream
+    failures are not safely idempotent. Retries on APIConnectionError / APITimeoutError
+    only; lets rate-limit and status errors propagate untouched.
+    """
+
+    def __init__(self, client, backoff_s: tuple[float, ...] = _RETRY_BACKOFF_S) -> None:
+        self._client = client
+        self._backoff_s = backoff_s
+
+    async def stream(self, messages, **kwargs):
+        last_exc: BaseException | None = None
+        for attempt, delay in enumerate((0.0, *self._backoff_s)):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                return await self._client.stream(messages, **kwargs)
+            except (openai.APIConnectionError, openai.APITimeoutError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "LLM transient error (attempt {}/{}): {}: {}",
+                    attempt + 1,
+                    len(self._backoff_s) + 1,
+                    type(exc).__name__,
+                    exc,
+                )
+        assert last_exc is not None
+        raise last_exc
 
     def __getattr__(self, name: str):
         return getattr(self._client, name)
@@ -301,6 +369,7 @@ def build_provider(provider_name: str, config: Config) -> yuullm.Provider:
             default_headers=default_headers,
         )
     if provider_name == "openrouter":
+        assert api_key is not None
         return yuullm.providers.OpenRouterProvider(
             api_key=api_key,
             default_headers=default_headers,
@@ -323,12 +392,31 @@ def build_llm_client(
         if isinstance(provider_cfg, dict)
         else "gpt-4o"
     )
+    default_model, effort = parse_effort_suffix(str(default_model))
     provider = build_provider(provider_name, config)
-    return yuullm.YLLMClient(
+    client = yuullm.YLLMClient(
         provider=provider,
         default_model=default_model,
         price_calculator=_build_price_calculator(),
     )
+    wrapped: Any = _RetryClient(client)
+    if effort:
+        wrapped = _EffortClient(cast(yuullm.YLLMClient, wrapped), effort)
+    return cast(yuullm.YLLMClient, wrapped)
+
+
+def build_resolved_llm_client(
+    resolved: "ResolvedModel", config: Config
+) -> yuullm.YLLMClient:
+    """Build a client for an already-resolved model, preserving effort suffixes."""
+    client = build_llm_client(
+        resolved.resolved_provider,
+        resolved.resolved_model,
+        config,
+    )
+    if resolved.effort:
+        client = cast(yuullm.YLLMClient, _EffortClient(client, resolved.effort))
+    return client
 
 
 def _collect_text(item: yuullm.StreamItem) -> str:
@@ -340,8 +428,8 @@ def _collect_text(item: yuullm.StreamItem) -> str:
 
 
 def _collect_content_text(item: yuullm.ContentItem) -> str:
-    if isinstance(item, yuullm.TextItem):
-        return item.text
+    if yuullm.is_text_item(item):
+        return item["text"]
     return ""
 
 
@@ -919,10 +1007,7 @@ class ModelResolver:
             update_sticky=update_sticky,
             allow_llm_choice=allow_llm_choice,
         )
-        client = build_llm_client(resolved.resolved_provider, resolved.resolved_model, self.config)
-        if resolved.effort:
-            client = _EffortClient(client, resolved.effort)
-        return client, resolved
+        return build_resolved_llm_client(resolved, self.config), resolved
 
     def _provider_priority(self, provider: str, selector: str) -> int:
         score = int(self.provider_priorities.get(provider, 0))

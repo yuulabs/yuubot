@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import functools
+import inspect
 import importlib
 import io
 import multiprocessing as mp
@@ -12,6 +14,7 @@ import queue
 import sys
 import time
 import traceback
+import types
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -26,7 +29,6 @@ from RestrictedPython.Guards import (
 )
 from RestrictedPython.transformer import RestrictingNodeTransformer
 from loguru import logger
-from yuuagents.kernel import _init_session_state, get_session_state
 from yuuagents.python_runtime import ResolvedPythonRuntime
 from yuuagents.python_session import MimeBundle, PythonExecResult, PythonResultItem
 
@@ -53,6 +55,27 @@ _ALLOWED_IMPORTS = {
 }
 _DENIED_CALLS = {"compile", "eval", "exec", "globals", "locals", "open", "__import__"}
 _LAST_EXPR_NAME = "YUUBOT_LAST_EXPR"
+
+_SESSION_STATE: dict[str, Any] = {}
+
+
+class SessionStateView(dict[str, Any]):
+    """Mapping with attribute access for agent-written SESSION_STATE code."""
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+def _init_session_state(state: dict[str, Any]) -> None:
+    global _SESSION_STATE
+    _SESSION_STATE = dict(state) if state else {}
+
+
+def get_session_state() -> dict[str, Any]:
+    return _SESSION_STATE
 
 
 class _AsyncToSyncTransformer(ast.NodeTransformer):
@@ -112,8 +135,11 @@ class RestrictedPythonSession:
     agent_id: str = ""
     agent_name: str = ""
     emit: Callable[[str, Mapping[str, Any]], Awaitable[None]] | None = attrs.field(default=None, repr=False)
+    _closed: bool = attrs.field(default=False, init=False, repr=False)
 
     async def execute(self, code: str, *, timeout_s: float | None = None) -> PythonExecResult:
+        if self._closed:
+            return PythonExecResult(status="crashed", traceback=("Restricted Python session is closed.",))
         started_at = time.perf_counter()
         await self._emit("python.cell_started", {"backend": "restricted", "timeout_s": timeout_s})
         result = await self.worker.execute(
@@ -134,13 +160,17 @@ class RestrictedPythonSession:
                 "traceback_len": len(result.traceback),
                 "stdout": _bounded(result.stdout),
                 "stderr": _bounded(result.stderr),
-                "traceback": tuple(result.traceback[-12:]),
+                "traceback": tuple(result.traceback),
                 "item_count": len(result.items),
             },
         )
         return result
 
     async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self.worker.close_session(self.session_id)
         await self._emit("python.session_closed", {"backend": "restricted"})
 
     async def interrupt(self) -> PythonExecResult:
@@ -154,6 +184,8 @@ class RestrictedPythonSession:
         runtime: ResolvedPythonRuntime,
         emit: Callable[[str, Mapping[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
+        if self._closed:
+            return
         self.agent_id = agent_id
         self.agent_name = agent_name
         self.runtime = runtime
@@ -214,11 +246,35 @@ class RestrictedPythonWorker:
                 )
             return _result_from_dict(response.get("result", {}))
 
+    async def close_session(self, session_id: str) -> None:
+        async with self._lock:
+            if self._process is None and self._requests is None:
+                return
+            if self._process is None or not self._process.is_alive():
+                self._terminate()
+                self._close_queues()
+                return
+            request_id = uuid.uuid4().hex
+            assert self._requests is not None
+            assert self._responses is not None
+            self._requests.put({"id": request_id, "op": "close_session", "session_id": session_id})
+            try:
+                response = await asyncio.to_thread(self._responses.get, True, 2.0)
+            except queue.Empty:
+                self._restart("close_session_timeout")
+                return
+            if not isinstance(response, dict) or response.get("id") != request_id:
+                self._restart("protocol_error")
+
     def stop(self) -> None:
+        process = self._process
         if self._requests is not None:
             with contextlib.suppress(Exception):
                 self._requests.put(None)
+        if process is not None and process.is_alive():
+            process.join(timeout=1)
         self._terminate()
+        self._close_queues()
 
     def _ensure_started(self) -> None:
         if self._process is not None and self._process.is_alive():
@@ -239,9 +295,7 @@ class RestrictedPythonWorker:
     def _restart(self, reason: str) -> None:
         logger.warning("Restricted Python worker restarted: reason={}", reason)
         self._terminate()
-        self._requests = None
-        self._responses = None
-        self._process = None
+        self._close_queues()
 
     def _terminate(self) -> None:
         process = self._process
@@ -255,14 +309,44 @@ class RestrictedPythonWorker:
                 process.join(timeout=1)
         self._process = None
 
+    def _close_queues(self) -> None:
+        for q in (self._requests, self._responses):
+            if q is None:
+                continue
+            with contextlib.suppress(Exception):
+                q.close()
+            with contextlib.suppress(Exception):
+                q.join_thread()
+        self._requests = None
+        self._responses = None
+
 
 def _worker_main(requests: Any, responses: Any) -> None:
     sessions: dict[str, dict[str, Any]] = {}
+    last_prune = time.time()
     while True:
-        request = requests.get()
+        try:
+            request = requests.get(timeout=60)
+        except queue.Empty:
+            # Periodic idle cleanup: prune sessions unused for > 10 minutes
+            now = time.time()
+            if now - last_prune > 60:
+                stale_cutoff = now - 600
+                stale = [
+                    sid for sid, ns in sessions.items()
+                    if ns.get("_last_used", 0) < stale_cutoff
+                ]
+                for sid in stale:
+                    sessions.pop(sid, None)
+                last_prune = now
+            continue
         if request is None:
             return
         request_id = request.get("id", "")
+        if request.get("op") == "close_session":
+            sessions.pop(str(request.get("session_id", "")), None)
+            responses.put({"id": request_id, "result": {"status": "ok"}})
+            continue
         try:
             result = _execute_request(sessions, request)
         except BaseException as exc:
@@ -279,6 +363,7 @@ def _execute_request(sessions: dict[str, dict[str, Any]], request: Mapping[str, 
     if namespace is None:
         namespace = _new_namespace(request)
         sessions[session_id] = namespace
+    namespace["_last_used"] = time.time()
     _refresh_namespace(namespace, request)
     return _execute_restricted(str(request.get("code", "")), namespace)
 
@@ -311,13 +396,41 @@ def _refresh_namespace(namespace: dict[str, Any], request: Mapping[str, Any]) ->
             sys.path.insert(0, path)
     state = request.get("state")
     _init_session_state(state if isinstance(state, Mapping) else {})
-    namespace["SESSION_STATE"] = get_session_state()
+    namespace["SESSION_STATE"] = SessionStateView(get_session_state())
     namespace["__builtins__"] = _restricted_builtins(namespace)
     for module_name, alias in request.get("imports", ()):
         module_name = str(module_name)
-        module = importlib.import_module(module_name)
+        module = _load_runtime_module(module_name)
         import_name = str(alias or module_name)
         namespace[import_name] = module
+
+
+def _load_runtime_module(module_name: str) -> types.ModuleType:
+    module = importlib.import_module(module_name)
+    if module_name == "yuubot.agent_fns" or module_name.startswith("yuubot.agent_fns."):
+        module = importlib.reload(module)
+        return _sync_agent_fns_facade(module)
+    return module
+
+
+def _sync_agent_fns_facade(module: types.ModuleType) -> types.ModuleType:
+    facade = types.ModuleType(module.__name__)
+    facade.__doc__ = module.__doc__
+    facade.__package__ = module.__package__
+    facade.__file__ = getattr(module, "__file__", None)
+    for name, value in vars(module).items():
+        if name.startswith("__") and name not in {"__all__"}:
+            continue
+        setattr(facade, name, _sync_callable(value) if inspect.iscoroutinefunction(value) else value)
+    return facade
+
+
+def _sync_callable(func: Callable[..., Awaitable[Any]]) -> Callable[..., Any]:
+    @functools.wraps(func)
+    def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        return YUUBOT_SYNC(func(*args, **kwargs))
+
+    return _wrapped
 
 
 def _execute_restricted(code: str, namespace: dict[str, Any]) -> PythonExecResult:
@@ -492,6 +605,5 @@ def _result_from_dict(payload: Any) -> PythonExecResult:
 
 
 def _bounded(text: str, limit: int = 4000) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "\n...[truncated]"
+    del limit
+    return text

@@ -1,0 +1,3 @@
+admin面板的monitor选项crash
+
+显示localhost拒绝连接。

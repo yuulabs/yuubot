@@ -232,3 +232,4 @@ yuuagents.config.yaml
 # Vendor (downloaded binaries, e.g. libsimple)
 vendor/
 .claude/
+docker_config.yaml

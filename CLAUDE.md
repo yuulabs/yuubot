@@ -83,7 +83,7 @@ All characters are registered in `characters/__init__.py` using `register(Charac
 
 Current characters:
 - `yuu` — default group/private chat agent (夕雨); delegates to `general`
-- `maid` — master private chat agent; long-lived kernel, workspace management; master-only
+- `shiori` — master private chat character; long-lived kernel, workspace management; master-only
 - `general` — general task execution delegate; master-only
 - `mem_curator` — memory maintenance delegate; master-only
 

@@ -21,7 +21,7 @@ def get_character(name: str) -> Character:
 
 
 # Import character modules to trigger registration
-from yuubot.characters import general, maid, mem_curator, yuu  # noqa: E402, F401
+from yuubot.characters import general, mem_curator, shiori, yuu  # noqa: E402, F401
 
 __all__ = [
     "AgentSpec",

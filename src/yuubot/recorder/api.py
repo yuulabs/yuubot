@@ -28,7 +28,8 @@ async def _log_bot_msg(body: dict, resp: dict, ctx_mgr: ContextManager, bot_qq: 
         segments = parse_segments(body.get("message", []))
         plain = segments_to_plain(segments)
         raw_json = segments_to_json(segments)
-        message_id = resp.get("data", {}).get("message_id")
+        data = resp.get("data")
+        message_id = data.get("message_id") if isinstance(data, dict) else None
 
         await MessageRecord.create(
             message_id=message_id,
@@ -94,10 +95,9 @@ async def _send_via_pipeline(
         r = await client.post("/send_msg", json=normal_body)
         last_status = r.status_code
         last_data = r.json()
-        if r.status_code == 200:
-            await _log_bot_msg(normal_body, last_data, ctx_mgr, bot_qq, bot_name)
-        else:
-            return last_data, last_status
+        if r.status_code != 200 or not _onebot_ok(last_data):
+            return last_data, _failed_status(last_status)
+        await _log_bot_msg(normal_body, last_data, ctx_mgr, bot_qq, bot_name)
 
     for react in react_segs:
         react_data = react.get("data", {})
@@ -108,13 +108,14 @@ async def _send_via_pipeline(
         r = await client.post("/set_msg_emoji_like", json=react_body)
         last_status = r.status_code
         last_data = r.json()
-        if r.status_code != 200:
-            return last_data, last_status
+        if r.status_code != 200 or not _onebot_ok(last_data):
+            return last_data, _failed_status(last_status)
 
         if bot_qq:
             record = await MessageRecord.filter(message_id=react_body["message_id"]).order_by("-id").first()
             if record is not None:
-                record_ctx_id = record.ctx_id
+                record_ctx_id = getattr(record, "ctx_id")
+                assert isinstance(record_ctx_id, int)
                 await _log_bot_action(
                     ctx_id=record_ctx_id,
                     bot_qq=bot_qq,
@@ -126,6 +127,17 @@ async def _send_via_pipeline(
                 )
 
     return last_data, last_status
+
+
+def _onebot_ok(data: dict) -> bool:
+    """Return whether a OneBot JSON response represents business success."""
+    if data.get("status") in {"ok", "async"}:
+        return True
+    return "status" not in data and data.get("retcode") == 0
+
+
+def _failed_status(http_status: int) -> int:
+    return http_status if http_status >= 400 else 502
 
 
 def create_api(
@@ -171,6 +183,8 @@ def create_api(
 
         # Mute check — emergency brake triggered by /bot off
         msg_type = body.get("message_type", "private")
+        if msg_type not in {"private", "group"}:
+            return JSONResponse({"error": f"unsupported QQ message_type: {msg_type}"}, status_code=400)
         target_id = body.get("group_id") or body.get("user_id") or 0
         mute_ctx = ctx_mgr.lookup(msg_type, int(target_id))
         if mute_ctx is not None and mute_ctx in muted_ctxs:
@@ -333,6 +347,8 @@ def create_api(
 
         # Mute check — still applies to guaranteed messages
         msg_type = body.get("message_type", "private")
+        if msg_type not in {"private", "group"}:
+            return JSONResponse({"error": f"unsupported QQ message_type: {msg_type}"}, status_code=400)
         target_id = body.get("group_id") or body.get("user_id") or 0
         mute_ctx = ctx_mgr.lookup(msg_type, int(target_id))
         if mute_ctx is not None and mute_ctx in muted_ctxs:

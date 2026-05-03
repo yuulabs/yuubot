@@ -5,7 +5,11 @@ from __future__ import annotations
 import yuullm
 
 from yuubot.config import Config
-from yuubot.model_resolution import ModelResolver, ResolvedModel, build_llm_client
+from yuubot.model_resolution import (
+    ModelResolver,
+    ResolvedModel,
+    build_resolved_llm_client,
+)
 
 
 async def make_llm(agent_name: str, config: Config) -> yuullm.YLLMClient:
@@ -17,10 +21,10 @@ async def make_llm(agent_name: str, config: Config) -> yuullm.YLLMClient:
 async def make_resolved_llm(agent_name: str, config: Config) -> tuple[yuullm.YLLMClient, ResolvedModel]:
     """Build a YLLMClient and return the resolved model metadata."""
     resolved = await ModelResolver(config).resolve_agent(agent_name)
-    return build_llm_client(resolved.resolved_provider, resolved.resolved_model, config), resolved
+    return build_resolved_llm_client(resolved, config), resolved
 
 
 async def make_summary_llm(config: Config) -> yuullm.YLLMClient:
     """Build a YLLMClient for summarization/compression via llm_roles.summarizer."""
     resolved = await ModelResolver(config).resolve_role("summarizer")
-    return build_llm_client(resolved.resolved_provider, resolved.resolved_model, config)
+    return build_resolved_llm_client(resolved, config)

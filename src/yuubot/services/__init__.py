@@ -15,7 +15,6 @@ from yuubot.services.delegate import DelegateService
 from yuubot.services.im import ImService
 from yuubot.services.media import MediaService
 from yuubot.services.mem import MemoryService
-from yuubot.services.schedule import ScheduleService
 from yuubot.services.web import WebService
 from yuubot.services.workspace import WorkspaceService
 
@@ -31,7 +30,6 @@ __all__ = [
     "PageInfo",
     "AccessDenied",
     "Reference",
-    "ScheduleService",
     "ServiceNotImplementedError",
     "WebService",
     "WorkspaceService",

@@ -27,3 +27,7 @@ yuuagents:
   workspace_root: /workspace
 docker:
   traces_ui_port: 8782  # host port for the ytrace WebUI (http://host:8782)
+admin:
+  persistent_paths:
+    - ~/.ssh
+  persist_base: /data/yuubot/persist

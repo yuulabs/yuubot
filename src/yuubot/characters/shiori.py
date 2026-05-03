@@ -14,32 +14,33 @@ from yuubot.prompt import (
 
 register(
     Character(
-        name="maid",
-        description="master 私聊默认 agent，长期维护工作区、跟踪项目进展、委派执行任务。",
+        name="shiori",
+        description="Shiori，Master 私聊中的长期协作伙伴，维护工作区、跟踪项目进展、委派执行任务。",
         spec=AgentSpec(
             tools=("execute_python", "read_file", "edit_file"),
             import_modules=(
                 ya.PythonImport("yuubot.agent_fns", alias="yb"),
                 ya.PythonImport("yuubot.agent_fns.im", alias="im"),
                 ya.PythonImport("yuubot.agent_fns.mem", alias="mem"),
-                ya.PythonImport("yuubot.agent_fns.schedule", alias="schedule"),
                 ya.PythonImport("yuubot.agent_fns.delegate", alias="delegate"),
                 ya.PythonImport("yuubot.agent_fns.vision", alias="vision"),
             ),
-            expand_functions=("+im.*", "*"),
+            expand_functions=("*", "+im.*"),
             prompt_sections=(
-                FileSection("maid/persona.md"),
-                FileSection("maid/messaging.md"),
+                FileSection("shiori/persona.md"),
+                FileSection("shiori/messaging.md"),
                 PYTHON_RUNTIME_SECTION,
                 ExpandFunctionsSection(),
-                FileSection("maid/bootstrap.md"),
-                FileSection("maid/workspace.md"),
+                FileSection("shiori/bootstrap.md"),
+                FileSection("shiori/workspace.md"),
                 DelegatesSection(),
                 PythonWorkerSection(),
             ),
             delegate_policy=DelegatePolicy(allowed_agents=("general",), max_depth=1),
             max_turns=None,
             max_context_tokens=512000,
+            idle_agent_ttl_s=3600,
+            preserve_python_session=True,
         ),
         bot_kind="master",
     )

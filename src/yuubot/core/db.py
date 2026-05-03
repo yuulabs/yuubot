@@ -172,10 +172,70 @@ _MIGRATIONS = [
         "SELECT 1 FROM pragma_table_info('memories') WHERE name='trashed_at'",
         "ALTER TABLE memories ADD COLUMN trashed_at TIMESTAMP NULL",
     ),
+    # v0.6: gateway/channel fields on contexts
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='channel'",
+        "ALTER TABLE contexts ADD COLUMN channel VARCHAR(32) NOT NULL DEFAULT 'qq'",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='key'",
+        "ALTER TABLE contexts ADD COLUMN \"key\" VARCHAR(256) NOT NULL DEFAULT ''",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='kind'",
+        "ALTER TABLE contexts ADD COLUMN kind VARCHAR(32) NOT NULL DEFAULT 'other'",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='target_str'",
+        "ALTER TABLE contexts ADD COLUMN target_str VARCHAR(256) NOT NULL DEFAULT ''",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='is_group'",
+        "ALTER TABLE contexts ADD COLUMN is_group BOOLEAN NOT NULL DEFAULT 0",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='is_private'",
+        "ALTER TABLE contexts ADD COLUMN is_private BOOLEAN NOT NULL DEFAULT 0",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='label'",
+        "ALTER TABLE contexts ADD COLUMN label VARCHAR(256) NOT NULL DEFAULT ''",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='metadata'",
+        "ALTER TABLE contexts ADD COLUMN metadata JSON NOT NULL DEFAULT '{}'",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='last_message_at'",
+        "ALTER TABLE contexts ADD COLUMN last_message_at TIMESTAMP NULL",
+    ),
+    (
+        "SELECT 1 FROM pragma_table_info('contexts') WHERE name='archived'",
+        "ALTER TABLE contexts ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0",
+    ),
 ]
 
 # Post-migration: set scope=public for memories with NULL ctx_id
 _SCOPE_MIGRATE_SQL = "UPDATE memories SET scope = 'public' WHERE ctx_id IS NULL AND scope = 'private';"
+
+# Populate gateway fields from existing QQ context identity.
+_CTX_FLAGS_MIGRATE_SQL = """\
+UPDATE contexts SET
+    "key" = CASE
+        WHEN target_str != '' THEN target_str
+        WHEN type != '' THEN type || ':' || target_id
+        ELSE "key"
+    END,
+    kind = CASE
+        WHEN type IN ('group', 'private') THEN type
+        WHEN is_group = 1 THEN 'group'
+        WHEN is_private = 1 THEN 'private'
+        ELSE kind
+    END,
+    is_group = CASE WHEN type = 'group' THEN 1 ELSE 0 END,
+    is_private = CASE WHEN type = 'private' THEN 1 ELSE 0 END
+WHERE channel = 'qq' AND (("key" = '' AND type != '') OR kind = 'other' OR (is_group = 0 AND is_private = 0 AND type != ''));\
+"""
 
 # Runtime flag: True when simple tokenizer is loaded.
 _simple_loaded = False
@@ -364,6 +424,9 @@ async def init_db(db_path: str, *, simple_ext: str = "") -> None:
 
     # Migrate existing NULL-ctx memories to public scope
     await conn.execute_query(_SCOPE_MIGRATE_SQL)
+
+    # Populate gateway identity from existing QQ context rows
+    await conn.execute_query(_CTX_FLAGS_MIGRATE_SQL)
 
 
 async def close_db() -> None:

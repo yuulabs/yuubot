@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import attrs
+from datetime import datetime
 
-from yuubot.core.models import segments_to_plain
 from yuubot.core.types import InboundMessage
+from yuubot.rendering import render_message_xml
 
 
 @attrs.define(frozen=True)
@@ -29,4 +30,14 @@ async def render_signal(
     upto_row_id: int = 0,
 ) -> str:
     del policy, context, upto_row_id
-    return (segments_to_plain(msg.segments) or msg.raw_message).strip()
+    display_name = msg.sender.card or msg.sender.nickname or str(msg.sender.user_id)
+    msg_xml = render_message_xml(
+        uid=msg.sender.user_id,
+        name=msg.sender.nickname,
+        display_name=display_name,
+        time=msg.timestamp,
+        segments=msg.segments,
+        message_id=msg.message_id,
+    )
+    now = datetime.now().astimezone().strftime("现在是 %Y年%m月%d日 %H时%M分%S秒")
+    return f"{now}\n{msg_xml}"

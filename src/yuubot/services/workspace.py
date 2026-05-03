@@ -66,57 +66,8 @@ class WorkspaceService:
         target = _resolve(payload, path)
         if not target.is_file():
             raise YuubotServiceError(f"file not found: {path}")
-        max_chars = max(1, min(_int(payload.get("max_chars"), 20000), 200000))
         text = target.read_text(encoding="utf-8", errors="replace")
-        if len(text) > max_chars:
-            return text[:max_chars] + "\n...[truncated]"
         return text
-
-    async def write_file(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        if not _is_master(payload):
-            raise AccessDenied("workspace writes are master-only")
-        path = str(payload.get("path", "") or "")
-        content = str(payload.get("content", "") or "")
-        if not path:
-            raise YuubotServiceError("path is required")
-        target = _resolve(payload, path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return {"status": "written", "path": str(target), "bytes": len(content.encode())}
-
-    async def list_files(self, payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-        path = str(payload.get("path", ".") or ".")
-        target = _resolve(payload, path)
-        if not target.exists():
-            return []
-        if target.is_file():
-            entries = [target]
-        else:
-            entries = sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
-        root = _workspace_root(payload)
-        return [
-            {
-                "path": str(entry.relative_to(root)),
-                "is_dir": entry.is_dir(),
-                "bytes": entry.stat().st_size if entry.is_file() else 0,
-            }
-            for entry in entries[:200]
-        ]
-
-    async def apply_patch(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        if not _is_master(payload):
-            raise AccessDenied("workspace patching is master-only")
-        patch = str(payload.get("patch", "") or "")
-        if not patch.strip():
-            raise YuubotServiceError("patch is empty")
-        return await self.run_command(
-            {
-                **payload,
-                "command": "git apply --whitespace=nowarn -",
-                "stdin": patch,
-                "timeout_s": payload.get("timeout_s", 30),
-            }
-        )
 
     async def run_command(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not _is_master(payload):
@@ -155,6 +106,6 @@ class WorkspaceService:
         return {
             "status": "ok" if process.returncode == 0 else "error",
             "returncode": process.returncode,
-            "stdout": stdout.decode(errors="replace")[-20000:],
-            "stderr": stderr.decode(errors="replace")[-20000:],
+            "stdout": stdout.decode(errors="replace"),
+            "stderr": stderr.decode(errors="replace"),
         }

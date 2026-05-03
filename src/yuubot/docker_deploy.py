@@ -19,6 +19,25 @@ DEFAULT_DEPLOY_DIR = Path("~/.local/share/yuubot-docker").expanduser()
 CONTAINER_CONFIG_PATH = "/config/config.yaml"
 CONTAINER_WORKSPACE_ROOT = "/workspace"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
+PROXY_ENV_NAMES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+CONTAINER_NO_PROXY_DEFAULTS = (
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "napcat",
+    "yuubot",
+    "traces-ui",
+    "host.docker.internal",
+)
 
 
 @dataclass(frozen=True)
@@ -47,7 +66,10 @@ def _find_docker_config() -> Path | None:
         if candidate.exists():
             return candidate
     candidate = Path("docker_config.yaml")
-    return candidate if candidate.exists() else None
+    if candidate.exists():
+        return candidate
+    repo_candidate = Path(__file__).resolve().parents[2] / "docker_config.yaml"
+    return repo_candidate if repo_candidate.exists() else None
 
 
 def _container_config(cfg: Config) -> dict[str, Any]:
@@ -92,6 +114,7 @@ def _api_key_env_names(cfg: Config) -> list[str]:
 
 def _write_env_file(path: Path, cfg: Config) -> None:
     timezone = str(cfg.timezone or DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE
+    no_proxy = _container_no_proxy()
     lines = [
         f"YUUBOT_CONFIG={CONTAINER_CONFIG_PATH}",
         "YUU_DEPLOYMENT_MODE=container",
@@ -103,12 +126,41 @@ def _write_env_file(path: Path, cfg: Config) -> None:
     ]
     for name in _api_key_env_names(cfg):
         lines.append(f"{name}={os.environ.get(name, '')}")
+    lines.extend(_proxy_env_lines(no_proxy=no_proxy))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _container_no_proxy() -> str:
+    existing = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    values = [part.strip() for part in existing.split(",") if part.strip()]
+    for host in CONTAINER_NO_PROXY_DEFAULTS:
+        if host not in values:
+            values.append(host)
+    return ",".join(values)
+
+
+def _proxy_env_lines(*, no_proxy: str) -> list[str]:
+    lines: list[str] = []
+    for upper, lower in (
+        ("HTTP_PROXY", "http_proxy"),
+        ("HTTPS_PROXY", "https_proxy"),
+        ("ALL_PROXY", "all_proxy"),
+    ):
+        value = os.environ.get(upper) or os.environ.get(lower)
+        if not value:
+            continue
+        lines.append(f"{upper}={value}")
+        lines.append(f"{lower}={value}")
+    if no_proxy:
+        lines.append(f"NO_PROXY={no_proxy}")
+        lines.append(f"no_proxy={no_proxy}")
+    return lines
 
 
 def _compose_payload(repo_root: Path, cfg: Config) -> dict[str, Any]:
     webui_port = int(cfg.recorder.napcat_webui_port)
     timezone = str(cfg.timezone or DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE
+    extra_hosts = ["host.docker.internal:host-gateway"]
     return {
         "name": "yuubot-docker",
         "services": {
@@ -116,6 +168,7 @@ def _compose_payload(repo_root: Path, cfg: Config) -> dict[str, Any]:
                 "image": "mlikiowa/napcat-framework-docker:latest",
                 "restart": "unless-stopped",
                 "env_file": [".env"],
+                "extra_hosts": list(extra_hosts),
                 "environment": {
                     "TZ": timezone,
                 },
@@ -137,6 +190,7 @@ def _compose_payload(repo_root: Path, cfg: Config) -> dict[str, Any]:
                 "image": "yuubot:local",
                 "restart": "unless-stopped",
                 "env_file": [".env"],
+                "extra_hosts": list(extra_hosts),
                 "environment": {
                     "YUUBOT_CONFIG": CONTAINER_CONFIG_PATH,
                     "YUU_DEPLOYMENT_MODE": "container",

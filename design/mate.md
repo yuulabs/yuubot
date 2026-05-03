@@ -1,133 +1,174 @@
-# Mate 设计
+# Mate 设计（精简版）
 
 ## 核心抽象
 
-Mate 是"拥有持久化人格的具名实体"。对外表现为永远在线、永远可寻址，内部在需要时临时拉起一个 Agent turn，turn 结束后 Agent 消亡，但 Mate 的持久状态保留。
+Mate 是"拥有持久化人格的具名实体"。对外永远在线，内部在需要时拉起一个 Agent turn，turn 结束后 Agent 消亡，持久状态保留。
 
 **Mate = Character + 持久化层**
 
-每个 Mate 有：
-- 唯一**人名**（如 Saki、John），用于寻址——是真正的人名，不是职位或角色名
-- 一个信箱（mailbox），消息队列
-- 一个工作区（workspace），磁盘目录，跨 turn 持久
-- 一条对话历史，用于 rollover（实现细节）
-- 一个 Character，决定人格和行为
+- **Character**：决定人格和行为
+- **workspace**：磁盘目录，跨 turn 持久。重要状态落盘于此，不依赖内存。
+- **对话历史/内存持久态**：Lineage维持。
 
-Mate 没有持久 kernel session（Python 内存状态随 Agent turn 结束而消亡，类比 RAM 断电；工作区文件保留，类比磁盘）。
+只有一个 Mate：`Shiori`（#0），系统启动时自动创建。不需要多 Mate 动态创建。
 
-## 对称性：所有参与者都是 Mate
+### 信箱
 
-`maid` 是 Mate #0，系统启动时自动创建，名称固定。人类消息是一种特殊的信件（from: "human"）。所有通信走同一套信箱机制，没有特例。
+Shiori 有一个入站信箱内容是标准list[yuullm.Message]
+
+Shiori 有一个简单的消费者loop持续从信箱中拉取消息并激活Lineage中的Agent处理。
+
+### 消费模型：iteration 边界
 
 ```
-human ──→ maid.mailbox
-maid  ──→ saki.mailbox
-saki  ──→ maid.mailbox   (reply)
-system ──→ maid.mailbox  (timeout 通知)
+for _ in steps:
+  if llmstep:
+    handle 
 ```
 
-## 信箱模型
 
-每个 Mate 一个信箱，不共享。消息结构：
+## 系统注入消息
+
+Agent 不应该在系统提示里被要求"记得存盘"——要么忘，要么过度存，要么存盘操作干扰正事。也不该让另一个没有上下文的 agent 来打扫——会误删或错误修改。
+
+Mate 的做法：系统在合适的时机 fork 当前 agent（携带完整 history），追加一条 system 消息，让 agent 自行处理。不同场景的触发条件、消息内容、返回值处理不同：
+
+| 场景 | 触发条件 | system 消息 | 返回值处理 |
+|---|---|---|---|
+| **维护** | idle 超过阈值 | "总结工作要点，整理 workspace，更新笔记" | 不关心文本返回值。agent 通过 tool call 写盘即可。 |
+| **rollover** | 上下文接近上限 | "总结这段对话。记录 kernel 中仍活跃的 Python 变量。" | 捕获 agent 最终文本回复，作为新 turn 的起始上下文。 |
+| **超时** | delegate_to_opencode 超时 | 由 system 往信箱投 timeout 通知，Shiori 下个 iteration 自行决定 | — |
+
+核心优势：agent 在任何场景都持有完整上下文，不会做出脱离实际的决策。
+
+## 编码委托：delegate_to_opencode
+
+Shiori 是完整的 Agent，有自己的推理能力和工具。**仅在遇到编码任务时**委托 opencode——不自己写代码。
+
+```
+人类 → Shiori 理解意图，自行处理非编码任务（对话、分析、管理等）
+     → 遇到编码需求时，Shiori 调 delegate_to_opencode(ssh, task, context)
+     → opencode 完成编码（探索、编写、测试、lint）→ 返回结果
+     → Shiori 整合结果，继续后续工作
+```
+
+`delegate_to_opencode` 是 Shiori 的工具之一，不是唯一的工具。底层对本地 opencode 还是远程 GPU 节点透明。
+
+### 远程自举
 
 ```python
-{
-  "from": "maid",          # 发方 mate name，或 "human" / "system"
-  "reply_to": "maid",      # 回复应投递到哪个信箱
-  "content": "...",
-  "ticket_id": "uuid",     # 关联 deadline，reply 时携带以取消 timer
-  "sent_at": "...",
-  "deadline_at": "...",    # 可选，见超时机制
-}
+def configure_opencode(ssh):
+    """
+    ssh: bot 自己通过 paramiko 连接的对象
+    
+    在远程机器上自举 opencode 环境：
+    1. 检测并安装 opencode
+    2. 同步 ~/.local/share/opencode/auth.json
+    3. 同步项目 skills（.opencode/skills/）
+    4. 安装标准 agent（denoiser）
+    """
 ```
 
-唤醒条件：信箱非空即触发 Mate 的 Agent turn。
+### 标准 opencode agent 阵容
 
-## 超时机制
+bot 在 `configure_opencode` 时写入 `.opencode/agents/`：
 
-`send_to_mate(name, content, deadline="30m")` 发信时自动注册 deadline。
+- **build**（内置）：全权限开发
+- **plan**（内置）：只读分析，不改文件
+- **explore**（内置）：只读探索代码库
+- **denoiser**（自定义）：专门整理代码——去重、简化、统一风格，不改变行为。跑测试验证。
 
-- 收到对应 reply（ticket_id 匹配）→ deadline 取消，无事发生
-- deadline 到期仍无 reply → 系统往**发方信箱**投一条 timeout 通知：
-  ```python
-  {"from": "system", "type": "timeout", "ticket_id": "...", "context": "message to saki, sent at T"}
-  ```
-
-Mate 醒来后看到 timeout 消息，自行决定重试、上报还是放弃。超时判断逻辑完全在发方，系统只负责投递通知。
-
-## 持久性与副作用
-
-`create_mate` 是具有持久副作用的操作。Mate 一经创建即写入 DB，独立于创建它的 Agent turn 的生命周期：
-
-- Agent turn 结束 → Mate 继续存在
-- Rollover 发生 → Mate 继续存在
-- Daemon 重启 → Mate 继续存在
-- 唯一的销毁方式是显式调用 `remove_mate`
-
-Agent 应将 `create_mate` 类比于"雇用一位团队成员"而非"创建一个局部变量"。`list_mates` 可在任意 turn 查看当前存活的所有 Mate。
-
-## Rollover
-
-当 Mate 的对话历史接近 context 上限时，自动触发 rollover：压缩历史为摘要，以摘要作为新 Agent turn 的起始上下文。对调用方不可见，Mate 的生命周期在外部看来是无限的。
-
-## API（agent_fns 层）
+### 编码流水线
 
 ```python
-yb.create_mate(name, character, workspace=None, description=None)
-yb.send_to_mate(name, content, deadline="1h")   # 返回 ticket_id
-yb.remove_mate(name)
-yb.list_mates()                                 # 返回各 Mate 状态摘要
-yb.get_mate_status(name)                        # 见可观测性
+# bot 编排两步，避免屎山积累
+ssh.exec_command("opencode run --agent build '{task}'")
+ssh.exec_command("opencode run --agent denoiser 'Clean up the code just written. Run tests.'")
 ```
+
+### Skills 沉淀
+
+bot 可以将 explore 的发现沉淀为 opencode skill，免去每次重新探索：
+
+```python
+ssh.exec_command("mkdir -p .opencode/skills/{name}")
+ssh.write_file(".opencode/skills/{name}/SKILL.md", skill_md)
+# opencode 下次启动时自动发现
+```
+
+### 超时
+
+`delegate_to_opencode` 支持 deadline。超时后 system 往信箱投一条 timeout 通知，Shiori 在下一 iteration 看到并决定重试或上报。
 
 ## 可观测性
 
-状态分两层，均由 runtime 层自动维护，不需要 Agent 主动上报。
+跟踪 opencode 任务的状态，由 runtime 自动维护：
 
-**Liveness**（DB 字段）：
-- `status`: `idle | running | error`
-- `last_heartbeat`: 最近一次 Agent step 完成时间
-- `error_info`: 最近一次崩溃信息
-
-**Progress**（runtime 实时状态）：
-- `frontier`: 当前正在执行的 tool call（tool name、输入摘要、已执行时长）
-- `last_completed`: 最近完成的 step 摘要
-
-`get_mate_status(name)` 返回：
-```python
-{
-  "status": "running",
-  "last_heartbeat": "2min ago",
-  "frontier": {
-    "tool": "execute_python",
-    "input": "result = yb.web_search('...')",
-    "elapsed": "47s"
-  },
-  "last_completed": {
-    "tool": "execute_python",
-    "summary": "searched X, found 3 results"
-  },
-  "error_info": None
-}
+```
+status: idle | running | error
+frontier: 当前执行的 tool call（名称、输入摘要、已执行时长）
+last_heartbeat: 最近完成时间
+error_info: 崩溃信息
 ```
 
-HTTP 端点 `/mates/{name}/status` 暴露同一份数据供人工观察。
+直接复用 opencode session 的 event stream（SSE），不做重复建设。
 
-frontier 直接映射 trace span 的 open/close 状态，与现有 traces 系统天然对齐。
+## 参考：OpenCode CLI
 
-## maid 的决策模式
+> 文档: <https://opencode.ai/docs> · CLI: <https://opencode.ai/docs/cli> · Server/SDK: <https://opencode.ai/docs/server> <https://opencode.ai/docs/sdk>
 
-maid 收到 timeout 通知后的典型处理：
+```bash
+# 一次性任务
+opencode run "task description"
+opencode run --model anthropic/claude-sonnet-4-6 "task"
+opencode run --agent build "task"
+opencode run --agent plan "analyze only, no edits"
+opencode run --continue                  # 继续上次会话
+opencode run --session abc123 "task"     # 恢复到指定会话
+opencode run --format json "task"        # JSON 输出
 
-1. `get_mate_status("saki")` 查看状态
-2. `frontier.elapsed` 正常且 `last_heartbeat` 新鲜 → 还在跑，等待或延长 deadline
-3. `last_heartbeat` stale 且 `status == "running"` → 大概率崩溃，考虑重启或上报
-4. `status == "error"` → 读 `error_info`，决定是否重试
+# 持久 server（API 模式）
+opencode serve --port 4096              # 启动 HTTP server
+# SDK: npm install @opencode-ai/sdk
+# client.session.create() → client.session.prompt() → 结果
 
-## 实现要点（待细化）
+# Agent 管理
+opencode agent list                      # 列出所有 agent
+opencode agent create                    # 交互式创建 agent
+# 或直接写文件: .opencode/agents/<name>.md
 
-- Mate 记录存 DB（`core/db.py`），字段：`name, character, workspace_path, status, last_heartbeat, error_info`
-- 信箱为 DB 表 `mate_messages`，字段含 `from, reply_to, ticket_id, deadline_at, acked_at`
-- 后台 job 扫 `deadline_at` 过期且未 ack 的消息，向发方信箱投 timeout 通知
-- Mate 唤醒由 daemon 监听 `mate_messages` 插入事件触发（或短轮询）
-- `get_mate_status` 从 daemon 内存中运行中的 runtime session 读取 frontier；非 running 状态从 DB 读
+# Skills 路径（OpenCode 自动发现）
+# .opencode/skills/<name>/SKILL.md
+# ~/.config/opencode/skills/<name>/SKILL.md
+# .claude/skills/<name>/SKILL.md         (兼容)
+# .agents/skills/<name>/SKILL.md         (兼容，yuubot 已有)
+```
+
+常用 agent 配置模板（`.opencode/agents/denoiser.md`）：
+
+```yaml
+---
+description: Code cleanup specialist. Refactors for clarity without changing behavior.
+mode: subagent
+permission:
+  edit: allow
+  bash: { "*": allow }
+model: anthropic/claude-sonnet-4-6
+---
+You are a code denoiser. Take working code and make it clean.
+- Never change behavior. Run tests before and after.
+- Eliminate duplication. Simplify control flow.
+- Remove dead code, stale comments, debug prints.
+```
+
+## 与旧版设计的差异
+
+| 旧版 | 精简版 | 原因 |
+|---|---|---|
+| 多 Mate 互发消息 | 单 Mate，单入站信箱 | multi-agent 协调不如 solo frontier model |
+| 消息等到最终文本才消费 | iteration 边界注入 | tool chain 可能很长，边执行边收消息更快 |
+| 信箱消息含 reply_to / ticket_id 路由 | 简化为 from + content + timestamp | 不需要多 Mate 路由 |
+| 内部 Agent lineage | 全部砍掉。自我维护用 idle fork，编码委托 opencode | curator/sweeper 无上下文易犯错；openode 内置 agent 够用 |
+| Mem curator | 被 idle 自我维护替代 | 同上下文 agent 自行整理，比无上下文 curator 可靠 |
+| Profile → 模型路由 | 砍掉 | v2，等模型阵容稳定再说 |
+| create_mate / remove_mate / send_to_mate API | 砍掉 | 不需要多 Mate |

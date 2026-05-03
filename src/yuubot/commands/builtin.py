@@ -262,16 +262,8 @@ async def _exec_off(request: CommandRequest) -> str | None:
     Emergency brake: recorder already muted this ctx on seeing /bot off.
     Daemon side cancels running flows, stops workers, and closes sessions.
     """
-    ctx_id = request.message.ctx_id
-
     # ── Daemon-side cleanup ──
-    agent_runner = request.deps.get("agent_runner")
-    if agent_runner:
-        agent_runner.cancel_ctx(ctx_id)
-
-    session_mgr = request.deps.get("session_mgr")
-    if session_mgr:
-        session_mgr.close(ctx_id)
+    await _reset_mate_lineage(request)
 
     if request.message.chat_type == "private":
         return "已执行紧急制动"
@@ -331,16 +323,32 @@ async def _exec_help(request: CommandRequest) -> str | None:
 
 async def _exec_close(request: CommandRequest) -> str | None:
     """Close current session."""
-    ctx_id = request.message.ctx_id
-    agent_runner = request.deps.get("agent_runner")
-    if agent_runner:
-        agent_runner.cancel_ctx(ctx_id)
-    session_mgr = request.deps.get("session_mgr")
-    if session_mgr is None:
-        return "Session 功能未启用"
-    if request.message.raw_event.get("_session_closed") or session_mgr.close(ctx_id):
+    closed = await _reset_mate_lineage(request)
+    if request.message.raw_event.get("_session_closed") or closed:
         return "会话已重置 ✨"
     return "当前没有活跃的会话"
+
+
+async def _reset_mate_lineage(request: CommandRequest) -> bool:
+    """Reset agent state for the current context. Actor handles this via expire + recreate."""
+    master_actor = request.deps.get("master_actor")
+    group_actor = request.deps.get("group_actor")
+    if master_actor is None and group_actor is None:
+        return False
+    # In the new architecture, reset means expiring the current agent for this ctx.
+    # The next message will create a fresh agent automatically.
+    from yuubot.auth import bot_kind_for_message
+    bot_kind = bot_kind_for_message(request.message, request.deps["config"].bot.master)
+    actor = master_actor if bot_kind == "master" else group_actor
+    if actor is None:
+        return False
+    # Find and expire the agent for this ctx
+    for agent_id, ctx_info in list(actor._agent_ctx.items()):
+        if ctx_info.get("ctx_id") == request.message.ctx_id:
+            agent = actor.agents.get(agent_id)
+            if agent is not None:
+                await actor.expire_agent(agent)
+    return True
 
 
 def _sanitize_agent_name(raw: str) -> str:
@@ -382,16 +390,13 @@ def _sanitize_agent_name(raw: str) -> str:
 
 async def _exec_ping(request: CommandRequest) -> str | None:
     """Report bot liveness plus current conversation readiness."""
-    session_mgr = request.deps.get("session_mgr")
-    if session_mgr is None:
+    master_actor = request.deps.get("master_actor")
+    group_actor = request.deps.get("group_actor")
+    if master_actor is None and group_actor is None:
         return "pong"
-
-    conv = session_mgr.get(request.message.ctx_id)
-    if conv is None:
-        return "pong"
-    if conv.state == "running":
-        return "session pong"
-    return "session ready"
+    agent_count = (len(master_actor.agents) if master_actor else 0) + (len(group_actor.agents) if group_actor else 0)
+    state = "running" if agent_count > 0 else "idle"
+    return f"pong ({state}, {agent_count} agents)"
 
 
 async def _exec_cost(request: CommandRequest) -> str | None:

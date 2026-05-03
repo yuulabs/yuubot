@@ -2,20 +2,137 @@
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal, TypedDict, cast
 
-from yuubot.agent_fns._proxy import _DaemonProxy
+from tortoise.queryset import QuerySet
+
+from yuubot.agent_fns.local import current_ctx_id, ensure_db_ready, is_master, local_config, service_payload
+from yuubot.core.models import Context, ForwardRecord, MessageRecord
 from yuubot.rendering import MessageList
+from yuubot.services.im import ImService
 
-_p = _DaemonProxy()
+__all__ = [
+    "send_message",
+    "ensure_ready",
+    "message_records",
+    "recent_messages",
+    "search_messages",
+    "read_forward",
+    "list_contacts",
+    "react_message",
+    "send_file",
+    "Context",
+    "ForwardRecord",
+    "MessageRecord",
+]
+
+
+class TextContentBlock(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class ImageUrlContent(TypedDict):
+    url: str
+
+
+class ImageContentBlock(TypedDict):
+    type: Literal["image_url"]
+    image_url: ImageUrlContent
+
+
+ContentBlock = TextContentBlock | ImageContentBlock
+MessageContent = str | list[ContentBlock]
+
+
+class MessageSegment(TypedDict, total=False):
+    type: str
+    data: dict[str, Any]
+
+
+class SendMessageResult(TypedDict):
+    status: Literal["sent"]
+    ctx_id: int
+    message_type: Literal["group", "private"]
+    target_id: int
+    segments: list[MessageSegment]
+    recorder: Any
+
+
+class ForwardNode(TypedDict, total=False):
+    user_id: int | str
+    nickname: str
+    time: int | str
+    content: str
+    message: Any
+    segments: list[MessageSegment]
+
+
+class ContactList(TypedDict):
+    groups: list[dict[str, Any]]
+    friends: list[dict[str, Any]]
+    contexts: Any
+
+
+class ReactMessageResult(TypedDict):
+    status: Literal["reacted"]
+    message_id: int
+    emoji_id: str
+
+
+class SendFileResult(TypedDict):
+    status: Literal["sent"]
+    ctx_id: int
+    chat_type: Literal["group", "private"]
+    target_id: int
+    file: str
+    name: str
+    napcat: Any
+
+
+async def ensure_ready() -> None:
+    """Initialize worker-local ORM access to Yuubot's SQLite database."""
+    await ensure_db_ready()
+
+
+async def message_records(
+    *,
+    ctx_id: int | None = None,
+    since: datetime | str | None = None,
+    until: datetime | str | None = None,
+    limit: int = 200,
+) -> QuerySet[MessageRecord]:
+    """Return a Tortoise QuerySet[MessageRecord] for local message queries.
+
+    MessageRecord fields: id, message_id, ctx_id, user_id, nickname,
+    display_name, content, raw_message, timestamp, media_files.
+
+    Group agents are scoped to their current ctx_id. Master agents may pass
+    another ctx_id or omit ctx_id, then chain arbitrary ORM filters:
+
+        qs = await im.message_records(limit=500)
+        rows = await qs.filter(content__icontains="猫").order_by("-timestamp")
+    """
+    await ensure_db_ready()
+    qs = MessageRecord.all()
+    if ctx_id is not None:
+        qs = qs.filter(ctx_id=current_ctx_id(ctx_id))
+    elif not is_master():
+        qs = qs.filter(ctx_id=current_ctx_id(None))
+    if since is not None:
+        qs = qs.filter(timestamp__gte=since)
+    if until is not None:
+        qs = qs.filter(timestamp__lte=until)
+    return qs.order_by("-timestamp").limit(max(1, min(int(limit), 5000)))
 
 
 async def send_message(
-    content: str | list[dict],
+    content: MessageContent,
     *,
     ctx_id: int | None = None,
-) -> dict[str, Any]:
-    """Send a message to the current QQ context or an explicitly permitted context.
+) -> SendMessageResult:
+    """Send text and/or inline images to the current QQ chat; returns delivery target and recorder response.
 
     ``content`` follows the ``yuullm.Content`` schema — QQ messages are naturally
     mixed text/image, so the same format is used here:
@@ -26,12 +143,23 @@ async def send_message(
         - Image block: ``{"type": "image_url", "image_url": {"url": "<url>"}}``
           where ``<url>`` is a ``https://`` URL or a ``file:///abs/path`` for a
           local file on the bot host.
+    By default, use this function to send images. Use send_file only if you want to "upload" an image. These two are slightly differently displayed in QQ.
+
+    Returns:
+        ``{"status": "sent", "ctx_id": int, "message_type": "group"|"private",
+        "target_id": int, "segments": [...], "recorder": ...}``. ``ctx_id`` is
+        the yuubot conversation context; ``target_id`` is the QQ group id or
+        private user id that actually received the message.
     """
-    return await _p.call("im", "send_message", content=content, ctx_id=ctx_id)
+    await ensure_db_ready()
+    return cast(
+        SendMessageResult,
+        await ImService(config=local_config()).send_message(service_payload(content=content, ctx_id=ctx_id)),
+    )
 
 
 async def recent_messages(*, limit: int = 30, ctx_id: int | None = None) -> MessageList:
-    """Read recent messages from the current QQ context.
+    """Read recent messages from a QQ context as a printable MessageList of message dicts.
 
     Returns a ``MessageList`` — prints as formatted XML, also supports list/dict operations:
 
@@ -47,7 +175,9 @@ async def recent_messages(*, limit: int = 30, ctx_id: int | None = None) -> Mess
     ``content`` (plain text), ``segments`` (structured), ``media_files``,
     ``rendered`` (XML string).
     """
-    return MessageList(await _p.call("im", "recent_messages", limit=limit, ctx_id=ctx_id))
+    await ensure_db_ready()
+    service = ImService()
+    return MessageList(await service.recent_messages(service_payload(limit=limit, ctx_id=ctx_id)))
 
 
 async def search_messages(
@@ -58,7 +188,7 @@ async def search_messages(
     filter_user_id: int | None = None,
     before_id: int | None = None,
 ) -> MessageList:
-    """Search messages by keywords.
+    """Search stored QQ messages by keywords and return a printable MessageList of matching message dicts.
 
     ``query`` is a space-separated list of keywords; each word is an independent
     search term matched against message text (OR logic).  Do NOT use field
@@ -79,32 +209,41 @@ async def search_messages(
         filter_user_id: Restrict to messages sent by this QQ user ID.
         before_id: Return only messages with db_id < this value (pagination cursor).
     """
+    await ensure_db_ready()
+    service = ImService()
     return MessageList(
-        await _p.call(
-            "im",
-            "search_messages",
-            query=query,
-            limit=limit,
-            ctx_id=ctx_id,
-            filter_user_id=filter_user_id,
-            before_id=before_id,
+        await service.search_messages(
+            service_payload(
+                query=query,
+                limit=limit,
+                ctx_id=ctx_id,
+                filter_user_id=filter_user_id,
+                before_id=before_id,
+            )
         )
     )
 
 
-async def read_forward(forward_id: str) -> list[dict[str, Any]]:
-    """Read a stored merged-forward message by forward id."""
-    return await _p.call("im", "read_forward", forward_id=forward_id)
+async def read_forward(forward_id: str) -> list[ForwardNode]:
+    """Read the nodes inside a QQ merged-forward message id returned in a message segment."""
+    await ensure_db_ready()
+    return cast(list[ForwardNode], await ImService().read_forward(service_payload(forward_id=forward_id)))
 
 
-async def list_contacts() -> dict[str, Any]:
-    """List contacts and groups visible to the current actor."""
-    return await _p.call("im", "list_contacts")
+async def list_contacts() -> ContactList:
+    """List QQ groups, friends, and yuubot contexts visible to the master actor."""
+    return cast(ContactList, await ImService(config=local_config()).list_contacts(service_payload()))
 
 
-async def react_message(message_id: int | str, emoji_id: int | str) -> dict[str, Any]:
-    """React to a QQ message when the recorder and policy allow it."""
-    return await _p.call("im", "react_message", message_id=message_id, emoji_id=emoji_id)
+async def react_message(message_id: int | str, emoji_id: int | str) -> ReactMessageResult:
+    """Send a QQ emoji reaction to an existing message; emoji_id may be a numeric id or supported alias."""
+    await ensure_db_ready()
+    return cast(
+        ReactMessageResult,
+        await ImService(config=local_config()).react_message(
+            service_payload(message_id=message_id, emoji_id=emoji_id)
+        ),
+    )
 
 
 async def send_file(
@@ -112,12 +251,21 @@ async def send_file(
     *,
     name: str | None = None,
     ctx_id: int | None = None,
-) -> dict[str, Any]:
-    """Upload a file to the current QQ context (group file space or private chat).
+) -> SendFileResult:
+    """Upload a workspace file as a QQ group/private file and return the upload target metadata.
 
     - ``path`` — absolute path or workspace-relative path on the bot host,
       e.g. ``"/workspace/ctx-1/report.pdf"`` or ``"report.pdf"``.
+      Note: you can only send files under your workspace.
     - ``name`` — display name shown in QQ; defaults to the filename.
     - ``ctx_id`` — target context; defaults to current.
+
+    Returns:
+        ``{"status": "sent", "ctx_id": int, "chat_type": "group"|"private",
+        "target_id": int, "file": "/abs/path", "name": str, "napcat": ...}``.
     """
-    return await _p.call("im", "send_file", path=path, name=name, ctx_id=ctx_id)
+    await ensure_db_ready()
+    return cast(
+        SendFileResult,
+        await ImService(config=local_config()).send_file(service_payload(path=path, name=name, ctx_id=ctx_id)),
+    )

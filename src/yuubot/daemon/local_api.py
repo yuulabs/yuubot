@@ -4,20 +4,18 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 import msgspec
 
 from yuubot.config import Config
-from yuubot.daemon.runtime import KernelTokenBinding, resolve_kernel_token
+from yuubot.daemon.actor import KernelTokenBinding, resolve_kernel_token
 from yuubot.services.base import AccessDenied, YuubotServiceError
-from yuubot.services.delegate import DelegateService
 from yuubot.services.im import ImService
 from yuubot.services.media import MediaService
 from yuubot.services.mem import MemoryService
-from yuubot.services.schedule import ScheduleService
 from yuubot.services.web import WebService
 from yuubot.services.workspace import WorkspaceService
 
@@ -40,25 +38,22 @@ def _register(handlers: dict[tuple[str, str], ServiceHandler], svc: object) -> N
     prefix = _service_name(svc)
     for name, method in inspect.getmembers(svc, predicate=inspect.iscoroutinefunction):
         if not name.startswith("_"):
-            handlers[(prefix, name)] = method
+            handlers[(prefix, name)] = cast(ServiceHandler, method)
 
 
 def create_agent_fn_router(
     *,
     config: Config | None = None,
-    agent_runner: object | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/agent-fns")
     im = ImService(config=config)
     mem = MemoryService(config=config)
     web = WebService(config=config)
-    schedule = ScheduleService(config=config)
     media = MediaService(config=config)
     workspace = WorkspaceService()
-    delegate = DelegateService(runner=agent_runner)  # type: ignore[arg-type]
 
     handlers: dict[tuple[str, str], ServiceHandler] = {}
-    for svc in (im, mem, web, schedule, media, workspace, delegate):
+    for svc in (im, mem, web, media, workspace):
         _register(handlers, svc)
 
     @router.post("/scope/check")

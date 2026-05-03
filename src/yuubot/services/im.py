@@ -72,6 +72,10 @@ def _int(value: object) -> int:
     return 0
 
 
+def _fts_phrase(term: str) -> str:
+    return '"' + term.replace('"', '""') + '"'
+
+
 def _iso(value: object) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -337,11 +341,11 @@ class ImService:
         if scoped_ctx is None and not _is_master(payload):
             scoped_ctx = _current_ctx(payload)
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        words = query.split()
+        words = [word for word in query.split() if word]
         conn = connections.get("default")
         if not words:
             return []
-        fts_query = " OR ".join(words)
+        fts_query = " OR ".join(_fts_phrase(word) for word in words)
         fts_where = [
             "id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)",
             "timestamp >= ?",
@@ -401,7 +405,8 @@ class ImService:
         record = await MessageRecord.filter(message_id=message_id).order_by("-id").first()
         if record is None:
             raise YuubotServiceError(f"message {message_id} was not found")
-        record_ctx_id = record.ctx_id
+        record_ctx_id = getattr(record, "ctx_id")
+        assert isinstance(record_ctx_id, int)
         if record_ctx_id != _current_ctx(payload) and not _is_master(payload):
             raise InvalidScope(f"message {message_id} is outside current group scope")
         ctx = await Context.filter(id=record_ctx_id).first()

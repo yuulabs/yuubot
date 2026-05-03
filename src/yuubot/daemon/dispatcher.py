@@ -14,14 +14,11 @@ from yuubot.config import Config
 from yuubot.core.models import AtSegment, Message, ReplySegment, TextSegment, segments_to_plain
 from yuubot.core.onebot import build_send_msg, to_inbound_message
 from yuubot.core.types import CommandRoute, InboundMessage, Route
-from yuubot.daemon.conversation import ConversationManager, conversation_worth_curating
 from yuubot.daemon.routing import resolve_route
 
 
 def _ctx_key(message: InboundMessage) -> str:
-    if message.chat_type == "group":
-        return f"group:{message.group_id}"
-    return f"private:{message.sender.user_id}"
+    return f"ctx:{message.ctx_id}"
 
 
 def _mentions_bot(message: InboundMessage, bot_qq: int) -> bool:
@@ -103,14 +100,14 @@ class Dispatcher:
         config: Config,
         root: RootCommand,
         deps: dict,
-        agent_runner,
-        conv_mgr: ConversationManager | None = None,
+        master_actor=None,
+        group_actor=None,
     ) -> None:
         self.config = config
         self.root = root
         self.deps = deps
-        self.agent_runner = agent_runner
-        self.conv_mgr = conv_mgr or ConversationManager()
+        self.master_actor = master_actor
+        self.group_actor = group_actor
         self._workers: dict[str, _CtxWorker] = {}
         self._group_settings_cache: dict[int, object] = {}
         self._group_settings_loaded_at = 0.0
@@ -127,15 +124,13 @@ class Dispatcher:
     async def dispatch(self, event: dict) -> None:
         if event.get("post_type") != "message":
             return
-        for expired in self.conv_mgr.collect_expired():
-            if conversation_worth_curating(expired):
-                logger.info("Expired conversation is worth curating; curator is phase-3 behavior")
-
         if event.get("user_id", 0) == self.config.bot.qq:
             return
 
         inbound = to_inbound_message(event)
-        self.conv_mgr.observe_message(inbound.ctx_id, inbound.db_id)
+        await self.dispatch_message(inbound)
+
+    async def dispatch_message(self, inbound: InboundMessage) -> None:
         preview = _message_preview(inbound)
         logger.info(
             "Received: type={} user={} group={} ctx={} text={}",
@@ -225,14 +220,6 @@ class Dispatcher:
         )
 
     async def _enqueue_or_pending(self, routed: RoutedCommand) -> None:
-        conv = self.conv_mgr.get(routed.message.ctx_id)
-        if conv is not None and conv.state == "running":
-            self.conv_mgr.touch(conv)
-            logger.info(
-                "Interactive message queued behind running conversation: ctx={} text={}",
-                routed.message.ctx_id,
-                _message_preview(routed.message),
-            )
         key = _ctx_key(routed.message)
         worker = self._workers.get(key)
         if worker is None:
@@ -242,13 +229,8 @@ class Dispatcher:
         worker.queue.put_nowait(routed)
 
     async def _wait_until_runnable(self, routed: RoutedCommand) -> None:
-        while True:
-            ctx_id = routed.message.ctx_id
-            conv = self.conv_mgr.get(ctx_id)
-            active = self.agent_runner.get_active_run(ctx_id)
-            if active is None and (conv is None or conv.state != "running"):
-                return
-            await asyncio.sleep(0.05)
+        # Actor handles per-agent serialization via asyncio.Lock
+        return
 
     async def _handle(self, routed: RoutedCommand) -> None:
         reply = await routed.execute()
@@ -270,8 +252,6 @@ class Dispatcher:
             return False
         if message.sender.user_id == self.config.bot.master:
             return True
-        if message.ctx_id and self.conv_mgr.get(message.ctx_id) is not None:
-            return message.chat_type == "private" or _mentions_bot(message, self.config.bot.qq)
         if message.chat_type == "private":
             return message.sender.user_id in self.config.response.dm_whitelist
         if message.chat_type == "group":

@@ -55,13 +55,13 @@ def _mime_for(path: Path) -> str:
 def _collect_text(item: yuullm.StreamItem) -> str:
     if isinstance(item, yuullm.Response):
         value = item.item
-        if isinstance(value, yuullm.TextItem):
-            return value.text
+        if yuullm.is_text_item(value):
+            return value["text"]
         return ""
     if isinstance(item, yuullm.Reasoning):
         value = item.item
-        if isinstance(value, yuullm.TextItem):
-            return value.text
+        if yuullm.is_text_item(value):
+            return value["text"]
         return ""
     return ""
 

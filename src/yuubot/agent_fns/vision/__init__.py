@@ -2,21 +2,45 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TypedDict, cast
 
-from yuubot.agent_fns._proxy import _DaemonProxy
+from yuubot.agent_fns.local import ensure_db_ready, local_config, service_payload
+from yuubot.services.media import MediaService
 
-_p = _DaemonProxy()
+__all__ = ["describe_image", "image_metadata"]
 
 
-async def describe_image(media: str, *, refresh: bool = False) -> dict[str, Any]:
-    """Describe a QQ, URL, or workspace image using the configured vision service.
+class ImageMetadata(TypedDict, total=False):
+    url: str
+    local_path: str
+    media_id: str
+    mime_type: str
+    bytes: int
+
+
+class ImageDescription(ImageMetadata):
+    media: str
+    description: str
+    cached: bool
+
+
+async def describe_image(media: str, *, refresh: bool = False) -> ImageDescription:
+    """Describe one image and return the text description plus resolved url/local_path metadata.
 
     Only available when SESSION_STATE.supports_vision is True.
     """
-    return await _p.call("media", "describe_image", media=media, refresh=refresh)
+    await ensure_db_ready()
+    return cast(
+        ImageDescription,
+        await MediaService(config=local_config()).describe_image(
+            service_payload(media=media, refresh=refresh)
+        ),
+    )
 
 
-async def image_metadata(media: str) -> dict[str, Any]:
-    """Resolve image metadata without generating a new description."""
-    return await _p.call("media", "resolve_media", media=media)
+async def image_metadata(media: str) -> ImageMetadata:
+    """Resolve an image reference without vision inference; returns url or local_path plus mime/bytes if local."""
+    return cast(
+        ImageMetadata,
+        await MediaService(config=local_config()).resolve_media(service_payload(media=media)),
+    )

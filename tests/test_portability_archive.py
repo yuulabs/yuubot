@@ -87,7 +87,7 @@ def _make_config(tmp_path: Path) -> Config:
             download_dir=str(tmp_path / "downloads"),
         ),
         response=ResponseConfig(group_default="at", dm_whitelist=[]),
-        session=SessionConfig(ttl=300, max_tokens=60000),
+        session=SessionConfig(),
         yuuagents={
             "yuutrace": {"db_path": str(tmp_path / "traces.db")},
             "docker": {"image": "yuuagents-runtime:latest"},

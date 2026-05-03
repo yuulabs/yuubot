@@ -309,10 +309,8 @@ def _finish_reasons_text(finish_reasons: list[str]) -> str:
 
 
 def _item_text(item: yuullm.ContentItem) -> str:
-    if isinstance(item, dict) and item.get("type") == "text":
-        return str(item.get("text", ""))
-    if isinstance(item, yuullm.TextItem):
-        return item.text
+    if yuullm.is_text_item(item):
+        return item["text"]
     return ""
 
 

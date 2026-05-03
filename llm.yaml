@@ -30,7 +30,7 @@ llm_roles:
   summarizer: deepseek-v4-flash
 agent_llm_refs:
   yuu: deepseek/deepseek-v4-flash:none
-  maid: deepseek/deepseek-v4-pro:max
+  shiori: deepseek/deepseek-v4-pro:max
   general: deepseek/deepseek-v4-flash
   mem_curator: deepseek/deepseek-v4-flash
   ops: deepseek/deepseek-v4-flash

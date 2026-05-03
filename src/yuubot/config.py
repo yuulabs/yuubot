@@ -53,7 +53,6 @@ class DaemonConfig(msgspec.Struct):
     recorder_ws: str = "ws://127.0.0.1:8766"
     recorder_api: str = "http://127.0.0.1:8767"
     api: DaemonApiConfig = msgspec.field(default_factory=DaemonApiConfig)
-    agent_timeout: float = 300.0
     self_url: str = "http://127.0.0.1:8780"
 
 
@@ -61,11 +60,6 @@ class DatabaseConfig(msgspec.Struct):
     path: str = "~/.yuubot/yuubot.db"
     simple_ext: str = ""  # path to libsimple (without .so), auto-detected if empty
 
-
-class CronJob(msgspec.Struct):
-    task: str = ""
-    cron: str = ""
-    ctx_id: int | None = None
 
 
 class MemoryConfig(msgspec.Struct):
@@ -79,13 +73,6 @@ class WebConfig(msgspec.Struct):
     download_dir: str = "~/.yuubot/downloads"
 
 
-class ScheduleConfig(msgspec.Struct):
-    max_long_cycle: int = 5
-    tick_seconds: float = 1.0  # clock-drift check interval for scheduler wakeups
-    late_grace_seconds: float = 2.0
-    catchup_spacing_seconds: float = 10.0
-    resume_threshold_seconds: float = 30.0
-
 
 class ResponseConfig(msgspec.Struct):
     group_default: str = "at"
@@ -97,9 +84,6 @@ class NetworkConfig(msgspec.Struct):
 
 
 class SessionConfig(msgspec.Struct):
-    ttl: int = 300          # seconds before group session expires
-    master_ttl: int = 3600  # seconds before master session expires
-    max_tokens: int = 60000  # context window token limit
     summarize_steps_span: int = (
         8  # steps to look back when generating compression summary
     )
@@ -118,6 +102,20 @@ class AdminConfig(msgspec.Struct):
     enabled: bool = True
     persistent_paths: list[str] = msgspec.field(default_factory=list)
     persist_base: str = ""  # defaults to "data/yuubot/persist" at runtime
+    secret: str = ""  # if non-empty, required as Bearer token or cookie
+
+
+class RoutingDefaultsConfig(msgspec.Struct):
+    group: str = "yuu"
+    private: str = "shiori"
+    thread: str = "yuu"
+    session: str = "shiori"
+    other: str = "yuu"
+
+
+class RoutingConfig(msgspec.Struct):
+    defaults: RoutingDefaultsConfig = msgspec.field(default_factory=RoutingDefaultsConfig)
+    rules: list[dict] = msgspec.field(default_factory=list)
 
 
 class Config(msgspec.Struct):
@@ -136,15 +134,14 @@ class Config(msgspec.Struct):
     families: dict[str, Any] = msgspec.field(default_factory=dict)
     selectors: list[str] = msgspec.field(default_factory=list)
     api_keys: dict[str, str] = msgspec.field(default_factory=dict)
-    cron_jobs: list[CronJob] = msgspec.field(default_factory=list)
     memory: MemoryConfig = msgspec.field(default_factory=MemoryConfig)
     web: WebConfig = msgspec.field(default_factory=WebConfig)
     response: ResponseConfig = msgspec.field(default_factory=ResponseConfig)
     network: NetworkConfig = msgspec.field(default_factory=NetworkConfig)
-    schedule: ScheduleConfig = msgspec.field(default_factory=ScheduleConfig)
     session: SessionConfig = msgspec.field(default_factory=SessionConfig)
     docker: DockerConfig = msgspec.field(default_factory=DockerConfig)
     admin: AdminConfig = msgspec.field(default_factory=AdminConfig)
+    routing: RoutingConfig = msgspec.field(default_factory=RoutingConfig)
 
     @property
     def skill_paths(self) -> list[str]:

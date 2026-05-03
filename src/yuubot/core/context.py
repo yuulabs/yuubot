@@ -24,9 +24,37 @@ class ContextManager:
         key = (ctx_type, target_id)
         if key in self._by_target:
             return self._by_target[key]
-        obj, _ = await Context.get_or_create(
-            type=ctx_type, target_id=target_id,
+        gateway_key = f"{ctx_type}:{target_id}"
+        obj, created = await Context.get_or_create(
+            channel="qq",
+            key=gateway_key,
+            defaults={
+                "kind": ctx_type if ctx_type in {"group", "private"} else "other",
+                "type": ctx_type,
+                "target_id": target_id,
+                "target_str": gateway_key,
+                "is_group": ctx_type == "group",
+                "is_private": ctx_type == "private",
+                "metadata": (
+                    {"group_id": str(target_id)}
+                    if ctx_type == "group"
+                    else {"user_id": str(target_id)}
+                    if ctx_type == "private"
+                    else {}
+                ),
+            },
         )
+        if created or obj.type != ctx_type or obj.target_id != target_id or not obj.kind:
+            await Context.filter(id=obj.id).update(
+                channel="qq",
+                key=gateway_key,
+                kind=ctx_type if ctx_type in {"group", "private"} else "other",
+                type=ctx_type,
+                target_id=target_id,
+                target_str=gateway_key,
+                is_group=ctx_type == "group",
+                is_private=ctx_type == "private",
+            )
         info = CtxInfo(ctx_id=obj.id, type=ctx_type, target_id=target_id)
         self._by_id[obj.id] = info
         self._by_target[key] = obj.id

@@ -287,13 +287,30 @@ class CtxInfo(msgspec.Struct):
 
 class Context(Model):
     id = fields.IntField(primary_key=True)
-    type = fields.CharField(max_length=16)
-    target_id = fields.BigIntField()
+
+    # ── Gateway identity ──
+    channel = fields.CharField(max_length=32, default="qq")
+    key = fields.CharField(max_length=256, default="")
+    kind = fields.CharField(max_length=32, default="other")
+    label = fields.CharField(max_length=256, default="")
+
+    # ── Channel-specific attributes ──
+    metadata = fields.JSONField(default=dict)
+
+    # ── State ──
+    last_message_at = fields.DatetimeField(null=True)
+    archived = fields.BooleanField(default=False)
     created_at = fields.DatetimeField(auto_now_add=True)
+
+    # ── Backward compat (QQ-only) ──
+    target_id = fields.BigIntField(default=0)
+    target_str = fields.CharField(max_length=256, default="")
+    is_group = fields.BooleanField(default=False)
+    is_private = fields.BooleanField(default=False)
+    type = fields.CharField(max_length=16, default="")
 
     class Meta:
         table = "contexts"
-        unique_together = (("type", "target_id"),)
 
 
 class MessageRecord(Model):
@@ -396,6 +413,16 @@ class MemoryConfigKV(Model):
 
     class Meta:
         table = "memory_config"
+
+
+class AdminConfigKV(Model):
+    """Persisted admin config overrides — survives restart, layered on top of config.yaml."""
+
+    key = fields.CharField(max_length=128, primary_key=True)
+    value = fields.TextField()
+
+    class Meta:
+        table = "admin_config"
 
 
 class ImageEntry(Model):

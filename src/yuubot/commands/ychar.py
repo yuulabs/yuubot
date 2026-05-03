@@ -11,22 +11,14 @@ def _resolver(request: CommandRequest) -> ModelResolver:
 
 
 def _current_agent_name(request: CommandRequest) -> str:
-    session_mgr = request.deps.get("session_mgr")
-    ctx_id = request.message.ctx_id
-    if session_mgr is not None and ctx_id:
-        current_agent = session_mgr.current_agent(ctx_id)
-        if current_agent:
-            return current_agent
-        conv = session_mgr.get(ctx_id)
-        if conv is not None and conv.agent_name:
-            return conv.agent_name
+    if request.message.sender.user_id == request.deps["config"].bot.master:
+        return "shiori"
     return "yuu"
 
 
 async def exec_char_show_prompt(request: CommandRequest) -> str | None:
     """Show the rendered system prompt for a character."""
     from yuubot.characters import CHARACTER_REGISTRY, get_character
-    from yuubot.daemon.runtime import YuubotRuntimeFactory
     from yuubot.prompt import render_system_prompt
 
     name = request.remaining.strip() or "yuu"
@@ -34,9 +26,7 @@ async def exec_char_show_prompt(request: CommandRequest) -> str | None:
         return f"未知 Character: {name}\n可用: {', '.join(CHARACTER_REGISTRY)}"
 
     character = get_character(name)
-    factory = YuubotRuntimeFactory(request.deps["config"])
-    delegates = factory._delegate_descriptions(character)
-    return render_system_prompt(character, delegate_descriptions=delegates)
+    return render_system_prompt(character, python_backend=character.bot_kind)
 
 
 async def exec_char_show_config(request: CommandRequest) -> str | None:
@@ -68,7 +58,6 @@ async def exec_char_show_config(request: CommandRequest) -> str | None:
         f"Imports: {', '.join(str(item) for item in spec.resolved_imports())}",
         f"Expand functions: {', '.join(spec.expand_functions) or '(none)'}",
         f"Max turns: {spec.max_turns}",
-        f"Inactivity timeout: {spec.inactivity_timeout_s or '(none)'}",
     ]
     if delegate_policy is not None:
         lines.append(

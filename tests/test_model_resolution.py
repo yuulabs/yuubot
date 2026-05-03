@@ -1,7 +1,13 @@
 from __future__ import annotations
 
-from yuubot.daemon.llm_factory import make_summary_llm
-from yuubot.model_resolution import ModelResolver
+from unittest.mock import patch
+
+import yuullm
+
+from yuubot.characters import get_character
+from yuubot.daemon.actor import _build_llm_options, build_definition
+from yuubot.daemon.llm_factory import make_llm, make_summary_llm
+from yuubot.model_resolution import ModelResolver, build_llm_client
 
 
 def test_internal_llm_roles_have_expected_defaults(yuubot_config) -> None:
@@ -86,3 +92,149 @@ async def test_summarizer_llm_uses_role_resolution(yuubot_config) -> None:
     llm = await make_summary_llm(yuubot_config)
 
     assert llm.default_model == "deepseek-chat"
+
+
+async def test_effort_suffix_is_not_sent_as_part_of_model_name(yuubot_config) -> None:
+    yuubot_config.agent_llm_refs["yuu"] = "test/test-model:none"
+    captured: dict[str, object] = {}
+
+    async def _fake_stream(self, messages, *, model=None, tools=None, **kw):
+        del self, messages, tools
+        captured["model"] = model
+        captured["kwargs"] = kw
+
+        async def _iter():
+            if False:
+                yield None
+
+        return _iter(), yuullm.Store()
+
+    resolved = await ModelResolver(yuubot_config).resolve_agent("yuu")
+    assert resolved.resolved_model == "test-model"
+    assert resolved.effort == "none"
+
+    llm = await make_llm("yuu", yuubot_config)
+    with patch.object(
+        yuullm.providers.OpenAIChatCompletionProvider,
+        "stream",
+        _fake_stream,
+    ):
+        stream, _store = await llm.stream([yuullm.user("hi")])
+        async for _item in stream:
+            pass
+
+    assert captured["model"] == "test-model"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["reasoning_effort"] == "none"
+
+
+async def test_raw_llm_client_model_suffix_sets_reasoning_effort(yuubot_config) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_stream(self, messages, *, model=None, tools=None, **kw):
+        del self, messages, tools
+        captured["model"] = model
+        captured["kwargs"] = kw
+
+        async def _iter():
+            if False:
+                yield None
+
+        return _iter(), yuullm.Store()
+
+    llm = build_llm_client("test", "test-model:none", yuubot_config)
+    with patch.object(
+        yuullm.providers.OpenAIChatCompletionProvider,
+        "stream",
+        _fake_stream,
+    ):
+        stream, _store = await llm.stream([yuullm.user("hi")])
+        async for _item in stream:
+            pass
+
+    assert llm.default_model == "test-model"
+    assert captured["model"] == "test-model"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["reasoning_effort"] == "none"
+
+
+async def test_deepseek_none_effort_disables_thinking(yuubot_config) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_stream(self, messages, *, model=None, tools=None, **kw):
+        del self, messages, tools
+        captured["model"] = model
+        captured["kwargs"] = kw
+
+        async def _iter():
+            if False:
+                yield None
+
+        return _iter(), yuullm.Store()
+
+    llm = build_llm_client("deepseek", "deepseek-v4-flash:none", yuubot_config)
+    with patch.object(
+        yuullm.providers.OpenAIChatCompletionProvider,
+        "stream",
+        _fake_stream,
+    ):
+        stream, _store = await llm.stream(
+            [yuullm.user("hi")],
+            reasoning_effort="none",
+        )
+        async for _item in stream:
+            pass
+
+    assert llm.default_model == "deepseek-v4-flash"
+    assert captured["model"] == "deepseek-v4-flash"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert "thinking" not in kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in kwargs
+
+
+async def test_deepseek_non_none_effort_enables_thinking(yuubot_config) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_stream(self, messages, *, model=None, tools=None, **kw):
+        del self, messages, tools
+        captured["model"] = model
+        captured["kwargs"] = kw
+
+        async def _iter():
+            if False:
+                yield None
+
+        return _iter(), yuullm.Store()
+
+    llm = build_llm_client("deepseek", "deepseek-v4-pro:high", yuubot_config)
+    with patch.object(
+        yuullm.providers.OpenAIChatCompletionProvider,
+        "stream",
+        _fake_stream,
+    ):
+        stream, _store = await llm.stream([yuullm.user("hi")])
+        async for _item in stream:
+            pass
+
+    assert llm.default_model == "deepseek-v4-pro"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert "thinking" not in kwargs
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert kwargs["reasoning_effort"] == "high"
+
+
+def test_yuuagents_definition_strips_effort_suffix_from_model(yuubot_config) -> None:
+    yuubot_config.agent_llm_refs["yuu"] = "test/test-model:none"
+
+    options = _build_llm_options(yuubot_config, "yuu")
+    definition = build_definition(get_character("yuu"), options, "master")
+
+    assert options["model"] == "test-model"
+    assert options["reasoning_effort"] == "none"
+    assert definition.llm.stream_kwargs()["model"] == "test-model"
+    assert definition.llm.stream_kwargs()["reasoning_effort"] == "none"

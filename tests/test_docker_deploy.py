@@ -52,3 +52,37 @@ def test_docker_traces_ui_default_avoids_admin_port(tmp_path: Path) -> None:
     compose = yaml.safe_load(deployment.compose_path.read_text(encoding="utf-8"))
     assert "8781:8781" in compose["services"]["yuubot"]["ports"]
     assert compose["services"]["traces-ui"]["ports"] == ["8782:8080"]
+
+
+def test_docker_deployment_inherits_host_proxy_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("http_proxy", "http://proxy.test:7890")
+    monkeypatch.setenv("https_proxy", "http://proxy.test:7890")
+    monkeypatch.setenv("NO_PROXY", "localhost,example.com")
+
+    deployment = write_deployment_bundle(
+        Config(bot=BotConfig(qq=123456), timezone="UTC"),
+        deploy_dir=tmp_path / "deploy",
+        repo_root=tmp_path / "repo",
+    )
+
+    env_lines = deployment.env_path.read_text(encoding="utf-8").splitlines()
+    assert "HTTP_PROXY=http://proxy.test:7890" in env_lines
+    assert "http_proxy=http://proxy.test:7890" in env_lines
+    assert "HTTPS_PROXY=http://proxy.test:7890" in env_lines
+    assert "https_proxy=http://proxy.test:7890" in env_lines
+    assert (
+        "NO_PROXY=localhost,example.com,127.0.0.1,::1,napcat,yuubot,traces-ui,"
+        "host.docker.internal"
+    ) in env_lines
+    assert (
+        "no_proxy=localhost,example.com,127.0.0.1,::1,napcat,yuubot,traces-ui,"
+        "host.docker.internal"
+    ) in env_lines
+
+    compose = yaml.safe_load(deployment.compose_path.read_text(encoding="utf-8"))
+    assert compose["services"]["napcat"]["extra_hosts"] == [
+        "host.docker.internal:host-gateway"
+    ]
+    assert compose["services"]["yuubot"]["extra_hosts"] == [
+        "host.docker.internal:host-gateway"
+    ]

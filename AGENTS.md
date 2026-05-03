@@ -7,6 +7,7 @@
 - **Type checker is `ty`**, not mypy/pyright. `uv run ty check`.
 - **Monorepo**: sibling packages (`yuuagents`, `yuullm`, `yuutools`, `yuutrace`) live in `../` from repo root. `ty check` resolves them via `extra-paths` in pyproject.toml. If type-check errors appear in these packages, the source is one level up.
 - **No `ConversationRoute` type exists** despite older docs. Routing returns only `CommandRoute` (with `command_path=("llm",)` for agent triggers) or `None`.
+- **Docker is not production-hardened yet**: Admin is published by compose and currently includes unauthenticated file/terminal surfaces when `admin.secret` is empty or not enforced. Keep it local-only unless `issues/013-docker-deploy-hardening.md` is resolved.
 
 ## Commands
 
@@ -45,13 +46,9 @@ NapCat WS → recorder/relay.py → daemon/ws_client.py → dispatcher.py
 
 ```bash
 # Logs
-tail -f ~/.yuubot/logs/daemon.log
-grep "ctx=N" ~/.yuubot/logs/daemon.log
-grep "agent failed\|exception" ~/.yuubot/logs/daemon.log -i
-
+cd ~/.local/share/yuubot-docker
 # Conversation traces (span-based DB)
 uv run python scripts/conv.py          # list recent
 uv run python scripts/conv.py -l -n    # latest, compact
 uv run python scripts/conv.py ID       # by short ID prefix
-curl http://127.0.0.1:8780/health     # daemon health
 ```

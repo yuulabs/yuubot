@@ -8,7 +8,6 @@ import pytest
 
 from yuubot.commands.builtin import build_command_tree
 from yuubot.commands.entry import EntryManager
-from yuubot.daemon.conversation import ConversationManager
 from yuubot.daemon.dispatcher import Dispatcher
 from tests.conftest import (
     FOLK_QQ,
@@ -20,22 +19,18 @@ from tests.helpers import sent_texts
 
 
 def _make_dispatcher(yuubot_config):
-    conv_mgr = ConversationManager(ttl=300, max_tokens=60000)
     root = build_command_tree(yuubot_config.bot.entries)
     deps = {
         "entry_mgr": EntryManager(),
         "root": root,
-        "session_mgr": conv_mgr,
         "config": yuubot_config,
     }
     dispatcher = Dispatcher(
         config=yuubot_config,
         root=root,
         deps=deps,
-        agent_runner=object(),
-        conv_mgr=conv_mgr,
     )
-    return dispatcher, conv_mgr
+    return dispatcher, None
 
 
 # ── /yhelp ───────────────────────────────────────────────────────

@@ -13,19 +13,19 @@ import yuutrace
 from yuutrace.cli.server import _build_app
 
 from yuubot.admin.app import create_admin_app
+from yuubot.channels.qq import QQRecorderAdapter
+from yuubot.channels.web import WebChatAdapter
 from yuubot.admin.persist import setup_persistent_paths
 from yuubot.commands.builtin import build_command_tree
 from yuubot.commands.entry import EntryManager
 from yuubot.config import load_config
 from yuubot.core.db import close_db, init_db
-from yuubot.daemon.agent_runner import AgentRunner
-from yuubot.daemon.conversation import ConversationManager
 from yuubot.daemon.dispatcher import Dispatcher
+from yuubot.daemon.gateway import Gateway, OutboundMessage, build_routing_engine
 from yuubot.daemon.llm import LLMExecutor
 from yuubot.daemon.local_api import create_agent_fn_router
 from yuubot.daemon.ws_client import WSClient
 from yuubot.log import setup as setup_logging
-from yuubot.scheduler import Scheduler
 
 _YTRACE_HOST = "127.0.0.1"
 _YTRACE_PORT = 4318
@@ -98,6 +98,26 @@ async def _start_tracing(cfg) -> tuple[uvicorn.Server, asyncio.Task[None]]:
     return trace_server, trace_task
 
 
+def _build_routing(cfg):
+    from yuubot.daemon.gateway import RoutingRule
+    routing = cfg.routing
+    rules = [
+        RoutingRule(match=r.get("match", {}), actor=r.get("actor", "yuu"))
+        for r in routing.rules
+        if isinstance(r, dict)
+    ]
+    return build_routing_engine({
+        "defaults": {
+            "group": routing.defaults.group,
+            "private": routing.defaults.private,
+            "thread": routing.defaults.thread,
+            "session": routing.defaults.session,
+            "other": routing.defaults.other,
+        },
+        "rules": [{"match": r.match, "actor": r.actor} for r in rules],
+    })
+
+
 async def run_daemon(config_path: str | None = None) -> None:
     cfg = load_config(config_path)
     setup_logging(cfg.log_dir, name="daemon")
@@ -105,47 +125,73 @@ async def run_daemon(config_path: str | None = None) -> None:
     await init_db(cfg.database.path, simple_ext=cfg.database.simple_ext)
     await setup_persistent_paths(cfg.admin.persistent_paths, cfg.admin.persist_base)
 
+    from yuubot.admin.config_api import load_config_overrides
+    from yuubot.core.models import Context
+    await load_config_overrides(cfg)
+    await Context.get_or_create(
+        channel="web",
+        key="session:admin",
+        defaults={
+            "kind": "session",
+            "label": "Admin session",
+            "type": "web",
+            "target_id": 0,
+        },
+    )
+
     from yuubot.model_resolution import load_model_pricing
     await load_model_pricing()
     asyncio.create_task(_daily_genai_prices_updater(), name="genai-prices-updater")
 
     entry_mgr = EntryManager()
-    conv_mgr = ConversationManager(
-        ttl=float(cfg.session.ttl),
-        master_ttl=float(cfg.session.master_ttl),
-        max_tokens=cfg.session.max_tokens,
-    )
-    agent_runner = AgentRunner(config=cfg)
+
+    # ── Stage + Actor architecture (yuuagents v0.2.0) ──
+    from yuubot.daemon.actor import build_master_stage, build_group_stage, YuubotActor
+
+    master_stage = build_master_stage(cfg)
+    group_stage = build_group_stage(cfg)
+
+    send_gateway = Gateway()
+    web_adapter = WebChatAdapter()
+    send_gateway.register(QQRecorderAdapter(cfg.daemon.recorder_api))
+    send_gateway.register(web_adapter)
+
+    async def _send_actor_reply(ctx_id: int, message: OutboundMessage) -> None:
+        await send_gateway.send(ctx_id, message)
+
+    master_actor = YuubotActor(master_stage, bot_kind="master", config=cfg, im_sender=_send_actor_reply)
+    group_actor = YuubotActor(group_stage, bot_kind="group", config=cfg, im_sender=_send_actor_reply)
+    # ─────────────────────────────────────────────────────────────
 
     llm_exec = LLMExecutor(
-        conv_mgr=conv_mgr,
-        agent_runner=agent_runner,
         config=cfg,
+        master_actor=master_actor,
+        group_actor=group_actor,
+        routing_engine=_build_routing(cfg),
     )
     root = build_command_tree(cfg.bot.entries, llm_executor=llm_exec)
     deps: dict[str, object] = {
         "entry_mgr": entry_mgr,
         "root": root,
         "dm_whitelist": cfg.response.dm_whitelist,
-        "session_mgr": conv_mgr,
         "config": cfg,
-        "agent_runner": agent_runner,
+        "master_actor": master_actor,
+        "group_actor": group_actor,
     }
     dispatcher = Dispatcher(
         config=cfg,
         root=root,
         deps=deps,
-        agent_runner=agent_runner,
-        conv_mgr=conv_mgr,
+        master_actor=master_actor,
+        group_actor=group_actor,
     )
     deps["dispatcher"] = dispatcher
 
     ws_client = WSClient(url=cfg.daemon.recorder_ws, on_event=dispatcher.dispatch)
-    scheduler = Scheduler(config=cfg, agent_runner=agent_runner)
     shutdown_event = asyncio.Event()
 
     app = FastAPI(title="yuubot-daemon")
-    app.include_router(create_agent_fn_router(config=cfg, agent_runner=agent_runner))
+    app.include_router(create_agent_fn_router(config=cfg))
 
     @app.get("/health")
     async def health() -> JSONResponse:
@@ -153,7 +199,7 @@ async def run_daemon(config_path: str | None = None) -> None:
             {
                 "status": "ok",
                 "workers": len(dispatcher._workers),
-                "live_agents": agent_runner.live_agent_count(),
+                "live_agents": len(master_actor.agents) + len(group_actor.agents),
                 "runtime": "rfc2",
             }
         )
@@ -162,11 +208,6 @@ async def run_daemon(config_path: str | None = None) -> None:
     async def do_shutdown() -> JSONResponse:
         shutdown_event.set()
         return JSONResponse({"status": "shutting down"})
-
-    @app.post("/schedule/reload")
-    async def schedule_reload() -> JSONResponse:
-        await scheduler.reload()
-        return JSONResponse({"status": "reloaded"})
 
     _allowed_roots = [
         p for raw in [
@@ -188,7 +229,8 @@ async def run_daemon(config_path: str | None = None) -> None:
 
     await ws_client.connect()
     dispatcher.start()
-    await scheduler.start()
+    asyncio.create_task(master_actor.run(), name="master-actor")
+    asyncio.create_task(group_actor.run(), name="group-actor")
 
     api_config = uvicorn.Config(
         app,
@@ -203,7 +245,7 @@ async def run_daemon(config_path: str | None = None) -> None:
     admin_task: asyncio.Task | None = None
     if cfg.admin.enabled:
         admin_cfg = uvicorn.Config(
-            create_admin_app(),
+            create_admin_app(cfg, master_actor, web_adapter),
             host=cfg.admin.host,
             port=cfg.admin.port,
             log_level="info",
@@ -218,9 +260,9 @@ async def run_daemon(config_path: str | None = None) -> None:
     except asyncio.CancelledError:
         pass
     finally:
-        await scheduler.stop()
         await dispatcher.stop()
-        await agent_runner.stop()
+        await master_actor.close()
+        await group_actor.close()
         await ws_client.close()
         api_server.should_exit = True
         await api_task

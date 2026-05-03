@@ -65,6 +65,8 @@ llm_roles:
 # ── Agent LLM assignments ────────────────────────────────────
 # Format: "provider/selector"  (selector is fuzzy-matched against the provider's model list)
 agent_llm_refs:
+  yuu: "deepseek/deepseek-chat"
+  shiori: "deepseek/deepseek-chat"
   main: "deepseek/deepseek-chat"
   general: "deepseek/deepseek-chat"
   researcher: "deepseek/deepseek-chat"

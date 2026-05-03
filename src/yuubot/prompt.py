@@ -13,6 +13,7 @@ from typing import Literal, Union
 
 import attrs
 import yuuagents as ya
+from yuuagents.python_runtime import ResolvedPythonRuntime
 
 from yuubot.daemon.restricted_python import _ALLOWED_IMPORTS as _RESTRICTED_ALLOWED_IMPORTS
 
@@ -66,6 +67,7 @@ PYTHON_RUNTIME_SECTION = InlineSection(
     content=(
         "你可以通过 execute_python 使用持久 Python session 处理需要工具的任务。每一段code类似于jupyter cell，将会持续活跃，直至session被关闭。\n"
         "业务函数已作为可 import 模块注入（见下方函数文档）；使用前必须先 `import 模块名`，例如 `import yb`，再调用 `yb.*`。\n"
+        "如需安装或更新 Python 依赖，默认使用 uv 管理包，例如通过 `yb.bash(\"uv add 包名\")` 或 `yb.bash(\"uv sync\")`；不要默认使用 pip。\n"
         "\n"
         "SESSION_STATE 是一个 msgspec.Struct 对象，通过属性访问（如 SESSION_STATE.ctx_id），"
         "不可 json.dumps；包含字段：bot_kind、ctx_id、chat_type、group_id、user_id、"
@@ -103,8 +105,9 @@ class AgentSpec:
     startup_code: str = ""
     delegate_policy: DelegatePolicy | None = None
     max_turns: int | None = 1
-    inactivity_timeout_s: float | None = None
     max_context_tokens: int | None = None
+    idle_agent_ttl_s: int = 300
+    preserve_python_session: bool = True
     facade_module: str = ""  # kept for backward compat; prefer import_modules
 
     def resolved_imports(self) -> tuple[ya.PythonImport, ...]:
@@ -161,7 +164,7 @@ def render_system_prompt(
     *,
     delegate_descriptions: Iterable[tuple[str, str]] = (),
     python_backend: str = "",
-    python_runtime: ya.ResolvedPythonRuntime | None = None,
+    python_runtime: ResolvedPythonRuntime | None = None,
 ) -> str:
     """Render the system prompt from prompt_sections; no hidden insertions."""
     delegate_list = list(delegate_descriptions)
@@ -186,7 +189,7 @@ def render_system_prompt(
                 parts.append(_RESTRICTED_WORKER_TEXT)
         elif isinstance(section, ExpandFunctionsSection):
             if python_runtime is not None:
-                text = python_runtime.render_import_docs()
+                text = python_runtime.tool_description_suffix()
                 if text:
                     parts.append(text)
 

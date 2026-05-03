@@ -23,7 +23,7 @@ register(
                 ya.PythonImport("yuubot.agent_fns.web", alias="web"),
                 ya.PythonImport("yuubot.agent_fns.vision", alias="vision"),
             ),
-            expand_functions=("+im.*", "*"),
+            expand_functions=("*", "+im.*"),
             prompt_sections=(
                 FileSection("main/persona.md"),
                 PYTHON_RUNTIME_SECTION,
@@ -39,6 +39,8 @@ register(
             delegate_policy=None,
             max_turns=16,
             max_context_tokens=32000,
+            idle_agent_ttl_s=300,
+            preserve_python_session=False,
         ),
         bot_kind="group"
     )

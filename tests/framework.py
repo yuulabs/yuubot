@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -199,7 +199,10 @@ def _serializable_msg(msg: yuullm.Message) -> dict:
             elif yuullm.is_thinking_item(item):
                 c.append({"type": "thinking"})
             elif yuullm.is_image_item(item):
-                c.append({"type": "image_url"})
+                c.append({
+                    "type": "image_url",
+                    "image_url": dict(item.get("image_url") or {}),
+                })
             else:
                 c.append({"type": "unknown"})
     else:
@@ -246,7 +249,7 @@ def _create_test_daemon_app(config) -> Any:
     from contextlib import asynccontextmanager
     from fastapi import FastAPI, Request
     from yuubot.daemon.local_api import create_agent_fn_router
-    from yuubot.core.db import _load_simple_ext
+    from yuubot.core.db import _load_simple_ext, close_db
     from tortoise import connections
 
     async def _ensure_simple_tokenizer():
@@ -260,7 +263,10 @@ def _create_test_daemon_app(config) -> Any:
     @asynccontextmanager
     async def _lifespan(_app: FastAPI):
         await _ensure_simple_tokenizer()
-        yield
+        try:
+            yield
+        finally:
+            await close_db()
 
     app = FastAPI(lifespan=_lifespan)
     router = create_agent_fn_router(config=config)
@@ -368,6 +374,184 @@ class ToolStep:
         self.args = args
         self.output = output
 
+    @property
+    def tool_name(self) -> str:
+        return self.name
+
+    @property
+    def output_text(self) -> str:
+        return self.output
+
+
+class ActorRunResult:
+    __slots__ = ("agent", "final_text", "status", "steps")
+
+    def __init__(
+        self,
+        *,
+        agent: Any,
+        final_text: str | None,
+        status: str,
+        steps: list[ToolStep],
+    ) -> None:
+        self.agent = agent
+        self.final_text = final_text
+        self.status = status
+        self.steps = steps
+
+
+class ActorTestRunner:
+    """Test harness that drives the new YuubotActor API directly."""
+
+    def __init__(self, config) -> None:
+        from yuubot.daemon.actor import (
+            YuubotActor,
+            build_group_stage,
+            build_master_stage,
+        )
+
+        self.config = config
+        self.master_actor = YuubotActor(
+            build_master_stage(config),
+            bot_kind="master",
+            config=config,
+        )
+        self.group_actor = YuubotActor(
+            build_group_stage(config),
+            bot_kind="group",
+            config=config,
+        )
+
+    async def run_direct_turn(
+        self,
+        inbound,
+        *,
+        agent_name: str,
+        bot_kind: str,
+    ) -> ActorRunResult:
+        from yuubot.daemon.actor import HumanMessage
+        from yuubot.daemon.render import render_signal
+
+        actor = self.master_actor if bot_kind == "master" else self.group_actor
+        history_start = 0
+        existing = self._agent_for(actor, inbound.ctx_id, agent_name)
+        if existing is not None:
+            history_start = len(existing.history)
+        content = yuullm.user(await render_signal(inbound))
+        message = HumanMessage(
+            content=content,
+            ctx_id=inbound.ctx_id,
+            chat_type=inbound.chat_type,
+            sender_id=inbound.sender.user_id,
+            character_name=agent_name,
+            reply_target=(
+                str(inbound.group_id)
+                if inbound.chat_type == "group"
+                else str(inbound.sender.user_id)
+            ),
+            workspace_root=self._workspace_root(inbound.ctx_id),
+            group_id=inbound.group_id,
+            supports_vision=True,
+            bot_kind=bot_kind,
+        )
+
+        agent = None
+        try:
+            agent = await actor.handle_message(message)
+        except Exception as exc:
+            if agent is None:
+                agent = self._agent_for(actor, inbound.ctx_id, agent_name)
+            return ActorRunResult(
+                agent=agent,
+                final_text=f"{type(exc).__name__}: {exc}",
+                status="error",
+                steps=_collect_tool_steps(agent, history_start) if agent is not None else [],
+            )
+
+        return ActorRunResult(
+            agent=agent,
+            final_text=_last_assistant_text(agent) if agent is not None else None,
+            status="idle",
+            steps=_collect_tool_steps(agent, history_start) if agent is not None else [],
+        )
+
+    async def render_signal(self, inbound) -> yuullm.Message:
+        from yuubot.daemon.render import render_signal
+
+        return yuullm.user(await render_signal(inbound))
+
+    async def stop(self) -> None:
+        await self.master_actor.close()
+        await self.group_actor.close()
+
+    def _workspace_root(self, ctx_id: int) -> str:
+        root = self.config.yuuagents.get("workspace_root", "")
+        if root:
+            return str(Path(root).expanduser() / f"ctx-{ctx_id}")
+        return str(Path.home() / ".yuubot" / "workspaces" / f"ctx-{ctx_id}")
+
+    @staticmethod
+    def _agent_for(actor: Any, ctx_id: int, agent_name: str) -> Any:
+        agent_id = actor._agent_for_key.get((ctx_id, agent_name))
+        return actor.agents.get(agent_id) if agent_id else None
+
+
+def _last_assistant_text(agent: Any) -> str | None:
+    for msg in reversed(agent.history):
+        if msg.role != "assistant":
+            continue
+        chunks = [
+            item.get("text", "")
+            for item in msg.content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        text = "".join(chunks).strip()
+        if text:
+            return text
+    return None
+
+
+def _collect_tool_steps(agent: Any, start_index: int = 0) -> list[ToolStep]:
+    if agent is None:
+        return []
+    pending: dict[str, ToolStep] = {}
+    steps: list[ToolStep] = []
+    for msg in agent.history[start_index:]:
+        if msg.role == "assistant":
+            for item in msg.content:
+                if yuullm.is_tool_call_item(item):
+                    try:
+                        args = json.loads(item.get("arguments", "{}"))
+                    except Exception:
+                        args = {}
+                    pending[item["id"]] = ToolStep(
+                        name=item["name"],
+                        args=args if isinstance(args, dict) else {},
+                    )
+        elif msg.role == "tool":
+            for item in msg.content:
+                if yuullm.is_tool_result_item(item):
+                    step = pending.pop(item["tool_call_id"], None)
+                    if step is None:
+                        step = ToolStep(name="", args={})
+                    step.output = _tool_result_text(item.get("content", ""))
+                    steps.append(step)
+    return steps
+
+
+def _tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        chunks = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                chunks.append(str(item.get("text", "")))
+            else:
+                chunks.append(str(item))
+        return "\n".join(chunks)
+    return str(content)
+
 
 async def _drive_agent_direct(
     runner,
@@ -376,13 +560,9 @@ async def _drive_agent_direct(
     bot_kind: str,
     llm: ScriptedLLM,
 ) -> tuple[str | None, list[ToolStep]]:
-    """Drive an agent with scripted LLM, returning (final_text, tool_steps)."""
+    """Drive an agent with scripted LLM via ActorTestRunner."""
     from unittest.mock import patch
-    import yuullm as yl
     from yuubot.core.onebot import to_inbound_message
-    import yuuagents as ya
-
-    tool_steps: list[ToolStep] = []
 
     inbound = to_inbound_message(msg)
     llm.clear()
@@ -390,17 +570,8 @@ async def _drive_agent_direct(
     with patch.object(
         yuullm.providers.OpenAIChatCompletionProvider, "stream", llm.build_handler(),
     ):
-        session = await runner.run_conversation(inbound, agent_name=agent_name, bot_kind=bot_kind)
+        result = await runner.run_direct_turn(inbound, agent_name=agent_name, bot_kind=bot_kind)
 
-    if session is None:
-        return None, []
+    tool_steps: list[ToolStep] = list(result.steps)
 
-    for step in session.steps:
-        if isinstance(step, ya.ToolStep):
-            tool_steps.append(ToolStep(
-                name=step.tool_name,
-                args={},
-                output=step.output_text or "",
-            ))
-
-    return session.final_text, tool_steps
+    return result.final_text, tool_steps

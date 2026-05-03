@@ -9,7 +9,7 @@ These typed models replace raw dicts at module boundaries:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import msgspec
 
@@ -39,7 +39,7 @@ class InboundMessage(msgspec.Struct):
     migration — code that still reads event dicts can use it.
     """
 
-    message_id: int
+    message_id: int | str
     ctx_id: int
     chat_type: Literal["private", "group"]
     sender: Sender
@@ -50,6 +50,7 @@ class InboundMessage(msgspec.Struct):
     group_id: int = 0
     self_id: int = 0
     raw_message: str = ""
+    metadata: dict[str, Any] = msgspec.field(default_factory=dict)
     extra_messages: list["InboundMessage"] = msgspec.field(default_factory=list)
 
 

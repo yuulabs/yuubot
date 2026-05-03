@@ -3,6 +3,7 @@
 # ruff: noqa: E402
 
 import asyncio
+import contextlib
 from pathlib import Path
 import sqlite3
 import socket
@@ -30,11 +31,6 @@ from yuubot.config import (
 )
 from yuubot.core.db import init_db, close_db
 from yuubot.daemon.dispatcher import Dispatcher
-from yuubot.daemon.conversation import ConversationManager
-from yuubot.daemon.agent_runner import AgentRunner
-from yuubot.daemon.llm import LLMExecutor
-from yuubot.commands.builtin import build_command_tree
-from yuubot.commands.entry import EntryManager
 
 # ── Constants ────────────────────────────────────────────────────
 
@@ -165,12 +161,13 @@ def yuubot_config(tmp_path, recorder_api_port, daemon_api_port, traces_db) -> Co
         ),
         database=DatabaseConfig(path=str(tmp_path / "yuubot.db")),
         response=ResponseConfig(group_default="at", dm_whitelist=[]),
-        session=SessionConfig(ttl=300, max_tokens=60000),
+        session=SessionConfig(),
         agent_llm_refs={
             "yuu": "test/test-model",
-            "maid": "test/test-model",
+            "shiori": "test/test-model",
             "general": "test/test-model",
-            "mem_curator": "test/test-model",
+            "master_mem_curator": "test/test-model",
+            "group_mem_curator": "test/test-model",
         },
         provider_priorities={"aihubmix": 120, "openrouter": 80, "deepseek": 110, "test": 60},
         provider_affinity={"deepseek-*": {"deepseek": 100}},
@@ -234,22 +231,31 @@ def recorder_api_env(yuubot_config, config_path, monkeypatch):
 # ── Test daemon server ───────────────────────────────────────────
 
 @pytest.fixture
-def test_daemon(yuubot_config):
+async def test_daemon(yuubot_config):
     """Real FastAPI server for /agent-fns endpoints on daemon_api_port."""
-    from tests.framework import TestDaemonServer
+    import uvicorn
+    from tests.framework import _create_test_daemon_app
 
-    server = TestDaemonServer(yuubot_config)
-    port = server.start(host="127.0.0.1", port=yuubot_config.daemon.api.port)
-    assert port == yuubot_config.daemon.api.port
-    yield server
-    server.stop()
-
-
-# ── Convenience ──────────────────────────────────────────────────
-
-@pytest.fixture
-def session_mgr() -> ConversationManager:
-    return ConversationManager(ttl=300, max_tokens=60000)
+    app = _create_test_daemon_app(yuubot_config)
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=yuubot_config.daemon.api.port,
+        log_level="error",
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve(), name="test-daemon")
+    try:
+        async with asyncio.timeout(5):
+            while not server.started:
+                if task.done():
+                    task.result()
+                await asyncio.sleep(0.01)
+        yield server
+    finally:
+        server.should_exit = True
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=5)
 
 
 # ── Event builders ───────────────────────────────────────────────

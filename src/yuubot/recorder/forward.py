@@ -37,12 +37,31 @@ def _extract_forward_payload(data: Any) -> list[dict[str, Any]]:
     if not isinstance(data, dict):
         return []
     payload = data.get("data", data)
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
     messages = payload.get("messages")
     if isinstance(messages, list):
         return messages
-    if isinstance(payload, list):
-        return payload
     return []
+
+
+def _extract_inline_forward_payloads(content_value: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(content_value, list):
+        return {}
+    payloads: dict[str, list[dict[str, Any]]] = {}
+    for item in content_value:
+        if not isinstance(item, dict) or item.get("type") not in {"forward", "node"}:
+            continue
+        data = item.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        forward_id = data.get("id")
+        content = data.get("content")
+        if forward_id and isinstance(content, list):
+            payloads[str(forward_id)] = content
+    return payloads
 
 
 def _render_forward_log_lines(
@@ -81,24 +100,30 @@ class ForwardResolver:
         source_ctx_id: int | None,
         max_depth: int = 3,
         _depth: int = 1,
+        _inline_payload: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         record = await ForwardRecord.filter(forward_id=forward_id).first()
         if record is not None:
             nodes = json.loads(record.raw_nodes)
             return {"summary": record.summary, "nodes": nodes, "log_nodes": nodes}
 
-        response = await self._client.get("/get_forward_msg", params={"id": forward_id})
-        if response.status_code != 200:
+        if _inline_payload is None:
+            response = await self._client.get("/get_forward_msg", params={"id": forward_id})
+            if response.status_code != 200:
+                return None
+            payload = response.json()
+            raw_nodes = _extract_forward_payload(payload)
+        else:
+            raw_nodes = _extract_forward_payload(_inline_payload)
+        if not raw_nodes:
             return None
-
-        payload = response.json()
-        raw_nodes = _extract_forward_payload(payload)
         nodes: list[dict[str, Any]] = []
         log_nodes: list[dict[str, Any]] = []
 
         for raw_node in raw_nodes:
             data = raw_node.get("data", raw_node)
             content_value = data.get("content") or data.get("message") or []
+            inline_forward_payloads = _extract_inline_forward_payloads(content_value)
             if isinstance(content_value, list):
                 segments: Message = parse_segments(content_value)
             else:
@@ -115,6 +140,7 @@ class ForwardResolver:
                         source_ctx_id=source_ctx_id,
                         max_depth=max_depth,
                         _depth=_depth + 1,
+                        _inline_payload=inline_forward_payloads.get(seg.id),
                     )
                     if child and child.get("summary") and not seg.summary:
                         seg.summary = str(child["summary"])

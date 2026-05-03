@@ -28,10 +28,12 @@ class _DaemonProxy:
     def __init__(self) -> None:
         raw: dict[str, Any] = {}
         try:
-            from yuuagents.kernel import get_session_state
-
-            s = get_session_state()
-            raw = s.as_dict()
+            # IpykernelProvider injects get_session_state into kernel namespace at bootstrap
+            import builtins
+            gss = getattr(builtins, 'get_session_state', None)
+            if gss is not None:
+                s = gss()
+                raw = s.as_dict() if hasattr(s, 'as_dict') else dict(s)
         except Exception:
             pass
         self._daemon_url: str = str(raw.get("daemon_base_url") or "")
