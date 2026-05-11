@@ -1,98 +1,50 @@
-# ============================================================
-# yuubot 配置文件示例
-# ============================================================
+# yuubot architecture-v2 bootstrap config example.
+#
+# Only startup-level settings belong here. Runtime resources such as LLM
+# providers, service providers, characters, actors, channels, routes, and
+# context pins are stored in the runtime resource DB and managed through the
+# ResourceService/Admin UI path.
 
-bot:
-  qq: 123456789
-  master: 987654321
-  entries:
-    - "/y"
-    - "/yuu"
+admin:
+  host: 127.0.0.1
+  port: 8781
+  # Required when admin.host is not loopback.
+  secret: ${YUU_ADMIN_SECRET}
 
-timezone: "Asia/Shanghai"
-
-recorder:
-  napcat_ws:
-    host: "0.0.0.0"
-    port: 8765
-  relay_ws:
-    host: "127.0.0.1"
-    port: 8766
-  api:
-    host: "127.0.0.1"
-    port: 8767
-  napcat_http: "http://127.0.0.1:3000"
-  napcat_webui_port: 6099
-
-daemon:
-  recorder_ws: "ws://127.0.0.1:8766"
-  recorder_api: "http://127.0.0.1:8767"
-  api:
-    host: "127.0.0.1"
-    port: 8780
+server:
+  daemon_host: 127.0.0.1
+  daemon_port: 8780
+  # Required for /api/admin/refresh and whenever daemon_host is not loopback.
+  daemon_secret: ${YUU_DAEMON_SECRET}
 
 database:
-  path: "~/.yuubot/yuubot.db"
+  # Tests can pass ":memory:" or a tmp_path DB through BootstrapConfig.for_tests().
+  path: ${YUU_DATA_DIR}/yuubot.db
 
-docker:
-  # ybot docker init/install/up/down/update 默认读取这里。
-  deploy_dir: "~/.local/share/yuubot-docker"
-  # 源码根目录；留空时自动使用当前 ybot 所在的 monorepo 根目录。
-  source_root: ""
-  health_timeout: 60
-  traces_ui_port: 8782
+secrets:
+  # Stable key used by the secret store boundary. Losing it makes stored
+  # provider/service secrets unreadable once real encryption is plugged in.
+  master_key: ${YUU_SECRET_KEY}
 
-# LLM provider config (families, providers, roles, priorities, agent refs)
-# lives in llm.yaml — see llm.example.yaml.
+trace:
+  enabled: true
+  collector_host: 127.0.0.1
+  collector_port: 4318
+  ui_host: 127.0.0.1
+  ui_port: 8782
 
-# yuuagents runtime settings (non-provider). Compiled into ~/.yagents/config.yaml.
-# Agent entries are synthesized automatically from agent_llm_refs and characters.
+paths:
+  data_dir: ${YUU_DATA_DIR}
+  workspace_dir: ${YUU_WORKSPACE_DIR}
+  logs_dir: ${YUU_LOGS_DIR}
+
+# yuuagents is daemon infrastructure, not a hot-reload runtime resource.
+# Edit this manually and restart the daemon (Admin UI may offer a restart
+# button). Actor resources reference these provider keys in their
+# AgentDefinition-shaped capability/prompt fields.
 yuuagents:
-  db:
-    url: "sqlite+aiosqlite:///~/.yagents/tasks.sqlite3"
-  yuutrace:
-    db_path: "~/.yagents/traces.db"
-    ui_port: 8081
-    server_port: 4318
-  docker:
-    image: "yuuagents-runtime:latest"
-  tavily:
-    api_key_env: "TAVILY_API_KEY"
-  skills:
-    paths:
-      - "~/.yagents/skills"
-
-api_keys:
-  tavily: "${TAVILY_API_KEY}"
-
-cron_jobs: []
-
-schedule:
-  max_long_cycle: 5
-  tick_seconds: 1.0            # clock-drift check interval for wakeups
-  late_grace_seconds: 2.0
-  catchup_spacing_seconds: 10.0
-  resume_threshold_seconds: 30.0
-
-memory:
-  forget_days: 90
-  max_length: 500
-
-web:
-  browser_profile: "~/.yuubot/browser_profile"
-  headless: true
-  download_dir: "~/.yuubot/downloads"
-
-response:
-  group_default: "at"
-  dm_whitelist: []
-
-network:
-  qq_direct: true   # NapCat runs without proxy env; yuubot direct-fetches QQ media
-
-# Session: multi-turn conversation settings.
-session:
-  ttl: 300            # seconds before group session expires (default 5 min)
-  master_ttl: 3600    # seconds before master session expires (default 1 h)
-  max_tokens: 60000   # single-turn token threshold for context rollover
-  summarize_steps_span: 8
+  strict: false
+  providers:
+    background: {}
+    schedule:
+      db_path: ${YUU_DATA_DIR}/schedule.sqlite3

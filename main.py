@@ -1,6 +1,7 @@
-def main():
-    print("Hello from yuubot!")
+"""Convenience module entry for local development."""
+
+from yuubot.cli import cli
 
 
 if __name__ == "__main__":
-    main()
+    cli()

@@ -1,38 +1,24 @@
 [project]
 name = "yuubot"
 version = "0.1.0"
-description = "yuuagents enhanced QQ bot with IM/Web/Memory skills"
+description = "yuubot architecture-v2 core skeleton"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "click",
-    "pyyaml",
-    "tortoise-orm",
-    "websockets",
-    "fastapi",
-    "python-multipart",
-    "uvicorn",
-    "httpx",
-    "apscheduler>=4.0.0a",
-    "python-dotenv",
-    "playwright",
-    "trafilatura",
-    "attrs",
     "msgspec",
-    "loguru>=0.7.3",
-    "playwright-stealth>=2.0.2",
-    "yuuagents>=0.1.1",
-    "yuullm>=0.6.0",
-    "yuutools>=0.2.0",
-    "yuutrace>=0.2.0",
-    "restrictedpython>=8.1",
+    "python-dotenv",
+    "starlette",
+    "tortoise-orm",
+    "pyyaml",
+    "uvicorn",
+    "yuuagents",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "pytest-asyncio",
-    "pytest-cov",
 ]
 
 [project.scripts]
@@ -44,6 +30,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.uv.sources]
+yuuagents = { path = "../yuuagents", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yuubot"]
@@ -57,12 +46,7 @@ markers = [
 
 [tool.ty.environment]
 python = "../.venv"
-extra-paths = [
-    "../yuuagents/src",
-    "../yuullm/src",
-    "../yuutrace/src",
-    "../yuutools/src",
-]
+extra-paths = []
 
 [tool.ty.src]
 include = ["src"]
@@ -79,7 +63,6 @@ call-top-callable = "warn"
 dev = [
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
-    "respx>=0.22.0",
     "ruff>=0.15.5",
     "ty>=0.0.21",
 ]
