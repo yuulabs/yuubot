@@ -76,8 +76,8 @@ class ChannelAdapter(Protocol):
         """Connect to the platform and emit IncomingMessage for each message."""
         ...
 
-    async def send(self, ctx: Context, message: OutboundMessage) -> None:
-        """Send message back to the platform using ctx.metadata."""
+    async def send(self, ctx: Context, text: str, **kwargs) -> None:
+        """Send message back to the platform. Each integration defines its own API."""
         ...
 
     async def stop(self) -> None:
@@ -231,62 +231,22 @@ class Context(Model):
 
 ## Routing
 
-路由只看 Context，必要时也可以看 sender/message metadata。
+Gateway 内部只维护一个极简映射：`channel_id → actor_ids`。
 
-```yaml
-routing:
-  defaults:
-    private: shiori
-    group: yuu
-    thread: yuu
-    session: shiori
-    other: yuu
+- 没有多维匹配、没有 priority、没有 Context pinning。
+- 复杂的路由需求（如不同群用不同 actor）属于 Actor 内部实现，不进入平台层。
 
-  rules:
-    - match:
-        channel: discord
-        kind: thread
-        metadata.channel_type: thread
-      actor: forum_bot
-
-    - match:
-        channel: qq
-        kind: private
-        metadata.is_master: true
-      actor: shiori
-```
-
-规则顺序：
-
-1. `rules` first match wins。
-2. 没有命中时，根据 `ctx.kind` 使用 `defaults`。
-3. `defaults` 没有对应 kind 时使用 `other`。
-
-匹配语义保持简单：
-
-- literal equality
-- `$in`
-- `$exists`
-
-不要把 routing engine 做成 mini query language。
+路由在 daemon 装配层配置，通过 `RouteBindings` 推入 Gateway：`Gateway.update_bindings(bindings)`。
 
 ---
 
 ## Sending
 
-Actor 和 command 只持有 `ctx_id`。
+Actor 和 command 只持有 `ctx_id`。出站通过 Integration 能力调用（如 `im.qq.send`）。
 
 ```python
-await gateway.send(ctx_id, OutboundMessage(text="hello"))
+await im.send(ctx_id, text="hello")
 ```
-
-Gateway：
-
-```python
-async def send(ctx_id: int, message: OutboundMessage) -> None:
-    ctx = await Context.get(id=ctx_id)
-    adapter = adapters[ctx.channel]
-    await adapter.send(ctx, message)
 ```
 
 Adapter 自己解释 `ctx.metadata`。
@@ -328,7 +288,7 @@ Checklist:
 5. Put send target fields in `ContextRef.metadata`.
 6. Register the adapter at daemon startup.
 7. Add config under `channels.<name>`.
-8. Add routing rules only if defaults are not enough.
+8. Bind the channel to actor targets in daemon assembly (one `channel_id → actor_ids` mapping).
 
 No new actor code is required.
 
@@ -343,6 +303,6 @@ Do not add these until needed:
 - full capability negotiation
 - generic thread manager
 - channel-specific fields on core message types
-- routing expressions beyond equality / `$in` / `$exists`
+- route rule tables, priority matching, or per-context routing overrides
 
 The extension point is intentionally small: `ChannelAdapter + ContextRef + IncomingMessage`.

@@ -1,136 +1,160 @@
-# 04. Gateway / Channel / Context / Route
+# 04. Gateway / IngressRule
 
-Gateway 的目标保持很小：不同平台的 adapter 把消息变成统一的 `IncomingMessage`，Gateway 负责 Context 创建、路由和回复发送。
+Gateway 的目标保持很小：路由消息、管理 actor mailbox。v2 core 只内置 Web 内置入口；Discord、Telegram、QQ/NapCat 等渠道作为 Integration 接入。
+
+## Gateway 架构
+
+Gateway 是单层投递引擎。没有独立的 "domain layer" 或 channels 表——路由完全由 `actor_ingress_rules` + 启用 actor 列表生成的 `RouteBindings` 表达。
+
+```python
+@dataclass
+class Gateway:
+    routes: RouteBindings              # 不可变 ActorIngressRule 快照
+    _mailboxes: dict[str, Mailbox]     # actor_id → Mailbox
+
+    def open_integration(integration_id: str) -> IntegrationIngress
+    def get_mailbox(actor_id: str) -> Mailbox
+    def close_mailbox(actor_id: str) -> None
+    def update_bindings(bindings: RouteBindings) -> None
+    async def ingest(message: IncomingMessage) -> None
+```
+
+数据流：
+
+```text
+ResourceRepository (写 actor_ingress_rules / actors)
+  → EventBus.publish(ResourceChanged)
+    → DaemonRefreshDispatcher
+      → RouteBindingService.reload()
+        → load_route_bindings(repository) → new RouteBindings
+        → Gateway.update_bindings(new_bindings)
+```
 
 ## Message Flow
 
 ```text
-Raw platform event
-  -> ChannelAdapter
-  -> IncomingMessage(context=ContextRef(...))
-  -> Gateway get/create Context
-  -> Route Engine select Actor
-  -> Actor Runtime
-  -> Gateway send OutboundMessage through ChannelAdapter
+入站：
+外部事件 → Integration (协议转换)
+       → IntegrationIngress.emit(IncomingMessage)
+       → Gateway.ingest()  → 遍历 RouteBindings 匹配 → 投递到 Mailboxes
+
+出站：
+Actor → 调用 Integration capability (如 search.query / im.qq.send) → 外部平台
 ```
 
-## ChannelAdapter Contract
+具体流程：
 
-```python
-class ChannelAdapter(Protocol):
-    channel: str
-
-    async def start(
-        self,
-        emit: Callable[[IncomingMessage], Awaitable[None]],
-    ) -> None:
-        ...
-
-    async def send(self, ctx: Context, message: OutboundMessage) -> None:
-        ...
-
-    async def stop(self) -> None:
-        ...
+```text
+1. Integration 接收外部事件（WebSocket、webhook、轮询等）
+2. Integration 将外部格式转换为 IncomingMessage
+3. Integration 调用 ingress.emit(message)
+   ingress 自动盖戳 source = MessageSource(producer="integration",
+                                           id=integration_id,
+                                           path=message.source.path)
+4. Gateway.ingest(message) 遍历 RouteBindings.rules
+   对每条 enabled rule，fnmatch (source.id, source.path, kind) 命中则收集 actor_id
+5. 命中 actor 集合去重后，依次 put 到对应 Mailbox
+6. Actor 从 Mailbox 读取消息，处理，通过 Integration capability 回复
 ```
 
-## ContextRef
+## IncomingMessage / MessageSource
 
 ```python
-class ContextRef(msgspec.Struct):
-    channel: str
-    key: str
-    kind: str
-    label: str = ""
-    metadata: dict[str, Any] = msgspec.field(default_factory=dict)
-```
+class MessageSource(msgspec.Struct):
+    producer: str = "integration"   # "integration" | "system"
+    id: str = ""                    # integration_id / "system:<actor_id>"
+    path: str = ""                  # integration 自定义子路径
 
-规则：
-
-1. 同一会话必须生成同一个 `(channel, key)`。
-2. 不同会话必须生成不同 `(channel, key)`。
-3. Gateway 核心不解析 `key`，平台字段留在 adapter 的 `metadata`。
-4. `metadata` 必须包含 `send()` 需要的结构化字段。
-5. Gateway 上线前必须迁移并创建 `UNIQUE(channel, key)`；已有重复数据先清理。
-
-## IncomingMessage
-
-```python
 class IncomingMessage(msgspec.Struct):
-    context: ContextRef
     message_id: str
     sender_id: str
+    source: MessageSource = MessageSource()
+    kind: str = ""                   # "private" / "group" / "system" 等，由 Integration 设定
     sender_name: str = ""
-    segments: list[Segment] = msgspec.field(default_factory=list)
+    segments: tuple[Segment, ...] = ()
     text: str = ""
-    timestamp: int = 0
-    metadata: dict[str, Any] = msgspec.field(default_factory=dict)
+    timestamp: int = ...
 ```
 
-## OutboundMessage
+平台特定字段通过子类扩展，而非无类型 metadata 字段：
 
 ```python
-class OutboundMessage(msgspec.Struct):
-    text: str = ""
-    segments: list[Segment] = msgspec.field(default_factory=list)
-    reply_to: str = ""
-    metadata: dict[str, Any] = msgspec.field(default_factory=dict)
+class QQIncomingMessage(IncomingMessage):
+    group_id: str = ""
+
+class DiscordIncomingMessage(IncomingMessage):
+    guild_id: str = ""
+    thread_id: str = ""
 ```
 
-## Route Resolution
+Gateway 只看基类接口（`source`、`kind`、`sender_id`），不需要知道平台细节。Integration 内部如何把 `group_id` 编码进 `source.path`（例如 `"group:42"`）由 Integration 自行决定，路由层只看 fnmatch 命中。
 
-推荐解析顺序：
+## RouteBindings
 
-```text
-1. Context.actor_id if pinned and actor enabled
-2. Route rules by priority
-3. Channel default_private_actor / default_group_actor
-4. System default private/group/thread/other actor
-5. No route -> reject with operator-visible error
+```python
+@dataclass
+class ActorIngressRule:
+    actor_id: str
+    source_id_pattern: str
+    source_path_pattern: str
+    kind_patterns: tuple[str, ...]
+
+    def matches(self, message: IncomingMessage) -> bool:
+        return (
+            fnmatchcase(message.source.id, self.source_id_pattern)
+            and fnmatchcase(message.source.path, self.source_path_pattern)
+            and any(fnmatchcase(message.kind, p) for p in self.kind_patterns)
+        )
+
+@dataclass
+class RouteBindings:
+    rules: tuple[ActorIngressRule, ...]   # 不可变快照
+
+    def resolve(self, message: IncomingMessage) -> tuple[str, ...]
+    def actor_ids(self) -> tuple[str, ...]
 ```
 
-首次解析后，默认 pin：
+`load_route_bindings(repository)` 从 `actor_ingress_rules` 表 + enabled actors 构建快照：
 
-```text
-if context.actor_id is null:
-  actor = resolve_route(context, incoming)
-  context.actor_id = actor.id
-```
+- 每条 enabled `ActorIngressRuleRecord`（其 actor_id 必须属于 enabled actor）转成一条 `ActorIngressRule`。
+- 每个 enabled actor_id 自动追加一条 system rule：`source_id_pattern = "system:<actor_id>"`、`source_path_pattern = "**"`、`kind_patterns = ("*",)`。这条规则给 actor 间消息和定时触发使用，不需要管理员配置。
 
-这样老会话不会因为默认 Actor 修改而突然换人格。管理员可在 UI 中手动 reassign。
+Daemon 在 `actors` / `actor_ingress_rules` 表变更时调用 `RouteBindingService.reload()`，构建新快照后 `Gateway.update_bindings(new)` 替换旧快照。已有 in-flight 消息不受影响。
 
-## Route Rule Match
+## 没有 channels 表
 
-Route rule match 支持：
+v2 不维护独立的 `channels`、`channel_targets`、`route_rules` 表。理由：
 
-- `channel`
-- `kind`
-- `metadata.<key>`
-- `sender_id`
-- `text_contains`
-- `text_regex`
-- `time_window`
+- Integration 已经唯一标识了一个外部连接源，`MessageSource.id == integration_id` 就是它的"频道身份"。
+- 多频道（如 QQ 多群、Discord 多 guild）通过 `MessageSource.path` 在同一 integration 下区分，由 ingress rule 的 `source_path_pattern` 选取。
+- 如果 UI 需要"频道列表"视图，从 `actor_ingress_rules` + 历史消息聚合即可派生，不需要落表。
 
-实现初期建议保持简单，只实现 `channel/kind/metadata exact match`。
+## Web Chat
 
-## Web Chat Reliability Boundary
+Web Chat 是内置入口，遵循 Gateway 模型——它就是一个 builtin integration（`integration_id = "web-admin"` 或类似），通过 `IntegrationIngress.emit()` 投递消息。
 
-Web Chat 是 Channel，遵循 Gateway 模型。
+Web Chat 不应是单一固定会话。Admin UI 至少支持：
+
+- 创建多个 Web dialog，每个 dialog 用一个独立 `source.path`（如 `dialog:<uuid>`）。
+- 从任意 dialog 发送消息，消息路径必须与其他 Integration 一样进入 Gateway（同一个 `IntegrationIngress.emit` 路径）。
+- 通过 `actor_ingress_rules` 把不同 dialog 路由到不同 actor，用于验证投递机制。
 
 可靠性边界：
 
 ```text
-Admin 后端收到 WebSocket message -> 写入 DB 成功 -> ack 前端
+Admin 后端收到 WebSocket message → 写入 inbound_queue（DB）成功 → ack 前端
+Daemon worker 从 inbound_queue 读取 → 通过 web ingress emit 给 Gateway → 标记 done
 ```
 
-daemon 是否在线不影响“消息已收到”的判断。
+daemon 是否在线不影响"消息已收到"的判断。
 
 建议队列表：
 
 ```sql
 CREATE TABLE inbound_queue (
     id INTEGER PRIMARY KEY,
-    channel_id INTEGER NOT NULL,
-    context_id INTEGER NOT NULL,
+    integration_id TEXT NOT NULL,        -- web-admin 等
+    source_path TEXT NOT NULL,           -- dialog:<uuid>
     client_nonce TEXT,
     payload JSON NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -145,8 +169,16 @@ CREATE TABLE inbound_queue (
 状态：
 
 ```text
-pending -> processing -> done
-                 -> failed
+pending -> processing -> done | failed
 ```
 
 daemon 重启时可以重新领取 `pending` 或超时 `processing` 的消息。
+
+## 非平台概念
+
+以下不在 v2 Gateway 模型中：
+
+- **Channel 表 / ChannelResource**：平台不持有"频道"一等对象，只有 Integration + ActorIngressRule。
+- **Context / Session**：平台不知道会话。Integration 把会话语义编码进 `source.path`（如 `private:user-7` / `group:42`），actor 内部如何使用是它自己的事。
+- **Context pinning / reassign**：没有"pin actor 到会话"的概念。`actor_ingress_rules` 就是全部投递行为。
+- **RouteRule / priority / text match**：不做 priority、不做正文文本匹配。复杂语义通过多条 ingress rule 的 fnmatch 模式表达。

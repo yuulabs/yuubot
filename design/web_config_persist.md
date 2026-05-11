@@ -83,10 +83,8 @@ spec:
   facade_modules: [im, web, vision]   # service module aliases
   max_turns: 20
   delegate: [general, mem_curator]    # character names; resolved at load time
-  prompt_sections:
-    - $ref: python_runtime            # reference to section library
-    - $ref: safety_base
-    - path: prompts/my_agent.md       # file section
+  system_prompt: |                    # complete prompt stored on character
+    You are ...
 ```
 
 **Facade modules** map to `agent_fns/` service modules (`im`, `web`, `mem`, `vision`, etc.).

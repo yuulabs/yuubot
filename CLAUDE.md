@@ -66,7 +66,7 @@ NapCat WS → recorder/relay.py
 | Agent function facades | `agent_fns/facades/` — per-character `yb` module compositions |
 | Agent function implementations | `agent_fns/im.py`, `agent_fns/mem.py`, `agent_fns/web.py`, etc. |
 | Characters/agents | `characters/__init__.py` — all characters registered here via `register(Character(...))` |
-| Prompt assembly | `prompt.py` — `AgentSpec`, `Character`, prompt section types, `render_system_prompt()` |
+| Prompt assembly | Character `system_prompt` stored as explicit text; Prompt Templates are UI editing aids only |
 | Commands (admin/user) | `commands/builtin.py`, `commands/ychar.py` |
 | Config | `config.py` — `load_config()` merges `llm.yaml` base + `config.yaml` override |
 | DB | `core/db.py` (Tortoise ORM + SQLite with optional libsimple FTS5) |
@@ -78,7 +78,7 @@ NapCat WS → recorder/relay.py
 All characters are registered in `characters/__init__.py` using `register(Character(...))`. Each defines:
 - `name` — agent identifier used in routing and CLI commands
 - `description` — shown when listing delegates
-- `spec` — `AgentSpec` with `facade_module`, `prompt_sections`, `delegate_policy`, `max_turns`
+- `spec` — `AgentSpec` with `facade_module`, explicit `system_prompt`, `delegate_policy`, `max_turns`
 - `bot_kinds` — optional tuple restricting which bot_kind can use this character (`"master"` or `"group"`); default allows all
 
 Current characters:
@@ -110,12 +110,7 @@ result = yb.web_search("latest news")
 
 ### Prompt Assembly
 
-Every character declares its system prompt explicitly as a `prompt_sections` tuple in `AgentSpec`. No hidden prompt insertions. Section types (`prompt.py`):
-- `FileSection("path/to/prompt.md")` — loads from `src/yuubot/prompts/`
-- `InlineSection("literal text")` — embedded directly
-- `PYTHON_RUNTIME_SECTION` — shared Python session instructions
-- `DelegatesSection()` — rendered from `delegate_policy` at definition time
-- `SessionContextSection()` — caller-provided context injected at session start
+Every character stores its full system prompt explicitly as plain text. Prompt Templates may be copied into a Character in the UI, but they are not runtime dependencies. No hidden prompt insertions.
 
 ### Config files
 

@@ -32,7 +32,7 @@ Tests are end-to-end only (no unit tests). Key fixtures in `tests/conftest.py`: 
 - **Routing** (`daemon/routing.py`): pure function `resolve_route()` → `CommandRoute | None`. LLM-triggered conversations are `CommandRoute(command_path=("llm",), entry="@")` or `entry="master"`.
 - **Agent functions** (`agent_fns/`): agents use `import yb; yb.send_message(...)` via execute_python tool. HTTP POST → `/agent-fns/{service}/{action}` → `services/`.
 - **Dual Python backends**: `master` uses long-lived kernel sessions; `group` uses sandboxed restricted sessions per turn.
-- **Characters** registered in `characters/__init__.py` via `register(Character(...))`. Prompt sections declared explicitly in `AgentSpec.prompt_sections` — no hidden injections.
+- **Characters** store a complete `system_prompt` explicitly. Prompt Templates are UI editing aids only — no hidden runtime injections.
 
 ## Request flow
 
@@ -52,3 +52,6 @@ uv run python scripts/conv.py          # list recent
 uv run python scripts/conv.py -l -n    # latest, compact
 uv run python scripts/conv.py ID       # by short ID prefix
 ```
+
+
+非必要不使用frozen类。

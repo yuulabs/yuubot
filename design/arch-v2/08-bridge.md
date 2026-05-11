@@ -5,7 +5,7 @@ Bridge 是基础设施层，不是 Channel。它允许远程节点主动连回 y
 ## 使用场景
 
 - GPU 节点：Actor 通过 Bridge 执行命令、跑训练、传文件。
-- 家宽 PC：QQ / NapCat 等 IM 服务在家宽环境运行，通过 Bridge 暴露给 yuubot。
+- 家宽 PC：需要特定网络位置的外部服务在家宽环境运行，通过 Bridge 暴露给 yuubot。
 - 移动设备或临时机器：节点主动连回，不需要公网 IP。
 
 ## 安全原则
@@ -141,21 +141,21 @@ yb.bridge_download("gpu-node-1", remote_path="/data/b", local_path="/tmp/b")
 
 ## Channel 使用 Bridge
 
-Channel 可以依赖 Bridge 的网络位置能力，例如 QQ / NapCat 在 home-pc 上运行：
+Channel 可以依赖 Bridge 的网络位置能力，例如某个可选 IM adapter 需要访问 home-pc 上的本地服务：
 
 ```yaml
 channels:
-  qq-home:
+  im-home:
     bridge_node: home-pc
-    napcat_port: 3000
+    local_service_port: 3000
 ```
 
-但 Bridge 本身不参与消息路由。消息流仍然是：
+但 Bridge 本身不参与消息路由，也不要求 v2 core 内置该 IM adapter。消息流仍然是：
 
 ```text
-NapCat on home-pc
+External service on home-pc
   -> Bridge tunnel/proxy
-  -> QQ ChannelAdapter
+  -> Optional ChannelAdapter
   -> Gateway
   -> Actor
 ```

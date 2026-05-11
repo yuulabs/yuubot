@@ -2,22 +2,27 @@
 
 Runtime Resources 是用户通过 Admin UI 创建、修改、启用、禁用的对象。它们存储在 DB，并支持明确语义下的在线变更。
 
+v2 中 Runtime Resources 是运行时的唯一事实来源。旧 YAML 或临时配置只允许通过一次性 import 写入这些表，不能在运行路径中继续参与解析。
+
+例外：`yuuagents` 的 provider wiring 是 daemon infrastructure，不属于 Runtime Resources。它从 Bootstrap Config 加载，修改后重启 daemon 生效。Runtime Resources 中的 Actor 只保存 `yuuagents.AgentDefinition` 需要的字段和 yuubot policy，不保存或热更新 yuuagents `StageConfig.providers`。
+
 ## Resource 总览
 
 ```text
-llm_providers
-service_providers
-secrets
-characters
-actors
-channels
-route_rules
-contexts
+secrets               -- API key / OAuth token / refresh token (master-key encrypted)
+llm_backends          -- infra config (hot-updatable, but not a plugin)
+integrations          -- agent capability extensions (plugin model)
+prompt_templates      -- Admin UI authoring helpers (not a runtime dependency)
+characters            -- prompt + facade declaration
+actors                -- runnable agent instances (yuuagents-shaped)
+actor_ingress_rules   -- glob-based MessageSource → actor_id routing
 ```
+
+平台**不持有**独立的 `channels` 或 `channel_targets` 表。"频道"在 v2 里是 UI 概念：Admin UI 可以按 `(integration_id, source.path)` 对入站消息分组展示，但运行时只看 `MessageSource` + `ActorIngressRule`。
 
 ## Secrets
 
-Provider 的 API key、OAuth token、refresh token 等都存入 Secret Store。
+LLM Backend 的 API key、Integration 的 OAuth token、refresh token 等都存入 Secret Store。
 
 要求：
 
@@ -39,17 +44,18 @@ CREATE TABLE secrets (
 );
 ```
 
-## LLM Provider
+## LLM Backend
 
 ```sql
-CREATE TABLE llm_providers (
+CREATE TABLE llm_backends (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    provider_type TEXT NOT NULL,
-    base_url TEXT,
+    yuuagents_provider TEXT NOT NULL,
+    provider_options JSON NOT NULL,
     api_key_secret_id INTEGER,
     default_model TEXT,
-    capabilities JSON NOT NULL,
+    default_stream_options JSON NOT NULL,
+    model_capabilities JSON NOT NULL,
     models JSON NOT NULL,
     pricing JSON NOT NULL,
     budget JSON NOT NULL,
@@ -62,28 +68,56 @@ CREATE TABLE llm_providers (
 
 字段说明：
 
-- `provider_type`: `openai`, `anthropic`, `gemini`, `deepseek`, `openai_compatible`, `ollama`, `custom`。
-- `capabilities`: `chat`, `vision`, `tool_calling`, `reasoning`, `embedding` 等。
-- `models`: UI 可选模型列表，可手填或从 provider 拉取。
+- `yuuagents_provider`: 直接对应 `yuuagents.StageConfig.llm.provider`，例如 `openai`、`anthropic`、`openrouter`。
+- `provider_options`: 直接传给 yuuagents/yuullm provider constructor，例如 `base_url`、`provider_name`、headers。
+- `default_stream_options`: backend/model 默认 stream options。
+- `model_capabilities`: 模型能力，例如 `vision`、`tool_calling`、`reasoning`、`embedding`、`structured_output`。
+- `models`: UI 可选模型列表，可手填或从 backend 拉取。
 - `pricing`: 模型价格和计费信息。
-- `budget`: provider 或 actor 级预算限制。
+- `budget`: backend 或 actor 级预算限制。
+
+实现要求：
+
+- LLM Backend 是 Actor Runtime 的模型后端 infra 配置，不生成 agent-visible `yb.*` 工具。
+- 上层 Actor Runtime 只机械拼装 `StageConfig.llm`，不直接写 `if backend == ...` 的业务分支。
+- 新增 LLM 厂商时，主要改动应限制在 yuuagents/yuullm backend wiring 和测试用例。不需要在 yuubot core 中新增 plugin。
 
 删除规则：
 
-- 如果 Actor 引用该 provider，禁止硬删除，只能 `enabled=false`。
-- 禁用后新请求不能选择该 provider；已运行 turn 不打断。
+- 如果 Actor 引用该 backend，禁止硬删除，只能 `enabled=false`。
+- 禁用后新请求不能选择该 backend；已运行 turn 不打断。
 
-## Service Provider
+## Integration
 
-外部服务也按 provider 管理。
+Integration 是 yuubot 与外部世界的连接点。它同时承担协议转换、连接管理和能力暴露三个职责。所有外部连接统一走 Integration 模型，包括 IM 平台（Discord、QQ、Telegram）——它们只是恰好只提供 Channel 的 Integration。
+
+### 三层结构
+
+```text
+Loader (代码级)
+  注册在 IntegrationFactoryRegistry 中，启动时加载。
+  未启用的 Integration 也有对应的 Loader。
+  定义 plugin_id、capability manifest、create/close 逻辑。
+
+运行实例 (DB 级)
+  用户在 Admin UI 中启用某个 Loader 后，创建 IntegrationConfig。
+  factory.create(config, provider): 创建即激活，返回 IntegrationInstance。
+  instance.close(): 释放资源，IntegrationConfig 保留在 DB。
+
+Channel (运行时)
+  Integration 在启用时向 Gateway 申请 Channel。
+  Channel 是消息路由的入口，由 Gateway 管理生命周期。
+  IM 类 Integration 的 Channel 就是消息通道。
+  Webhook 类 Integration 的 Channel 接收外部事件推送。
+```
+
+### DB Schema
 
 ```sql
-CREATE TABLE service_providers (
+CREATE TABLE integrations (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    service_type TEXT NOT NULL,
-    auth_type TEXT NOT NULL,
-    secret_id INTEGER,
+    plugin_id TEXT NOT NULL,
     config JSON NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     version INTEGER NOT NULL DEFAULT 1,
@@ -92,27 +126,90 @@ CREATE TABLE service_providers (
 );
 ```
 
+`config` 是 opaque dict —— 认证信息、endpoint、bot_id 等字段由 factory 自行解释。capabilities 不由 DB 存储，而是由 IntegrationFactory 在代码中声明。这样做的好处是框架完全不需要预先知道每个 Integration 能做什么。
+
 示例：
 
-- `web_search:tavily`
-- `web_search:exa`
-- `github:personal`
-- `linear:team`
-- `wandb:lab`
-- `swanlab:lab`
+- `qq:main` 提供消息接入（`IntegrationIngress.emit()` 投递 IncomingMessage）+ 可能的 capability。
+- `discord:personal` 提供消息接入 + 可能的 capability。
+- `web_search:tavily` 提供 `search.query` capability（不投递消息，纯能力提供者）。
+- `github:personal` 提供 `repo.issue_read`、`repo.pr_read` capability + webhook 事件接入。
+- `linear:team` 提供 `issue.search`、`issue.update` capability + webhook 事件接入。
+
+Integration 的 capability manifest 由 IntegrationFactory 在代码中声明，不存储在 DB。每个 capability 至少包含 `id`、`name`、`description`、`input_type`、`output_type`（均为 `msgspec.Struct`）。Core 用 `msgspec.json.schema()` 生成 UI 展示用的 JSON Schema，并在 invoke 边界做输入输出 dict 校验；不引入 Pydantic 等第二套类型库。
+
+Actor 的 capability permissions 绑定 capability id，而不是绑定 integration instance。`IntegrationCore` 通过 `IntegrationFactoryRegistry` 和 `plugin_id` 把 `search.query` 解析到一个启用且健康的 integration instance。
+
+### 生命周期
+
+Integration 生命周期分为实例级和运行时级两个层面：
+
+**实例级（factory）：**
+- `factory.create(record, repository, *, gateway)` — 创建即激活，返回 IntegrationInstance。Instance 通过 `gateway.open_integration(integration_id)` 拿到 `IntegrationIngress`，并自行管理外部资源（连接、worker、secrets 读取等）。
+- `instance.close()` — 释放所有资源（连接、worker）。关闭后 instance 被丢弃，但 IntegrationConfig 保留在 DB 以备重新创建。
+
+**运行时级（IntegrationCore）：**
+- `core.enable(integration_id)` — 调用 factory.create() 创建 instance 并注册。
+- `core.disable(integration_id)` — 调用 instance.close() 并移除注册。
+- `core.reconcile(event=None)` — 比对 DB 中 enabled 状态与运行时实例集合，启停差异。
+
+```text
+启用流程：
+  用户在 Admin UI 中启用 Integration
+  → IntegrationConfig.enabled = True (DB)
+  → IntegrationCore.enable(integration_id)
+    → factory.create(record, repository, gateway=gateway)
+      → instance 通过 gateway.open_integration() 获得 IntegrationIngress
+      → instance 向外部服务注册（如向 Linear 注册 webhook）
+    → instance 开始接收/发送消息
+
+停用流程：
+  用户停用 Integration
+  → IntegrationCore.disable(integration_id)
+    → instance.close()
+      → 向外部服务注销
+      → 不再向 Gateway 投递消息（IntegrationIngress 自然失效）
+  → IntegrationConfig.enabled = False (DB)
+
+删除流程：
+  用户删除 Integration
+  → 如果还在启用状态，先 disable()
+  → 删除 IntegrationConfig (DB)
+  → 引用该 integration 的 ActorIngressRule（按 source_id_pattern 命中 integration_id）失效，需管理员清理
+```
+
+Bot 重启时，`IntegrationCore.reconcile()` 会对每个 `enabled=True` 的 IntegrationConfig 重新调用 `enable()`。`factory.create()` 必须是幂等的——如果外部 webhook 已注册，确认/更新即可。
+
+## Prompt Template
+
+Prompt Template 是 Admin UI 的编辑辅助：用户可以把模板内容复制/插入到 Character 的 system prompt 中。它不是运行时依赖；删除或修改模板不会影响已有 Character。
+
+```sql
+CREATE TABLE prompt_templates (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    content TEXT NOT NULL,
+    is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
+    builtin_version TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL
+);
+```
 
 ## Character
 
-Character 是角色模板，不直接绑定模型。
+Character 是角色模板，不直接绑定模型。它保存完整的 system prompt 纯文本；Admin UI 展示的内容就是运行时会传给 yuuagents 的内容。
 
 ```sql
 CREATE TABLE characters (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
     description TEXT,
-    sections JSON NOT NULL,
+    system_prompt TEXT NOT NULL,
+    default_prompt_providers JSON NOT NULL,
     facade_module TEXT NOT NULL,
-    tool_surface JSON NOT NULL,
     default_hints JSON NOT NULL,
     is_builtin BOOLEAN NOT NULL DEFAULT FALSE,
     builtin_version TEXT,
@@ -123,43 +220,66 @@ CREATE TABLE characters (
 );
 ```
 
-`sections` 示例：
-
-```json
-[
-  {"type": "file", "path": "shiori/persona.md"},
-  {"type": "inline", "content": "你是一个..."},
-  {"type": "python_runtime"},
-  {"type": "delegates"}
-]
-```
-
 内置 Character 可以被覆盖，但必须支持 reset 到 builtin version。
 
 ## Actor
 
 Actor 是运行实例，是 Gateway 的消息消费终端。
 
+Actor 的持久化形状应贴近 `yuuagents.AgentDefinition`，避免“yuubot Actor DSL -> Binding -> AgentDefinition”的二次抽象。它可以保留 yuubot 自己的 policy，但执行所需的 capabilities / prompt provider config / budget / LLM options 应直接对应 yuuagents 字段。
+
 ```sql
 CREATE TABLE actors (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
     character_id INTEGER NOT NULL,
-    llm_provider_id INTEGER,
+    llm_backend_id INTEGER NOT NULL,
     model TEXT,
-    fallback_llm_provider_id INTEGER,
-    fallback_model TEXT,
-    bot_kinds JSON NOT NULL,
+    llm_options JSON NOT NULL,
+    budget JSON NOT NULL,
+    agent_capabilities JSON NOT NULL,
+    agent_prompt_providers JSON NOT NULL,
+    allowed_capability_ids JSON NOT NULL,
     runtime_policy JSON NOT NULL,
     resource_policy JSON NOT NULL,
-    default_private BOOLEAN NOT NULL DEFAULT FALSE,
-    default_group BOOLEAN NOT NULL DEFAULT FALSE,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
 ```
+
+字段直接对应：
+
+```text
+llm_options             -> AgentDefinition.llm.max_tokens / stream_options
+budget                  -> AgentDefinition.budget
+agent_capabilities      -> AgentDefinition.capabilities
+agent_prompt_providers  -> AgentDefinition.prompts.providers
+```
+
+示例：
+
+```json
+{
+  "agent_capabilities": [
+    {
+      "provider_key": "ipykernel",
+      "config": {
+        "imports": [{"module": "yuubot_runtime_yb", "alias": "yb"}],
+        "expand_functions": ["yb.*"],
+        "state": {"sandbox": "restricted"}
+      }
+    }
+  ],
+  "agent_prompt_providers": [
+    {"provider_key": "ipykernel", "config": {"level": "summary"}}
+  ],
+  "allowed_capability_ids": ["search.query", "mem.read"]
+}
+```
+
+`allowed_capability_ids` 是 yuubot dispatcher / `yb.*` facade 的安全边界；`agent_capabilities` 是 yuuagents executor/tool-spec 配置。两者不要合并。
 
 `runtime_policy` 示例：
 
@@ -169,9 +289,7 @@ CREATE TABLE actors (
   "memory_curator_enabled": true,
   "rollover_enabled": true,
   "summarize_steps_span": 20,
-  "max_turns": 50,
-  "tool_permissions": ["im", "web", "mem"],
-  "sandbox": "restricted"
+  "strict_usage_sink": false
 }
 ```
 
@@ -186,90 +304,62 @@ CREATE TABLE actors (
 }
 ```
 
-## Channel
+`runtime_policy` 和 `resource_policy` 虽然存为 JSON，但不是任意 dict。每个 policy 都需要对应的 typed schema、默认值和 validator，避免调用方猜字段含义。
 
-Channel 是接入外部消息平台的实例。
+## ActorIngressRule
+
+`actor_ingress_rules` 表是 v2 唯一的平台路由配置。每条规则描述"哪个 actor 接收什么 source 的消息"，用 fnmatch glob 在 `MessageSource(id, path)` + `kind` 上做匹配。
 
 ```sql
-CREATE TABLE channels (
-    id INTEGER PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
-    channel_type TEXT NOT NULL,
-    auth_secret_id INTEGER,
-    config JSON NOT NULL,
-    default_private_actor_id INTEGER,
-    default_group_actor_id INTEGER,
+CREATE TABLE actor_ingress_rules (
+    id TEXT PRIMARY KEY,
+    actor_id TEXT NOT NULL REFERENCES actors(id),
+    source_id_pattern TEXT NOT NULL DEFAULT '*',
+    source_path_pattern TEXT NOT NULL DEFAULT '**',
+    kind_patterns JSON NOT NULL DEFAULT '["*"]',
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    status TEXT NOT NULL DEFAULT 'created',
     version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
 ```
 
-示例：
+字段语义：
 
-```json
-{
-  "channel_type": "discord",
-  "config": {
-    "guild_allowlist": ["123"],
-    "intents": ["messages", "message_content"]
-  },
-  "default_private_actor": "shiori-discord",
-  "default_group_actor": "yuu-discord"
-}
-```
-
-## Route Rules
-
-```sql
-CREATE TABLE route_rules (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    priority INTEGER NOT NULL,
-    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-    match JSON NOT NULL,
-    actor_id INTEGER NOT NULL,
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL
-);
-```
+- `source_id_pattern`：匹配 `MessageSource.id`。Integration 投入的消息 id 通常是 `integration_id`；Actor 自我触发的消息 id 是 `system:<actor_id>`。
+- `source_path_pattern`：匹配 `MessageSource.path`。Integration 自定义，如 `group:42`、`private:user-7`、`webhook:linear-team-x`。
+- `kind_patterns`：匹配 `IncomingMessage.kind`，如 `private` / `group` / `system`。
 
 示例：
 
 ```json
 {
-  "match": {
-    "channel": "discord-main",
-    "kind": "thread",
-    "metadata.guild_id": "123",
-    "metadata.thread_name_contains": "project"
-  },
-  "actor": "project-manager"
+  "actor_id": "shiori-web",
+  "source_id_pattern": "web-admin",
+  "source_path_pattern": "dialog:*",
+  "kind_patterns": ["*"]
 }
 ```
 
-## Context Binding
+```json
+{
+  "actor_id": "ops",
+  "source_id_pattern": "qq-main",
+  "source_path_pattern": "group:42",
+  "kind_patterns": ["group"]
+}
+```
 
-Context 应保存稳定身份，并可 pin 到 Actor。
+每个 enabled actor 自动获得一条隐式 `system:<actor_id>` rule，由 `build_route_bindings(...)` 在加载时注入；管理员无需手动创建。
 
-推荐在当前 `contexts` 表上补充：
+UI 语义：
 
 ```text
-channel
-key
-kind
-label
-metadata
-actor_id nullable
-last_message_at
-archived
+Actor: shiori-web
+Ingress Rules:
+  qq-main / group:42 / [private,group]
+  web-admin / dialog:* / [*]
+  + add rule
 ```
 
-规则：
-
-- `(channel, key)` 必须唯一。
-- 首次消息进入时，如果 `actor_id` 为空，Route Engine 解析 actor，并可写入 `context.actor_id`。
-- 后续消息优先使用 `context.actor_id`。
-- 管理员可以在 UI 中 reassign context。
+复杂路由（如群聊内按 group_id 分流到不同 actor）通过为同一 integration 配置多条不同 `source_path_pattern` 的 rule 实现；不需要在 actor 内部再做一层 dispatch。

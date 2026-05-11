@@ -2,12 +2,31 @@
 
 v2 的 Admin UI 应围绕 Runtime Resources，而不是围绕 YAML 配置项。
 
-## 首次启动
+## 登录
 
-系统 seed 默认资源：
+Admin 使用 session-based 登录。首次访问时展示登录表单，输入 `admin.secret`：
 
 ```text
-Builtin Providers
+登录页：
+  - 输入框（password 类型，不回显）
+  - "登录" 按钮
+  - 失败提示："密钥不匹配"
+
+POST /api/auth/login  → 200 + Set-Cookie: yuubot_session=...
+                       → 401 密钥错误
+
+GET  /api/auth/session → 200 {"authenticated": true} | 401
+POST /api/auth/logout  → 清 session
+```
+
+Cookie 属性：`httpOnly=True`、`sameSite=Lax`、HTTPS 部署时 `secure=True`。所有 `/api/*` 端点（除 `/healthz` 和 `/api/auth/*`）需要有效 session。
+
+## 首次启动
+
+系统不自动创建 Runtime Resources。空库首次进入 Admin UI 时展示 setup flow，由用户显式创建或导入资源。
+
+```text
+LLM Provider templates
   OpenAI template
   OpenAI-compatible template
   Anthropic template
@@ -29,42 +48,68 @@ Builtin Channels
   web-admin-chat enabled
 ```
 
-如果没有任何可用 LLM provider：
+如果没有任何可用 LLM provider 或 Channel：
 
 ```text
-web-admin-chat channel exists
-shiori-web actor exists
-actor status = needs_provider
-UI 引导用户创建 provider 或填 key
+UI status = setup_required
+UI 引导用户创建 provider、character、actor、web channel
 ```
+
+Web Channel 首屏不应只提供一个固定聊天框。它至少支持创建多个 Web dialog：
+
+```text
+Dialog: shiori-private-test
+  context.key = web/dialog:shiori-private-test
+  kind = private
+  metadata = {"purpose": "route-test", "target": "shiori"}
+
+Dialog: yuu-group-test
+  context.key = web/dialog:yuu-group-test
+  kind = group
+  metadata = {"purpose": "route-test", "target": "yuu"}
+```
+
+这样在只有 Web Channel 的 v2 core 中，也可以通过不同 dialog 验证 Route rules、default actor 和 context pin/reassign 是否按预期工作。
 
 ## 用户路径
 
-### 1. 创建 Provider
+### 1. 创建 LLM Provider
 
-入口：`Providers / Integrations -> New`
+入口：`Providers -> LLM Providers -> New`
 
 用户可以：
 
-- 选择内置 provider 模板并填 key。
+- 选择内置 LLM 模板并填 key。
 - 创建 OpenAI-compatible provider，填写 base_url、api_key、models。
-- 创建额外服务，例如 web search、GitHub、Linear、W&B。
 - 点击 `Test Connection`。
 
-表单：
+表单由 LLM provider spec 生成，典型字段：
 
 ```text
 name
-provider_type
+plugin_id
 base_url
-api_key
+api_key / oauth
 models
 default_model
-capabilities
+model_capabilities
 pricing / budget
 ```
 
-### 2. 创建 Character
+### 2. 创建 Integration Provider
+
+入口：`Providers -> Integrations -> New`
+
+用户可以：
+
+- 选择 search、GitHub、Linear、W&B、SwanLab 或自定义 integration。
+- 按 provider 自己声明的 config/auth schema 填表或走 OAuth。
+- 查看 provider 暴露的 capability manifest。
+- 点击 `Test Connection`。
+
+Core 只展示 schema、保存 config/secret，并记录验证结果；具体服务含义由 integration plugin 自己实现。
+
+### 3. 创建 Character
 
 入口：`Characters -> New`
 
@@ -72,12 +117,12 @@ pricing / budget
 
 - 选择内置 Character 克隆。
 - 从空白创建。
-- 编辑 prompt sections。
+- 从 Prompt Template 插入文本，或直接编辑完整 system prompt。
 - 选择 facade / tool surface。
 
 Character 不绑定模型。模型在 Actor 中选择。
 
-### 3. 创建 Actor
+### 4. 创建 Actor
 
 入口：`Actors -> New`
 
@@ -88,8 +133,8 @@ Actor 是“分配资源后的可运行 Agent”。
 ```text
 name
 character
-primary provider + model
-fallback provider + model
+primary llm provider + model
+fallback llm provider + model
 bot kind: private / group / both
 default private: yes/no
 default group: yes/no
@@ -99,7 +144,7 @@ runtime policy:
   rollover
   summarization interval
   max turns
-  tool permissions
+  capability permissions
 resource policy:
   budget
   concurrency
@@ -109,11 +154,11 @@ resource policy:
 
 创建完成后，Actor 可以被 Gateway 的 Channel / Route 引用。
 
-### 4. 接入 Channel
+### 5. 接入 Channel
 
 入口：`Channels -> Connect`
 
-示例：Discord
+v2 core 只内置 Web Channel。下面的 Discord 流程是 adapter contract 的示例，不代表 core 必须随主仓维护所有平台。
 
 ```text
 channel_type = discord
@@ -147,9 +192,10 @@ Dashboard
   warnings
 
 Providers
-  LLM providers
-  service providers
+  LLM backends
+  integration providers
   connection test
+  capability manifest preview
 
 Characters
   builtin/custom list
@@ -174,6 +220,7 @@ Routes
 
 Contexts
   recent contexts
+  web dialog create/edit
   pinned actor
   reassign actor
   archive
@@ -185,3 +232,5 @@ Bootstrap Config
   read-only values
   restart-required badges
 ```
+
+API 端点详细规范见 [11-api-design.md](./11-api-design.md)。每个页面对应一组 REST 端点。安全约束（认证、secret 遮蔽、错误脱敏、rate limit）见 API 设计文档。

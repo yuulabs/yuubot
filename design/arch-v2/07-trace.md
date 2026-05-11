@@ -51,6 +51,13 @@ GET /monitor/{path:path} -> http://{trace.ui_host}:{trace.ui_port}/{path}
 
 这样避免跨域和 referrer policy 问题。
 
+## 实现约束
+
+- daemon 使用 `yuutrace.init(...)` / `yuutrace.disable()` 初始化 SDK，不自定义 trace SDK。
+- collector/UI 优先复用 `ytrace server` / `ytrace ui` 或 `yuutrace.cli.server.run_server(...)` / `yuutrace.cli.ui.run_ui(...)`。
+- ActorRuntime 通过手动装配 yuuagents `Stage` 注入 `EventBus` observer，不新增 yuubot 全局 EventBus。
+- LLM/tool usage 使用 `yuutrace.record_llm_usage(...)`、`record_llm_cost(...)`、`record_tool_usage(...)`，不重新定义 usage schema。
+
 ## 部署原则
 
 - collector port 只对内部网络开放。
