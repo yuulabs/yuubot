@@ -1,0 +1,220 @@
+"""E2E coverage for Echo HTTP ingress through a real daemon."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import httpx
+import msgspec
+import pytest
+import yuullm
+import yuuagents.stage as yuuagents_stage
+
+from helpers import insert_echo_actor_resources
+from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
+from yuubot.core.actors import SimpleLoopActor
+from yuubot.core.integrations.echo import EchoIntegration, EchoPayload
+from yuubot.runtime.daemon import YuubotDaemon, build_daemon
+
+
+SOURCE_PATH = "channels/http-echo"
+ACTOR_ID = "echo-http-actor"
+INTEGRATION_ID = "echo-http"
+MESSAGE_ID = "http-msg-1"
+SENDER_ID = "external-user"
+ORIGINAL_TEXT = "hello from external integration"
+
+
+async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = EchoRoundTripProvider()
+    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+
+    daemon = await _build_daemon(yuubot_config, tmp_path)
+    await daemon.start()
+    try:
+        resources = await insert_echo_actor_resources(
+            daemon.resources.repository,
+            actor_id=ACTOR_ID,
+            integration_id=INTEGRATION_ID,
+            source_path=SOURCE_PATH,
+            system_prompt="You verify echo HTTP ingress.",
+        )
+        await daemon.resources.event_bus.drain()
+
+        assert daemon.actors.running_actor_ids() == (resources.actor.id,)
+        instance = _echo_instance(daemon, resources.integration.id)
+
+        async with _client(daemon) as client:
+            response = await client.post(
+                "/integration/echo",
+                json={
+                    "integration_id": resources.integration.id,
+                    "message_id": MESSAGE_ID,
+                    "sender_id": SENDER_ID,
+                    "sender_name": "External User",
+                    "kind": "private",
+                    "text": ORIGINAL_TEXT,
+                    "segments": [{"kind": "text", "text": ORIGINAL_TEXT}],
+                },
+            )
+
+        assert response.status_code == 202, response.json()
+        assert response.json()["source"] == {
+            "producer": "integration",
+            "id": resources.integration.id,
+            "path": SOURCE_PATH,
+        }
+
+        assert await instance.next_echo_call() == EchoPayload(
+            value=f"{ACTOR_ID}:{ORIGINAL_TEXT}",
+            message=ORIGINAL_TEXT,
+            sender_id=SENDER_ID,
+            message_id=MESSAGE_ID,
+        )
+        context = await instance.next_echo_context()
+        assert context["actor_id"] == resources.actor.id
+
+        turn = await _next_simple_loop_turn(daemon, resources.actor.id)
+        assert turn.message_id == MESSAGE_ID
+        assert turn.assistant_text == "done"
+
+        assert len(llm.calls) == 2
+        first_user_message = yuullm.render_message_text(llm.calls[0][-1])
+        assert ORIGINAL_TEXT in first_user_message
+        assert f'"id": "{resources.integration.id}"' in first_user_message
+        assert f'"path": "{SOURCE_PATH}"' in first_user_message
+        assert f'"message_id": "{MESSAGE_ID}"' in first_user_message
+        assert f'"sender_id": "{SENDER_ID}"' in first_user_message
+
+        execute_python_description = _execute_python_description(llm.tools[0])
+        assert "async def yext.echo" in execute_python_description
+        assert "Returns the payload unchanged." in execute_python_description
+        assert "sender_id" in execute_python_description
+        assert "message_id" in execute_python_description
+    finally:
+        await daemon.stop()
+
+
+class EchoRoundTripProvider:
+    def __init__(self) -> None:
+        self.calls: list[list[yuullm.Message]] = []
+        self.tools: list[list[dict[str, Any]]] = []
+
+    @property
+    def api_type(self) -> str:
+        return "scripted"
+
+    @property
+    def provider(self) -> str:
+        return "scripted"
+
+    async def list_models(self) -> list[yuullm.ProviderModel]:
+        return [yuullm.ProviderModel(id="gpt-4")]
+
+    async def stream(
+        self,
+        messages: list[yuullm.Message],
+        *,
+        model: str,
+        tools: list[dict[str, Any]] | None = None,
+        on_raw_chunk: yuullm.RawChunkHook | None = None,
+        **kwargs: Any,
+    ) -> yuullm.StreamResult:
+        _ = model, on_raw_chunk, kwargs
+        self.calls.append(list(messages))
+        self.tools.append(list(tools or ()))
+        turn = self._tool_turn() if len(self.calls) == 1 else self._done_turn()
+
+        async def stream_items() -> AsyncIterator[yuullm.StreamItem]:
+            for item in turn:
+                yield item
+
+        return stream_items(), yuullm.Store(
+            usage=yuullm.Usage(
+                provider="fake",
+                model="fake",
+                input_tokens=1,
+                output_tokens=1,
+            )
+        )
+
+    def _tool_turn(self) -> list[yuullm.StreamItem]:
+        code = (
+            "import yext\n"
+            f"message = {ORIGINAL_TEXT!r}\n"
+            "result = await yext.echo(\n"
+            "    value=f\"{SESSION_STATE['actor_id']}:{message}\",\n"
+            "    message=message,\n"
+            f"    sender_id={SENDER_ID!r},\n"
+            f"    message_id={MESSAGE_ID!r},\n"
+            ")\n"
+            "print(result)"
+        )
+        return [
+            yuullm.ToolCall(
+                id="call-echo",
+                name="execute_python",
+                arguments=json.dumps(
+                    {
+                        "code": code,
+                        "timeout_s": 10,
+                        "capture": ["stdout", "stderr"],
+                    }
+                ),
+            )
+        ]
+
+    def _done_turn(self) -> list[yuullm.StreamItem]:
+        return [yuullm.Response({"type": "text", "text": "done"})]
+
+
+async def _build_daemon(
+    base_config: BootstrapConfig,
+    tmp_path: Path,
+) -> YuubotDaemon:
+    return await build_daemon(
+        msgspec.structs.replace(
+            base_config,
+            database=DatabaseConfig(path=":memory:"),
+            paths=PathsConfig(
+                data_dir=str(tmp_path / "data"),
+                workspace_dir=str(tmp_path / "workspaces"),
+                logs_dir=str(tmp_path / "logs"),
+            ),
+        ),
+    )
+
+
+def _client(daemon: YuubotDaemon) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=daemon.asgi_app()),
+        base_url="http://testserver",
+    )
+
+
+def _echo_instance(daemon: YuubotDaemon, integration_id: str) -> EchoIntegration:
+    instance = daemon.integrations.running_instance(integration_id)
+    assert isinstance(instance, EchoIntegration)
+    return instance
+
+
+async def _next_simple_loop_turn(daemon: YuubotDaemon, actor_id: str):
+    actor = daemon.actors.running_actor(actor_id)
+    assert isinstance(actor, SimpleLoopActor)
+    return await actor.next_turn_result()
+
+
+def _execute_python_description(tools: list[dict[str, Any]]) -> str:
+    for tool in tools:
+        function = tool.get("function")
+        if isinstance(function, dict) and function.get("name") == "execute_python":
+            description = function.get("description", "")
+            return description if isinstance(description, str) else ""
+    raise AssertionError("execute_python tool spec was not sent to the LLM")
