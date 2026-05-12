@@ -7,6 +7,8 @@ from typing import Literal
 
 import msgspec
 
+from yuubot.core.validation import LLMProviderOptions, StreamOptions
+
 
 class SecretRecord(msgspec.Struct):
     id: str
@@ -55,10 +57,10 @@ class LLMBackendRecord(msgspec.Struct):
     pricing: PricingTable
     budget: BudgetPolicy
     id: str = ""
-    provider_options: dict[str, object] = msgspec.field(default_factory=dict)
+    provider_options: LLMProviderOptions = msgspec.field(default_factory=LLMProviderOptions)
     api_key_secret_id: str | None = None
     default_model: str = ""
-    default_stream_options: dict[str, object] = msgspec.field(default_factory=dict)
+    default_stream_options: StreamOptions = msgspec.field(default_factory=StreamOptions)
     version: int = 1
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -84,12 +86,26 @@ class YuuAgentBudget(msgspec.Struct):
     max_tokens: int = 0
     max_usd: float = 0.0
 
+    def to_budget_config(self):
+        """Convert to yuuagents BudgetConfig.
+
+        Lazily imported to keep the records layer free of yuuagents dependency
+        at module load time.
+        """
+        from yuuagents import BudgetConfig
+
+        return BudgetConfig(
+            max_steps=self.max_steps,
+            max_tokens=self.max_tokens,
+            max_usd=self.max_usd,
+        )
+
 
 class YuuAgentLLMOptions(msgspec.Struct):
     """Actor-level LLM overrides for AgentDefinition.llm/StageConfig.llm."""
 
     max_tokens: int | None = None
-    stream_options: dict[str, object] = msgspec.field(default_factory=dict)
+    stream_options: StreamOptions = msgspec.field(default_factory=StreamOptions)
 
 
 class CapabilityConfig(msgspec.Struct):

@@ -50,7 +50,7 @@ class IntegrationCore:
     async def refresh_capabilities(self) -> None:
         self._enabled_capability_ids.invalidate()
 
-    def declared_capability_specs(self) -> tuple[AnyCapabilitySpec, ...]:
+    def declared_capability_specs(self) -> list[AnyCapabilitySpec]:
         return self.factories.capability_specs()
 
     async def handle_resource_changed(self, event: ResourceChanged) -> None:
@@ -112,7 +112,7 @@ class IntegrationCore:
 
     async def disable(self, integration_id: str) -> None:
         instance = self._instances.pop(integration_id, None)
-        for key in tuple(self._capabilities_index):
+        for key in list(self._capabilities_index):
             if key[0] == integration_id:
                 self._capabilities_index.pop(key, None)
         if instance is not None:
@@ -136,8 +136,8 @@ class IntegrationCore:
         await self._refresh_enabled_integrations(event, enabled_ids)
         self._enabled_capability_ids.invalidate()
 
-    def running_integration_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self._instances))
+    def running_integration_ids(self) -> list[str]:
+        return sorted(self._instances)
 
     def running_instance(self, integration_id: str) -> IntegrationInstance:
         try:
@@ -177,7 +177,7 @@ class IntegrationCore:
         self,
         enabled_ids: set[str],
     ) -> None:
-        for integration_id in tuple(self._instances):
+        for integration_id in list(self._instances):
             if integration_id not in enabled_ids:
                 await self.disable(integration_id)
 

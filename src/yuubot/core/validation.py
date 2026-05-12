@@ -25,7 +25,7 @@ class StreamOptions(msgspec.Struct, forbid_unknown_fields=False):
     max_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
-    stop: tuple[str, ...] | None = None
+    stop: list[str] | None = None
 
 
 class LLMProviderOptions(msgspec.Struct, forbid_unknown_fields=False):

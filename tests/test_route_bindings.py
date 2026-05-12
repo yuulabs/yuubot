@@ -74,10 +74,10 @@ class TestRouteBindings:
 
         bindings = await load_route_bindings(repository)
 
-        assert bindings.resolve(_msg("slack-main", "channels/dev")) == (actor1.id,)
-        assert bindings.resolve(_msg("github-main", "repos/yuulabs/yuubot-v2")) == (
+        assert bindings.resolve(_msg("slack-main", "channels/dev")) == [actor1.id]
+        assert bindings.resolve(_msg("github-main", "repos/yuulabs/yuubot-v2")) == [
             actor2.id,
-        )
+        ]
 
     async def test_build_route_bindings_allows_multiple_targets(
         self, resources: Resources
@@ -90,10 +90,10 @@ class TestRouteBindings:
 
         bindings = await load_route_bindings(repository)
 
-        assert bindings.resolve(_msg("slack-main", "channels/support")) == (
+        assert bindings.resolve(_msg("slack-main", "channels/support")) == [
             actor1.id,
             actor2.id,
-        )
+        ]
 
     async def test_build_route_bindings_uses_source_and_kind_globs(self):
         bindings = build_route_bindings(
@@ -108,9 +108,9 @@ class TestRouteBindings:
             )
         )
 
-        assert bindings.resolve(_msg("slack-main", "channels/support", "mention")) == (
+        assert bindings.resolve(_msg("slack-main", "channels/support", "mention")) == [
             "support-agent",
-        )
+        ]
         with pytest.raises(LookupError):
             bindings.resolve(_msg("github-main", "channels/support", "mention"))
         with pytest.raises(LookupError):
@@ -128,7 +128,7 @@ class TestRouteBindings:
             source=system_source_for_actor(actor.id, path="schedules/nightly"),
             kind="schedule.tick",
         )
-        assert bindings.resolve(message) == (actor.id,)
+        assert bindings.resolve(message) == [actor.id]
 
     async def test_build_route_bindings_empty(self):
         bindings = build_route_bindings(())
@@ -145,7 +145,7 @@ class TestRouteBindings:
         await gateway.ingest(_msg("slack-main", "channels/dev", text="hello"))
 
         received = await asyncio.wait_for(mailbox.get(), timeout=1.0)
-        assert received.text == "hello"
+        assert received.content[0]["text"] == "hello"
 
     async def test_gateway_update_bindings_refreshes_routing(
         self, resources: Resources
@@ -160,7 +160,7 @@ class TestRouteBindings:
         mb1 = gateway.get_mailbox(actor1.id)
 
         await gateway.ingest(_msg("slack-main", "channels/dev", text="first"))
-        assert (await asyncio.wait_for(mb1.get(), timeout=1.0)).text == "first"
+        assert (await asyncio.wait_for(mb1.get(), timeout=1.0)).content[0]["text"] == "first"
 
         await repository.delete(ActorIngressRuleORM, rule1.id)
         await _create_rule(repository, "slack-main", "channels/dev", actor2.id)
@@ -168,7 +168,7 @@ class TestRouteBindings:
         mb2 = gateway.get_mailbox(actor2.id)
 
         await gateway.ingest(_msg("slack-main", "channels/dev", text="second"))
-        assert (await asyncio.wait_for(mb2.get(), timeout=1.0)).text == "second"
+        assert (await asyncio.wait_for(mb2.get(), timeout=1.0)).content[0]["text"] == "second"
 
     async def test_actor_reads_latest_llm_backend_details(self, resources: Resources):
         repository = resources.repository
@@ -232,7 +232,7 @@ class TestRouteBindings:
 
         rule = await _create_rule(repository, "slack-main", "channels/dev", actor.id)
         await asyncio.wait_for(reloaded.wait(), timeout=1.0)
-        assert gateway.routes.resolve(_msg("slack-main", "channels/dev")) == (actor.id,)
+        assert gateway.routes.resolve(_msg("slack-main", "channels/dev")) == [actor.id]
 
         reloaded.clear()
         await repository.delete(ActorIngressRuleORM, rule.id)
@@ -359,10 +359,11 @@ def _msg(
     kind: str = "message",
     text: str = "",
 ) -> IncomingMessage:
+    content = [{"type": "text", "text": text}] if text else []
     return IncomingMessage(
         source=MessageSource(id=source_id, path=source_path),
         message_id="1",
         sender_id="u1",
         kind=kind,
-        text=text,
+        content=content,
     )

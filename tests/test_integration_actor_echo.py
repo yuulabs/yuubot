@@ -20,7 +20,6 @@ from yuubot.core.integrations.echo import (
     EchoPayload,
     EchoIntegrationFactory,
 )
-from yuubot.core.messages import Segment
 from yuubot.core.routing import load_route_bindings
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
@@ -98,7 +97,7 @@ async def test_test_integration_message_reaches_echo_actor(
             sender_name="Tester",
             kind="private",
             text="hello echo",
-            segments=(Segment(kind="text", text="hello echo"),),
+            content=[{"type": "text", "text": "hello echo"}],
         )
 
         expected = {"value": "hello echo"}

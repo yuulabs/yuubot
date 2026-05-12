@@ -29,6 +29,7 @@ from yuubot.core.integrations import (
     default_integration_factories,
 )
 from yuubot.core.integrations.echo import EchoIngressPayload, EchoIntegration
+from yuubot.core.observability import TraceObserver
 from yuubot.core.routing import RouteBindings, load_route_bindings
 from yuubot.events import Event
 from yuubot.process import (
@@ -53,10 +54,12 @@ class DaemonInfrastructure:
         default_factory=default_integration_factories
     )
     actor_factories: ActorFactoryRegistry | None = None
+    observer: TraceObserver = field(default_factory=TraceObserver)
     asgi_server: ASGIServer = field(default_factory=UvicornServer)
 
     def trace_service(self, config: BootstrapConfig) -> TraceService:
-        return TraceService(config=config.trace)
+        db_path = str(Path(config.paths.data_dir) / "traces.db")
+        return TraceService(config=config.trace, db_path=db_path)
 
     def actor_factory_registry(
         self,
@@ -68,6 +71,7 @@ class DaemonInfrastructure:
             config.yuuagents,
             python_sessions,
             repository,
+            observer=self.observer,
         )
 
 
@@ -117,14 +121,14 @@ class DaemonRefreshDispatcher:
     actors: ActorManager
     integrations: IntegrationCore
 
-    async def refresh(self, event: ResourceChanged) -> tuple[str, ...]:
+    async def refresh(self, event: ResourceChanged) -> list[str]:
         actions: list[str] = []
         if event.is_table("actor_ingress_rules"):
             await self.routes.reload()
             actions.append("routes.reloaded")
             await self.actors.reconcile()
             actions.append("actors.reconciled")
-            return tuple(actions)
+            return actions
         if event.is_table("actors"):
             await self.routes.reload()
             actions.append("routes.reloaded")
@@ -132,15 +136,15 @@ class DaemonRefreshDispatcher:
             actions.append("integrations.actor_cache_invalidated")
             await self.actors.reconcile()
             actions.append("actors.reconciled")
-            return tuple(actions)
+            return actions
         if event.is_table("characters", "llm_backends"):
             await self.actors.forward_resource_change(event)
             actions.append("actors.notified")
-            return tuple(actions)
+            return actions
         if event.is_table("integrations"):
             await self.integrations.reconcile(event)
-            return ("integrations.reconciled", "capabilities.reloaded")
-        return ()
+            return ["integrations.reconciled", "capabilities.reloaded"]
+        return []
 
 
 @dataclass
@@ -155,7 +159,7 @@ class YuubotDaemon:
     services: ServiceHost
     asgi_server: ASGIServer
     refresh: DaemonRefreshDispatcher
-    trace_enabled: bool
+    trace_service: TraceService
 
     async def start(self) -> None:
         await self.services.start()
@@ -176,7 +180,7 @@ class YuubotDaemon:
             integrations=self.integrations,
             gateway=self.gateway,
             refresh=self.refresh,
-            trace_enabled=self.trace_enabled,
+            trace_service=self.trace_service,
         )
 
     async def serve(self) -> None:
@@ -199,7 +203,7 @@ def build_daemon_asgi_app(
     integrations: IntegrationCore,
     gateway: Gateway,
     refresh: DaemonRefreshDispatcher,
-    trace_enabled: bool,
+    trace_service: TraceService,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_: Starlette):
@@ -228,15 +232,13 @@ def build_daemon_asgi_app(
         return JSONResponse(
             {
                 "status": "running" if services.started else "stopped",
-                "running_integration_ids": list(
-                    integrations.running_integration_ids()
-                ),
-                "running_actor_ids": list(actors.running_actor_ids()),
+                    "running_integration_ids": integrations.running_integration_ids(),
+                    "running_actor_ids": actors.running_actor_ids(),
                 "actor_workspaces": actors.running_actor_workspace_paths(),
                 "route_binding_count": gateway.routes.binding_count(),
                 "trace": {
-                    "enabled": trace_enabled,
-                    "status": "enabled" if trace_enabled else "disabled",
+                    "enabled": trace_service.config.enabled,
+                    "status": trace_service.status,
                 },
             }
         )
@@ -317,7 +319,7 @@ async def build_daemon(
     resources = await open_resources(config)
 
     repository = resources.repository
-    gateway = Gateway(routes=RouteBindings(rules=()))
+    gateway = Gateway(routes=RouteBindings(rules=[]))
     integrations = IntegrationCore(
         repository=repository,
         factories=components.integration_factories,
@@ -349,6 +351,7 @@ async def build_daemon(
 
     resources.event_bus.subscribe([ResourceChanged], on_resources_changed)
 
+    trace_svc = components.trace_service(config)
     return YuubotDaemon(
         config=config.server,
         resources=resources,
@@ -358,7 +361,7 @@ async def build_daemon(
         services=ServiceHost.from_iterable(
             (
                 resources.event_bus,
-                components.trace_service(config),
+                trace_svc,
                 IntegrationLifecycleService(integrations),
                 actor_python_sessions,
                 routes,
@@ -367,7 +370,7 @@ async def build_daemon(
         ),
         asgi_server=components.asgi_server,
         refresh=refresh,
-        trace_enabled=config.trace.enabled,
+        trace_service=trace_svc,
     )
 
 

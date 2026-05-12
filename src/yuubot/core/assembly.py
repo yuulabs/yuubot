@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, cast
+
+import msgspec
 
 from yuuagents import (
     Actor as YuuAgentsActor,
     AgentDefinition,
-    BudgetConfig,
     LlmConfig,
     PromptDefinition,
     Stage,
@@ -19,7 +20,9 @@ from yuuagents.agent import LlmClient
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.bindings import ActorBinding
 from yuubot.core.facade import ActorFacadeBinding
+from yuubot.core.observability import TraceObserver
 from yuubot.core.validation import (
+    ConfigurationError,
     validate_capability_config,
     validate_prompt_provider_config,
     validate_provider_options,
@@ -32,7 +35,7 @@ from yuubot.resources.records import (
 
 PYTHON_PROVIDER_KEY = "ipykernel"
 YEXT_IMPORT = {"module": "yext"}
-YEXT_EXPAND_FUNCTIONS = ("yext.*",)
+YEXT_EXPAND_FUNCTIONS = ["yext.*"]
 
 
 def start_yuuagents_actor(
@@ -41,7 +44,9 @@ def start_yuuagents_actor(
     yuuagents_config: YuuAgentsConfig,
     facade: ActorFacadeBinding | None = None,
     llm_client: LlmClient | None = None,
+    observer: TraceObserver | None = None,
 ) -> YuuAgentsActor:
+    _check_pricing_for_budget(binding)
     stage = Stage.from_config(
         StageConfig(
             strict=yuuagents_config.strict,
@@ -53,7 +58,10 @@ def start_yuuagents_actor(
             llm=llm_client or _stage_llm_config(binding),
         )
     )
-    return YuuAgentsActor(stage, [build_agent_definition(binding, facade=facade)])
+    actor = YuuAgentsActor(stage, [build_agent_definition(binding, facade=facade)])
+    if observer is not None:
+        stage.eventbus.subscribe(observer)
+    return actor
 
 
 def build_agent_definition(
@@ -67,13 +75,9 @@ def build_agent_definition(
         llm=LlmConfig(
             model=binding.llm.model,
             max_tokens=actor.llm_options.max_tokens,
-            stream_options=dict(actor.llm_options.stream_options),
+            stream_options=msgspec.to_builtins(actor.llm_options.stream_options),
         ),
-        budget=BudgetConfig(
-            max_steps=actor.budget.max_steps,
-            max_tokens=actor.budget.max_tokens,
-            max_usd=actor.budget.max_usd,
-        ),
+        budget=actor.budget.to_budget_config(),
         capabilities=_agent_capability_configs(actor.agent_capabilities, facade),
         prompts=PromptDefinition(
             system=binding.character.system_prompt,
@@ -91,11 +95,11 @@ def build_agent_definition(
 def _stage_llm_config(binding: ActorBinding) -> dict[str, object]:
     backend = binding.llm.backend
     provider_options = validate_provider_options(
-        dict(backend.provider_options),
+        msgspec.to_builtins(backend.provider_options),
         context=f"llm_backend[{backend.name}].provider_options",
     )
     stream_options = validate_stream_options(
-        dict(backend.default_stream_options),
+        msgspec.to_builtins(backend.default_stream_options),
         context=f"llm_backend[{backend.name}].default_stream_options",
     )
     return {
@@ -132,7 +136,7 @@ def _copy_provider_config(config: object) -> Any:
 
 
 def _capability_configs(
-    configs: tuple[CapabilityConfig, ...],
+    configs: Iterable[CapabilityConfig],
 ) -> dict[str, dict[str, Any]]:
     return {
         item.provider_key: validate_capability_config(
@@ -143,7 +147,7 @@ def _capability_configs(
 
 
 def _agent_capability_configs(
-    configs: tuple[CapabilityConfig, ...],
+    configs: Iterable[CapabilityConfig],
     facade: ActorFacadeBinding | None,
 ) -> dict[str, dict[str, Any]]:
     result = _capability_configs(configs)
@@ -156,7 +160,7 @@ def _agent_capability_configs(
 
 
 def _prompt_provider_configs(
-    configs: tuple[PromptProviderConfig, ...],
+    configs: Iterable[PromptProviderConfig],
 ) -> dict[str, dict[str, Any]]:
     return {
         item.provider_key: validate_prompt_provider_config(
@@ -167,7 +171,7 @@ def _prompt_provider_configs(
 
 
 def _agent_prompt_provider_configs(
-    configs: tuple[PromptProviderConfig, ...],
+    configs: Iterable[PromptProviderConfig],
     facade: ActorFacadeBinding | None,
 ) -> dict[str, dict[str, Any]]:
     result = _prompt_provider_configs(configs)
@@ -236,7 +240,7 @@ def _import_module(item: object) -> str:
     return item if isinstance(item, str) else ""
 
 
-def _merged_str_sequence(existing: object, required: tuple[str, ...]) -> list[str]:
+def _merged_str_sequence(existing: object, required: list[str]) -> list[str]:
     values = [
         item
         for item in (existing if isinstance(existing, Sequence) and not isinstance(existing, str) else ())
@@ -254,3 +258,16 @@ def _merged_startup_code(existing: str, required: str) -> str:
     if required in existing:
         return existing
     return f"{existing}\n{required}"
+
+
+def _check_pricing_for_budget(binding: ActorBinding) -> None:
+    if binding.actor.budget.max_usd <= 0:
+        return
+    model = binding.llm.model
+    for entry in binding.llm.backend.pricing.entries:
+        if entry.model == model:
+            return
+    raise ConfigurationError(
+        f"actor {binding.actor.name!r}: max_usd budget requires pricing for "
+        f"model {model!r} in backend {binding.llm.backend.name!r}"
+    )

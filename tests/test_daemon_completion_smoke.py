@@ -22,7 +22,7 @@ from yuubot.core.integrations.echo import (
     EchoIntegration,
     EchoPayload,
 )
-from yuubot.core.messages import Segment
+from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
@@ -71,7 +71,7 @@ async def test_daemon_completion_smoke_runs_real_daemon_turn_and_refreshes(
             sender_name="Tester",
             kind="private",
             text="hello daemon",
-            segments=(Segment(kind="text", text="hello daemon"),),
+            content=[{"type": "text", "text": "hello daemon"}],
         )
 
         actor_workspace = daemon.actors.running_actor_workspace_paths()[actor.id]
@@ -104,7 +104,7 @@ async def test_daemon_completion_smoke_runs_real_daemon_turn_and_refreshes(
             "running_actor_ids": [actor.id],
             "actor_workspaces": {actor.id: actor_workspace},
             "route_binding_count": 2,
-            "trace": {"enabled": True, "status": "enabled"},
+            "trace": {"enabled": True, "status": "running"},
         }
 
         await _assert_refresh_cases(daemon, SOURCE_PATH, actor.id)
@@ -209,7 +209,7 @@ async def _assert_refresh_cases(
             source_path,
             second_actor.id,
         )
-    assert daemon.actors.running_actor_ids() == (actor_id, second_actor.id)
+    assert daemon.actors.running_actor_ids() == [actor_id, second_actor.id]
 
     async with _client(daemon) as client:
         disabled_rule = await client.request(
@@ -231,8 +231,8 @@ async def _assert_refresh_cases(
         for rule in list_rules.json()["data"]
         if rule["actor_id"] == second_actor.id
     ] == [False]
-    assert daemon.gateway.routes.actor_ids() == (actor_id,)
-    assert daemon.actors.running_actor_ids() == (actor_id,)
+    assert daemon.gateway.routes.actor_ids() == [actor_id]
+    assert daemon.actors.running_actor_ids() == [actor_id]
 
     async with _client(daemon) as client:
         disabled_actor = await client.post(
@@ -240,7 +240,7 @@ async def _assert_refresh_cases(
             headers=DAEMON_HEADERS,
         )
     assert disabled_actor.status_code == 200
-    assert daemon.actors.running_actor_ids() == ()
+    assert daemon.actors.running_actor_ids() == []
 
     async with _client(daemon) as client:
         enabled_actor = await client.post(
@@ -248,7 +248,7 @@ async def _assert_refresh_cases(
             headers=DAEMON_HEADERS,
         )
     assert enabled_actor.status_code == 200
-    assert daemon.actors.running_actor_ids() == (actor_id,)
+    assert daemon.actors.running_actor_ids() == [actor_id]
 
     async with _client(daemon) as client:
         disabled_integration = await client.post(
@@ -256,7 +256,7 @@ async def _assert_refresh_cases(
             headers=DAEMON_HEADERS,
         )
     assert disabled_integration.status_code == 200
-    assert daemon.integrations.running_integration_ids() == ()
+    assert daemon.integrations.running_integration_ids() == []
     with pytest.raises(LookupError):
         await _invoke_echo(daemon, actor_id, "blocked")
 
@@ -266,7 +266,7 @@ async def _assert_refresh_cases(
             headers=DAEMON_HEADERS,
         )
     assert enabled_integration.status_code == 200
-    assert daemon.integrations.running_integration_ids() == ("echo-main",)
+    assert daemon.integrations.running_integration_ids() == ["echo-main"]
     assert await _invoke_echo(daemon, actor_id, "restored") == EchoPayload(
         value="restored"
     )

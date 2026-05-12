@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 from starlette.types import ASGIApp
 
-from yuubot.bootstrap.config import ServerConfig
+from yuubot.bootstrap.config import ServerConfig, TraceConfig
 from yuubot.core.actors import Actor, ActorFactoryRegistry, ActorManager
 from yuubot.core.actors.workspace import ActorWorkspaceResolver
 from yuubot.core.bindings import ActorBinding
@@ -17,7 +17,7 @@ from yuubot.core.gateway import Gateway, Mailbox
 from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
 from yuubot.core.integrations.contracts import IntegrationInstance
 from yuubot.core.routing import RouteBindings
-from yuubot.process import ServiceHost
+from yuubot.process import ServiceHost, TraceService
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.records import (
     IntegrationRecord,
@@ -150,6 +150,7 @@ def _build_runtime(
         )
     )
     refresh = DaemonRefreshDispatcher(routes=routes, actors=actors, integrations=integrations)
+    trace_service = TraceService(config=TraceConfig(enabled=False), db_path=":memory:")
     app = build_daemon_asgi_app(
         config=ServerConfig(daemon_secret=SECRET),
         resources=resources,
@@ -158,7 +159,7 @@ def _build_runtime(
         integrations=integrations,
         gateway=gateway,
         refresh=refresh,
-        trace_enabled=False,
+        trace_service=trace_service,
     )
     return RuntimeHarness(
         actors=actors,
@@ -341,7 +342,7 @@ async def test_integration_enable_disable_lifecycle(
         body = resp.json()
         assert body["status"] == "ok"
         assert "integration.enabled" in body["actions"]
-        assert runtime.integrations.running_integration_ids() == ("int-1",)
+        assert runtime.integrations.running_integration_ids() == ["int-1"]
 
         async with _client(runtime) as client:
             resp = await client.post(
@@ -349,7 +350,7 @@ async def test_integration_enable_disable_lifecycle(
                 headers=HEADERS,
             )
         assert resp.status_code == 200, resp.text
-        assert runtime.integrations.running_integration_ids() == ()
+        assert runtime.integrations.running_integration_ids() == []
     finally:
         await runtime.services.stop()
 

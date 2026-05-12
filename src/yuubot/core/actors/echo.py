@@ -55,7 +55,7 @@ class EchoOnceActor(Actor):
             raise RuntimeError("echo actor execute_python harness is not started")
         result = await self._python.call_facade(
             call_path=facade_call_path(ECHO_CAPABILITY_SPEC),
-            value=message.text,
+            value=_first_text(message.content),
         )
         await self.echo_results.put(result)
 
@@ -120,4 +120,11 @@ class EchoOnceActorFactory:
                 root=Path(self._tmp_dir.name),
             )
         return self.python_sessions
+
+
+def _first_text(content: list[dict[str, object]]) -> str:
+    for item in content:
+        if item.get("type") == "text":
+            return str(item.get("text", ""))
+    return ""
 

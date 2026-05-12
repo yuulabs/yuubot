@@ -3,19 +3,15 @@
 from __future__ import annotations
 
 import time
-from typing import Literal
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 
-SegmentKind = Literal["text", "image", "file"]
+if TYPE_CHECKING:
+    from yuullm.types import ContentItem
+
 SYSTEM_SOURCE_PREFIX = "system:"
-
-
-class Segment(msgspec.Struct):
-    kind: SegmentKind
-    text: str = ""
-    url: str = ""
-    path: str = ""
 
 
 class MessageSource(msgspec.Struct):
@@ -27,16 +23,36 @@ class MessageSource(msgspec.Struct):
 
 
 class IncomingMessage(msgspec.Struct):
-    """Base message type routed through Gateway."""
+    """Base message type routed through Gateway.
+
+    content holds yuullm ContentItem dicts (TextItem, ImageItem, etc.)
+    directly, avoiding an unnecessary intermediate Segment type.
+    """
 
     message_id: str
     sender_id: str
     source: MessageSource = msgspec.field(default_factory=MessageSource)
     kind: str = ""
     sender_name: str = ""
-    segments: tuple[Segment, ...] = ()
-    text: str = ""
+    # ContentItem dicts (TextItem / ImageItem / AudioItem / FileItem);
+    # msgspec does not support TypedDict unions, so we use dict[str, object].
+    content: list[dict[str, object]] = msgspec.field(default_factory=list)
     timestamp: int = msgspec.field(default_factory=lambda: int(time.time()))
+
+    def render_metadata(self) -> str:
+        """Render sender identity as a human-readable prefix for the LLM."""
+        name = self.sender_name or self.sender_id
+        ts = datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime("%H:%M:%S")
+        return f"[{name} {ts}] "
+
+    def content_items(self) -> list[ContentItem]:
+        """Typed accessor for content cast to yuullm ContentItem list.
+
+        The underlying field is list[dict[str, object]] because msgspec does
+        not support TypedDict unions, but the dicts are ContentItem-shaped.
+        This method centralizes the cast behind a named API.
+        """
+        return cast("list[ContentItem]", self.content)
 
 
 def system_source_id(actor_id: str) -> str:

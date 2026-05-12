@@ -1202,6 +1202,7 @@ dependencies = [
     { name = "tortoise-orm" },
     { name = "uvicorn" },
     { name = "yuuagents" },
+    { name = "yuutrace" },
 ]
 
 [package.optional-dependencies]
@@ -1230,6 +1231,7 @@ requires-dist = [
     { name = "tortoise-orm" },
     { name = "uvicorn" },
     { name = "yuuagents", editable = "../yuuagents" },
+    { name = "yuutrace", editable = "../yuutrace" },
 ]
 provides-extras = ["dev"]
 

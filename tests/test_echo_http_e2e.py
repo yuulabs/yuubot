@@ -48,21 +48,21 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
         )
         await daemon.resources.event_bus.drain()
 
-        assert daemon.actors.running_actor_ids() == (resources.actor.id,)
+        assert daemon.actors.running_actor_ids() == [resources.actor.id]
         instance = _echo_instance(daemon, resources.integration.id)
 
         async with _client(daemon) as client:
             response = await client.post(
                 "/integration/echo",
-                json={
-                    "integration_id": resources.integration.id,
-                    "message_id": MESSAGE_ID,
-                    "sender_id": SENDER_ID,
-                    "sender_name": "External User",
-                    "kind": "private",
-                    "text": ORIGINAL_TEXT,
-                    "segments": [{"kind": "text", "text": ORIGINAL_TEXT}],
-                },
+                    json={
+                        "integration_id": resources.integration.id,
+                        "message_id": MESSAGE_ID,
+                        "sender_id": SENDER_ID,
+                        "sender_name": "External User",
+                        "kind": "private",
+                        "text": ORIGINAL_TEXT,
+                        "content": [{"type": "text", "text": ORIGINAL_TEXT}],
+                    },
             )
 
         assert response.status_code == 202, response.json()
@@ -88,10 +88,7 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
         assert len(llm.calls) == 2
         first_user_message = yuullm.render_message_text(llm.calls[0][-1])
         assert ORIGINAL_TEXT in first_user_message
-        assert f'"id": "{resources.integration.id}"' in first_user_message
-        assert f'"path": "{SOURCE_PATH}"' in first_user_message
-        assert f'"message_id": "{MESSAGE_ID}"' in first_user_message
-        assert f'"sender_id": "{SENDER_ID}"' in first_user_message
+        assert "External User" in first_user_message
 
         execute_python_description = _execute_python_description(llm.tools[0])
         assert "async def yext.echo" in execute_python_description

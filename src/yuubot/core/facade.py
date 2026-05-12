@@ -37,7 +37,7 @@ class ActorFacadeBinding:
     actor_id: str
     agent_id: str
     root: Path
-    sys_path: tuple[str, ...]
+    sys_path: list[str]
     startup_code: str
     session_state: dict[str, object]
 
@@ -95,7 +95,7 @@ class FacadeWorkspace:
             actor_id=actor_id,
             agent_id=agent_id,
             root=actor_root,
-            sys_path=(str(actor_root),),
+            sys_path=[str(actor_root)],
             startup_code=(
                 f"import {self.package_name}\n"
                 f"import {YEXT_CONTEXT_MODULE} as yext_context"
@@ -111,6 +111,15 @@ class FacadeWorkspace:
         path_id = safe_actor_path_id(actor_id)
         _replace_path(self.root / "actors" / path_id)
         _replace_path(self.root / "actor-packages" / path_id)
+
+
+class FacadeRpcRequest(msgspec.Struct):
+    """Wire format for integration facade RPC requests."""
+
+    token: str
+    actor_id: str
+    capability_id: str
+    payload: dict[str, object] = msgspec.field(default_factory=dict)
 
 
 @dataclass
@@ -159,23 +168,18 @@ class IntegrationInvokeBridge:
             await writer.wait_closed()
 
     async def _dispatch(self, raw: bytes) -> dict[str, object]:
-        request = json.loads(raw.decode())
-        if not isinstance(request, dict):
-            raise TypeError("facade request must be a JSON object")
-        if request.get("token") != self._token:
+        try:
+            request = msgspec.json.decode(raw, type=FacadeRpcRequest)
+        except msgspec.ValidationError as exc:
+            raise TypeError(f"facade request decode failed: {exc}") from None
+        if request.token != self._token:
             raise PermissionError("invalid facade bridge token")
 
-        actor_id = _required_str(request, "actor_id")
-        capability_id = _required_str(request, "capability_id")
-        payload = request.get("payload", {})
-        if not isinstance(payload, dict):
-            raise TypeError("facade payload must be a JSON object")
-
         output = await self.integrations.invoke(
-            actor_id=actor_id,
-            capability_id=capability_id,
-            payload=dict(payload),
-            context=InvocationContext(actor_id=actor_id),
+            actor_id=request.actor_id,
+            capability_id=request.capability_id,
+            payload=request.payload,
+            context=InvocationContext(actor_id=request.actor_id),
         )
         return {"ok": True, "result": struct_to_dict(output, omit_defaults=True)}
 
@@ -451,13 +455,6 @@ def _parents(root: Path, path: Path) -> Iterable[Path]:
         current = current.parent
 
 
-def _required_str(request: dict[str, object], key: str) -> str:
-    value = request.get(key)
-    if not isinstance(value, str) or not value:
-        raise TypeError(f"facade request requires string {key!r}")
-    return value
-
-
 def _error_response(exc: Exception) -> dict[str, object]:
     return {
         "ok": False,
@@ -470,11 +467,11 @@ def _error_response(exc: Exception) -> dict[str, object]:
 
 def _unique_capabilities(
     capabilities: Iterable[AnyCapabilitySpec],
-) -> tuple[AnyCapabilitySpec, ...]:
+) -> list[AnyCapabilitySpec]:
     result: dict[str, AnyCapabilitySpec] = {}
     for capability in capabilities:
         result.setdefault(capability.id, capability)
-    return tuple(result.values())
+    return list(result.values())
 
 
 def _replace_dir(path: Path) -> None:

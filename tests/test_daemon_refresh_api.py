@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 from starlette.types import ASGIApp
 
-from yuubot.bootstrap.config import ServerConfig
+from yuubot.bootstrap.config import ServerConfig, TraceConfig
 from yuubot.core.actors import Actor, ActorFactoryRegistry, ActorManager
 from yuubot.core.actors.workspace import ActorWorkspaceResolver
 from yuubot.core.bindings import ActorBinding
@@ -18,7 +18,7 @@ from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
 from yuubot.core.integrations.contracts import IntegrationInstance
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.core.routing import RouteBindings
-from yuubot.process import ServiceHost
+from yuubot.process import ServiceHost, TraceService
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.records import (
     ActorRecord,
@@ -169,10 +169,10 @@ async def test_refresh_actor_ingress_rule_reloads_routes_and_actors(
 
         assert response.status_code == 200
         assert response.json()["actions"] == ["routes.reloaded", "actors.reconciled"]
-        assert runtime.gateway.routes.resolve(_message("slack-main", "channels/dev")) == (
+        assert runtime.gateway.routes.resolve(_message("slack-main", "channels/dev")) == [
             actor.id,
-        )
-        assert runtime.actors.running_actor_ids() == (actor.id,)
+        ]
+        assert runtime.actors.running_actor_ids() == [actor.id]
     finally:
         await runtime.services.stop()
 
@@ -206,7 +206,7 @@ async def test_refresh_integrations_reconciles_enabled_state(
             )
 
         assert enabled.status_code == 200
-        assert runtime.integrations.running_integration_ids() == (integration.id,)
+        assert runtime.integrations.running_integration_ids() == [integration.id]
 
         instance = integration_factory.instances[integration.id]
         await repository.update(IntegrationORM, integration.id, enabled=False)
@@ -223,7 +223,7 @@ async def test_refresh_integrations_reconciles_enabled_state(
             )
 
         assert disabled.status_code == 200
-        assert runtime.integrations.running_integration_ids() == ()
+        assert runtime.integrations.running_integration_ids() == []
         assert instance.closed is True
     finally:
         await runtime.services.stop()
@@ -343,6 +343,10 @@ def _build_runtime(
         actors=actors,
         integrations=integrations,
     )
+    trace_service = TraceService(
+        config=TraceConfig(enabled=trace_enabled),
+        db_path=":memory:",
+    )
     app = build_daemon_asgi_app(
         config=ServerConfig(daemon_secret="secret"),
         resources=resources,
@@ -351,7 +355,7 @@ def _build_runtime(
         integrations=integrations,
         gateway=gateway,
         refresh=refresh,
-        trace_enabled=trace_enabled,
+        trace_service=trace_service,
     )
     return RuntimeHarness(
         actors=actors,
@@ -456,5 +460,5 @@ def _message(source_id: str, source_path: str) -> IncomingMessage:
         message_id="msg-1",
         sender_id="user-1",
         source=MessageSource(id=source_id, path=source_path),
-        text="hello",
+        content=[{"type": "text", "text": "hello"}],
     )

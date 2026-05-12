@@ -88,13 +88,13 @@ class ActorPythonSessionFactory:
     def _visible_capabilities(
         self,
         binding: ActorBinding,
-    ) -> tuple[AnyCapabilitySpec, ...]:
+    ) -> list[AnyCapabilitySpec]:
         allowed = set(binding.actor.allowed_capability_ids)
-        return tuple(
+        return [
             capability
             for capability in self.integrations.declared_capability_specs()
             if capability.id in allowed
-        )
+        ]
 
 
 @dataclass
@@ -114,7 +114,7 @@ class ExecutePythonSession:
         provider = IpykernelProvider(
             config=PythonKernelConfig(
                 cwd=str(self.cwd),
-                sys_path=self.facade.sys_path,
+                sys_path=tuple(self.facade.sys_path),
                 startup_code=self.facade.startup_code,
             ),
         )

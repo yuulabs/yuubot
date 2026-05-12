@@ -11,7 +11,7 @@ import msgspec
 from yuubot.core.capabilities import Capability, CapabilitySpec
 from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.context import InvocationContext
-from yuubot.core.messages import IncomingMessage, MessageSource, Segment
+from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.core.validation import validate_integration_config
 from yuubot.resources.records import IntegrationRecord
 from yuubot.resources.repository import ResourceRepository
@@ -38,19 +38,19 @@ class EchoIngressPayload(msgspec.Struct, forbid_unknown_fields=False):
     sender_name: str = ""
     kind: str = ""
     text: str = ""
-    segments: tuple[Segment, ...] = ()
+    content: list[dict[str, object]] = msgspec.field(default_factory=list)
     source_path: str = ""
     timestamp: int = 0
 
     def to_message(self, *, default_source_path: str = "") -> IncomingMessage:
+        content_items = list(self.content) if self.content else _text_content(self.text)
         fields: dict[str, object] = {
             "message_id": self.message_id or f"echo-{uuid4().hex}",
             "sender_id": self.sender_id,
             "source": MessageSource(path=self.source_path or default_source_path),
             "kind": self.kind,
             "sender_name": self.sender_name,
-            "text": self.text,
-            "segments": self.segments,
+            "content": content_items,
         }
         if self.timestamp:
             fields["timestamp"] = self.timestamp
@@ -77,8 +77,8 @@ class EchoIntegrationFactory:
     plugin_id: str = ECHO_INTEGRATION_PLUGIN_ID
     _instances: dict[str, EchoIntegration] = field(default_factory=dict)
 
-    def capability_specs(self) -> tuple[CapabilitySpec[EchoPayload, EchoPayload], ...]:
-        return (ECHO_CAPABILITY_SPEC,)
+    def capability_specs(self) -> list[CapabilitySpec[EchoPayload, EchoPayload]]:
+        return [ECHO_CAPABILITY_SPEC]
 
     async def create(
         self,
@@ -121,18 +121,17 @@ class EchoIntegration:
         *,
         message_id: str,
         sender_id: str,
-        text: str,
+        text: str = "",
         kind: str = "",
         sender_name: str = "",
-        segments: tuple[Segment, ...] = (),
+        content: list[dict[str, object]] | None = None,
     ) -> None:
         await self.emit_message(
             message_id=message_id,
             sender_id=sender_id,
-            text=text,
             kind=kind,
             sender_name=sender_name,
-            segments=segments,
+            content_items=content or _text_content(text),
         )
 
     async def emit_message(
@@ -140,10 +139,9 @@ class EchoIntegration:
         *,
         message_id: str,
         sender_id: str,
-        text: str,
         kind: str = "",
         sender_name: str = "",
-        segments: tuple[Segment, ...] = (),
+        content_items: list[dict[str, object]] | None = None,
         source_path: str = "",
     ) -> IncomingMessage:
         message = IncomingMessage(
@@ -152,8 +150,7 @@ class EchoIntegration:
             source=MessageSource(path=source_path or self.default_source_path),
             kind=kind,
             sender_name=sender_name,
-            text=text,
-            segments=segments,
+            content=content_items or [],
         )
         await self.ingress.emit(message)
         return message
@@ -163,8 +160,8 @@ class EchoIntegration:
         await self.ingress.emit(message)
         return message
 
-    def capabilities(self) -> tuple[Capability[EchoPayload, EchoPayload], ...]:
-        return (
+    def capabilities(self) -> list[Capability[EchoPayload, EchoPayload]]:
+        return [
             Capability(
                 id=ECHO_CAPABILITY_ID,
                 name="Echo",
@@ -174,7 +171,7 @@ class EchoIntegration:
                 namespace="echo",
                 invoke=self.invoke_echo,
             ),
-        )
+        ]
 
     async def invoke_echo(
         self,
@@ -200,6 +197,12 @@ class EchoIntegration:
 
     async def next_echo_context(self) -> dict[str, object]:
         return await asyncio.wait_for(self.echo_contexts.get(), timeout=1.0)
+
+
+def _text_content(text: str) -> list[dict[str, object]]:
+    if not text:
+        return []
+    return [{"type": "text", "text": text}]
 
 
 def _source_path(record: IntegrationRecord) -> str:

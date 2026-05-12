@@ -54,7 +54,7 @@ class ActorManager:
         self.gateway.close_mailbox(actor_id)
 
     async def stop_all(self) -> None:
-        for actor_id in tuple(self._actors):
+        for actor_id in list(self._actors):
             await self.stop_actor(actor_id)
 
     async def reconcile(self) -> None:
@@ -79,8 +79,8 @@ class ActorManager:
     def running_actor(self, actor_id: str) -> Actor | None:
         return self._actors.get(actor_id)
 
-    def running_actor_ids(self) -> tuple[str, ...]:
-        return tuple(sorted(self._actors))
+    def running_actor_ids(self) -> list[str]:
+        return sorted(self._actors)
 
     def running_actor_workspace_paths(self) -> dict[str, str]:
         return {
@@ -95,22 +95,22 @@ class ActorManager:
             mailbox,
         )
 
-    async def _load_desired_actor_ids(self) -> tuple[str, ...]:
+    async def _load_desired_actor_ids(self) -> list[str]:
         routed_actor_ids = set(self.gateway.routes.actor_ids())
         records = await self.repository.list(ActorORM)
-        return tuple(
+        return [
             record.id
             for record in records
             if record.enabled and record.id in routed_actor_ids
-        )
+        ]
 
-    async def _stop_undesired_actors(self, desired_actor_ids: tuple[str, ...]) -> None:
+    async def _stop_undesired_actors(self, desired_actor_ids: list[str]) -> None:
         desired = set(desired_actor_ids)
-        for actor_id in tuple(self._actors):
+        for actor_id in list(self._actors):
             if actor_id not in desired:
                 await self.stop_actor(actor_id)
 
-    async def _start_missing_actors(self, desired_actor_ids: tuple[str, ...]) -> None:
+    async def _start_missing_actors(self, desired_actor_ids: list[str]) -> None:
         for actor_id in desired_actor_ids:
             if actor_id not in self._actors:
                 await self.start_actor(actor_id)

@@ -18,8 +18,8 @@ class IntegrationFactoryRegistry:
     def register(self, factory: IntegrationFactory) -> None:
         self._factories[factory.plugin_id] = factory
 
-    def capability_specs(self) -> tuple[AnyCapabilitySpec, ...]:
-        return tuple(_unique_capabilities(self._all_capabilities()))
+    def capability_specs(self) -> list[AnyCapabilitySpec]:
+        return list(_unique_capabilities(self._all_capabilities()))
 
     def get(self, plugin_id: str) -> IntegrationFactory:
         try:
@@ -36,11 +36,11 @@ class IntegrationFactoryRegistry:
 
 def _unique_capabilities(
     capabilities: Iterable[AnyCapabilitySpec],
-) -> tuple[AnyCapabilitySpec, ...]:
+) -> list[AnyCapabilitySpec]:
     result: dict[str, AnyCapabilitySpec] = {}
     for capability in capabilities:
         result.setdefault(capability.id, capability)
-    return tuple(result.values())
+    return list(result.values())
 
 
 def default_integration_factories() -> IntegrationFactoryRegistry:

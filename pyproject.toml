@@ -13,6 +13,7 @@ dependencies = [
     "pyyaml",
     "uvicorn",
     "yuuagents",
+    "yuutrace",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,7 @@ allow-direct-references = true
 
 [tool.uv.sources]
 yuuagents = { path = "../yuuagents", editable = true }
+yuutrace = { path = "../yuutrace", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/yuubot"]

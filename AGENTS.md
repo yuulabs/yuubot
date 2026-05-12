@@ -28,7 +28,7 @@ Tests are end-to-end only (no unit tests). Key fixtures in `tests/conftest.py`: 
 ## Architecture
 
 - **`src/yuubot/cli.py`** is the real entrypoint (`ybot` command via `[project.scripts]`). `main.py` is a stub.
-- **Message boundary**: raw OneBot event dicts → `InboundMessage` (`core/types.py`) at the dispatcher ingress. Never pass raw events downstream.
+- **Message boundary**: raw OneBot event dicts → `IncomingMessage` (`core/messages.py`) at the dispatcher ingress. Never pass raw events downstream.
 - **Routing** (`daemon/routing.py`): pure function `resolve_route()` → `CommandRoute | None`. LLM-triggered conversations are `CommandRoute(command_path=("llm",), entry="@")` or `entry="master"`.
 - **Agent functions** (`agent_fns/`): agents use `import yb; yb.send_message(...)` via execute_python tool. HTTP POST → `/agent-fns/{service}/{action}` → `services/`.
 - **Dual Python backends**: `master` uses long-lived kernel sessions; `group` uses sandboxed restricted sessions per turn.
@@ -38,7 +38,7 @@ Tests are end-to-end only (no unit tests). Key fixtures in `tests/conftest.py`: 
 
 ```
 NapCat WS → recorder/relay.py → daemon/ws_client.py → dispatcher.py
-  → routing.py (InboundMessage → CommandRoute)
+  → routing.py (IncomingMessage → CommandRoute)
     → commands/tree.py (click command tree) or agent_runner.py
 ```
 

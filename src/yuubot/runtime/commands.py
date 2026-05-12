@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 class RefreshDispatcher(Protocol):
-    async def refresh(self, event: ResourceChanged) -> tuple[str, ...]: ...
+    async def refresh(self, event: ResourceChanged) -> list[str]: ...
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +63,9 @@ def _encode_record(record: object) -> Any:
     return msgspec.json.decode(_encoder.encode(record))
 
 
-def _ok(data: object, actions: tuple[str, ...] = (), status_code: int = 200) -> JSONResponse:
+def _ok(data: object, actions: list[str] | None = None, status_code: int = 200) -> JSONResponse:
     return JSONResponse(
-        {"status": "ok", "data": _encode_record(data), "actions": list(actions)},
+        {"status": "ok", "data": _encode_record(data), "actions": actions or []},
         status_code=status_code,
     )
 
@@ -279,7 +279,7 @@ class ResourceCommandHandlers:
                     changed_fields=("enabled",),
                 )
             )
-            return _ok(updated, actions=(f"integration.{action}d",))
+            return _ok(updated, actions=[f"integration.{action}d"])
         except Exception as exc:
             logger.exception("integration %s failed for %s", action, row_id)
             return _partial(updated, [f"integration {action} failed: {exc}"])
@@ -304,7 +304,7 @@ class ResourceCommandHandlers:
                     changed_fields=("enabled",),
                 )
             )
-            return _ok(updated, actions=(f"actor.{action}d", *actions))
+            return _ok(updated, actions=[f"actor.{action}d", *actions])
         except Exception as exc:
             logger.exception("actor %s failed for %s", action, row_id)
             return _partial(updated, [f"actor {action} failed: {exc}"])
@@ -315,7 +315,7 @@ class ResourceCommandHandlers:
         action: str,
         row_id: str,
         changed_fields: tuple[str, ...] = (),
-    ) -> tuple[tuple[str, ...], list[str]]:
+    ) -> tuple[list[str], list[str]]:
         table = orm_type._meta.db_table
         event = ResourceChanged(
             table=table,
@@ -328,7 +328,7 @@ class ResourceCommandHandlers:
             return actions, []
         except Exception as exc:
             logger.exception("reconcile failed after %s on %s", action, table)
-            return (), [str(exc)]
+            return [], [str(exc)]
 
 
 def build_commands_app(

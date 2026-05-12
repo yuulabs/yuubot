@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 
+import msgspec
+
 from yuubot.core.messages import IncomingMessage, system_source_id
 from yuubot.resources.records import ActorIngressRuleRecord
 from yuubot.resources.repository import ResourceRepository
@@ -23,7 +25,7 @@ class ActorIngressRule:
     actor_id: str
     source_id_pattern: str
     source_path_pattern: str
-    kind_patterns: tuple[str, ...]
+    kind_patterns: list[str]
 
     def matches(self, message: IncomingMessage) -> bool:
         return (
@@ -37,10 +39,10 @@ class ActorIngressRule:
 class RouteBindings:
     """Immutable source glob route snapshot."""
 
-    rules: tuple[ActorIngressRule, ...]
+    rules: list[ActorIngressRule]
 
-    def resolve(self, message: IncomingMessage) -> tuple[str, ...]:
-        actor_ids = tuple(
+    def resolve(self, message: IncomingMessage) -> list[str]:
+        actor_ids = list(
             dict.fromkeys(
                 rule.actor_id for rule in self.rules if rule.matches(message)
             )
@@ -49,8 +51,8 @@ class RouteBindings:
             raise RouteResolutionError(_unrouted_message(message))
         return actor_ids
 
-    def actor_ids(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(rule.actor_id for rule in self.rules))
+    def actor_ids(self) -> list[str]:
+        return list(dict.fromkeys(rule.actor_id for rule in self.rules))
 
     def binding_count(self) -> int:
         return len(self.rules)
@@ -75,7 +77,7 @@ def build_route_bindings(
     *,
     enabled_actor_ids: Iterable[str] = (),
 ) -> RouteBindings:
-    explicit_rules = tuple(explicit_rules)
+    explicit_rules = list(explicit_rules)
     explicit_rule_ids = set()
     rules = []
     for rule in explicit_rules:
@@ -89,15 +91,14 @@ def build_route_bindings(
             rule.enabled and rule.actor_id == actor_id for rule in explicit_rules
         )
     )
-    return RouteBindings(rules=tuple(rules))
+    return RouteBindings(rules=rules)
 
 
 def _runtime_rule(rule: ActorIngressRuleRecord) -> ActorIngressRule:
-    return ActorIngressRule(
-        actor_id=rule.actor_id,
-        source_id_pattern=rule.source_id_pattern,
-        source_path_pattern=rule.source_path_pattern,
-        kind_patterns=rule.kind_patterns or ("*",),
+    return msgspec.convert(
+        msgspec.to_builtins(rule),
+        type=ActorIngressRule,
+        strict=False,
     )
 
 
@@ -106,11 +107,11 @@ def _system_rule(actor_id: str) -> ActorIngressRule:
         actor_id=actor_id,
         source_id_pattern=system_source_id(actor_id),
         source_path_pattern="**",
-        kind_patterns=("*",),
+        kind_patterns=["*"],
     )
 
 
-def _matches_any(value: str, patterns: tuple[str, ...]) -> bool:
+def _matches_any(value: str, patterns: list[str]) -> bool:
     return any(fnmatchcase(value, pattern) for pattern in patterns)
 
 

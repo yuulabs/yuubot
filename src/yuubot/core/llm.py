@@ -21,7 +21,7 @@ class BoundLLM(msgspec.Struct):
 
 class ChatRequest(msgspec.Struct):
     model: str
-    messages: tuple[str, ...]
+    messages: list[str]
 
 
 class ChatResponse(msgspec.Struct):

@@ -58,8 +58,8 @@ async def _active_actor(
 
 def _bound_llm(actor: ActorRecord, backend: LLMBackendRecord) -> BoundLLM:
     merged = {
-        **backend.default_stream_options,
-        **actor.llm_options.stream_options,
+        **msgspec.to_builtins(backend.default_stream_options),
+        **msgspec.to_builtins(actor.llm_options.stream_options),
     }
     validate_stream_options(
         merged,

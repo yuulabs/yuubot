@@ -11,6 +11,7 @@ from yuubot.core.actors.python_session import (
 from yuubot.core.actors.registry import ActorFactoryRegistry
 from yuubot.core.actors.simple_loop import SimpleLoopActor, SimpleLoopActorFactory
 from yuubot.core.actors.workspace import ActorWorkspaceResolver, safe_actor_path_id
+from yuubot.core.observability import TraceObserver
 from yuubot.resources.repository import ResourceRepository
 
 __all__ = [
@@ -35,11 +36,13 @@ def default_actor_factories(
     config: YuuAgentsConfig,
     python_sessions: ActorPythonSessionFactory,
     repository: ResourceRepository,
+    observer: TraceObserver | None = None,
 ) -> ActorFactoryRegistry:
     registry = ActorFactoryRegistry()
     registry.register(SimpleLoopActorFactory(
         repository=repository,
         yuuagents_config=config,
         python_sessions=python_sessions,
+        observer=observer,
     ))
     return registry
