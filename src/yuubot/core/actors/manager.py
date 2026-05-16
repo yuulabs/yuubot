@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,8 +27,13 @@ class ActorManager:
     workspace_resolver: ActorWorkspaceResolver
     _actors: dict[str, Actor] = field(default_factory=dict, init=False)
     _actor_workspaces: dict[str, Path] = field(default_factory=dict, init=False)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     async def start_actor(self, actor_id: str) -> Actor:
+        async with self._lock:
+            return await self._start_actor_locked(actor_id)
+
+    async def _start_actor_locked(self, actor_id: str) -> Actor:
         if actor_id in self._actors:
             return self._actors[actor_id]
         workspace_path = self.workspace_resolver.resolve(actor_id)
@@ -47,6 +53,10 @@ class ActorManager:
         return actor
 
     async def stop_actor(self, actor_id: str) -> None:
+        async with self._lock:
+            await self._stop_actor_locked(actor_id)
+
+    async def _stop_actor_locked(self, actor_id: str) -> None:
         actor = self._actors.pop(actor_id, None)
         self._actor_workspaces.pop(actor_id, None)
         if actor is not None:
@@ -54,13 +64,15 @@ class ActorManager:
         self.gateway.close_mailbox(actor_id)
 
     async def stop_all(self) -> None:
-        for actor_id in list(self._actors):
-            await self.stop_actor(actor_id)
+        async with self._lock:
+            for actor_id in list(self._actors):
+                await self._stop_actor_locked(actor_id)
 
     async def reconcile(self) -> None:
-        desired_actor_ids = await self._load_desired_actor_ids()
-        await self._stop_undesired_actors(desired_actor_ids)
-        await self._start_missing_actors(desired_actor_ids)
+        async with self._lock:
+            desired_actor_ids = await self._load_desired_actor_ids()
+            await self._stop_undesired_actors_locked(desired_actor_ids)
+            await self._start_missing_actors_locked(desired_actor_ids)
 
     async def handle_lifecycle_command(
         self,
@@ -104,13 +116,13 @@ class ActorManager:
             if record.enabled and record.id in routed_actor_ids
         ]
 
-    async def _stop_undesired_actors(self, desired_actor_ids: list[str]) -> None:
+    async def _stop_undesired_actors_locked(self, desired_actor_ids: list[str]) -> None:
         desired = set(desired_actor_ids)
         for actor_id in list(self._actors):
             if actor_id not in desired:
-                await self.stop_actor(actor_id)
+                await self._stop_actor_locked(actor_id)
 
-    async def _start_missing_actors(self, desired_actor_ids: list[str]) -> None:
+    async def _start_missing_actors_locked(self, desired_actor_ids: list[str]) -> None:
         for actor_id in desired_actor_ids:
             if actor_id not in self._actors:
-                await self.start_actor(actor_id)
+                await self._start_actor_locked(actor_id)

@@ -100,7 +100,7 @@ Delete LLM backend
 Create integration (创建并启用)
   validate -> save config to DB -> bump version
   -> IntegrationCore.enable(integration_id)
-    -> factory.create(record, repository, gateway=gateway): 创建即激活
+    -> factory.create(record, gateway=gateway, storage=storage): 创建即激活
       -> instance 通过 gateway.open_integration() 拿 IntegrationIngress
       -> 向外部服务注册
   -> 立即可用于新 turn 的 capability resolver 和消息路由

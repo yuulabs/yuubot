@@ -4,6 +4,9 @@ from yuubot.core.integrations.context import InvocationContext, bind_invocation_
 from yuubot.core.integrations.contracts import (
     IntegrationFactory,
     IntegrationInstance,
+    IntegrationKindInfo,
+    IntegrationStorage,
+    LocalIntegrationStorage,
 )
 from yuubot.core.integrations.core import IntegrationCore
 from yuubot.core.integrations.registry import (
@@ -16,7 +19,10 @@ __all__ = [
     "IntegrationFactory",
     "IntegrationFactoryRegistry",
     "IntegrationInstance",
+    "IntegrationKindInfo",
+    "IntegrationStorage",
     "InvocationContext",
+    "LocalIntegrationStorage",
     "bind_invocation_context",
     "default_integration_factories",
 ]

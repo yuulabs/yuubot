@@ -131,14 +131,47 @@ POST /api/llm-backends/{id}/disable
 ### Integrations
 
 ```
+GET /api/integration-kinds
+  列出当前进程注册的所有 integration kind（由 IntegrationFactoryRegistry 决定），
+  供 admin UI 在"新建 integration"/"编辑卡片"时动态渲染配置表单。
+  响应: {
+    "kinds": [
+      {
+        "name": "echo",
+        "description": "Loopback integration used by runtime tests.",
+        "config_schema": {                       # JSON Schema（msgspec 自动生成）
+          "type": "object",
+          "properties": {
+            "source_path": {
+              "type": "string",
+              "title": "Source path",
+              "description": "Logical channel this integration serves ...",
+              "default": ""
+            },
+            ...
+          },
+          "required": []
+        },
+        "capabilities": [
+          {"id": "echo", "name": "echo", "description": "...", "namespace": "echo"}
+        ]
+      },
+      ...
+    ]
+  }
+  说明：
+    - config_schema 已内联顶层 $ref，前端可直接按 type=object 渲染；
+      仅在嵌套引用时才会保留 $defs 字段。
+    - Factory 未声明 config_schema 时返回空 dict；UI 应据此隐藏表单或只留 name/描述。
+    - 该列表是静态目录（进程生命周期内不变），可在前端缓存。
+
 GET /api/integrations
   响应: [IntegrationConfig, ...]
 
 POST /api/integrations
   请求体: {
-    "name": "qq-main",
-    "pluginId": "qq-napcat",
-    "config": {"bot_id": "...", "ws_url": "..."}
+    "name": "qq",                                # 必须在 GET /api/integration-kinds 列出的 name 中
+    "config": {"bot_id": "...", "ws_url": "..."} # 应符合该 kind 的 config_schema
   }
   201: IntegrationConfig
 
@@ -146,8 +179,12 @@ GET /api/integrations/{id}
   200: IntegrationConfig
 
 PUT /api/integrations/{id}
-  更新 config 字段
+  更新 config 字段。secret 字段留空表示不修改，非空表示覆盖。
   200: IntegrationConfig
+
+GET /api/integrations/{id}/secrets/{field}/reveal
+  仅 admin 可达。field 必须是该 kind 的 config_schema 中声明为 format=secret 的字段。
+  200: {"status": "ok", "data": {"value": "<plaintext>"}}
 
 POST /api/integrations/{id}/enable
   调用 IntegrationCore.enable(id)，触发 factory.create()
@@ -291,18 +328,6 @@ DELETE /api/ingress-rules/{id}
 
 每个 enabled actor 会自动获得一条隐式 `system:<actor_id>` rule（用于 actor 间消息和定时触发），该 rule 不出现在 `GET /api/ingress-rules` 列表中，也不可通过 API 修改。
 
-### Secrets
-
-```
-GET /api/secrets
-  响应列表，每条: {"id": 1, "name": "openai-key", "kind": "api_key", "value": "set:32"}
-  绝不返回 ciphertext 或 plaintext
-
-POST /api/secrets
-  请求体: {"name": "openai-key", "kind": "api_key", "plaintext": "sk-..."}
-  201: {"id": 1, "name": "openai-key", "kind": "api_key", "value": "set:32"}
-```
-
 ### Bootstrap Config
 
 ```
@@ -365,9 +390,10 @@ POST /api/admin/reload
 ## 安全约束
 
 ### Secret 处理
-- `GET /api/secrets` 只返回 masked value（`set:{length}`），不回显 ciphertext 或 plaintext。
-- `POST /api/secrets` 接受 plaintext，服务端立即加密后存入 DB，响应中不回显任何 secret 内容。
-- LLM Backend 的 `apiKeySecretId` 只存 secret ID 引用，响应中展开为 `{secretId: 1, secretName: "openai-key"}`。
+- Secret 是 config 字段，不是独立资源表；factory 用 `Secret` 类型声明敏感字段。
+- 普通资源 GET/list 只返回 `"***"`，不回显 ciphertext 或 plaintext。
+- 只有 `GET /api/integrations/{id}/secrets/{field}/reveal` 返回明文，供可信 admin 主动显示。
+- DB 中只存 `{"$enc": "v1", "ct": "..."}` 形状的密文。
 
 ### 错误脱敏
 - 所有 500 错误统一返回 `{"error": "internal_error"}`。

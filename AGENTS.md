@@ -5,7 +5,7 @@
 - **Python 3.14** (`.python-version`, `requires-python = ">=3.14"`). Agents defaulting to 3.11–3.12 will fail.
 - **`config.yaml` is gitignored** — clone won't work without copying `config.example.yaml` → `config.yaml`. Same for `.env`.
 - **Type checker is `ty`**, not mypy/pyright. `uv run ty check`.
-- **Monorepo**: sibling packages (`yuuagents`, `yuullm`, `yuutools`, `yuutrace`) live in `../` from repo root. `ty check` resolves them via `extra-paths` in pyproject.toml. If type-check errors appear in these packages, the source is one level up.
+- **Monorepo**: sibling packages (`yuuagents`, `yuullm`, `yuutools`, `yuutrace`) live in `../` from repo root (read them first for api understanding). `ty check` resolves them via `extra-paths` in pyproject.toml. If type-check errors appear in these packages, the source is one level up.
 - **No `ConversationRoute` type exists** despite older docs. Routing returns only `CommandRoute` (with `command_path=("llm",)` for agent triggers) or `None`.
 - **Docker is not production-hardened yet**: Admin is published by compose and currently includes unauthenticated file/terminal surfaces when `admin.secret` is empty or not enforced. Keep it local-only unless `issues/013-docker-deploy-hardening.md` is resolved.
 

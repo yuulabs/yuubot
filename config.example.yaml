@@ -22,8 +22,8 @@ database:
   path: ${YUU_DATA_DIR}/yuubot.db
 
 secrets:
-  # Stable key used by the secret store boundary. Losing it makes stored
-  # provider/service secrets unreadable once real encryption is plugged in.
+  # Stable 32-byte base64 key used to encrypt config fields declared as Secret.
+  # Losing it makes stored provider/service secrets unreadable.
   master_key: ${YUU_SECRET_KEY}
 
 trace:

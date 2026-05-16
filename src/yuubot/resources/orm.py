@@ -7,18 +7,32 @@ from typing import Any, TypeVar, cast
 import msgspec
 from tortoise import Model
 
+from yuubot.core.secrets import SecretCodec, decrypt_secret_values, encrypt_secret_values
+
 ResourceT = TypeVar("ResourceT")
 
 
-async def from_orm(row: Model, resource_type: type[ResourceT]) -> ResourceT:
+async def from_orm(
+    row: Model,
+    resource_type: type[ResourceT],
+    *,
+    secret_codec: SecretCodec | None = None,
+) -> ResourceT:
     fields = dict(cast(Iterable[tuple[str, object]], row))
     for name, reference in _references(type(row)).items():
         fields.pop(f"{name}_id", None)
-        fields[name] = await _referenced_resource(row, name, reference)
+        fields[name] = await _referenced_resource(row, name, reference, secret_codec)
+    if secret_codec is not None:
+        fields = cast(dict[str, object], decrypt_secret_values(fields, secret_codec))
     return msgspec.convert(fields, type=resource_type, strict=False)
 
 
-def to_orm_fields(resource: object, row_type: type[Model]) -> dict[str, Any]:
+def to_orm_fields(
+    resource: object,
+    row_type: type[Model],
+    *,
+    secret_codec: SecretCodec | None = None,
+) -> dict[str, Any]:
     schema_type = getattr(row_type, "_yuubot_schema_type", None)
     if schema_type is None:
         raise TypeError(f"{row_type.__name__} is not derived from a resource schema")
@@ -28,7 +42,13 @@ def to_orm_fields(resource: object, row_type: type[Model]) -> dict[str, Any]:
             f"got {type(resource).__name__}"
         )
 
-    values = msgspec.to_builtins(resource)
+    if secret_codec is None:
+        values = msgspec.to_builtins(resource)
+    else:
+        values = msgspec.to_builtins(
+            resource,
+            enc_hook=lambda value: encrypt_secret_values(value, secret_codec),
+        )
     if not isinstance(values, dict):
         raise TypeError(f"{type(resource).__name__} did not convert to a field dict")
 
@@ -55,15 +75,26 @@ def to_orm_fields(resource: object, row_type: type[Model]) -> dict[str, Any]:
     return _replace_references_with_ids(orm_fields, row_type)
 
 
-def to_orm_update_fields(row_type: type[Model], fields: dict[str, Any]) -> dict[str, Any]:
-    return _replace_references_with_ids(dict(fields), row_type)
+def to_orm_update_fields(
+    row_type: type[Model],
+    fields: dict[str, Any],
+    *,
+    secret_codec: SecretCodec | None = None,
+) -> dict[str, Any]:
+    prepared = encrypt_secret_values(fields, secret_codec) if secret_codec else fields
+    return _replace_references_with_ids(dict(cast(dict[str, Any], prepared)), row_type)
 
 
 def referenced_field_names(row_type: type[Model]) -> tuple[str, ...]:
     return tuple(_references(row_type))
 
 
-async def _referenced_resource(row: Model, name: str, reference: object) -> object:
+async def _referenced_resource(
+    row: Model,
+    name: str,
+    reference: object,
+    secret_codec: SecretCodec | None,
+) -> object:
     if getattr(row, f"{name}_id", None) is None:
         return None
     related = getattr(row, name)
@@ -74,7 +105,7 @@ async def _referenced_resource(row: Model, name: str, reference: object) -> obje
     else:
         raise TypeError(f"{type(row).__name__}.{name} is not a model relation")
     schema_type = getattr(type(related_row), "_yuubot_schema_type")
-    return await from_orm(related_row, schema_type)
+    return await from_orm(related_row, schema_type, secret_codec=secret_codec)
 
 
 def _replace_references_with_ids(

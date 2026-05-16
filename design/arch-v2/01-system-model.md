@@ -71,11 +71,11 @@ Integration 有三层结构：
 Loader (代码级)
   注册在 IntegrationFactoryRegistry 中，启动时加载。
   未启用的 Integration 也有对应的 Loader。
-  定义 plugin_id、capability manifest、create/close 逻辑。
+  定义 name、capability manifest、create/close 逻辑。
 
 运行实例 (DB + 运行时)
   用户在 Admin UI 中启用某个 Loader 后，创建 IntegrationConfig (DB)。
-  factory.create(record, repository, gateway): 创建即激活，返回 IntegrationInstance。
+  factory.create(record, gateway, storage): 创建即激活，返回 IntegrationInstance。
   Integration 通过 gateway.open_integration(integration_id) 拿到 IntegrationIngress。
   instance.close(): 释放资源，IntegrationConfig 保留在 DB。
 
@@ -99,7 +99,7 @@ output_type   # msgspec.Struct
 
 Agent 可见面统一由 capability manifest 生成。Actor policy 绑定 capability id（如 `search.query`、`repo.issue_read`），不绑定具体 integration 实例。capability 的 input/output schema 用 `msgspec.json.schema()` 生成，框架内部不引入第二套类型库。
 
-Integration 是真正的扩展点：新增服务主要新增 plugin + manifest，而不是修改多条业务路径。
+Integration 是真正的扩展点：新增服务主要新增一个 IntegrationFactory + capability manifest，而不是修改多条业务路径。
 
 ### Character
 
@@ -214,7 +214,7 @@ Integration 的生命周期由三个阶段组成：
    用户在 Admin UI 中启用某个 Integration。
    IntegrationConfig.enabled = True (DB)。
    IntegrationCore.enable(integration_id):
-     → factory.create(record, repository, gateway=gateway)：创建即激活
+     → factory.create(record, gateway=gateway, storage=storage)：创建即激活
        - Integration 通过 gateway.open_integration(integration_id) 拿到 IntegrationIngress
        - Integration 向外部服务注册（如向 Linear 注册 webhook）
        - Integration 开始接收/发送消息

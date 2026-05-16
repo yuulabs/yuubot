@@ -16,7 +16,7 @@ from yuubot.core.integrations import (
 )
 from yuubot.core.integrations.echo import (
     ECHO_CAPABILITY_ID,
-    ECHO_INTEGRATION_PLUGIN_ID,
+    ECHO_INTEGRATION_NAME,
     EchoPayload,
     EchoIntegrationFactory,
 )
@@ -66,6 +66,7 @@ async def test_test_integration_message_reaches_echo_actor(
         repository=repository,
         factories=integration_factories,
         gateway=gateway,
+        data_root=tmp_path / "data",
     )
     await integrations.refresh_capabilities()
     await integrations.enable(integration.id)
@@ -120,8 +121,7 @@ async def _create_test_integration(
         IntegrationORM,
         IntegrationRecord(
             id="test-integration",
-            name="test-integration",
-            plugin_id=ECHO_INTEGRATION_PLUGIN_ID,
+            name=ECHO_INTEGRATION_NAME,
             config={"source_path": source_path},
         ),
     )

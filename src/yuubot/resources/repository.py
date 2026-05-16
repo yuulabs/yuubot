@@ -8,6 +8,7 @@ from typing import Any, TypeVar, cast
 from tortoise import Model
 
 from yuubot.events import EventBus
+from yuubot.core.secrets import SecretCodec
 from yuubot.resources.events import ResourceAction, ResourceChanged
 from yuubot.resources.orm import (
     from_orm,
@@ -27,11 +28,18 @@ class ResourceRepository:
 
     store: Store
     event_bus: EventBus
+    secret_codec: SecretCodec | None = None
 
     async def insert(self, row_type: type[OrmT], record: RecordT) -> RecordT:
         async with self.store.transaction():
             with self.store.db.activate():
-                await row_type.create(**to_orm_fields(record, row_type))
+                await row_type.create(
+                    **to_orm_fields(
+                        record,
+                        row_type,
+                        secret_codec=self.secret_codec,
+                    )
+                )
                 query = row_type.get(id=self._row_id(record))
                 query = query.select_related(*referenced_field_names(row_type))
                 row = await query
@@ -68,7 +76,11 @@ class ResourceRepository:
             return await self.get(row_type, row_id)
         async with self.store.transaction():
             with self.store.db.activate():
-                orm_fields = to_orm_update_fields(row_type, fields)
+                orm_fields = to_orm_update_fields(
+                    row_type,
+                    fields,
+                    secret_codec=self.secret_codec,
+                )
                 count = await row_type.filter(id=row_id).update(**orm_fields)
                 if count == 0:
                     return None
@@ -90,7 +102,7 @@ class ResourceRepository:
 
     async def _record_from_row(self, row: Model) -> object:
         schema_type = getattr(type(row), "_yuubot_schema_type")
-        return await from_orm(row, schema_type)
+        return await from_orm(row, schema_type, secret_codec=self.secret_codec)
 
     def _publish(
         self,

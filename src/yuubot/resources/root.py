@@ -24,7 +24,11 @@ class Resources:
     repository: ResourceRepository = field(init=False)
 
     def __post_init__(self) -> None:
-        self.repository = ResourceRepository(self.store, self.event_bus)
+        self.repository = ResourceRepository(
+            self.store,
+            self.event_bus,
+            self.secret_codec,
+        )
 
     @classmethod
     async def from_store(

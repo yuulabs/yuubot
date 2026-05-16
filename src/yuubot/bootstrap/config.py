@@ -16,6 +16,8 @@ import msgspec
 import yaml
 from dotenv import load_dotenv
 
+from yuubot.core.secrets import master_key_for_tests, master_key_is_valid
+
 _ENV_RE = re.compile(r"\$\{(\w+)\}")
 
 
@@ -45,7 +47,7 @@ class DatabaseConfig(msgspec.Struct, frozen=True):
 
 
 class SecretConfig(msgspec.Struct, frozen=True):
-    master_key: str = "dev-only-change-me"
+    master_key: str = ""
 
 
 class TraceConfig(msgspec.Struct, frozen=True):
@@ -87,6 +89,8 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
             raise BootstrapConfigError(msg)
         if not self.secrets.master_key:
             raise BootstrapConfigError("secrets.master_key must be set")
+        if not master_key_is_valid(self.secrets.master_key):
+            raise BootstrapConfigError("secrets.master_key must be 32 bytes base64")
         return self
 
     @classmethod
@@ -94,7 +98,7 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
         cls,
         *,
         database_path: str = ":memory:",
-        master_key: str = "test-master-key",
+        master_key: str = master_key_for_tests(),
         daemon_secret: str = "test-daemon-secret",
         workspace_dir: str = "~/.yuubot-test/workspace",
     ) -> Self:
@@ -102,6 +106,7 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
             server=ServerConfig(daemon_secret=daemon_secret),
             database=DatabaseConfig(path=database_path),
             secrets=SecretConfig(master_key=master_key),
+            trace=TraceConfig(enabled=False),
             paths=PathsConfig(workspace_dir=workspace_dir),
         )
 

@@ -8,7 +8,11 @@ import shlex
 from dataclasses import dataclass
 from typing import Any
 
-from yuubot.core.integrations.echo import ECHO_CAPABILITY_ID, ECHO_INTEGRATION_PLUGIN_ID
+from yuubot.core.integrations.echo import (
+    ECHO_CAPABILITY_ID,
+    ECHO_INTEGRATION_NAME,
+    ECHO_REPLY_CAPABILITY_ID,
+)
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
@@ -163,8 +167,7 @@ def make_echo_integration_record(
 ) -> IntegrationRecord:
     return IntegrationRecord(
         id=integration_id,
-        name=integration_id,
-        plugin_id=ECHO_INTEGRATION_PLUGIN_ID,
+        name=ECHO_INTEGRATION_NAME,
         config={"source_path": source_path},
     )
 
@@ -238,7 +241,7 @@ def make_actor_record(
         budget=YuuAgentBudget(max_steps=max_steps),
         agent_capabilities=(),
         agent_prompt_providers=(),
-        allowed_capability_ids=(ECHO_CAPABILITY_ID,),
+        allowed_capability_ids=(ECHO_CAPABILITY_ID, ECHO_REPLY_CAPABILITY_ID),
         runtime_policy=RuntimePolicy(),
         resource_policy=ResourcePolicy(workspace_access="read_write"),
     )

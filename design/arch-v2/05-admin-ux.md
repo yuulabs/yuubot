@@ -87,7 +87,6 @@ Dialog: yuu-group-test
 
 ```text
 name
-plugin_id
 base_url
 api_key / oauth
 models
@@ -103,11 +102,11 @@ pricing / budget
 用户可以：
 
 - 选择 search、GitHub、Linear、W&B、SwanLab 或自定义 integration。
-- 按 provider 自己声明的 config/auth schema 填表或走 OAuth。
+- 按 factory 自己声明的 config schema 填表或走 OAuth。UI 在进入此页面时通过 `GET /api/integration-kinds` 拉取所有 kind 的 JSON Schema（字段 title/description 由 `msgspec.Meta` 携带），据此渲染表单；不再维护第二份前端字段定义。
 - 查看 provider 暴露的 capability manifest。
 - 点击 `Test Connection`。
 
-Core 只展示 schema、保存 config/secret，并记录验证结果；具体服务含义由 integration plugin 自己实现。
+Core 只展示 schema、保存 config/secret，并记录验证结果；具体服务含义由 integration 自己实现。
 
 ### 3. 创建 Character
 

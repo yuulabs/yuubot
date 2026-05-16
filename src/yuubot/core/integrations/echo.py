@@ -6,18 +6,26 @@ import asyncio
 from dataclasses import dataclass, field
 from uuid import uuid4
 
+from typing import Annotated
+
 import msgspec
 
-from yuubot.core.capabilities import Capability, CapabilitySpec
+from yuubot.core.capabilities import (
+    AnyCapability,
+    AnyCapabilitySpec,
+    Capability,
+    CapabilitySpec,
+)
 from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.context import InvocationContext
+from yuubot.core.integrations.contracts import IntegrationStorage
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.core.validation import validate_integration_config
 from yuubot.resources.records import IntegrationRecord
-from yuubot.resources.repository import ResourceRepository
 
-ECHO_CAPABILITY_ID = "echo"
-ECHO_INTEGRATION_PLUGIN_ID = "echo"
+ECHO_CAPABILITY_ID = "echo.echo"
+ECHO_REPLY_CAPABILITY_ID = "echo.reply"
+ECHO_INTEGRATION_NAME = "echo"
 
 
 class EchoPayload(msgspec.Struct):
@@ -27,6 +35,16 @@ class EchoPayload(msgspec.Struct):
     message: str = ""
     sender_id: str = ""
     message_id: str = ""
+
+
+class EchoReplyPayload(msgspec.Struct):
+    """Outbound reply payload captured by the echo round-trip endpoint."""
+
+    text: str = ""
+    message: str = ""
+    sender_id: str = ""
+    message_id: str = ""
+    in_reply_to_message_id: str = ""
 
 
 class EchoIngressPayload(msgspec.Struct, forbid_unknown_fields=False):
@@ -58,8 +76,29 @@ class EchoIngressPayload(msgspec.Struct, forbid_unknown_fields=False):
 
 
 class EchoIntegrationConfig(msgspec.Struct, forbid_unknown_fields=False):
-    source_path: str = ""
-    channel_id: str = ""
+    source_path: Annotated[
+        str,
+        msgspec.Meta(
+            title="Source path",
+            description=(
+                "Logical channel this integration serves (e.g. 'channels/test'). "
+                "Used as the default source for inbound messages."
+            ),
+        ),
+    ] = ""
+    channel_id: Annotated[
+        str,
+        msgspec.Meta(
+            title="Channel ID",
+            description="Optional external channel identifier.",
+        ),
+    ] = ""
+
+
+ECHO_INTEGRATION_DESCRIPTION = (
+    "Loopback integration used by runtime tests. Echoes whatever it receives "
+    "back to the actor that consumed the message."
+)
 
 
 ECHO_CAPABILITY_SPEC = CapabilitySpec[EchoPayload, EchoPayload](
@@ -72,27 +111,40 @@ ECHO_CAPABILITY_SPEC = CapabilitySpec[EchoPayload, EchoPayload](
 )
 
 
+ECHO_REPLY_CAPABILITY_SPEC = CapabilitySpec[EchoReplyPayload, EchoReplyPayload](
+    id=ECHO_REPLY_CAPABILITY_ID,
+    name="Echo Reply",
+    description="Records an outbound reply for echo round-trip tests.",
+    input_type=EchoReplyPayload,
+    output_type=EchoReplyPayload,
+    namespace="echo",
+    effect="write",
+)
+
+
 @dataclass
 class EchoIntegrationFactory:
-    plugin_id: str = ECHO_INTEGRATION_PLUGIN_ID
+    name: str = ECHO_INTEGRATION_NAME
+    description: str = ECHO_INTEGRATION_DESCRIPTION
+    config_schema: type[msgspec.Struct] = EchoIntegrationConfig
     _instances: dict[str, EchoIntegration] = field(default_factory=dict)
 
-    def capability_specs(self) -> list[CapabilitySpec[EchoPayload, EchoPayload]]:
-        return [ECHO_CAPABILITY_SPEC]
+    def capability_specs(self) -> list[AnyCapabilitySpec]:
+        return [ECHO_CAPABILITY_SPEC, ECHO_REPLY_CAPABILITY_SPEC]
 
     async def create(
         self,
         record: IntegrationRecord,
-        repository: ResourceRepository,
         *,
         gateway: Gateway,
+        storage: IntegrationStorage,
     ) -> "EchoIntegration":
-        _ = repository
+        _ = storage
         validate_integration_config(
-            record.plugin_id,
+            record.name,
             dict(record.config),
             schema=EchoIntegrationConfig,
-            context=f"integration[{record.name}]",
+            context=f"integration[{record.id}]",
         )
         instance = EchoIntegration(
             ingress=gateway.open_integration(record.id),
@@ -113,6 +165,12 @@ class EchoIntegration:
         default_factory=asyncio.Queue
     )
     echo_contexts: asyncio.Queue[dict[str, object]] = field(
+        default_factory=asyncio.Queue
+    )
+    reply_calls: asyncio.Queue[EchoReplyPayload] = field(
+        default_factory=asyncio.Queue
+    )
+    reply_contexts: asyncio.Queue[dict[str, object]] = field(
         default_factory=asyncio.Queue
     )
 
@@ -160,7 +218,7 @@ class EchoIntegration:
         await self.ingress.emit(message)
         return message
 
-    def capabilities(self) -> list[Capability[EchoPayload, EchoPayload]]:
+    def capabilities(self) -> list[AnyCapability]:
         return [
             Capability(
                 id=ECHO_CAPABILITY_ID,
@@ -170,6 +228,16 @@ class EchoIntegration:
                 output_type=EchoPayload,
                 namespace="echo",
                 invoke=self.invoke_echo,
+            ),
+            Capability(
+                id=ECHO_REPLY_CAPABILITY_ID,
+                name="Echo Reply",
+                description="Records an outbound reply for echo round-trip tests.",
+                input_type=EchoReplyPayload,
+                output_type=EchoReplyPayload,
+                namespace="echo",
+                effect="write",
+                invoke=self.invoke_reply,
             ),
         ]
 
@@ -189,6 +257,22 @@ class EchoIntegration:
         )
         return payload
 
+    async def invoke_reply(
+        self,
+        payload: EchoReplyPayload,
+        context: InvocationContext,
+    ) -> EchoReplyPayload:
+        await self.reply_calls.put(payload)
+        await self.reply_contexts.put(
+            {
+                "actor_id": context.actor_id,
+                "source_id": context.source_id,
+                "source_path": context.source_path,
+                "raw": context.raw,
+            }
+        )
+        return payload
+
     async def close(self) -> None:
         pass
 
@@ -197,6 +281,15 @@ class EchoIntegration:
 
     async def next_echo_context(self) -> dict[str, object]:
         return await asyncio.wait_for(self.echo_contexts.get(), timeout=1.0)
+
+    async def next_reply_call(self) -> EchoReplyPayload:
+        return await asyncio.wait_for(self.reply_calls.get(), timeout=1.0)
+
+    async def next_reply_context(self) -> dict[str, object]:
+        return await asyncio.wait_for(self.reply_contexts.get(), timeout=1.0)
+
+    async def wait_for_reply(self, timeout_s: float) -> EchoReplyPayload:
+        return await asyncio.wait_for(self.reply_calls.get(), timeout=timeout_s)
 
 
 def _text_content(text: str) -> list[dict[str, object]]:

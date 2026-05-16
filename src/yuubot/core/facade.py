@@ -8,6 +8,7 @@ import keyword
 import re
 import secrets
 import shutil
+import sys
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ class FacadeWorkspace:
             capabilities=capabilities,
             package_name=self.package_name,
         )
+        clear_facade_module_cache(self.package_name)
         return catalog_root / self.package_name
 
     def bind_actor(
@@ -77,6 +79,7 @@ class FacadeWorkspace:
             capabilities=capabilities,
             package_name=self.package_name,
         )
+        clear_facade_module_cache(self.package_name)
         actor_root.mkdir(parents=True, exist_ok=True)
         _replace_path(actor_root / self.package_name)
         (actor_root / self.package_name).symlink_to(
@@ -230,6 +233,20 @@ def write_facade_package(
         )
 
 
+def clear_facade_module_cache(package_name: str = YEXT_PACKAGE) -> None:
+    """Drop generated facade modules from the host import cache.
+
+    yuuagents imports generated modules in the host process to render function
+    docs for execute_python. The package name is stable (`yext`) while the
+    generated files vary per actor, so stale sys.modules entries can otherwise
+    leak the previous actor's capability surface into the next prompt.
+    """
+    prefix = f"{package_name}."
+    for name in list(sys.modules):
+        if name == package_name or name.startswith(prefix):
+            sys.modules.pop(name, None)
+
+
 def facade_call_path(
     capability: AnyCapabilitySpec,
     *,
@@ -333,6 +350,7 @@ def coerce_payload(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
 
 def _render_module(capabilities: list[AnyCapabilitySpec]) -> str:
     functions = "\n\n".join(_render_function(capability) for capability in capabilities)
+    exports = [_function_name(capability) for capability in capabilities]
     return f'''"""Generated integration capability facade."""
 
 from __future__ import annotations
@@ -340,6 +358,8 @@ from __future__ import annotations
 from typing import Any
 
 from ._client import coerce_payload, invoke
+
+__all__ = {exports!r}
 
 _UNSET = object()
 

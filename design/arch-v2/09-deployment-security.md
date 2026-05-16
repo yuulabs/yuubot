@@ -62,11 +62,12 @@ Web Chat：
 - cookie 在 HTTPS 部署中设置 `secure=True`、`httpOnly=True`、`sameSite=Lax/Strict`。
 - Terminal / file APIs 需要显式启用，默认仅 local/admin 可用。
 
-## Secret Store
+## Config Secrets
 
-- Provider key 和 OAuth token 不写 YAML。
-- DB 中 secret 加密存储。
-- Admin UI 不回显明文。
+- Provider key 和 OAuth token 不写 YAML，也不进入独立 secrets 表。
+- Integration config 中用 `Secret` 类型声明敏感字段。
+- DB 中只存 master-key 加密后的 secret 字段密文。
+- Admin UI 默认不回显明文，只在用户主动 reveal 时请求明文。
 - 导出/备份时明确提示 secret 依赖 `YUU_SECRET_KEY`。
 
 ## Budget Protection

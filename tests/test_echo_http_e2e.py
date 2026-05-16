@@ -16,7 +16,7 @@ import yuuagents.stage as yuuagents_stage
 from helpers import insert_echo_actor_resources
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.actors import SimpleLoopActor
-from yuubot.core.integrations.echo import EchoIntegration, EchoPayload
+from yuubot.core.integrations.echo import EchoIntegration, EchoPayload, EchoReplyPayload
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
 
@@ -26,6 +26,8 @@ INTEGRATION_ID = "echo-http"
 MESSAGE_ID = "http-msg-1"
 SENDER_ID = "external-user"
 ORIGINAL_TEXT = "hello from external integration"
+REPLY_TEXT = "reply from actor"
+REPLY_MESSAGE_ID = "reply-msg-1"
 
 
 async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
@@ -91,10 +93,72 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
         assert "External User" in first_user_message
 
         execute_python_description = _execute_python_description(llm.tools[0])
-        assert "async def yext.echo" in execute_python_description
+        assert "async def yext.echo.echo" in execute_python_description
         assert "Returns the payload unchanged." in execute_python_description
         assert "sender_id" in execute_python_description
         assert "message_id" in execute_python_description
+    finally:
+        await daemon.stop()
+
+
+async def test_echo_round_trip_waits_for_llm_reply(
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = ReplyRoundTripProvider()
+    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+
+    daemon = await _build_daemon(yuubot_config, tmp_path)
+    await daemon.start()
+    try:
+        resources = await insert_echo_actor_resources(
+            daemon.resources.repository,
+            actor_id=ACTOR_ID,
+            integration_id=INTEGRATION_ID,
+            source_path=SOURCE_PATH,
+            system_prompt="You reply through echo round-trip.",
+        )
+        await daemon.resources.event_bus.drain()
+
+        async with _client(daemon) as client:
+            response = await client.post(
+                "/integration/echo/round-trip",
+                json={
+                    "integration_id": resources.integration.id,
+                    "message_id": MESSAGE_ID,
+                    "sender_id": SENDER_ID,
+                    "sender_name": "External User",
+                    "kind": "private",
+                    "text": ORIGINAL_TEXT,
+                    "content": [{"type": "text", "text": ORIGINAL_TEXT}],
+                    "timeout_s": 5,
+                },
+            )
+
+        assert response.status_code == 200, response.json()
+        assert response.json()["reply"] == msgspec.to_builtins(
+            EchoReplyPayload(
+                text=REPLY_TEXT,
+                message=ORIGINAL_TEXT,
+                sender_id=SENDER_ID,
+                message_id=REPLY_MESSAGE_ID,
+                in_reply_to_message_id=MESSAGE_ID,
+            )
+        )
+
+        turn = await _next_simple_loop_turn(daemon, resources.actor.id)
+        assert turn.message_id == MESSAGE_ID
+        assert turn.assistant_text == "done"
+
+        assert len(llm.calls) == 2
+        first_user_message = yuullm.render_message_text(llm.calls[0][-1])
+        assert ORIGINAL_TEXT in first_user_message
+        assert "External User" in first_user_message
+
+        execute_python_description = _execute_python_description(llm.tools[0])
+        assert "async def yext.echo.reply" in execute_python_description
+        assert "Records an outbound reply for echo round-trip tests." in execute_python_description
     finally:
         await daemon.stop()
 
@@ -146,7 +210,7 @@ class EchoRoundTripProvider:
         code = (
             "import yext\n"
             f"message = {ORIGINAL_TEXT!r}\n"
-            "result = await yext.echo(\n"
+            "result = await yext.echo.echo(\n"
             "    value=f\"{SESSION_STATE['actor_id']}:{message}\",\n"
             "    message=message,\n"
             f"    sender_id={SENDER_ID!r},\n"
@@ -170,6 +234,34 @@ class EchoRoundTripProvider:
 
     def _done_turn(self) -> list[yuullm.StreamItem]:
         return [yuullm.Response({"type": "text", "text": "done"})]
+
+
+class ReplyRoundTripProvider(EchoRoundTripProvider):
+    def _tool_turn(self) -> list[yuullm.StreamItem]:
+        code = (
+            "import yext\n"
+            "result = await yext.echo.reply(\n"
+            f"    text={REPLY_TEXT!r},\n"
+            f"    message={ORIGINAL_TEXT!r},\n"
+            f"    sender_id={SENDER_ID!r},\n"
+            f"    message_id={REPLY_MESSAGE_ID!r},\n"
+            f"    in_reply_to_message_id={MESSAGE_ID!r},\n"
+            ")\n"
+            "print(result)"
+        )
+        return [
+            yuullm.ToolCall(
+                id="call-reply",
+                name="execute_python",
+                arguments=json.dumps(
+                    {
+                        "code": code,
+                        "timeout_s": 10,
+                        "capture": ["stdout", "stderr"],
+                    }
+                ),
+            )
+        ]
 
 
 async def _build_daemon(

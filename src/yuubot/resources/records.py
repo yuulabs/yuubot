@@ -10,15 +10,6 @@ import msgspec
 from yuubot.core.validation import LLMProviderOptions, StreamOptions
 
 
-class SecretRecord(msgspec.Struct):
-    id: str
-    name: str
-    kind: str
-    ciphertext: str
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
 class ModelCapabilities(msgspec.Struct):
     chat: bool = True
     vision: bool = False
@@ -67,10 +58,13 @@ class LLMBackendRecord(msgspec.Struct):
 
 
 class IntegrationRecord(msgspec.Struct):
-    """DB-persisted configuration for one integration instance."""
+    """DB-persisted configuration for an integration.
+
+    ``name`` identifies both the integration kind (e.g. ``"echo"``, ``"qq"``)
+    and this record; per-kind aliases belong in ``config``.
+    """
 
     name: str
-    plugin_id: str
     config: dict[str, object] = msgspec.field(default_factory=dict)
     id: str = ""
     enabled: bool = True

@@ -19,6 +19,7 @@ from yuuagents.agent import LlmClient
 
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.bindings import ActorBinding
+from yuubot.core.costing import PricingAwareLlmClient
 from yuubot.core.facade import ActorFacadeBinding
 from yuubot.core.observability import TraceObserver
 from yuubot.core.validation import (
@@ -34,8 +35,8 @@ from yuubot.resources.records import (
 )
 
 PYTHON_PROVIDER_KEY = "ipykernel"
-YEXT_IMPORT = {"module": "yext"}
-YEXT_EXPAND_FUNCTIONS = ["yext.*"]
+YEXT_IMPORTS = [{"module": "yext"}, {"module": "yext.echo"}]
+YEXT_EXPAND_FUNCTIONS = ["yext.*", "yext.echo.*"]
 
 
 def start_yuuagents_actor(
@@ -57,6 +58,11 @@ def start_yuuagents_actor(
             ),
             llm=llm_client or _stage_llm_config(binding),
         )
+    )
+    stage.llm_provider = PricingAwareLlmClient(
+        inner=stage.llm_provider,
+        pricing=binding.llm.backend.pricing,
+        configured_model=binding.llm.model,
     )
     actor = YuuAgentsActor(stage, [build_agent_definition(binding, facade=facade)])
     if observer is not None:
@@ -204,7 +210,7 @@ def _python_capability_config(
     facade: ActorFacadeBinding,
 ) -> dict[str, Any]:
     config = dict(existing or {})
-    config["imports"] = _merged_imports(config.get("imports"), YEXT_IMPORT)
+    config["imports"] = _merged_imports(config.get("imports"), YEXT_IMPORTS)
     config["expand_functions"] = _merged_str_sequence(
         config.get("expand_functions"),
         YEXT_EXPAND_FUNCTIONS,
@@ -223,14 +229,14 @@ def _python_capability_config(
 
 def _merged_imports(
     existing: object,
-    required_import: dict[str, str],
+    required_imports: list[dict[str, str]],
 ) -> list[object]:
     imports = list(existing) if isinstance(existing, Sequence) and not isinstance(existing, str) else []
-    required_module = required_import["module"]
-    for item in imports:
-        if _import_module(item) == required_module:
-            return imports
-    return [*imports, dict(required_import)]
+    existing_modules = {_import_module(item) for item in imports}
+    for required_import in required_imports:
+        if required_import["module"] not in existing_modules:
+            imports.append(dict(required_import))
+    return imports
 
 
 def _import_module(item: object) -> str:
@@ -261,13 +267,26 @@ def _merged_startup_code(existing: str, required: str) -> str:
 
 
 def _check_pricing_for_budget(binding: ActorBinding) -> None:
-    if binding.actor.budget.max_usd <= 0:
+    if not _requires_pricing(binding):
         return
     model = binding.llm.model
     for entry in binding.llm.backend.pricing.entries:
         if entry.model == model:
             return
     raise ConfigurationError(
-        f"actor {binding.actor.name!r}: max_usd budget requires pricing for "
+        f"actor {binding.actor.name!r}: USD budget requires pricing for "
         f"model {model!r} in backend {binding.llm.backend.name!r}"
     )
+
+
+def _requires_pricing(binding: ActorBinding) -> bool:
+    backend_budget = binding.llm.backend.budget
+    return (
+        binding.actor.budget.max_usd > 0
+        or _positive_budget(backend_budget.daily_usd)
+        or _positive_budget(backend_budget.monthly_usd)
+    )
+
+
+def _positive_budget(value: float | None) -> bool:
+    return value is not None and value > 0

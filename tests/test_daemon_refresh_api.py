@@ -15,7 +15,7 @@ from yuubot.core.bindings import ActorBinding
 from yuubot.core.capabilities import AnyCapability, AnyCapabilitySpec
 from yuubot.core.gateway import Gateway, Mailbox
 from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
-from yuubot.core.integrations.contracts import IntegrationInstance
+from yuubot.core.integrations.contracts import IntegrationInstance, IntegrationStorage
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.core.routing import RouteBindings
 from yuubot.process import ServiceHost, TraceService
@@ -45,12 +45,13 @@ from yuubot.resources.store.models import (
     IntegrationORM,
     LLMBackendORM,
 )
+from yuubot.runtime.commands import build_default_resource_type_registry
 from yuubot.runtime.daemon import (
     ActorLifecycleService,
-    DaemonRefreshDispatcher,
     IntegrationLifecycleService,
     RouteBindingService,
     build_daemon_asgi_app,
+    build_refresh_dispatcher,
 )
 
 
@@ -285,7 +286,7 @@ class FakeIntegrationInstance:
 
 @dataclass
 class FakeIntegrationFactory:
-    plugin_id: str = "fake"
+    name: str = "fake"
     instances: dict[str, FakeIntegrationInstance] = field(default_factory=dict)
 
     def capability_specs(self) -> tuple[AnyCapabilitySpec, ...]:
@@ -294,11 +295,11 @@ class FakeIntegrationFactory:
     async def create(
         self,
         record: IntegrationRecord,
-        repository: ResourceRepository,
         *,
         gateway: Gateway,
+        storage: IntegrationStorage,
     ) -> IntegrationInstance:
-        _ = repository, gateway
+        _ = gateway, storage
         instance = FakeIntegrationInstance()
         self.instances[record.id] = instance
         return instance
@@ -328,6 +329,7 @@ def _build_runtime(
         repository=resources.repository,
         factories=integration_factories,
         gateway=gateway,
+        data_root=workspace_root / "data",
     )
 
     routes = RouteBindingService(repository=resources.repository, gateway=gateway)
@@ -338,11 +340,12 @@ def _build_runtime(
             ActorLifecycleService(actors),
         )
     )
-    refresh = DaemonRefreshDispatcher(
+    refresh = build_refresh_dispatcher(
         routes=routes,
         actors=actors,
         integrations=integrations,
     )
+    type_registry = build_default_resource_type_registry()
     trace_service = TraceService(
         config=TraceConfig(enabled=trace_enabled),
         db_path=":memory:",
@@ -356,6 +359,7 @@ def _build_runtime(
         gateway=gateway,
         refresh=refresh,
         trace_service=trace_service,
+        type_registry=type_registry,
     )
     return RuntimeHarness(
         actors=actors,
@@ -382,8 +386,7 @@ async def _create_integration(
         IntegrationORM,
         IntegrationRecord(
             id="integration-main",
-            name="integration-main",
-            plugin_id="fake",
+            name="fake",
             enabled=enabled,
         ),
     )

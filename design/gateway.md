@@ -298,7 +298,7 @@ No new actor code is required.
 
 Do not add these until needed:
 
-- dynamic plugin loading
+- dynamic integration loading
 - channel hot reload
 - full capability negotiation
 - generic thread manager

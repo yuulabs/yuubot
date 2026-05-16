@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
+import msgspec
 from starlette.types import ASGIApp
 
 from yuubot.bootstrap.config import ServerConfig, TraceConfig
@@ -15,21 +16,23 @@ from yuubot.core.bindings import ActorBinding
 from yuubot.core.capabilities import AnyCapability, AnyCapabilitySpec
 from yuubot.core.gateway import Gateway, Mailbox
 from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
-from yuubot.core.integrations.contracts import IntegrationInstance
+from yuubot.core.integrations.contracts import IntegrationInstance, IntegrationStorage
+from yuubot.core.secrets import Secret
 from yuubot.core.routing import RouteBindings
 from yuubot.process import ServiceHost, TraceService
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.records import (
     IntegrationRecord,
 )
-from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
+from yuubot.resources.registry import EventDrivenRefreshDispatcher, ResourceTypeRegistry
+from yuubot.runtime.commands import build_default_resource_type_registry
 from yuubot.runtime.daemon import (
     ActorLifecycleService,
-    DaemonRefreshDispatcher,
     IntegrationLifecycleService,
     RouteBindingService,
     build_daemon_asgi_app,
+    build_refresh_dispatcher,
 )
 
 SECRET = "test-secret"
@@ -86,8 +89,9 @@ class FakeIntegrationInstance:
 
 @dataclass
 class FakeIntegrationFactory:
-    plugin_id: str = "fake"
+    name: str = "fake"
     instances: dict[str, FakeIntegrationInstance] = field(default_factory=dict)
+    storage_dirs: dict[str, Path] = field(default_factory=dict)
 
     def capability_specs(self) -> tuple[AnyCapabilitySpec, ...]:
         return ()
@@ -95,14 +99,26 @@ class FakeIntegrationFactory:
     async def create(
         self,
         record: IntegrationRecord,
-        repository: ResourceRepository,
         *,
         gateway: Gateway,
+        storage: IntegrationStorage,
     ) -> IntegrationInstance:
-        _ = repository, gateway
+        _ = gateway, storage
         instance = FakeIntegrationInstance()
         self.instances[record.id] = instance
+        self.storage_dirs[record.id] = storage.data_dir
         return instance
+
+
+class SecretFakeIntegrationConfig(msgspec.Struct, forbid_unknown_fields=False):
+    bot_token: Secret
+    label: str = ""
+
+
+@dataclass
+class SecretFakeIntegrationFactory(FakeIntegrationFactory):
+    name: str = "secret-fake"
+    config_schema: type[msgspec.Struct] = SecretFakeIntegrationConfig
 
 
 # --- Harness ---
@@ -115,7 +131,8 @@ class RuntimeHarness:
     gateway: Gateway
     services: ServiceHost
     app: ASGIApp
-    refresh: DaemonRefreshDispatcher
+    refresh: EventDrivenRefreshDispatcher
+    type_registry: ResourceTypeRegistry
 
 
 def _build_runtime(
@@ -140,6 +157,7 @@ def _build_runtime(
         repository=resources.repository,
         factories=integration_factories,
         gateway=gateway,
+        data_root=workspace_root / "data",
     )
     routes = RouteBindingService(repository=resources.repository, gateway=gateway)
     services = ServiceHost.from_iterable(
@@ -149,7 +167,8 @@ def _build_runtime(
             ActorLifecycleService(actors),
         )
     )
-    refresh = DaemonRefreshDispatcher(routes=routes, actors=actors, integrations=integrations)
+    refresh = build_refresh_dispatcher(routes=routes, actors=actors, integrations=integrations)
+    type_registry = build_default_resource_type_registry()
     trace_service = TraceService(config=TraceConfig(enabled=False), db_path=":memory:")
     app = build_daemon_asgi_app(
         config=ServerConfig(daemon_secret=SECRET),
@@ -160,6 +179,7 @@ def _build_runtime(
         gateway=gateway,
         refresh=refresh,
         trace_service=trace_service,
+        type_registry=type_registry,
     )
     return RuntimeHarness(
         actors=actors,
@@ -168,6 +188,7 @@ def _build_runtime(
         services=services,
         app=app,
         refresh=refresh,
+        type_registry=type_registry,
     )
 
 
@@ -325,7 +346,7 @@ async def test_integration_enable_disable_lifecycle(
     await repo.insert(
         IntegrationORM,
         IntegrationRecord(
-            id="int-1", name="int-1", plugin_id="fake", enabled=False,
+            id="int-1", name="fake", enabled=False,
         ),
     )
 
@@ -351,6 +372,87 @@ async def test_integration_enable_disable_lifecycle(
             )
         assert resp.status_code == 200, resp.text
         assert runtime.integrations.running_integration_ids() == []
+    finally:
+        await runtime.services.stop()
+
+
+async def test_delete_integration_removes_private_storage(
+    resources: Resources, tmp_path: Path
+) -> None:
+    from yuubot.resources.store.models import IntegrationORM
+
+    repo = resources.repository
+    await repo.insert(
+        IntegrationORM,
+        IntegrationRecord(id="int-delete", name="fake", enabled=True),
+    )
+
+    integration_factory = FakeIntegrationFactory()
+    runtime = _build_runtime(resources, tmp_path, integration_factory=integration_factory)
+    await runtime.services.start()
+    try:
+        data_dir = integration_factory.storage_dirs["int-delete"]
+        marker = data_dir / "cursor.txt"
+        marker.write_text("42")
+        assert marker.exists()
+
+        async with _client(runtime) as client:
+            resp = await client.delete(
+                "/api/resources/integrations/int-delete",
+                headers=HEADERS,
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert runtime.integrations.running_integration_ids() == []
+        assert not data_dir.exists()
+    finally:
+        await runtime.services.stop()
+
+
+async def test_integration_secret_config_is_encrypted_and_redacted(
+    resources: Resources, tmp_path: Path
+) -> None:
+    from yuubot.resources.store.models import IntegrationORM
+
+    runtime = _build_runtime(
+        resources,
+        tmp_path,
+        integration_factory=SecretFakeIntegrationFactory(),
+    )
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            created = await client.post(
+                "/api/resources/integrations",
+                headers=HEADERS,
+                json={
+                    "id": "secret-api",
+                    "name": "secret-fake",
+                    "config": {"bot_token": "plain-token", "label": "before"},
+                },
+            )
+            updated = await client.put(
+                "/api/resources/integrations/secret-api",
+                headers=HEADERS,
+                json={"config": {"bot_token": "", "label": "after"}},
+            )
+
+        assert created.status_code == 201, created.text
+        assert created.json()["data"]["config"]["bot_token"] == "***"
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["data"]["config"]["bot_token"] == "***"
+
+        with resources.store.db.activate():
+            row = await IntegrationORM.get(id="secret-api")
+        assert row.config["bot_token"]["$enc"] == "v1"
+        assert "plain-token" not in repr(row.config)
+
+        loaded = await resources.repository.get(IntegrationORM, "secret-api")
+        assert loaded is not None
+        token = loaded.config["bot_token"]
+        assert isinstance(token, Secret)
+        assert token.reveal() == "plain-token"
+        assert loaded.config["label"] == "after"
     finally:
         await runtime.services.stop()
 

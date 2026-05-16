@@ -62,7 +62,7 @@ database:
   path: ${YUU_DATA_DIR}/yuubot.db
 
 secrets:
-  # 用于加密 DB 中的 provider api keys / oauth tokens。
+  # 32 bytes base64，用于加密 DB 中 config 内的 Secret 字段。
   # 必须稳定；丢失后 DB 中 secret 无法解密。
   master_key: ${YUU_SECRET_KEY}
 

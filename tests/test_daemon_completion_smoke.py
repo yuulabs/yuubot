@@ -18,11 +18,10 @@ from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.actors import SimpleLoopActor
 from yuubot.core.integrations.echo import (
     ECHO_CAPABILITY_ID,
-    ECHO_INTEGRATION_PLUGIN_ID,
+    ECHO_INTEGRATION_NAME,
     EchoIntegration,
     EchoPayload,
 )
-from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
@@ -104,7 +103,7 @@ async def test_daemon_completion_smoke_runs_real_daemon_turn_and_refreshes(
             "running_actor_ids": [actor.id],
             "actor_workspaces": {actor.id: actor_workspace},
             "route_binding_count": 2,
-            "trace": {"enabled": True, "status": "running"},
+            "trace": {"enabled": False, "status": "disabled"},
         }
 
         await _assert_refresh_cases(daemon, SOURCE_PATH, actor.id)
@@ -364,8 +363,7 @@ def _llm_backend_record(actor_id: str) -> LLMBackendRecord:
 def _integration_record(source_path: str) -> IntegrationRecord:
     return IntegrationRecord(
         id="echo-main",
-        name="echo-main",
-        plugin_id=ECHO_INTEGRATION_PLUGIN_ID,
+        name=ECHO_INTEGRATION_NAME,
         config={"source_path": source_path},
     )
 
@@ -401,7 +399,7 @@ def _simple_loop_turns() -> list[list[yuullm.StreamItem]]:
     code = (
         "import os\n"
         "import yext\n"
-        "result = await yext.echo(\n"
+        "result = await yext.echo.echo(\n"
         "    value=os.getcwd(),\n"
         "    message='hello from python',\n"
         "    sender_id='user-1',\n"

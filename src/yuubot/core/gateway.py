@@ -47,6 +47,8 @@ class Gateway:
     _mailboxes: dict[str, Mailbox] = field(default_factory=dict, init=False)
 
     def get_mailbox(self, actor_id: str) -> Mailbox:
+        if actor_id in self._mailboxes:
+            return self._mailboxes[actor_id]
         mailbox = Mailbox()
         self._mailboxes[actor_id] = mailbox
         return mailbox

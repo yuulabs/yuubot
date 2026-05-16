@@ -49,7 +49,7 @@ parse typed request
 - 每个 Resource 有 msgspec record、Tortoise ORM 映射、validator 和最小 E2E 测试。
 - JSON 字段必须有 msgspec schema，不以裸 `dict[str, Any]` 作为跨模块契约。
 - Runtime Registry 只从 DB hydrate，不从旧 YAML 混合读取。
-- `IntegrationFactoryRegistry` 只注册 Integration Factory code，不保存 Runtime Resource instance。LLM Backend 不需要 plugin registry。
+- `IntegrationFactoryRegistry` 只注册 Integration Factory code，不保存 Runtime Resource instance。LLM Backend 不需要 factory registry。
 
 ## Phase 2: LLM Backend / Integration UI
 

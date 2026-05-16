@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -40,10 +41,16 @@ from yuubot.process import (
     open_resources,
 )
 from yuubot.resources.events import ResourceChanged
+from yuubot.resources.registry import EventDrivenRefreshDispatcher, ResourceTypeRegistry
+from yuubot.resources.service import ResourceService
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
 from yuubot.resources.store.models import ActorIngressRuleORM, IntegrationORM
-from yuubot.runtime.commands import build_commands_app, in_command_context
+from yuubot.runtime.commands import (
+    build_commands_app,
+    build_default_resource_type_registry,
+    in_command_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,36 +122,49 @@ class ActorLifecycleService:
         await self.actors.stop_all()
 
 
-@dataclass
-class DaemonRefreshDispatcher:
-    routes: RouteBindingService
-    actors: ActorManager
-    integrations: IntegrationCore
+def build_refresh_dispatcher(
+    *,
+    routes: RouteBindingService,
+    actors: ActorManager,
+    integrations: IntegrationCore,
+) -> EventDrivenRefreshDispatcher:
+    """Build an event-driven refresh dispatcher with per-table handlers.
 
-    async def refresh(self, event: ResourceChanged) -> list[str]:
+    Replaces the hardcoded if/elif chain — new resource types register
+    their own handlers without modifying this function.
+    """
+    dispatcher = EventDrivenRefreshDispatcher()
+
+    async def on_ingress_rules_change(event: ResourceChanged) -> list[str]:
+        await routes.reload()
+        await actors.reconcile()
+        return ["routes.reloaded", "actors.reconciled"]
+
+    async def on_actor_change(event: ResourceChanged) -> list[str]:
         actions: list[str] = []
-        if event.is_table("actor_ingress_rules"):
-            await self.routes.reload()
-            actions.append("routes.reloaded")
-            await self.actors.reconcile()
-            actions.append("actors.reconciled")
-            return actions
-        if event.is_table("actors"):
-            await self.routes.reload()
-            actions.append("routes.reloaded")
-            await self.integrations.handle_resource_changed(event)
-            actions.append("integrations.actor_cache_invalidated")
-            await self.actors.reconcile()
-            actions.append("actors.reconciled")
-            return actions
-        if event.is_table("characters", "llm_backends"):
-            await self.actors.forward_resource_change(event)
-            actions.append("actors.notified")
-            return actions
-        if event.is_table("integrations"):
-            await self.integrations.reconcile(event)
-            return ["integrations.reconciled", "capabilities.reloaded"]
-        return []
+        await routes.reload()
+        actions.append("routes.reloaded")
+        await integrations.handle_resource_changed(event)
+        actions.append("integrations.actor_cache_invalidated")
+        await actors.reconcile()
+        actions.append("actors.reconciled")
+        return actions
+
+    async def on_character_or_llm_change(event: ResourceChanged) -> list[str]:
+        await actors.forward_resource_change(event)
+        return ["actors.notified"]
+
+    async def on_integration_change(event: ResourceChanged) -> list[str]:
+        await integrations.reconcile(event)
+        return ["integrations.reconciled", "capabilities.reloaded"]
+
+    dispatcher.on("actor_ingress_rules", on_ingress_rules_change)
+    dispatcher.on("actors", on_actor_change)
+    dispatcher.on("characters", on_character_or_llm_change)
+    dispatcher.on("llm_backends", on_character_or_llm_change)
+    dispatcher.on("integrations", on_integration_change)
+
+    return dispatcher
 
 
 @dataclass
@@ -158,8 +178,9 @@ class YuubotDaemon:
     gateway: Gateway
     services: ServiceHost
     asgi_server: ASGIServer
-    refresh: DaemonRefreshDispatcher
+    refresh: EventDrivenRefreshDispatcher
     trace_service: TraceService
+    type_registry: ResourceTypeRegistry
 
     async def start(self) -> None:
         await self.services.start()
@@ -181,6 +202,7 @@ class YuubotDaemon:
             gateway=self.gateway,
             refresh=self.refresh,
             trace_service=self.trace_service,
+            type_registry=self.type_registry,
         )
 
     async def serve(self) -> None:
@@ -202,8 +224,9 @@ def build_daemon_asgi_app(
     actors: ActorManager,
     integrations: IntegrationCore,
     gateway: Gateway,
-    refresh: DaemonRefreshDispatcher,
+    refresh: EventDrivenRefreshDispatcher,
     trace_service: TraceService,
+    type_registry: ResourceTypeRegistry,
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_: Starlette):
@@ -292,16 +315,55 @@ def build_daemon_asgi_app(
             status_code=202,
         )
 
+    async def echo_round_trip(request: Request) -> JSONResponse:
+        round_trip_or_response = await _echo_round_trip_from_request(request)
+        if isinstance(round_trip_or_response, JSONResponse):
+            return round_trip_or_response
+
+        payload, timeout_s = round_trip_or_response
+        try:
+            instance = _resolve_echo_instance(integrations, payload.integration_id)
+            message = await instance.emit_payload(payload)
+            reply = await instance.wait_for_reply(timeout_s)
+        except TimeoutError:
+            return _error_response("echo round-trip timed out", status_code=504)
+        except LookupError as exc:
+            return _error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return _error_response(str(exc), status_code=400)
+        except Exception as exc:
+            logger.exception("echo integration round-trip failed")
+            return _error_response(str(exc), status_code=500)
+
+        return JSONResponse(
+            {
+                "status": "ok",
+                "integration_id": instance.ingress.integration_id,
+                "message_id": message.message_id,
+                "source": msgspec.to_builtins(message.source),
+                "reply": msgspec.to_builtins(reply),
+            },
+            status_code=200,
+        )
+
+    resource_service = ResourceService(
+        repository=resources.repository,
+        refresh=refresh,
+        integrations=integrations,
+        actors=actors,
+    )
+
     return Starlette(
         routes=(
             Route("/healthz", health, methods=("GET",)),
+            Route("/integration/echo/round-trip", echo_round_trip, methods=("POST",)),
             Route("/integration/echo", echo_ingress, methods=("POST",)),
             Route("/api/status", status, methods=("GET",)),
             Route("/api/admin/refresh", refresh_resources, methods=("POST",)),
             Mount(
                 "/api/resources",
                 app=build_commands_app(
-                    resources.repository, refresh, integrations, actors, config,
+                    resource_service, type_registry, resources.repository, config,
                 ),
             ),
         ),
@@ -324,6 +386,7 @@ async def build_daemon(
         repository=repository,
         factories=components.integration_factories,
         gateway=gateway,
+        data_root=Path(config.paths.data_dir),
     )
     actor_python_sessions = ActorPythonSessionFactory.in_directory(
         integrations=integrations,
@@ -336,11 +399,13 @@ async def build_daemon(
         workspace_resolver=ActorWorkspaceResolver(Path(config.paths.workspace_dir)),
     )
     routes = RouteBindingService(repository=repository, gateway=gateway)
-    refresh = DaemonRefreshDispatcher(
+    refresh = build_refresh_dispatcher(
         routes=routes,
         actors=actors,
         integrations=integrations,
     )
+
+    type_registry = build_default_resource_type_registry()
 
     async def on_resources_changed(event: Event) -> None:
         if not isinstance(event, ResourceChanged):
@@ -371,6 +436,7 @@ async def build_daemon(
         asgi_server=components.asgi_server,
         refresh=refresh,
         trace_service=trace_svc,
+        type_registry=type_registry,
     )
 
 
@@ -387,7 +453,7 @@ async def _resource_changed_from_request(
 ) -> ResourceChanged | JSONResponse:
     try:
         payload = await request.json()
-    except Exception:
+    except json.JSONDecodeError:
         return _error_response("request body must be valid JSON", status_code=400)
     if not isinstance(payload, dict):
         return _error_response("request body must be a JSON object", status_code=400)
@@ -407,20 +473,59 @@ def _error_response(reason: str, *, status_code: int) -> JSONResponse:
 async def _echo_payload_from_request(
     request: Request,
 ) -> EchoIngressPayload | JSONResponse:
+    body_or_response = await _echo_request_body(request)
+    if isinstance(body_or_response, JSONResponse):
+        return body_or_response
+    return _echo_payload_from_body(body_or_response)
+
+
+async def _echo_round_trip_from_request(
+    request: Request,
+) -> tuple[EchoIngressPayload, float] | JSONResponse:
+    body_or_response = await _echo_request_body(request)
+    if isinstance(body_or_response, JSONResponse):
+        return body_or_response
+    payload_or_response = _echo_payload_from_body(body_or_response)
+    if isinstance(payload_or_response, JSONResponse):
+        return payload_or_response
+    try:
+        timeout_s = _round_trip_timeout_s(body_or_response)
+    except ValueError as exc:
+        return _error_response(str(exc), status_code=400)
+    return payload_or_response, timeout_s
+
+
+async def _echo_request_body(request: Request) -> dict[str, Any] | JSONResponse:
     try:
         payload = await request.json()
-    except Exception:
+    except json.JSONDecodeError:
         return _error_response("request body must be valid JSON", status_code=400)
     if not isinstance(payload, dict):
         return _error_response("request body must be a JSON object", status_code=400)
+    return cast(dict[str, Any], payload)
+
+
+def _echo_payload_from_body(
+    payload: dict[str, Any],
+) -> EchoIngressPayload | JSONResponse:
     try:
         return msgspec.convert(
-            cast(dict[str, Any], payload),
+            payload,
             type=EchoIngressPayload,
             strict=False,
         )
     except (msgspec.ValidationError, msgspec.DecodeError) as exc:
         return _error_response(str(exc), status_code=400)
+
+
+def _round_trip_timeout_s(payload: dict[str, Any]) -> float:
+    raw_timeout = payload.get("timeout_s", 10.0)
+    if not isinstance(raw_timeout, int | float) or isinstance(raw_timeout, bool):
+        raise ValueError("timeout_s must be a number")
+    timeout_s = float(raw_timeout)
+    if timeout_s <= 0:
+        raise ValueError("timeout_s must be positive")
+    return min(timeout_s, 60.0)
 
 
 def _resolve_echo_instance(

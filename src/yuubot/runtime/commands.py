@@ -1,11 +1,16 @@
-"""Resource command sub-application for the daemon."""
+"""Resource command sub-application for the daemon.
+
+HTTP handlers parse/validate input and format output.
+All business logic (CRUD, reconcile, lifecycle) is delegated to ResourceService.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from contextvars import ContextVar
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 import msgspec
 from starlette.applications import Starlette
@@ -17,10 +22,10 @@ from starlette.routing import Route
 from tortoise import Model
 
 from yuubot.bootstrap.config import ServerConfig
-from yuubot.core.actors import ActorManager
-from yuubot.core.integrations import IntegrationCore
-from yuubot.resources.events import ResourceAction, ResourceChanged
+from yuubot.core.secrets import redact_secret_for_json, wrap_config_secrets
+from yuubot.resources.registry import ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
+from yuubot.resources.service import ResourceService
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
@@ -28,7 +33,6 @@ from yuubot.resources.store.models import (
     IntegrationORM,
     LLMBackendORM,
     PromptTemplateORM,
-    SecretORM,
 )
 from yuubot.runtime.validators import (
     ValidationError,
@@ -38,29 +42,24 @@ from yuubot.runtime.validators import (
 
 logger = logging.getLogger(__name__)
 
-
-class RefreshDispatcher(Protocol):
-    async def refresh(self, event: ResourceChanged) -> list[str]: ...
-
-logger = logging.getLogger(__name__)
-
 in_command_context: ContextVar[bool] = ContextVar("in_command_context", default=False)
 
-_encoder = msgspec.json.Encoder()
-
-RESOURCE_REGISTRY: dict[str, type[Model]] = {
-    "llm-backends": LLMBackendORM,
-    "integrations": IntegrationORM,
-    "characters": CharacterORM,
-    "actors": ActorORM,
-    "ingress-rules": ActorIngressRuleORM,
-    "prompt-templates": PromptTemplateORM,
-    "secrets": SecretORM,
-}
+def build_default_resource_type_registry() -> ResourceTypeRegistry:
+    """Create a ResourceTypeRegistry with all known resource types."""
+    registry = ResourceTypeRegistry()
+    registry.register("llm-backends", LLMBackendORM)
+    registry.register("integrations", IntegrationORM)
+    registry.register("characters", CharacterORM)
+    registry.register("actors", ActorORM)
+    registry.register("ingress-rules", ActorIngressRuleORM)
+    registry.register("prompt-templates", PromptTemplateORM)
+    return registry
 
 
 def _encode_record(record: object) -> Any:
-    return msgspec.json.decode(_encoder.encode(record))
+    return msgspec.json.decode(
+        msgspec.json.encode(record, enc_hook=redact_secret_for_json)
+    )
 
 
 def _ok(data: object, actions: list[str] | None = None, status_code: int = 200) -> JSONResponse:
@@ -97,58 +96,56 @@ class SecretMiddleware(BaseHTTPMiddleware):
 
 
 class ResourceCommandHandlers:
-    """CRUD + lifecycle handlers for all resource types."""
+    """HTTP handlers for resource CRUD and lifecycle.
+
+    Each handler parses/validates the request, delegates business logic
+    to ResourceService, and formats the JSON response.
+    """
 
     def __init__(
         self,
+        service: ResourceService,
+        type_registry: ResourceTypeRegistry,
         repository: ResourceRepository,
-        refresh: RefreshDispatcher,
-        integrations: IntegrationCore,
-        actors: ActorManager,
     ):
+        self.service = service
+        self.type_registry = type_registry
         self.repository = repository
-        self.refresh = refresh
-        self.integrations = integrations
-        self.actors = actors
 
     async def create(self, request: Request) -> JSONResponse:
         slug = request.path_params["resource_type"]
-        orm_type = RESOURCE_REGISTRY.get(slug)
+        orm_type = self.type_registry.get_orm_type(slug)
         if orm_type is None:
             return _error("not_found", f"unknown resource type '{slug}'", 404)
 
-        try:
-            payload = await request.json()
-        except Exception:
-            return _error("validation_error", "invalid JSON body", 400)
-
-        if not isinstance(payload, dict):
-            return _error("validation_error", "body must be a JSON object", 400)
+        payload = await self._parse_json_body(request)
+        if isinstance(payload, JSONResponse):
+            return payload
 
         if not payload.get("id"):
             payload["id"] = str(uuid.uuid4())
 
-        schema_type = getattr(orm_type, "_yuubot_schema_type")
-        try:
-            record = msgspec.convert(payload, type=schema_type, strict=False)
-        except (msgspec.ValidationError, msgspec.DecodeError) as exc:
-            return _error("validation_error", str(exc), 400)
+        config_error = await self._prepare_integration_config(orm_type, payload)
+        if config_error is not None:
+            return config_error
+
+        record = self._decode_payload(orm_type, payload)
+        if isinstance(record, JSONResponse):
+            return record
 
         if orm_type is ActorORM:
-            try:
-                await validate_actor_references(payload, self.repository)
-            except ValidationError as exc:
-                return _error(exc.code, exc.detail, 400)
+            ref_error = await self._validate_actor_refs(payload)
+            if ref_error is not None:
+                return ref_error
 
         token = in_command_context.set(True)
         try:
-            inserted = await self.repository.insert(orm_type, record)
-        except Exception as exc:
+            inserted, actions, warnings = await self.service.create(orm_type, record)
+        except ValueError as exc:
             return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
 
-        actions, warnings = await self._reconcile(orm_type, "inserted", payload["id"])
         if warnings:
             return _partial(inserted, warnings)
         return _ok(inserted, actions, status_code=201)
@@ -156,7 +153,7 @@ class ResourceCommandHandlers:
     async def get(self, request: Request) -> JSONResponse:
         slug = request.path_params["resource_type"]
         row_id = request.path_params["id"]
-        orm_type = RESOURCE_REGISTRY.get(slug)
+        orm_type = self.type_registry.get_orm_type(slug)
         if orm_type is None:
             return _error("not_found", f"unknown resource type '{slug}'", 404)
 
@@ -167,7 +164,7 @@ class ResourceCommandHandlers:
 
     async def list_all(self, request: Request) -> JSONResponse:
         slug = request.path_params["resource_type"]
-        orm_type = RESOURCE_REGISTRY.get(slug)
+        orm_type = self.type_registry.get_orm_type(slug)
         if orm_type is None:
             return _error("not_found", f"unknown resource type '{slug}'", 404)
 
@@ -179,42 +176,43 @@ class ResourceCommandHandlers:
     async def update(self, request: Request) -> JSONResponse:
         slug = request.path_params["resource_type"]
         row_id = request.path_params["id"]
-        orm_type = RESOURCE_REGISTRY.get(slug)
+        orm_type = self.type_registry.get_orm_type(slug)
         if orm_type is None:
             return _error("not_found", f"unknown resource type '{slug}'", 404)
 
-        try:
-            payload = await request.json()
-        except Exception:
-            return _error("validation_error", "invalid JSON body", 400)
-
-        if not isinstance(payload, dict):
-            return _error("validation_error", "body must be a JSON object", 400)
+        payload = await self._parse_json_body(request)
+        if isinstance(payload, JSONResponse):
+            return payload
 
         payload.pop("id", None)
         if not payload:
             return _error("validation_error", "no fields to update", 400)
 
         if orm_type is ActorORM:
-            try:
-                await validate_actor_references(payload, self.repository)
-            except ValidationError as exc:
-                return _error(exc.code, exc.detail, 400)
+            ref_error = await self._validate_actor_refs(payload)
+            if ref_error is not None:
+                return ref_error
+
+        config_error = await self._prepare_integration_config(
+            orm_type,
+            payload,
+            row_id=row_id,
+        )
+        if config_error is not None:
+            return config_error
 
         token = in_command_context.set(True)
         try:
-            updated = await self.repository.update(orm_type, row_id, **payload)
-        except Exception as exc:
+            updated, actions, warnings = await self.service.update(
+                orm_type, row_id, **payload,
+            )
+        except ValueError as exc:
             return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
 
         if updated is None:
             return _error("not_found", f"{slug} '{row_id}' not found", 404)
-
-        actions, warnings = await self._reconcile(
-            orm_type, "updated", row_id, tuple(payload.keys())
-        )
         if warnings:
             return _partial(updated, warnings)
         return _ok(updated, actions)
@@ -222,7 +220,7 @@ class ResourceCommandHandlers:
     async def delete(self, request: Request) -> JSONResponse:
         slug = request.path_params["resource_type"]
         row_id = request.path_params["id"]
-        orm_type = RESOURCE_REGISTRY.get(slug)
+        orm_type = self.type_registry.get_orm_type(slug)
         if orm_type is None:
             return _error("not_found", f"unknown resource type '{slug}'", 404)
 
@@ -233,16 +231,14 @@ class ResourceCommandHandlers:
 
         token = in_command_context.set(True)
         try:
-            deleted = await self.repository.delete(orm_type, row_id)
-        except Exception as exc:
+            deleted, actions, warnings = await self.service.delete(orm_type, row_id)
+        except ValueError as exc:
             return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
 
         if not deleted:
             return _error("not_found", f"{slug} '{row_id}' not found", 404)
-
-        actions, warnings = await self._reconcile(orm_type, "deleted", row_id)
         return JSONResponse(
             {"status": "ok", "actions": list(actions), "warnings": warnings},
         )
@@ -252,93 +248,106 @@ class ResourceCommandHandlers:
         row_id = request.path_params["id"]
         action = request.path_params["action"]
 
-        if slug == "integrations" and action in ("enable", "disable"):
-            return await self._integration_lifecycle(row_id, action)
-        if slug == "actors" and action in ("enable", "disable"):
-            return await self._actor_lifecycle(row_id, action)
+        if action not in ("enable", "disable"):
+            return _error("not_found", f"unknown action '{action}' for '{slug}'", 404)
 
-        return _error("not_found", f"unknown action '{action}' for '{slug}'", 404)
+        orm_type = self.type_registry.get_orm_type(slug)
+        if orm_type is None:
+            return _error("not_found", f"unknown resource type '{slug}'", 404)
 
-    async def _integration_lifecycle(self, row_id: str, action: str) -> JSONResponse:
         enabled = action == "enable"
         token = in_command_context.set(True)
         try:
-            updated = await self.repository.update(IntegrationORM, row_id, enabled=enabled)
+            updated, actions, warnings = await self.service.set_enabled(
+                orm_type, row_id, enabled,
+            )
+        except ValueError as exc:
+            return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
 
         if updated is None:
-            return _error("not_found", f"integration '{row_id}' not found", 404)
+            return _error("not_found", f"{slug} '{row_id}' not found", 404)
+        if warnings:
+            return _partial(updated, warnings)
+        return _ok(updated, actions)
 
+    # -- helpers --
+
+    async def _parse_json_body(self, request: Request) -> dict[str, object] | JSONResponse:
         try:
-            await self.integrations.reconcile(
-                ResourceChanged(
-                    table="integrations",
-                    action="updated",
-                    row_ids=(row_id,),
-                    changed_fields=("enabled",),
-                )
-            )
-            return _ok(updated, actions=[f"integration.{action}d"])
-        except Exception as exc:
-            logger.exception("integration %s failed for %s", action, row_id)
-            return _partial(updated, [f"integration {action} failed: {exc}"])
+            payload = await request.json()
+        except json.JSONDecodeError:
+            return _error("validation_error", "invalid JSON body", 400)
+        if not isinstance(payload, dict):
+            return _error("validation_error", "body must be a JSON object", 400)
+        return payload  # type: ignore[return-value]
 
-    async def _actor_lifecycle(self, row_id: str, action: str) -> JSONResponse:
-        enabled = action == "enable"
-        token = in_command_context.set(True)
+    def _decode_payload(self, orm_type: type[Model], payload: dict[str, object]) -> object | JSONResponse:
+        schema_type = getattr(orm_type, "_yuubot_schema_type")
         try:
-            updated = await self.repository.update(ActorORM, row_id, enabled=enabled)
-        finally:
-            in_command_context.reset(token)
+            return msgspec.convert(payload, type=schema_type, strict=False)
+        except (msgspec.ValidationError, msgspec.DecodeError) as exc:
+            return _error("validation_error", str(exc), 400)
 
-        if updated is None:
-            return _error("not_found", f"actor '{row_id}' not found", 404)
-
+    async def _validate_actor_refs(self, payload: dict[str, object]) -> JSONResponse | None:
         try:
-            actions = await self.refresh.refresh(
-                ResourceChanged(
-                    table="actors",
-                    action="updated",
-                    row_ids=(row_id,),
-                    changed_fields=("enabled",),
-                )
-            )
-            return _ok(updated, actions=[f"actor.{action}d", *actions])
-        except Exception as exc:
-            logger.exception("actor %s failed for %s", action, row_id)
-            return _partial(updated, [f"actor {action} failed: {exc}"])
+            await validate_actor_references(payload, self.repository)
+        except ValidationError as exc:
+            return _error(exc.code, exc.detail, 400)
+        return None
 
-    async def _reconcile(
+    async def _prepare_integration_config(
         self,
         orm_type: type[Model],
-        action: str,
-        row_id: str,
-        changed_fields: tuple[str, ...] = (),
-    ) -> tuple[list[str], list[str]]:
-        table = orm_type._meta.db_table
-        event = ResourceChanged(
-            table=table,
-            action=cast(ResourceAction, action),
-            row_ids=(row_id,),
-            changed_fields=changed_fields,
-        )
+        payload: dict[str, object],
+        *,
+        row_id: str | None = None,
+    ) -> JSONResponse | None:
+        if orm_type is not IntegrationORM or "config" not in payload:
+            return None
+        config = payload["config"]
+        if not isinstance(config, dict):
+            return _error("validation_error", "integration config must be an object", 400)
+        config = cast(dict[str, object], config)
+
+        existing = None
+        if row_id is not None:
+            existing = await self.repository.get(IntegrationORM, row_id)
+            if existing is None:
+                return None
+
+        name = payload.get("name")
+        if name is None and existing is not None:
+            name = existing.name
+        if not isinstance(name, str) or not name:
+            return _error("validation_error", "integration name must be set", 400)
+
         try:
-            actions = await self.refresh.refresh(event)
-            return actions, []
-        except Exception as exc:
-            logger.exception("reconcile failed after %s on %s", action, table)
-            return [], [str(exc)]
+            factory = self.service.integrations.factories.get(name)
+        except LookupError as exc:
+            return _error("validation_error", str(exc), 400)
+
+        try:
+            payload["config"] = wrap_config_secrets(
+                config,
+                schema=getattr(factory, "config_schema", None),
+                existing=existing.config if existing is not None else None,
+            )
+        except ValueError as exc:
+            return _error("validation_error", str(exc), 400)
+        return None
 
 
 def build_commands_app(
+    service: ResourceService,
+    type_registry: ResourceTypeRegistry,
     repository: ResourceRepository,
-    refresh: RefreshDispatcher,
-    integrations: IntegrationCore,
-    actors: ActorManager,
     config: ServerConfig,
 ) -> Starlette:
-    handlers = ResourceCommandHandlers(repository, refresh, integrations, actors)
+    handlers = ResourceCommandHandlers(
+        service, type_registry, repository,
+    )
 
     routes = [
         Route("/{resource_type}", handlers.create, methods=["POST"]),

@@ -9,22 +9,8 @@ from yuubot.resources.records import (
     IntegrationRecord,
     LLMBackendRecord,
     PromptTemplateRecord,
-    SecretRecord,
 )
 from yuubot.resources.store.model_factory import char, reference, resource_model, text
-
-SecretORM = resource_model(
-    "SecretORM",
-    SecretRecord,
-    table="secrets",
-    module=__name__,
-    field_specs={
-        "id": char(primary_key=True),
-        "name": char(unique=True),
-        "kind": char(max_length=64),
-        "ciphertext": text(),
-    },
-)
 
 LLMBackendORM = resource_model(
     "LLMBackendORM",

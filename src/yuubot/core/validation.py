@@ -11,6 +11,8 @@ import logging
 
 import msgspec
 
+from yuubot.core.secrets import secret_decode_hook
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,7 +85,7 @@ def validate_prompt_provider_config(
 
 
 def validate_integration_config(
-    plugin_id: str,
+    name: str,
     raw: dict[str, object],
     *,
     schema: type[msgspec.Struct] | None = None,
@@ -91,7 +93,7 @@ def validate_integration_config(
 ) -> dict[str, object]:
     if schema is None:
         return raw
-    return _validate(raw, schema, context or f"integration[{plugin_id}]")
+    return _validate(raw, schema, context or f"integration[{name}]")
 
 
 def validate_actor_config(
@@ -121,7 +123,7 @@ def _validate(
     context: str,
 ) -> dict[str, object]:
     try:
-        msgspec.convert(raw, type=schema, strict=False)
+        msgspec.convert(raw, type=schema, strict=False, dec_hook=secret_decode_hook)
     except msgspec.ValidationError as exc:
         raise ConfigurationError(f"{context}: {exc}") from None
     return raw
