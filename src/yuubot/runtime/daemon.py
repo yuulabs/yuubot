@@ -6,7 +6,6 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, cast
 
 import msgspec
@@ -16,6 +15,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from yuubot.bootstrap.config import BootstrapConfig, ServerConfig
+from yuubot.bootstrap.layout import DataLayout
 from yuubot.core.actors import (
     ActorFactoryRegistry,
     ActorManager,
@@ -51,6 +51,11 @@ from yuubot.runtime.commands import (
     build_default_resource_type_registry,
     in_command_context,
 )
+from yuubot.runtime.plugin_manager import (
+    ExternalPluginInboundMessage,
+    ExternalPluginIntegration,
+    ExternalPluginManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,20 +70,22 @@ class DaemonInfrastructure:
     asgi_server: ASGIServer = field(default_factory=UvicornServer)
 
     def trace_service(self, config: BootstrapConfig) -> TraceService:
-        db_path = str(Path(config.paths.data_dir) / "traces.db")
-        return TraceService(config=config.trace, db_path=db_path)
+        layout = DataLayout.from_path(config.paths.data_dir)
+        return TraceService(config=config.trace, db_path=str(layout.traces_db_path))
 
     def actor_factory_registry(
         self,
         config: BootstrapConfig,
         python_sessions: ActorPythonSessionFactory,
         repository: ResourceRepository,
+        integrations: IntegrationCore | None = None,
     ) -> ActorFactoryRegistry:
         return self.actor_factories or default_actor_factories(
             config.yuuagents,
             python_sessions,
             repository,
             observer=self.observer,
+            integrations=integrations,
         )
 
 
@@ -175,6 +182,7 @@ class YuubotDaemon:
     resources: Resources
     actors: ActorManager
     integrations: IntegrationCore
+    plugin_manager: ExternalPluginManager
     gateway: Gateway
     services: ServiceHost
     asgi_server: ASGIServer
@@ -199,6 +207,7 @@ class YuubotDaemon:
             services=self.services,
             actors=self.actors,
             integrations=self.integrations,
+            plugin_manager=self.plugin_manager,
             gateway=self.gateway,
             refresh=self.refresh,
             trace_service=self.trace_service,
@@ -223,11 +232,19 @@ def build_daemon_asgi_app(
     services: ServiceHost,
     actors: ActorManager,
     integrations: IntegrationCore,
+    plugin_manager: ExternalPluginManager | None = None,
     gateway: Gateway,
     refresh: EventDrivenRefreshDispatcher,
     trace_service: TraceService,
     type_registry: ResourceTypeRegistry,
 ) -> Starlette:
+    if plugin_manager is None:
+        layout = DataLayout.from_path("~/.yuubot")
+        plugin_manager = ExternalPluginManager(
+            plugins_dir=layout.plugins_dir,
+            data_root=layout.data_dir,
+        )
+
     @asynccontextmanager
     async def lifespan(_: Starlette):
         await services.start()
@@ -245,6 +262,7 @@ def build_daemon_asgi_app(
                 "daemon": f"{config.daemon_host}:{config.daemon_port}",
                 "ingress_rules": len(ingress_rules),
                 "integrations": len(integrations),
+                "external_plugins": len(plugin_manager.statuses()),
             }
         )
 
@@ -252,19 +270,30 @@ def build_daemon_asgi_app(
         error = _daemon_secret_error(config, request)
         if error is not None:
             return _error_response(error, status_code=403)
-        return JSONResponse(
-            {
-                "status": "running" if services.started else "stopped",
-                    "running_integration_ids": integrations.running_integration_ids(),
-                    "running_actor_ids": actors.running_actor_ids(),
-                "actor_workspaces": actors.running_actor_workspace_paths(),
-                "route_binding_count": gateway.routes.binding_count(),
-                "trace": {
-                    "enabled": trace_service.config.enabled,
-                    "status": trace_service.status,
-                },
-            }
-        )
+        body: dict[str, object] = {
+            "status": "running" if services.started else "stopped",
+            "running_integration_ids": integrations.running_integration_ids(),
+            "running_actor_ids": actors.running_actor_ids(),
+            "actor_workspaces": actors.running_actor_workspace_paths(),
+            "route_binding_count": gateway.routes.binding_count(),
+            "trace": {
+                "enabled": trace_service.config.enabled,
+                "status": trace_service.status,
+            },
+        }
+        plugin_statuses = plugin_manager.statuses()
+        if plugin_statuses:
+            body["external_plugins"] = [
+                {
+                    "name": status.name,
+                    "integration_id": status.integration_id,
+                    "port": status.port,
+                    "healthy": status.healthy,
+                    "pid": status.pid,
+                }
+                for status in plugin_statuses
+            ]
+        return JSONResponse(body)
 
     async def refresh_resources(request: Request) -> JSONResponse:
         error = _daemon_secret_error(config, request)
@@ -286,6 +315,38 @@ def build_daemon_asgi_app(
                 "event": event.to_dict(),
                 "actions": list(actions),
             }
+        )
+
+    async def plugin_ingest(request: Request) -> JSONResponse:
+        payload_or_response = await _plugin_ingest_from_request(request, plugin_manager)
+        if isinstance(payload_or_response, JSONResponse):
+            return payload_or_response
+        payload = payload_or_response
+
+        try:
+            instance = _resolve_external_plugin_instance(
+                integrations,
+                payload.integration_id,
+            )
+            message = await instance.emit_payload(payload)
+        except PermissionError as exc:
+            return _error_response(str(exc), status_code=403)
+        except LookupError as exc:
+            return _error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return _error_response(str(exc), status_code=400)
+        except Exception as exc:
+            logger.exception("external plugin ingest failed")
+            return _error_response(str(exc), status_code=500)
+
+        return JSONResponse(
+            {
+                "status": "ok",
+                "integration_id": payload.integration_id,
+                "message_id": message.message_id,
+                "source": msgspec.to_builtins(message.source),
+            },
+            status_code=202,
         )
 
     async def echo_ingress(request: Request) -> JSONResponse:
@@ -358,6 +419,7 @@ def build_daemon_asgi_app(
             Route("/healthz", health, methods=("GET",)),
             Route("/integration/echo/round-trip", echo_round_trip, methods=("POST",)),
             Route("/integration/echo", echo_ingress, methods=("POST",)),
+            Route("/ingest", plugin_ingest, methods=("POST",)),
             Route("/api/status", status, methods=("GET",)),
             Route("/api/admin/refresh", refresh_resources, methods=("POST",)),
             Mount(
@@ -378,25 +440,35 @@ async def build_daemon(
 ) -> YuubotDaemon:
     config.validate()
     components = components or DaemonInfrastructure()
+    layout = DataLayout.from_path(config.paths.data_dir)
+    layout.ensure()
     resources = await open_resources(config)
 
     repository = resources.repository
     gateway = Gateway(routes=RouteBindings(rules=[]))
+    plugin_manager = ExternalPluginManager(
+        plugins_dir=layout.plugins_dir,
+        data_root=layout.data_dir,
+        daemon_host=config.server.daemon_host,
+        daemon_port=config.server.daemon_port,
+    )
+    components.integration_factories.register_loader(plugin_manager.loader())
     integrations = IntegrationCore(
         repository=repository,
         factories=components.integration_factories,
         gateway=gateway,
-        data_root=Path(config.paths.data_dir),
+        integrations_root=layout.integrations_root,
     )
     actor_python_sessions = ActorPythonSessionFactory.in_directory(
         integrations=integrations,
-        root=Path(config.paths.data_dir) / "runtime" / "facades",
+        root=layout.runtime_facades_dir,
+        mailbox_for_actor=gateway.find_mailbox,
     )
     actors = ActorManager(
         repository=repository,
-        factories=components.actor_factory_registry(config, actor_python_sessions, repository),
+        factories=components.actor_factory_registry(config, actor_python_sessions, repository, integrations),
         gateway=gateway,
-        workspace_resolver=ActorWorkspaceResolver(Path(config.paths.workspace_dir)),
+        workspace_resolver=ActorWorkspaceResolver(layout.workspace_root),
     )
     routes = RouteBindingService(repository=repository, gateway=gateway)
     refresh = build_refresh_dispatcher(
@@ -422,11 +494,13 @@ async def build_daemon(
         resources=resources,
         actors=actors,
         integrations=integrations,
+        plugin_manager=plugin_manager,
         gateway=gateway,
         services=ServiceHost.from_iterable(
             (
                 resources.event_bus,
                 trace_svc,
+                plugin_manager,
                 IntegrationLifecycleService(integrations),
                 actor_python_sessions,
                 routes,
@@ -548,3 +622,52 @@ def _resolve_echo_instance(
     if len(matches) > 1:
         raise ValueError("integration_id is required when multiple echo integrations run")
     return matches[0]
+
+
+async def _plugin_ingest_from_request(
+    request: Request,
+    plugin_manager: ExternalPluginManager,
+) -> ExternalPluginInboundMessage | JSONResponse:
+    token = _bearer_token(request)
+    if token is None:
+        return _error_response("Authorization bearer token is missing", status_code=403)
+    try:
+        expected_integration_id = plugin_manager.integration_id_for_token(token)
+    except PermissionError as exc:
+        return _error_response(str(exc), status_code=403)
+
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return _error_response("request body must be valid JSON", status_code=400)
+    if not isinstance(payload, dict):
+        return _error_response("request body must be a JSON object", status_code=400)
+    try:
+        message = msgspec.convert(
+            payload,
+            type=ExternalPluginInboundMessage,
+            strict=False,
+        )
+    except (msgspec.ValidationError, msgspec.DecodeError) as exc:
+        return _error_response(str(exc), status_code=400)
+    if message.integration_id != expected_integration_id:
+        return _error_response("integration_id does not match plugin token", status_code=403)
+    return message
+
+
+def _bearer_token(request: Request) -> str | None:
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
+
+
+def _resolve_external_plugin_instance(
+    integrations: IntegrationCore,
+    integration_id: str,
+) -> ExternalPluginIntegration:
+    instance = integrations.running_instance(integration_id)
+    if not isinstance(instance, ExternalPluginIntegration):
+        raise LookupError(f"integration {integration_id!r} is not an external plugin")
+    return instance

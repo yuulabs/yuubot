@@ -61,6 +61,23 @@ class LocalIntegrationStorage:
 class IntegrationInstance(Protocol):
     def capabilities(self) -> list[AnyCapability]: ...
 
+    async def response(
+        self,
+        target_msg_id: str,
+        *,
+        msg: str = "",
+        poke: str = "",
+    ) -> None:
+        """Reply or react to a previously received inbound message.
+
+        ``msg`` is human-visible text (typically an error message); ``poke``
+        is a fast acknowledgement signal (e.g. an emoji reaction). Platforms
+        that cannot poke must silently ignore that argument.
+
+        Implementations should not raise on missing target ids — the actor
+        loop calls this opportunistically and tolerates failures.
+        """
+
     async def close(self) -> None: ...
 
 
@@ -76,6 +93,8 @@ def integration_kind_info(factory: IntegrationFactory) -> IntegrationKindInfo:
         schema = _inline_root_schema(
             msgspec.json.schema(config_type, schema_hook=secret_schema_hook)
         )
+    elif isinstance(config_type, dict):
+        schema = dict(cast(dict[str, object], config_type))
     description = getattr(factory, "description", "") or ""
     return IntegrationKindInfo(
         name=factory.name,

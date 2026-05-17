@@ -12,6 +12,7 @@ import yuutrace
 from starlette.types import ASGIApp
 
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, TraceConfig
+from yuubot.bootstrap.layout import DataLayout
 from yuubot.resources.root import Resources
 from yuubot.resources.secrets import SecretCodec
 from yuubot.resources.store.resource import Store
@@ -149,8 +150,11 @@ class TraceService:
         return "starting"
 
 
-async def open_store(config: DatabaseConfig) -> Store:
-    store = await Store.open(config.path)
+async def open_store(config: DatabaseConfig, *, layout: DataLayout) -> Store:
+    path = config.path or str(layout.db_path)
+    if path != ":memory:":
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    store = await Store.open(path)
     await store.migrate()
     return store
 
@@ -159,10 +163,11 @@ async def open_resources(
     config: BootstrapConfig,
     create_store: Callable[[DatabaseConfig], Awaitable[Store]] | None = None,
 ) -> Resources:
+    layout = DataLayout.from_path(config.paths.data_dir)
     if create_store is not None:
         store = await create_store(config.database)
     else:
-        store = await open_store(config.database)
+        store = await open_store(config.database, layout=layout)
     return await Resources.from_store(
         store, secret_codec=SecretCodec(config.secrets.master_key)
     )

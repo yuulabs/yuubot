@@ -9,7 +9,9 @@ import sys
 import click
 
 from yuubot.bootstrap.config import load_bootstrap_config
+from yuubot.bootstrap.layout import DataLayout
 from yuubot.runtime.admin import build_admin
+from yuubot.runtime.archive import ArchiveError, export_data, import_data
 from yuubot.runtime.daemon import build_daemon
 
 
@@ -79,6 +81,48 @@ def dev(ctx: click.Context) -> None:
         for proc in (daemon_proc, admin_proc):
             if proc.poll() is None:
                 proc.terminate()
+
+
+@cli.command("export")
+@click.argument("out_path", type=click.Path(dir_okay=False))
+@click.pass_context
+def export_command(ctx: click.Context, out_path: str) -> None:
+    """Snapshot the data directory into a zip archive.
+
+    The daemon and admin processes should be stopped before running this.
+    """
+    config = load_bootstrap_config(ctx.obj["config_path"])
+    layout = DataLayout.from_path(config.paths.data_dir)
+    if not layout.data_dir.is_dir():
+        raise click.ClickException(f"data_dir {layout.data_dir} does not exist")
+    archive = export_data(layout.data_dir, out_path)
+    click.echo(f"wrote {archive}")
+
+
+@cli.command("import")
+@click.argument("in_path", type=click.Path(dir_okay=False, exists=True))
+@click.option(
+    "--replace",
+    is_flag=True,
+    help="Wipe the destination data_dir before extracting",
+)
+@click.pass_context
+def import_command(ctx: click.Context, in_path: str, replace: bool) -> None:
+    """Extract an archive into the configured data directory.
+
+    The daemon and admin processes must be stopped before running this.
+    """
+    config = load_bootstrap_config(ctx.obj["config_path"])
+    layout = DataLayout.from_path(config.paths.data_dir)
+    layout.data_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        manifest = import_data(in_path, layout.data_dir, replace=replace)
+    except ArchiveError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"imported manifest_version={manifest.manifest_version} "
+        f"created_at={manifest.created_at} into {layout.data_dir}"
+    )
 
 
 if __name__ == "__main__":

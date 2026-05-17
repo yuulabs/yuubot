@@ -9,15 +9,16 @@ import re
 import secrets
 import shutil
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 import msgspec
+import yuullm
+from yuuagents.mailbox import BackgroundCompletedMessage, MailBox, MailMessage
 
-from yuubot.core.actors.workspace import safe_actor_path_id
 from yuubot.core.capabilities import AnyCapabilitySpec, struct_to_dict
 from yuubot.core.integrations.context import InvocationContext
 from yuubot.core.integrations.core import IntegrationCore
@@ -36,7 +37,9 @@ class FacadeEndpoint:
 @dataclass
 class ActorFacadeBinding:
     actor_id: str
-    agent_id: str
+    agent_name: str
+    session_id: str
+    mailbox_id: str
     root: Path
     sys_path: list[str]
     startup_code: str
@@ -65,10 +68,14 @@ class FacadeWorkspace:
         self,
         *,
         actor_id: str,
-        agent_id: str,
+        agent_name: str,
+        session_id: str,
+        mailbox_id: str,
         capabilities: Iterable[AnyCapabilitySpec],
         endpoint: FacadeEndpoint,
     ) -> ActorFacadeBinding:
+        from yuubot.core.actors.workspace import safe_actor_path_id
+
         path_id = safe_actor_path_id(actor_id)
         actor_root = self.root / "actors" / path_id
         source_root = self.root / "actor-packages" / path_id
@@ -89,14 +96,18 @@ class FacadeWorkspace:
         (actor_root / f"{YEXT_CONTEXT_MODULE}.py").write_text(
             _render_context_module(
                 actor_id=actor_id,
-                agent_id=agent_id,
+                agent_name=agent_name,
+                session_id=session_id,
+                mailbox_id=mailbox_id,
                 endpoint=endpoint,
             ),
             encoding="utf-8",
         )
         return ActorFacadeBinding(
             actor_id=actor_id,
-            agent_id=agent_id,
+            agent_name=agent_name,
+            session_id=session_id,
+            mailbox_id=mailbox_id,
             root=actor_root,
             sys_path=[str(actor_root)],
             startup_code=(
@@ -105,12 +116,16 @@ class FacadeWorkspace:
             ),
             session_state={
                 "actor_id": actor_id,
-                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "session_id": session_id,
+                "mailbox_id": mailbox_id,
                 "facade_package": self.package_name,
             },
         )
 
     def cleanup_actor(self, actor_id: str) -> None:
+        from yuubot.core.actors.workspace import safe_actor_path_id
+
         path_id = safe_actor_path_id(actor_id)
         _replace_path(self.root / "actors" / path_id)
         _replace_path(self.root / "actor-packages" / path_id)
@@ -121,8 +136,34 @@ class FacadeRpcRequest(msgspec.Struct):
 
     token: str
     actor_id: str
-    capability_id: str
+    capability_id: str = ""
+    kind: str = "invoke"
     payload: dict[str, object] = msgspec.field(default_factory=dict)
+    agent_name: str = ""
+    session_id: str = ""
+    mailbox_id: str = ""
+    task_id: str = ""
+    status: str = ""
+    summary: str = ""
+
+
+class YextBackgroundTaskStarted(MailMessage, msgspec.Struct):
+    task_id: str
+    actor_id: str
+    agent_name: str
+    session_id: str
+    mailbox_id: str
+    summary: str = ""
+
+
+class YextBackgroundTaskEnded(MailMessage, msgspec.Struct):
+    task_id: str
+    actor_id: str
+    agent_name: str
+    session_id: str
+    mailbox_id: str
+    status: str
+    summary: str = ""
 
 
 @dataclass
@@ -130,6 +171,7 @@ class IntegrationInvokeBridge:
     """Local daemon-owned RPC bridge used by generated yext modules."""
 
     integrations: IntegrationCore
+    mailbox_for_actor: Callable[[str], MailBox | None] | None = None
     host: str = "127.0.0.1"
     _token: str = ""
     _server: asyncio.Server | None = None
@@ -177,6 +219,12 @@ class IntegrationInvokeBridge:
             raise TypeError(f"facade request decode failed: {exc}") from None
         if request.token != self._token:
             raise PermissionError("invalid facade bridge token")
+        if request.kind == "background_started":
+            return await self._background_started(request)
+        if request.kind == "background_finished":
+            return await self._background_finished(request)
+        if request.kind != "invoke":
+            raise ValueError(f"unknown facade request kind: {request.kind}")
 
         output = await self.integrations.invoke(
             actor_id=request.actor_id,
@@ -185,6 +233,57 @@ class IntegrationInvokeBridge:
             context=InvocationContext(actor_id=request.actor_id),
         )
         return {"ok": True, "result": struct_to_dict(output, omit_defaults=True)}
+
+    async def _background_started(
+        self,
+        request: FacadeRpcRequest,
+    ) -> dict[str, object]:
+        mailbox = self._mailbox(request.actor_id)
+        if mailbox is not None:
+            await mailbox.send(
+                YextBackgroundTaskStarted(
+                    task_id=request.task_id,
+                    actor_id=request.actor_id,
+                    agent_name=request.agent_name,
+                    session_id=request.session_id,
+                    mailbox_id=request.mailbox_id,
+                    summary=request.summary,
+                )
+            )
+        return {"ok": True, "result": {}}
+
+    async def _background_finished(
+        self,
+        request: FacadeRpcRequest,
+    ) -> dict[str, object]:
+        mailbox = self._mailbox(request.actor_id)
+        if mailbox is not None:
+            await mailbox.send(
+                YextBackgroundTaskEnded(
+                    task_id=request.task_id,
+                    actor_id=request.actor_id,
+                    agent_name=request.agent_name,
+                    session_id=request.session_id,
+                    mailbox_id=request.mailbox_id,
+                    status=request.status,
+                    summary=request.summary,
+                )
+            )
+            await mailbox.send(
+                BackgroundCompletedMessage(
+                    task_id=request.task_id,
+                    agent_name=request.agent_name,
+                    actor_id=request.actor_id,
+                    session_id=request.session_id,
+                    content=yuullm.user(_background_completion_text(request)),
+                )
+            )
+        return {"ok": True, "result": {}}
+
+    def _mailbox(self, actor_id: str) -> MailBox | None:
+        if self.mailbox_for_actor is None:
+            return None
+        return self.mailbox_for_actor(actor_id)
 
 
 def write_facade_package(
@@ -261,7 +360,9 @@ def facade_call_path(
 def _render_context_module(
     *,
     actor_id: str,
-    agent_id: str,
+    agent_name: str,
+    session_id: str,
+    mailbox_id: str,
     endpoint: FacadeEndpoint,
 ) -> str:
     return f'''"""Actor-local yext runtime context."""
@@ -273,7 +374,9 @@ PORT = {endpoint.port!r}
 TOKEN = {endpoint.token!r}
 TIMEOUT_S = 10.0
 ACTOR_ID = {actor_id!r}
-AGENT_ID = {agent_id!r}
+AGENT_NAME = {agent_name!r}
+SESSION_ID = {session_id!r}
+MAILBOX_ID = {mailbox_id!r}
 '''
 
 
@@ -283,8 +386,10 @@ def _render_package_init(root_exports: list[str], module_exports: list[str]) -> 
         lines.append(f"from .{name} import {name}")
     for name in module_exports:
         lines.append(f"from . import {name}")
+    lines.append("from ._client import submit_bg")
     lines.append("")
-    lines.append(f"__all__ = {[*root_exports, *module_exports]!r}")
+    exports = ["submit_bg", *[name for name in root_exports if name != "submit_bg"], *module_exports]
+    lines.append(f"__all__ = {exports!r}")
     lines.append("")
     return "\n".join(lines)
 
@@ -296,6 +401,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+import uuid
 from contextlib import suppress
 from collections.abc import Mapping
 from typing import Any
@@ -306,10 +413,71 @@ import {YEXT_CONTEXT_MODULE} as _context
 async def invoke(capability_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     request = {{
         "token": _context.TOKEN,
+        "kind": "invoke",
         "actor_id": _context.ACTOR_ID,
         "capability_id": capability_id,
         "payload": payload,
     }}
+    response = await _request(request)
+    result = response.get("result", {{}})
+    if not isinstance(result, dict):
+        raise TypeError("integration facade result must be a JSON object")
+    return result
+
+
+def submit_bg(coro: Any, tid_suggest: str | None = None) -> str:
+    """Submit a long-running coroutine as a background task.
+
+    Use this when work may take a long time. The daemon will notify you when
+    the task completes. Keep the returned task id, and after the notification
+    inspect the completed asyncio.Task with TASKS[task_id], for example:
+    task = TASKS[task_id]; result = task.result().
+    """
+    task_id = _task_id(tid_suggest)
+    task = asyncio.create_task(coro)
+    _tasks()[task_id] = task
+    asyncio.create_task(_notify_background_started(task_id))
+    task.add_done_callback(lambda done: asyncio.create_task(_finish_background(task_id, done)))
+    return task_id
+
+
+async def _notify_background_started(task_id: str) -> None:
+    with suppress(Exception):
+        await _request(_background_request("background_started", task_id, status="running"))
+
+
+async def _finish_background(task_id: str, task: asyncio.Task[Any]) -> None:
+    status, summary = _summarize_task(task)
+    with suppress(Exception):
+        await _request(_background_request(
+            "background_finished",
+            task_id,
+            status=status,
+            summary=summary,
+        ))
+
+
+def _background_request(
+    kind: str,
+    task_id: str,
+    *,
+    status: str,
+    summary: str = "",
+) -> dict[str, Any]:
+    return {{
+        "token": _context.TOKEN,
+        "kind": kind,
+        "actor_id": _context.ACTOR_ID,
+        "agent_name": _context.AGENT_NAME,
+        "session_id": _context.SESSION_ID,
+        "mailbox_id": _context.MAILBOX_ID,
+        "task_id": task_id,
+        "status": status,
+        "summary": summary,
+    }}
+
+
+async def _request(request: dict[str, Any]) -> dict[str, Any]:
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(_context.HOST, _context.PORT),
         timeout=_context.TIMEOUT_S,
@@ -333,10 +501,7 @@ async def invoke(capability_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         error_type = error.get("type", "RuntimeError")
         message = error.get("message", "integration facade call failed")
         raise RuntimeError(f"{{error_type}}: {{message}}")
-    result = response.get("result", {{}})
-    if not isinstance(result, dict):
-        raise TypeError("integration facade result must be a JSON object")
-    return result
+    return response
 
 
 def coerce_payload(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -345,6 +510,48 @@ def coerce_payload(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
     if not payload and isinstance(value, Mapping):
         return dict(value)
     return {{"value": value, **payload}}
+
+
+def _tasks() -> dict[str, asyncio.Task[Any]]:
+    main = sys.modules.get("__main__")
+    tasks = getattr(main, "TASKS", None)
+    if isinstance(tasks, dict):
+        return tasks
+    local_tasks = globals().setdefault("TASKS", {{}})
+    return local_tasks
+
+
+def _task_id(tid_suggest: str | None) -> str:
+    tasks = _tasks()
+    base = str(tid_suggest).strip() if tid_suggest else ""
+    if not base:
+        base = uuid.uuid4().hex
+    task_id = base
+    while task_id in tasks:
+        task_id = f"{{base}}-{{uuid.uuid4().hex[:8]}}"
+    return task_id
+
+
+def _summarize_task(task: asyncio.Task[Any]) -> tuple[str, str]:
+    if task.cancelled():
+        return "cancelled", "cancelled"
+    try:
+        result = task.result()
+    except BaseException as exc:
+        return "error", _bounded(f"{{type(exc).__name__}}: {{exc}}")
+    if result is None:
+        return "ok", "completed with no result"
+    if isinstance(result, str):
+        return "ok", _bounded(result)
+    with suppress(Exception):
+        return "ok", _bounded(json.dumps(result, ensure_ascii=False, default=repr))
+    return "ok", _bounded(repr(result))
+
+
+def _bounded(text: str, limit: int = 2000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\\n... truncated ..."
 '''
 
 
@@ -483,6 +690,26 @@ def _error_response(exc: Exception) -> dict[str, object]:
             "message": str(exc),
         },
     }
+
+
+def _background_completion_text(request: FacadeRpcRequest) -> str:
+    inspect_hint = f"Inspect it with TASKS[{request.task_id!r}]."
+    if request.status == "ok":
+        if request.summary:
+            return (
+                f"Background task {request.task_id} completed:\n"
+                f"{request.summary}\n\n{inspect_hint}"
+            )
+        return f"Background task {request.task_id} completed. {inspect_hint}"
+    if request.summary:
+        return (
+            f"Background task {request.task_id} finished with status "
+            f"{request.status}:\n{request.summary}\n\n{inspect_hint}"
+        )
+    return (
+        f"Background task {request.task_id} finished with status "
+        f"{request.status}. {inspect_hint}"
+    )
 
 
 def _unique_capabilities(

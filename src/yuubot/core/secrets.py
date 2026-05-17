@@ -131,13 +131,15 @@ def master_key_for_tests() -> str:
 def wrap_config_secrets(
     config: dict[str, object],
     *,
-    schema: type | None,
+    schema: type | dict[str, object] | None,
     existing: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate an integration config schema and wrap secret fields."""
 
     if schema is None:
         return dict(config)
+    if isinstance(schema, dict):
+        return _wrap_json_schema_secrets(config, schema, existing=existing)
 
     from msgspec import Struct, ValidationError, convert
     from msgspec.structs import fields
@@ -166,13 +168,49 @@ def wrap_config_secrets(
     return wrapped
 
 
-def secret_field_names(schema: type | None) -> tuple[str, ...]:
+def secret_field_names(schema: type | dict[str, object] | None) -> tuple[str, ...]:
     from msgspec import Struct
     from msgspec.structs import fields
 
+    if isinstance(schema, dict):
+        return tuple(_json_schema_secret_fields(schema))
     if not isinstance(schema, type) or not issubclass(schema, Struct):
         return ()
     return tuple(field.name for field in fields(schema) if is_secret_type(field.type))
+
+
+def _wrap_json_schema_secrets(
+    config: dict[str, object],
+    schema: dict[str, object],
+    *,
+    existing: dict[str, object] | None,
+) -> dict[str, object]:
+    wrapped = dict(config)
+    previous = existing or {}
+    for field_name in _json_schema_secret_fields(schema):
+        if _should_keep_existing_secret(field_name, wrapped, previous):
+            wrapped[field_name] = previous[field_name]
+            continue
+        if field_name in wrapped and not isinstance(wrapped[field_name], Secret):
+            value = wrapped[field_name]
+            if not isinstance(value, str):
+                raise ValueError(f"secret field {field_name!r} must be a string")
+            wrapped[field_name] = Secret(value)
+    return wrapped
+
+
+def _json_schema_secret_fields(schema: dict[str, object]) -> tuple[str, ...]:
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return ()
+    result: list[str] = []
+    for name, field_schema in properties.items():
+        if not isinstance(name, str) or not isinstance(field_schema, dict):
+            continue
+        schema_info = cast(dict[str, object], field_schema)
+        if schema_info.get("format") == "secret":
+            result.append(name)
+    return tuple(result)
 
 
 def _should_keep_existing_secret(

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
 import msgspec
+from yuuagents.mailbox import MailMessage
 
 if TYPE_CHECKING:
     from yuullm.types import ContentItem
@@ -22,7 +23,7 @@ class MessageSource(msgspec.Struct):
     path: str = ""
 
 
-class IncomingMessage(msgspec.Struct):
+class IncomingMessage(MailMessage, msgspec.Struct):
     """Base message type routed through Gateway.
 
     content holds yuullm ContentItem dicts (TextItem, ImageItem, etc.)

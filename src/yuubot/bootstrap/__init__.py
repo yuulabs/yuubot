@@ -10,11 +10,13 @@ from yuubot.bootstrap.config import (
     YuuAgentsConfig,
     load_bootstrap_config,
 )
+from yuubot.bootstrap.layout import DataLayout
 
 __all__ = [
     "BootstrapConfigError",
     "AdminConfig",
     "BootstrapConfig",
+    "DataLayout",
     "DatabaseConfig",
     "HostPort",
     "PathsConfig",

@@ -75,7 +75,7 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
         }
 
         assert await instance.next_echo_call() == EchoPayload(
-            value=f"{ACTOR_ID}:{ORIGINAL_TEXT}",
+            value=f"{ACTOR_ID}:True:actor:{ACTOR_ID}",
             message=ORIGINAL_TEXT,
             sender_id=SENDER_ID,
             message_id=MESSAGE_ID,
@@ -211,7 +211,7 @@ class EchoRoundTripProvider:
             "import yext\n"
             f"message = {ORIGINAL_TEXT!r}\n"
             "result = await yext.echo.echo(\n"
-            "    value=f\"{SESSION_STATE['actor_id']}:{message}\",\n"
+            "    value=f\"{ACTOR_ID}:{SESSION_ID.startswith(SESSION_STATE['actor_id'])}:{MAILBOX_ID}\",\n"
             "    message=message,\n"
             f"    sender_id={SENDER_ID!r},\n"
             f"    message_id={MESSAGE_ID!r},\n"
@@ -274,8 +274,6 @@ async def _build_daemon(
             database=DatabaseConfig(path=":memory:"),
             paths=PathsConfig(
                 data_dir=str(tmp_path / "data"),
-                workspace_dir=str(tmp_path / "workspaces"),
-                logs_dir=str(tmp_path / "logs"),
             ),
         ),
     )

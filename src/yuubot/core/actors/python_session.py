@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +12,7 @@ from typing import cast
 from uuid import uuid4
 
 import yuullm
-from yuuagents import Budget, EventBus, PythonKernelConfig, Runtime
+from yuuagents import Budget, EventBus, MailBox, PythonKernelConfig, Runtime
 from yuuagents.providers import IpykernelProvider
 
 from yuubot.core.bindings import ActorBinding
@@ -39,11 +39,15 @@ class ActorPythonSessionFactory:
         *,
         integrations: IntegrationCore,
         root: Path,
+        mailbox_for_actor: Callable[[str], MailBox | None] | None = None,
     ) -> "ActorPythonSessionFactory":
         return cls(
             integrations=integrations,
             workspace=FacadeWorkspace(root),
-            bridge=IntegrationInvokeBridge(integrations),
+            bridge=IntegrationInvokeBridge(
+                integrations,
+                mailbox_for_actor=mailbox_for_actor,
+            ),
         )
 
     async def start(self) -> None:
@@ -59,22 +63,32 @@ class ActorPythonSessionFactory:
         await self.bridge.stop()
         self._started = False
 
-    async def bind_facade(self, binding: ActorBinding) -> ActorFacadeBinding:
+    async def bind_facade(
+        self,
+        binding: ActorBinding,
+        *,
+        mailbox_id: str,
+    ) -> ActorFacadeBinding:
         if not self._started:
             await self.start()
         actor_id = binding.actor.id
-        agent_id = f"{actor_id}-{uuid4()}"
+        session_id = f"{actor_id}-{uuid4()}"
         return self.workspace.bind_actor(
             actor_id=actor_id,
-            agent_id=agent_id,
+            agent_name=binding.actor.name,
+            session_id=session_id,
+            mailbox_id=mailbox_id,
             capabilities=self._visible_capabilities(binding),
             endpoint=self.bridge.endpoint,
         )
 
     async def create(self, binding: ActorBinding) -> "ExecutePythonSession":
-        facade = await self.bind_facade(binding)
+        facade = await self.bind_facade(
+            binding,
+            mailbox_id=f"python-session:{binding.actor.id}",
+        )
         session = ExecutePythonSession(
-            agent_id=facade.agent_id,
+            session_id=facade.session_id,
             facade=facade,
             bridge=self.bridge,
             cwd=binding.require_workspace_path(),
@@ -99,7 +113,7 @@ class ActorPythonSessionFactory:
 
 @dataclass
 class ExecutePythonSession:
-    agent_id: str
+    session_id: str
     facade: ActorFacadeBinding
     bridge: IntegrationInvokeBridge
     cwd: Path
@@ -120,7 +134,7 @@ class ExecutePythonSession:
         )
         executor = provider.create_executor({"state": self.facade.session_state})
         self._runtime.add_executors(
-            self.agent_id,
+            self.session_id,
             {"ipykernel": executor},
             owned=True,
         )
@@ -151,7 +165,7 @@ class ExecutePythonSession:
             ),
         )
         task = self._runtime.submit(
-            self.agent_id,
+            self.session_id,
             tool_call,
             self.budget,
             timeout=self.submit_timeout_s,
@@ -159,7 +173,7 @@ class ExecutePythonSession:
         return await task.wait_with_error_handling()
 
     async def close(self) -> None:
-        await self._runtime.remove_agent(self.agent_id)
+        await self._runtime.remove_agent(self.session_id)
 
 
 def extract_execute_python_result(output: object) -> dict[str, object]:

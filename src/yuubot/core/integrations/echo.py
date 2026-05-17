@@ -158,6 +158,13 @@ class EchoIntegrationFactory:
 
 
 @dataclass
+class EchoResponseRecord:
+    target_msg_id: str
+    msg: str = ""
+    poke: str = ""
+
+
+@dataclass
 class EchoIntegration:
     ingress: IntegrationIngress
     default_source_path: str = ""
@@ -171,6 +178,9 @@ class EchoIntegration:
         default_factory=asyncio.Queue
     )
     reply_contexts: asyncio.Queue[dict[str, object]] = field(
+        default_factory=asyncio.Queue
+    )
+    response_calls: asyncio.Queue[EchoResponseRecord] = field(
         default_factory=asyncio.Queue
     )
 
@@ -275,6 +285,20 @@ class EchoIntegration:
 
     async def close(self) -> None:
         pass
+
+    async def response(
+        self,
+        target_msg_id: str,
+        *,
+        msg: str = "",
+        poke: str = "",
+    ) -> None:
+        await self.response_calls.put(
+            EchoResponseRecord(target_msg_id=target_msg_id, msg=msg, poke=poke)
+        )
+
+    async def next_response(self) -> EchoResponseRecord:
+        return await asyncio.wait_for(self.response_calls.get(), timeout=1.0)
 
     async def next_echo_call(self) -> EchoPayload:
         return await asyncio.wait_for(self.echo_calls.get(), timeout=1.0)

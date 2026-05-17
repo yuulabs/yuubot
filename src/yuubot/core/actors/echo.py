@@ -64,7 +64,9 @@ class EchoOnceActor(Actor):
 
     async def _consume_messages(self) -> None:
         while True:
-            await self.handle_message(await self.mailbox.get())
+            message = await self.mailbox.recv()
+            if isinstance(message, IncomingMessage):
+                await self.handle_message(message)
 
     async def _start_execute_python(self) -> None:
         try:
@@ -127,4 +129,3 @@ def _first_text(content: list[dict[str, object]]) -> str:
         if item.get("type") == "text":
             return str(item.get("text", ""))
     return ""
-

@@ -18,8 +18,9 @@ server:
   daemon_secret: ${YUU_DAEMON_SECRET}
 
 database:
-  # Tests can pass ":memory:" or a tmp_path DB through BootstrapConfig.for_tests().
-  path: ${YUU_DATA_DIR}/yuubot.db
+  # When empty, the daemon resolves <data_dir>/yuubot/yuubot.db.
+  # Tests can pass ":memory:" or a tmp_path through BootstrapConfig.for_tests().
+  path: ""
 
 secrets:
   # Stable 32-byte base64 key used to encrypt config fields declared as Secret.
@@ -33,10 +34,18 @@ trace:
   ui_host: 127.0.0.1
   ui_port: 8782
 
+# yuubot owns the entire data directory. Subpaths derived by DataLayout:
+#   <data_dir>/yuubot/yuubot.db        — main database
+#   <data_dir>/yuubot/traces.db        — trace store
+#   <data_dir>/yuubot/logs/            — daemon logs
+#   <data_dir>/yuubot/runtime/facades/ — generated yext packages
+#   <data_dir>/yuubot/plugins/         — external plugin installs
+#   <data_dir>/integrations/<id>/      — per-integration private data
+#   <data_dir>/workspace/actors/<id>/  — per-actor workspace
+#   <data_dir>/skills/                 — skill repository
+# Docker deployments mount this single directory.
 paths:
   data_dir: ${YUU_DATA_DIR}
-  workspace_dir: ${YUU_WORKSPACE_DIR}
-  logs_dir: ${YUU_LOGS_DIR}
 
 # yuuagents is daemon infrastructure, not a hot-reload runtime resource.
 # Edit this manually and restart the daemon (Admin UI may offer a restart

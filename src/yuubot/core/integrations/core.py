@@ -40,7 +40,9 @@ class IntegrationCore:
     repository: ResourceRepository
     factories: IntegrationFactoryRegistry
     gateway: Gateway | None = None
-    data_root: Path = field(default_factory=lambda: Path("~/.yuubot"))
+    integrations_root: Path = field(
+        default_factory=lambda: Path("~/.yuubot/integrations")
+    )
     _instances: dict[str, IntegrationInstance] = field(default_factory=dict, init=False)
     _capabilities_index: dict[tuple[str, str], AnyCapability] = field(
         default_factory=dict,
@@ -230,7 +232,7 @@ class IntegrationCore:
         return result
 
     def _storage_for(self, integration_id: str) -> LocalIntegrationStorage:
-        data_dir = Path(self.data_root).expanduser() / "integrations" / integration_id
+        data_dir = Path(self.integrations_root).expanduser() / integration_id
         data_dir.mkdir(parents=True, exist_ok=True)
         return LocalIntegrationStorage(data_dir=data_dir)
 
@@ -238,7 +240,7 @@ class IntegrationCore:
         if event.action != "deleted":
             return
         for integration_id in event.row_ids:
-            data_dir = Path(self.data_root).expanduser() / "integrations" / integration_id
+            data_dir = Path(self.integrations_root).expanduser() / integration_id
             shutil.rmtree(data_dir, ignore_errors=True)
 
 

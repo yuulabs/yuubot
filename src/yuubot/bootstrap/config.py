@@ -43,7 +43,14 @@ class ServerConfig(msgspec.Struct, frozen=True):
 
 
 class DatabaseConfig(msgspec.Struct, frozen=True):
-    path: str = "~/.yuubot/yuubot.db"
+    """Optional override for the platform DB.
+
+    When ``path`` is empty, the daemon resolves it as
+    ``DataLayout(paths.data_dir).db_path``. Tests may override with
+    ``":memory:"`` or a temp file.
+    """
+
+    path: str = ""
 
 
 class SecretConfig(msgspec.Struct, frozen=True):
@@ -59,9 +66,15 @@ class TraceConfig(msgspec.Struct, frozen=True):
 
 
 class PathsConfig(msgspec.Struct, frozen=True):
+    """Single root for every yuubot on-disk artifact.
+
+    See ``yuubot.bootstrap.layout.DataLayout`` for derived subpaths
+    (``<data_dir>/yuubot/yuubot.db``, ``<data_dir>/integrations/...``,
+    ``<data_dir>/workspace/actors/...``, etc.). Docker deployments mount
+    only ``data_dir``.
+    """
+
     data_dir: str = "~/.yuubot"
-    workspace_dir: str = "~/.yuubot/workspace"
-    logs_dir: str = "~/.yuubot/logs"
 
 
 class YuuAgentsConfig(msgspec.Struct, frozen=True):
@@ -100,14 +113,14 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
         database_path: str = ":memory:",
         master_key: str = master_key_for_tests(),
         daemon_secret: str = "test-daemon-secret",
-        workspace_dir: str = "~/.yuubot-test/workspace",
+        data_dir: str = "~/.yuubot-test",
     ) -> Self:
         return cls(
             server=ServerConfig(daemon_secret=daemon_secret),
             database=DatabaseConfig(path=database_path),
             secrets=SecretConfig(master_key=master_key),
             trace=TraceConfig(enabled=False),
-            paths=PathsConfig(workspace_dir=workspace_dir),
+            paths=PathsConfig(data_dir=data_dir),
         )
 
 
@@ -146,7 +159,7 @@ def _walk_resolve_env(value: Any) -> Any:
 
 
 def _walk_expand_paths(value: Any) -> Any:
-    path_keys = {"path", "data_dir", "workspace_dir", "logs_dir"}
+    path_keys = {"path", "data_dir"}
     if isinstance(value, str):
         return value
     if isinstance(value, list):

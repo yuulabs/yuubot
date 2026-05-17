@@ -172,8 +172,6 @@ async def _build_daemon(
             database=DatabaseConfig(path=":memory:"),
             paths=PathsConfig(
                 data_dir=str(tmp_path / "data"),
-                workspace_dir=str(tmp_path / "workspaces"),
-                logs_dir=str(tmp_path / "logs"),
             ),
         ),
     )

@@ -10,7 +10,9 @@ import msgspec
 from yuuagents import (
     Actor as YuuAgentsActor,
     AgentDefinition,
+    EventBus,
     LlmConfig,
+    MailBox,
     PromptDefinition,
     Stage,
     StageConfig,
@@ -44,6 +46,8 @@ def start_yuuagents_actor(
     *,
     yuuagents_config: YuuAgentsConfig,
     facade: ActorFacadeBinding | None = None,
+    mailbox: MailBox | None = None,
+    eventbus: EventBus | None = None,
     llm_client: LlmClient | None = None,
     observer: TraceObserver | None = None,
 ) -> YuuAgentsActor:
@@ -57,7 +61,9 @@ def start_yuuagents_actor(
                 facade=facade,
             ),
             llm=llm_client or _stage_llm_config(binding),
-        )
+        ),
+        mailbox=mailbox,
+        eventbus=eventbus,
     )
     stage.llm_provider = PricingAwareLlmClient(
         inner=stage.llm_provider,
@@ -222,7 +228,9 @@ def _python_capability_config(
         else {}
     )
     state.setdefault("actor_id", facade.actor_id)
-    state.setdefault("agent_id", facade.agent_id)
+    state.setdefault("agent_name", facade.agent_name)
+    state.setdefault("session_id", facade.session_id)
+    state.setdefault("mailbox_id", facade.mailbox_id)
     config["state"] = state
     return config
 

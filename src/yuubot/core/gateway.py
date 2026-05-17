@@ -2,25 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+from yuuagents.mailbox import MailBox as Mailbox
+
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.core.routing import RouteBindings
-
-
-@dataclass
-class Mailbox:
-    """An actor input port."""
-
-    _queue: asyncio.Queue[IncomingMessage] = field(default_factory=asyncio.Queue)
-
-    async def put(self, message: IncomingMessage) -> None:
-        await self._queue.put(message)
-
-    async def get(self) -> IncomingMessage:
-        return await self._queue.get()
 
 
 @dataclass
@@ -49,9 +37,12 @@ class Gateway:
     def get_mailbox(self, actor_id: str) -> Mailbox:
         if actor_id in self._mailboxes:
             return self._mailboxes[actor_id]
-        mailbox = Mailbox()
+        mailbox = Mailbox(mailbox_id=f"actor:{actor_id}")
         self._mailboxes[actor_id] = mailbox
         return mailbox
+
+    def find_mailbox(self, actor_id: str) -> Mailbox | None:
+        return self._mailboxes.get(actor_id)
 
     def close_mailbox(self, actor_id: str) -> None:
         self._mailboxes.pop(actor_id, None)

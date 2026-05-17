@@ -58,7 +58,7 @@ async def test_actor_python_session_uses_actor_workspace_cwd(
         repository=repository,
         factories=IntegrationFactoryRegistry(),
         gateway=Gateway(routes=RouteBindings(rules=())),
-        data_root=tmp_path / "data",
+        integrations_root=tmp_path / "data" / "integrations",
     )
     python_sessions = ActorPythonSessionFactory.in_directory(
         integrations=integrations,

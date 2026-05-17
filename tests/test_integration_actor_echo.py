@@ -66,7 +66,7 @@ async def test_test_integration_message_reaches_echo_actor(
         repository=repository,
         factories=integration_factories,
         gateway=gateway,
-        data_root=tmp_path / "data",
+        integrations_root=tmp_path / "data" / "integrations",
     )
     await integrations.refresh_capabilities()
     await integrations.enable(integration.id)

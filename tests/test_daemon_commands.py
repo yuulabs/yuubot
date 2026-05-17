@@ -157,7 +157,7 @@ def _build_runtime(
         repository=resources.repository,
         factories=integration_factories,
         gateway=gateway,
-        data_root=workspace_root / "data",
+        integrations_root=workspace_root / "data" / "integrations",
     )
     routes = RouteBindingService(repository=resources.repository, gateway=gateway)
     services = ServiceHost.from_iterable(
