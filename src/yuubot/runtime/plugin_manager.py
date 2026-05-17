@@ -32,7 +32,7 @@ from yuubot.core.capabilities import (
 )
 from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.context import InvocationContext
-from yuubot.core.integrations.contracts import IntegrationStorage
+from yuubot.core.integrations.contracts import IntegrationStorage, ReactionKind
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.resources.records import IntegrationRecord
 
@@ -408,13 +408,15 @@ class ExternalPluginIntegration:
             return []
         return [
             Capability(
-                id=_capability_id(facade.namespace, fn.name),
-                name=fn.name,
-                description=fn.description,
-                input_type=_input_struct(self.manifest.name, fn),
-                output_type=ExternalPluginResult,
-                namespace=facade.namespace,
-                effect=fn.effect,
+                spec=CapabilitySpec(
+                    id=_capability_id(facade.namespace, fn.name),
+                    name=fn.name,
+                    description=fn.description,
+                    input_type=_input_struct(self.manifest.name, fn),
+                    output_type=ExternalPluginResult,
+                    namespace=facade.namespace,
+                    effect=fn.effect,
+                ),
                 invoke=self._invoke_function(fn.name),
             )
             for fn in facade.functions
@@ -430,9 +432,9 @@ class ExternalPluginIntegration:
         target_msg_id: str,
         *,
         msg: str = "",
-        poke: str = "",
+        react: ReactionKind | None = None,
     ) -> None:
-        if not msg and not poke:
+        if not msg and react is None:
             return
         try:
             await _post_json(
@@ -441,7 +443,7 @@ class ExternalPluginIntegration:
                 payload={
                     "target_msg_id": target_msg_id,
                     "msg": msg,
-                    "poke": poke,
+                    "react": react or "",
                 },
             )
         except RuntimeError as exc:

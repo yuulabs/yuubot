@@ -24,7 +24,7 @@ from yuubot.core.integrations import (
     default_integration_factories,
 )
 from yuubot.core.secrets import Secret, secret_field_names
-from yuubot.process import ASGIServer, UvicornServer, open_resources
+from yuubot.runtime.process import ASGIServer, UvicornServer, open_resources
 from yuutrace.cli.ui import _build_app as build_trace_app
 from yuubot.resources.events import ResourceAction, ResourceChanged
 from yuubot.resources.root import Resources

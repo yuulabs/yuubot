@@ -49,41 +49,50 @@ class CapabilitySpec(Generic[InputT, OutputT]):
 class Capability(Generic[InputT, OutputT]):
     """Executable capability: schema + invoke callback. The runtime unit."""
 
-    id: str
-    name: str
-    description: str
-    input_type: type[InputT]
-    output_type: type[OutputT]
+    spec: CapabilitySpec[InputT, OutputT]
     invoke: Callable[[InputT, InvocationContext], Awaitable[OutputT]]
-    namespace: str = ""
-    effect: CapabilityEffect = "read"
 
     @property
-    def spec(self) -> CapabilitySpec[InputT, OutputT]:
-        """Project to schema-only view."""
-        return CapabilitySpec(
-            id=self.id,
-            name=self.name,
-            description=self.description,
-            input_type=self.input_type,
-            output_type=self.output_type,
-            namespace=self.namespace,
-            effect=self.effect,
-        )
+    def id(self) -> str:
+        return self.spec.id
+
+    @property
+    def name(self) -> str:
+        return self.spec.name
+
+    @property
+    def description(self) -> str:
+        return self.spec.description
+
+    @property
+    def input_type(self) -> type[InputT]:
+        return self.spec.input_type
+
+    @property
+    def output_type(self) -> type[OutputT]:
+        return self.spec.output_type
+
+    @property
+    def namespace(self) -> str:
+        return self.spec.namespace
+
+    @property
+    def effect(self) -> CapabilityEffect:
+        return self.spec.effect
 
     @property
     def input_schema(self) -> dict[str, object]:
-        return msgspec.json.schema(self.input_type)
+        return self.spec.input_schema
 
     @property
     def output_schema(self) -> dict[str, object]:
-        return msgspec.json.schema(self.output_type)
+        return self.spec.output_schema
 
     def decode_input(self, payload: object) -> InputT:
-        return _decode_struct(payload, self.input_type)
+        return self.spec.decode_input(payload)
 
     def decode_output(self, payload: object | None) -> OutputT:
-        return _decode_struct(payload or {}, self.output_type)
+        return self.spec.decode_output(payload)
 
 
 def struct_to_dict(

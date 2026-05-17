@@ -7,7 +7,7 @@ from typing import Any, TypeVar, cast
 
 from tortoise import Model
 
-from yuubot.events import EventBus
+from yuubot.core.events import EventBus
 from yuubot.core.secrets import SecretCodec
 from yuubot.resources.events import ResourceAction, ResourceChanged
 from yuubot.resources.orm import (

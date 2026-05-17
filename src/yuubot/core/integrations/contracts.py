@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 import msgspec
 
@@ -14,6 +14,15 @@ from yuubot.resources.records import IntegrationRecord
 
 if TYPE_CHECKING:
     from yuubot.core.gateway import Gateway
+
+
+ReactionKind = Literal["working", "get", "OK", "YES", "NO", "Done"]
+"""Fast acknowledgement signals for `IntegrationInstance.response`.
+
+Only `"working"` is currently emitted by the system (to indicate the actor is
+processing an inbound message). The remaining values are advisory and
+reserved for future use, possibly exposed to agents.
+"""
 
 
 @dataclass
@@ -66,13 +75,13 @@ class IntegrationInstance(Protocol):
         target_msg_id: str,
         *,
         msg: str = "",
-        poke: str = "",
+        react: ReactionKind | None = None,
     ) -> None:
         """Reply or react to a previously received inbound message.
 
-        ``msg`` is human-visible text (typically an error message); ``poke``
+        ``msg`` is human-visible text (typically an error message); ``react``
         is a fast acknowledgement signal (e.g. an emoji reaction). Platforms
-        that cannot poke must silently ignore that argument.
+        that cannot react must silently ignore that argument.
 
         Implementations should not raise on missing target ids — the actor
         loop calls this opportunistically and tolerates failures.

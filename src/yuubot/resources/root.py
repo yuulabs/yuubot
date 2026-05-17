@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from yuubot.events import EventBus
+from yuubot.core.events import EventBus
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.secrets import SecretCodec
 from yuubot.resources.store.resource import Store

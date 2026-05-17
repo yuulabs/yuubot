@@ -6,7 +6,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import cast
 
 import msgspec
 from starlette.applications import Starlette
@@ -29,11 +29,11 @@ from yuubot.core.integrations import (
     IntegrationFactoryRegistry,
     default_integration_factories,
 )
-from yuubot.core.integrations.echo import EchoIngressPayload, EchoIntegration
 from yuubot.core.observability import TraceObserver
 from yuubot.core.routing import RouteBindings, load_route_bindings
-from yuubot.events import Event
-from yuubot.process import (
+from yuubot.core.events import Event
+from yuubot.runtime.http_utils import error_response
+from yuubot.runtime.process import (
     ASGIServer,
     ServiceHost,
     TraceService,
@@ -349,64 +349,6 @@ def build_daemon_asgi_app(
             status_code=202,
         )
 
-    async def echo_ingress(request: Request) -> JSONResponse:
-        payload_or_response = await _echo_payload_from_request(request)
-        if isinstance(payload_or_response, JSONResponse):
-            return payload_or_response
-
-        payload = payload_or_response
-        try:
-            instance = _resolve_echo_instance(integrations, payload.integration_id)
-            message = await instance.emit_payload(payload)
-        except LookupError as exc:
-            return _error_response(str(exc), status_code=404)
-        except ValueError as exc:
-            return _error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("echo integration ingress failed")
-            return _error_response(str(exc), status_code=500)
-
-        return JSONResponse(
-            {
-                "status": "ok",
-                "integration_id": instance.ingress.integration_id,
-                "message_id": message.message_id,
-                "source": msgspec.to_builtins(message.source),
-            },
-            status_code=202,
-        )
-
-    async def echo_round_trip(request: Request) -> JSONResponse:
-        round_trip_or_response = await _echo_round_trip_from_request(request)
-        if isinstance(round_trip_or_response, JSONResponse):
-            return round_trip_or_response
-
-        payload, timeout_s = round_trip_or_response
-        try:
-            instance = _resolve_echo_instance(integrations, payload.integration_id)
-            message = await instance.emit_payload(payload)
-            reply = await instance.wait_for_reply(timeout_s)
-        except TimeoutError:
-            return _error_response("echo round-trip timed out", status_code=504)
-        except LookupError as exc:
-            return _error_response(str(exc), status_code=404)
-        except ValueError as exc:
-            return _error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("echo integration round-trip failed")
-            return _error_response(str(exc), status_code=500)
-
-        return JSONResponse(
-            {
-                "status": "ok",
-                "integration_id": instance.ingress.integration_id,
-                "message_id": message.message_id,
-                "source": msgspec.to_builtins(message.source),
-                "reply": msgspec.to_builtins(reply),
-            },
-            status_code=200,
-        )
-
     resource_service = ResourceService(
         repository=resources.repository,
         refresh=refresh,
@@ -414,11 +356,12 @@ def build_daemon_asgi_app(
         actors=actors,
     )
 
+    integration_routes = integrations.factories.collect_routes(integrations)
+
     return Starlette(
         routes=(
             Route("/healthz", health, methods=("GET",)),
-            Route("/integration/echo/round-trip", echo_round_trip, methods=("POST",)),
-            Route("/integration/echo", echo_ingress, methods=("POST",)),
+            *integration_routes,
             Route("/ingest", plugin_ingest, methods=("POST",)),
             Route("/api/status", status, methods=("GET",)),
             Route("/api/admin/refresh", refresh_resources, methods=("POST",)),
@@ -536,92 +479,7 @@ async def _resource_changed_from_request(
     except ValueError as exc:
         return _error_response(str(exc), status_code=400)
 
-
-def _error_response(reason: str, *, status_code: int) -> JSONResponse:
-    return JSONResponse(
-        {"status": "error", "reason": reason},
-        status_code=status_code,
-    )
-
-
-async def _echo_payload_from_request(
-    request: Request,
-) -> EchoIngressPayload | JSONResponse:
-    body_or_response = await _echo_request_body(request)
-    if isinstance(body_or_response, JSONResponse):
-        return body_or_response
-    return _echo_payload_from_body(body_or_response)
-
-
-async def _echo_round_trip_from_request(
-    request: Request,
-) -> tuple[EchoIngressPayload, float] | JSONResponse:
-    body_or_response = await _echo_request_body(request)
-    if isinstance(body_or_response, JSONResponse):
-        return body_or_response
-    payload_or_response = _echo_payload_from_body(body_or_response)
-    if isinstance(payload_or_response, JSONResponse):
-        return payload_or_response
-    try:
-        timeout_s = _round_trip_timeout_s(body_or_response)
-    except ValueError as exc:
-        return _error_response(str(exc), status_code=400)
-    return payload_or_response, timeout_s
-
-
-async def _echo_request_body(request: Request) -> dict[str, Any] | JSONResponse:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        return _error_response("request body must be valid JSON", status_code=400)
-    if not isinstance(payload, dict):
-        return _error_response("request body must be a JSON object", status_code=400)
-    return cast(dict[str, Any], payload)
-
-
-def _echo_payload_from_body(
-    payload: dict[str, Any],
-) -> EchoIngressPayload | JSONResponse:
-    try:
-        return msgspec.convert(
-            payload,
-            type=EchoIngressPayload,
-            strict=False,
-        )
-    except (msgspec.ValidationError, msgspec.DecodeError) as exc:
-        return _error_response(str(exc), status_code=400)
-
-
-def _round_trip_timeout_s(payload: dict[str, Any]) -> float:
-    raw_timeout = payload.get("timeout_s", 10.0)
-    if not isinstance(raw_timeout, int | float) or isinstance(raw_timeout, bool):
-        raise ValueError("timeout_s must be a number")
-    timeout_s = float(raw_timeout)
-    if timeout_s <= 0:
-        raise ValueError("timeout_s must be positive")
-    return min(timeout_s, 60.0)
-
-
-def _resolve_echo_instance(
-    integrations: IntegrationCore,
-    integration_id: str,
-) -> EchoIntegration:
-    if integration_id:
-        instance = integrations.running_instance(integration_id)
-        if not isinstance(instance, EchoIntegration):
-            raise LookupError(f"integration {integration_id!r} is not an echo integration")
-        return instance
-
-    matches: list[EchoIntegration] = []
-    for running_id in integrations.running_integration_ids():
-        instance = integrations.running_instance(running_id)
-        if isinstance(instance, EchoIntegration):
-            matches.append(instance)
-    if not matches:
-        raise LookupError("no running echo integration")
-    if len(matches) > 1:
-        raise ValueError("integration_id is required when multiple echo integrations run")
-    return matches[0]
+_error_response = error_response
 
 
 async def _plugin_ingest_from_request(

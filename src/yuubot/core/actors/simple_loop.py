@@ -168,7 +168,7 @@ class SimpleLoopActor(Actor):
         consecutive_failures = 0
         while True:
             message = await self.mailbox.recv()
-            await self._maybe_poke_working(message)
+            await self._maybe_react_working(message)
             try:
                 if self.restart_required:
                     await self._reload()
@@ -194,7 +194,7 @@ class SimpleLoopActor(Actor):
                 )
                 await asyncio.sleep(delay)
 
-    async def _maybe_poke_working(self, message: MailMessage) -> None:
+    async def _maybe_react_working(self, message: MailMessage) -> None:
         if not isinstance(message, IncomingMessage):
             return
         if message.source.producer != "integration":
@@ -203,7 +203,7 @@ class SimpleLoopActor(Actor):
         if instance is None:
             return
         try:
-            await instance.response(message.message_id, poke="working")
+            await instance.response(message.message_id, react="working")
         except Exception:
             pass
 

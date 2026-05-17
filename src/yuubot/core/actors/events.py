@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from yuubot.events import Event
+from yuubot.core.events import Event
 
 
 @dataclass

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
 from typing import Literal, Self, cast
 
-from yuubot.events import Event
+from yuubot.core.events import Event
 
 ResourceAction = Literal["inserted", "updated", "deleted"]
 RESOURCE_CHANGED_TYPE = "resource.changed"

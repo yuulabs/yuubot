@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from yuubot.core.capabilities import AnyCapabilitySpec
 from yuubot.core.integrations.contracts import (
@@ -12,6 +12,11 @@ from yuubot.core.integrations.contracts import (
     IntegrationKindInfo,
     integration_kind_info,
 )
+
+if TYPE_CHECKING:
+    from starlette.routing import Route
+
+    from yuubot.core.integrations.core import IntegrationCore
 
 
 class IntegrationFactoryLoader(Protocol):
@@ -58,6 +63,27 @@ class IntegrationFactoryRegistry:
         if factory is not None:
             return factory
         raise LookupError(f"integration factory {name!r} is not registered")
+
+    def collect_routes(self, integrations: IntegrationCore) -> list[Route]:
+        from starlette.routing import Route
+
+        routes: list[Route] = []
+        for factory in self._all_factories():
+            routes_fn = getattr(factory, "routes", None)
+            if routes_fn is not None:
+                routes_list = routes_fn(integrations)
+                if routes_list:
+                    prefix = f"/integration/{factory.name}"
+                    for route in routes_list:
+                        path = route.path if route.path != "/" else ""
+                        routes.append(
+                            Route(
+                                f"{prefix}{path}",
+                                route.endpoint,
+                                methods=route.methods,
+                            )
+                        )
+        return routes
 
     def _all_capabilities(self) -> Iterable[AnyCapabilitySpec]:
         for factory in self._all_factories():

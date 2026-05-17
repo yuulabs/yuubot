@@ -1,0 +1,261 @@
+"""Facade package code generation for agent-visible integration surfaces."""
+
+from __future__ import annotations
+
+import json
+import keyword
+import re
+import sys
+from collections.abc import Iterable
+from pathlib import Path
+
+import msgspec
+
+from yuubot.core.capabilities import AnyCapabilitySpec
+from yuubot.core.facade.client import render_client_module
+
+YEXT_PACKAGE = "yext"
+
+
+def write_facade_package(
+    root: Path,
+    *,
+    capabilities: Iterable[AnyCapabilitySpec],
+    package_name: str = YEXT_PACKAGE,
+) -> None:
+    """Write a yext package that exposes async capability facade functions."""
+
+    package = root / package_name
+    package.mkdir(parents=True, exist_ok=True)
+
+    modules: dict[tuple[str, ...], list[AnyCapabilitySpec]] = {}
+    for capability in _unique_capabilities(capabilities):
+        modules.setdefault(_module_parts(capability), []).append(capability)
+
+    root_exports = sorted({
+        _function_name(capability)
+        for capabilities_for_module in modules.values()
+        for capability in capabilities_for_module
+        if _exports_at_package_root(capability)
+    })
+    module_exports = sorted({
+        _module_parts(capability)[0]
+        for capabilities_for_module in modules.values()
+        for capability in capabilities_for_module
+        if not _exports_at_package_root(capability)
+    })
+    (package / "__init__.py").write_text(
+        _render_package_init(root_exports, module_exports),
+        encoding="utf-8",
+    )
+    (package / "_client.py").write_text(render_client_module(), encoding="utf-8")
+    for parts, module_capabilities in modules.items():
+        module_dir = package.joinpath(*parts[:-1])
+        module_dir.mkdir(parents=True, exist_ok=True)
+        for parent in _parents(package, module_dir):
+            init_path = parent / "__init__.py"
+            if not init_path.exists():
+                init_path.write_text("", encoding="utf-8")
+        module_path = module_dir / f"{parts[-1]}.py"
+        module_path.write_text(
+            _render_module(module_capabilities),
+            encoding="utf-8",
+        )
+
+
+def clear_facade_module_cache(package_name: str = YEXT_PACKAGE) -> None:
+    """Drop generated facade modules from the host import cache."""
+    prefix = f"{package_name}."
+    for name in list(sys.modules):
+        if name == package_name or name.startswith(prefix):
+            sys.modules.pop(name, None)
+
+
+def facade_call_path(
+    capability: AnyCapabilitySpec,
+    *,
+    package_name: str = YEXT_PACKAGE,
+) -> str:
+    function_name = _function_name(capability)
+    if _exports_at_package_root(capability):
+        return f"{package_name}.{function_name}"
+    return f"{package_name}." + ".".join((*_module_parts(capability), function_name))
+
+
+def render_context_module(
+    *,
+    actor_id: str,
+    agent_name: str,
+    session_id: str,
+    mailbox_id: str,
+    host: str,
+    port: int,
+    token: str,
+) -> str:
+    return f'''"""Actor-local yext runtime context."""
+
+from __future__ import annotations
+
+HOST = {host!r}
+PORT = {port!r}
+TOKEN = {token!r}
+TIMEOUT_S = 10.0
+ACTOR_ID = {actor_id!r}
+AGENT_NAME = {agent_name!r}
+SESSION_ID = {session_id!r}
+MAILBOX_ID = {mailbox_id!r}
+'''
+
+
+def _render_package_init(root_exports: list[str], module_exports: list[str]) -> str:
+    lines = ['"""Generated integration facade package."""', ""]
+    for name in root_exports:
+        lines.append(f"from .{name} import {name}")
+    for name in module_exports:
+        lines.append(f"from . import {name}")
+    lines.append("from ._client import submit_bg")
+    lines.append("")
+    exports = ["submit_bg", *[name for name in root_exports if name != "submit_bg"], *module_exports]
+    lines.append(f"__all__ = {exports!r}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_module(capabilities: list[AnyCapabilitySpec]) -> str:
+    functions = "\n\n".join(_render_function(capability) for capability in capabilities)
+    exports = [_function_name(capability) for capability in capabilities]
+    return f'''"""Generated integration capability facade."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from ._client import coerce_payload, invoke
+
+__all__ = {exports!r}
+
+_UNSET = object()
+
+{functions}
+'''
+
+
+def _render_function(capability: AnyCapabilitySpec) -> str:
+    function_name = _function_name(capability)
+    fields = _struct_fields(capability.input_type)
+    doc = _function_doc(capability)
+    if not fields:
+        return f'''async def {function_name}(value: Any = None, **payload: Any) -> dict[str, Any]:
+    """{doc}"""
+    return await invoke({capability.id!r}, coerce_payload(value, payload))
+'''
+    if not _fields_have_valid_parameter_names(fields):
+        return f'''async def {function_name}(**payload: Any) -> dict[str, Any]:
+    """{doc}"""
+    return await invoke({capability.id!r}, dict(payload))
+'''
+    parameters = _render_parameters(fields)
+    assignments = "\n".join(_render_payload_assignment(field) for field in fields)
+    return f'''async def {function_name}({parameters}) -> dict[str, Any]:
+    """{doc}"""
+    data = dict(payload)
+{assignments}
+    return await invoke({capability.id!r}, data)
+'''
+
+
+def _struct_fields(
+    struct_type: type[msgspec.Struct],
+) -> tuple[msgspec.structs.FieldInfo, ...]:
+    return msgspec.structs.fields(struct_type)
+
+
+def _fields_have_valid_parameter_names(
+    fields: tuple[msgspec.structs.FieldInfo, ...],
+) -> bool:
+    return all(field.name == _identifier(field.name) for field in fields)
+
+
+def _render_parameters(fields: tuple[msgspec.structs.FieldInfo, ...]) -> str:
+    required: list[str] = []
+    optional: list[str] = []
+    for field in fields:
+        if _field_is_required(field):
+            required.append(f"{field.name}: Any")
+        else:
+            optional.append(f"{field.name}: Any = _UNSET")
+    return "*, " + ", ".join([*required, *optional, "**payload: Any"])
+
+
+def _render_payload_assignment(field: msgspec.structs.FieldInfo) -> str:
+    if _field_is_required(field):
+        return f"    data[{field.name!r}] = {field.name}"
+    return (
+        f"    if {field.name} is not _UNSET:\n"
+        f"        data[{field.name!r}] = {field.name}"
+    )
+
+
+def _field_is_required(field: msgspec.structs.FieldInfo) -> bool:
+    return field.default is msgspec.NODEFAULT and field.default_factory is msgspec.NODEFAULT
+
+
+def _function_doc(capability: AnyCapabilitySpec) -> str:
+    lines = [
+        capability.description.strip(),
+        "",
+        "Input schema:",
+        _indent(_schema_json(capability.input_schema), "    "),
+        "Output schema:",
+        _indent(_schema_json(capability.output_schema), "    "),
+    ]
+    return "\n    ".join(line.replace('"""', r'\"\"\"') for line in lines)
+
+
+def _schema_json(schema: dict[str, object]) -> str:
+    return json.dumps(schema, ensure_ascii=True, sort_keys=True)
+
+
+def _module_parts(capability: AnyCapabilitySpec) -> tuple[str, ...]:
+    if "." in capability.id:
+        return tuple(_identifier(part) for part in capability.id.split(".")[:-1])
+    if capability.namespace:
+        return tuple(_identifier(part) for part in capability.namespace.split("."))
+    return (_identifier(capability.id),)
+
+
+def _function_name(capability: AnyCapabilitySpec) -> str:
+    return _identifier(capability.id.split(".")[-1])
+
+
+def _exports_at_package_root(capability: AnyCapabilitySpec) -> bool:
+    return "." not in capability.id and capability.namespace in {"", capability.id}
+
+
+def _identifier(value: str) -> str:
+    result = re.sub(r"\W", "_", value)
+    if not result or result[0].isdigit():
+        result = f"_{result}"
+    if keyword.iskeyword(result):
+        return f"{result}_"
+    return result
+
+
+def _parents(root: Path, path: Path) -> Iterable[Path]:
+    current = path
+    while current != root:
+        yield current
+        current = current.parent
+
+
+def _unique_capabilities(
+    capabilities: Iterable[AnyCapabilitySpec],
+) -> list[AnyCapabilitySpec]:
+    result: dict[str, AnyCapabilitySpec] = {}
+    for capability in capabilities:
+        result.setdefault(capability.id, capability)
+    return list(result.values())
+
+
+def _indent(text: str, prefix: str) -> str:
+    return "\n".join(prefix + line for line in text.splitlines())

@@ -6,7 +6,10 @@ import asyncio
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
+
+if TYPE_CHECKING:
+    from yuubot.core.integrations.core import IntegrationCore
 
 import msgspec
 
@@ -18,7 +21,7 @@ from yuubot.core.capabilities import (
 )
 from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.context import InvocationContext
-from yuubot.core.integrations.contracts import IntegrationStorage
+from yuubot.core.integrations.contracts import IntegrationStorage, ReactionKind
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.core.validation import validate_integration_config
 from yuubot.resources.records import IntegrationRecord
@@ -153,6 +156,11 @@ class EchoIntegrationFactory:
         self._instances[record.id] = instance
         return instance
 
+    def routes(self, integrations: "IntegrationCore") -> list:
+        from yuubot.core.integrations.echo_routes import echo_routes
+
+        return echo_routes(integrations)
+
     def instance(self, integration_id: str) -> "EchoIntegration":
         return self._instances[integration_id]
 
@@ -161,7 +169,7 @@ class EchoIntegrationFactory:
 class EchoResponseRecord:
     target_msg_id: str
     msg: str = ""
-    poke: str = ""
+    react: ReactionKind | None = None
 
 
 @dataclass
@@ -231,22 +239,26 @@ class EchoIntegration:
     def capabilities(self) -> list[AnyCapability]:
         return [
             Capability(
-                id=ECHO_CAPABILITY_ID,
-                name="Echo",
-                description="Returns the payload unchanged.",
-                input_type=EchoPayload,
-                output_type=EchoPayload,
-                namespace="echo",
+                spec=CapabilitySpec(
+                    id=ECHO_CAPABILITY_ID,
+                    name="Echo",
+                    description="Returns the payload unchanged.",
+                    input_type=EchoPayload,
+                    output_type=EchoPayload,
+                    namespace="echo",
+                ),
                 invoke=self.invoke_echo,
             ),
             Capability(
-                id=ECHO_REPLY_CAPABILITY_ID,
-                name="Echo Reply",
-                description="Records an outbound reply for echo round-trip tests.",
-                input_type=EchoReplyPayload,
-                output_type=EchoReplyPayload,
-                namespace="echo",
-                effect="write",
+                spec=CapabilitySpec(
+                    id=ECHO_REPLY_CAPABILITY_ID,
+                    name="Echo Reply",
+                    description="Records an outbound reply for echo round-trip tests.",
+                    input_type=EchoReplyPayload,
+                    output_type=EchoReplyPayload,
+                    namespace="echo",
+                    effect="write",
+                ),
                 invoke=self.invoke_reply,
             ),
         ]
@@ -291,10 +303,10 @@ class EchoIntegration:
         target_msg_id: str,
         *,
         msg: str = "",
-        poke: str = "",
+        react: ReactionKind | None = None,
     ) -> None:
         await self.response_calls.put(
-            EchoResponseRecord(target_msg_id=target_msg_id, msg=msg, poke=poke)
+            EchoResponseRecord(target_msg_id=target_msg_id, msg=msg, react=react)
         )
 
     async def next_response(self) -> EchoResponseRecord:
