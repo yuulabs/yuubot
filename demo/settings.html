@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings — yuubot Admin</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-brand"><div class="logo">Y</div><div class="name">yuubot</div><div class="tag">admin</div></div>
+    <div class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-section-title">Overview</div>
+        <a class="nav-item" href="index.html"><span class="icon">◉</span> Dashboard</a>
+        <a class="nav-item" href="chat.html"><span class="icon">◈</span> Web Chat</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Resources</div>
+        <a class="nav-item" href="actors.html"><span class="icon">⬡</span> Actors</a>
+        <a class="nav-item" href="characters.html"><span class="icon">✎</span> Characters</a>
+        <a class="nav-item" href="routes.html"><span class="icon">⇌</span> Ingress Rules</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Providers</div>
+        <a class="nav-item" href="providers.html"><span class="icon">⚡</span> LLM Backends</a>
+        <a class="nav-item" href="integrations.html"><span class="icon">⬡</span> Integrations</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">System</div>
+        <a class="nav-item" href="monitor.html"><span class="icon">◉</span> Monitor</a>
+        <a class="nav-item active" href="settings.html"><span class="icon">⚙</span> Settings</a>
+      </div>
+    </div>
+    <div class="sidebar-footer"><div class="avatar">A</div><div class="user-name">admin</div></div>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="topbar-title">Settings</span>
+      <span class="topbar-breadcrumb">System</span>
+    </div>
+
+    <div class="content">
+      <div class="tabs">
+        <div class="tab active">Bootstrap Config</div>
+        <div class="tab">Export / Import</div>
+        <div class="tab">Danger Zone</div>
+      </div>
+
+      <!-- Bootstrap config (read-only) -->
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3>Bootstrap Config</h3>
+          <span class="text-sm text-muted">Read-only — changes require daemon restart</span>
+        </div>
+        <div class="card-body">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;padding:10px 14px;background:var(--warning-muted);border-radius:var(--radius-md);border:1px solid rgba(234,179,8,0.2);">
+            These values are loaded from config.yaml and environment variables at startup. To change them, edit the config file and restart the daemon.
+          </div>
+
+          <h4 style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;">Admin</h4>
+          <div class="grid grid-3 mb-4">
+            <div class="form-group">
+              <label class="form-label">Host</label>
+              <input type="text" value="0.0.0.0" disabled>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Port</label>
+              <input type="number" value="8781" disabled>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Secret</label>
+              <input type="password" value="••••••••" disabled>
+              <div class="form-hint">Masked. Restart required to change.</div>
+            </div>
+          </div>
+
+          <h4 style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;">Daemon</h4>
+          <div class="grid grid-3 mb-4">
+            <div class="form-group">
+              <label class="form-label">Host</label>
+              <input type="text" value="127.0.0.1" disabled>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Port</label>
+              <input type="number" value="8780" disabled>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Data Path</label>
+              <input type="text" value="/data/yuubot" disabled>
+            </div>
+          </div>
+
+          <h4 style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;">Trace</h4>
+          <div class="grid grid-3 mb-4">
+            <div class="form-group">
+              <label class="form-label">Collector Port</label>
+              <input type="number" value="8782" disabled>
+            </div>
+            <div class="form-group">
+              <label class="form-label">UI Port</label>
+              <input type="number" value="8783" disabled>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Enabled</label>
+              <input type="text" value="true" disabled>
+            </div>
+          </div>
+
+          <h4 style="font-size:13px;font-weight:600;color:var(--text-secondary);margin-bottom:12px;">Status</h4>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Key</th><th>Value</th><th>Source</th><th>Hot Reload</th><th>Restart Required</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>admin.host</code></td>
+                  <td>0.0.0.0</td>
+                  <td class="text-muted">config.yaml</td>
+                  <td><span style="color:var(--danger);">No</span></td>
+                  <td><span style="color:var(--warning);">Yes</span></td>
+                </tr>
+                <tr>
+                  <td><code>admin.port</code></td>
+                  <td>8781</td>
+                  <td class="text-muted">config.yaml</td>
+                  <td><span style="color:var(--danger);">No</span></td>
+                  <td><span style="color:var(--warning);">Yes</span></td>
+                </tr>
+                <tr>
+                  <td><code>admin.secret</code></td>
+                  <td>••••••••</td>
+                  <td class="text-muted">config.yaml</td>
+                  <td><span style="color:var(--danger);">No</span></td>
+                  <td><span style="color:var(--warning);">Yes</span></td>
+                </tr>
+                <tr>
+                  <td><code>daemon.host</code></td>
+                  <td>127.0.0.1</td>
+                  <td class="text-muted">config.yaml</td>
+                  <td><span style="color:var(--danger);">No</span></td>
+                  <td><span style="color:var(--warning);">Yes</span></td>
+                </tr>
+                <tr>
+                  <td><code>daemon.port</code></td>
+                  <td>8780</td>
+                  <td class="text-muted">default</td>
+                  <td><span style="color:var(--danger);">No</span></td>
+                  <td><span style="color:var(--warning);">Yes</span></td>
+                </tr>
+                <tr>
+                  <td><code>data_path</code></td>
+                  <td>/data/yuubot</td>
+                  <td class="text-muted">env</td>
+                  <td><span style="color:var(--danger);">No</span></td>
+                  <td><span style="color:var(--warning);">Yes</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Export / Import -->
+      <div class="card mb-4" id="export-import" style="display:none;">
+        <div class="card-header">
+          <h3>Export / Import Data</h3>
+        </div>
+        <div class="card-body">
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;padding:10px 14px;background:var(--bg-primary);border-radius:var(--radius-md);">
+            Export packages the entire data directory. Import unpacks and replaces data, with conflict resolution strategies.
+          </div>
+
+          <div class="grid grid-2">
+            <div style="padding:20px;background:var(--bg-primary);border-radius:var(--radius-lg);border:1px solid var(--border);text-align:center;">
+              <div style="font-size:24px;margin-bottom:8px;">📦</div>
+              <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Export Data</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Download all data as a compressed archive</div>
+              <button class="btn btn-primary">Export</button>
+            </div>
+            <div style="padding:20px;background:var(--bg-primary);border-radius:var(--radius-lg);border:1px solid var(--border);text-align:center;">
+              <div style="font-size:24px;margin-bottom:8px;">📂</div>
+              <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Import Data</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">Upload and restore from an archive</div>
+              <button class="btn">Import</button>
+            </div>
+          </div>
+
+          <h4 style="font-size:13px;font-weight:600;color:var(--text-secondary);margin:16px 0 12px;">Import Strategy</h4>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <label style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:var(--bg-primary);border-radius:var(--radius-md);border:1px solid var(--border);cursor:pointer;">
+              <input type="radio" name="strategy" checked style="margin-top:3px;">
+              <div>
+                <div style="font-size:13px;font-weight:500;">Dry Run (Default)</div>
+                <div style="font-size:12px;color:var(--text-muted);">Preview all conflicts without making any changes.</div>
+              </div>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:var(--bg-primary);border-radius:var(--radius-md);border:1px solid var(--border);cursor:pointer;">
+              <input type="radio" name="strategy" style="margin-top:3px;">
+              <div>
+                <div style="font-size:13px;font-weight:500;">Host Priority</div>
+                <div style="font-size:12px;color:var(--text-muted);">Host files overwrite persistent path files on conflict.</div>
+              </div>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:var(--bg-primary);border-radius:var(--radius-md);border:1px solid var(--border);cursor:pointer;">
+              <input type="radio" name="strategy" style="margin-top:3px;">
+              <div>
+                <div style="font-size:13px;font-weight:500;">Archive Priority</div>
+                <div style="font-size:12px;color:var(--text-muted);">Archive files overwrite host files on conflict.</div>
+              </div>
+            </label>
+            <label style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:var(--bg-primary);border-radius:var(--radius-md);border:1px solid var(--border);cursor:pointer;">
+              <input type="radio" name="strategy" style="margin-top:3px;">
+              <div>
+                <div style="font-size:13px;font-weight:500;">No-Conflict Merge</div>
+                <div style="font-size:12px;color:var(--text-muted);">Merge only if no conflicts exist. Fail on any overlap.</div>
+              </div>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Danger Zone -->
+      <div class="card" id="danger-zone" style="display:none;">
+        <div class="card-header">
+          <h3 style="color:var(--danger);">Danger Zone</h3>
+        </div>
+        <div class="card-body">
+          <div style="margin-bottom:16px;padding:12px 16px;border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-md);background:var(--danger-muted);">
+            <div style="font-size:13px;font-weight:600;color:var(--danger);margin-bottom:4px;">Reset to Defaults</div>
+            <div style="font-size:12px;color:var(--text-muted);">This will delete all Runtime Resources and restore built-in Characters, Actors, and Channels. This action cannot be undone.</div>
+            <button class="btn btn-danger mt-2" style="margin-top:8px;">Reset All Resources</button>
+          </div>
+          <div style="padding:12px 16px;border:1px solid rgba(239,68,68,0.3);border-radius:var(--radius-md);background:var(--danger-muted);">
+            <div style="font-size:13px;font-weight:600;color:var(--danger);margin-bottom:4px;">Wipe Data Directory</div>
+            <div style="font-size:12px;color:var(--text-muted);">Permanently delete the entire data directory including all configurations, conversations, and workspace files.</div>
+            <button class="btn btn-danger mt-2" style="margin-top:8px;">Wipe Data</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.tab').forEach((tab, i) => {
+    tab.addEventListener('click', function() {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+      const panels = ['bootstrap-panel', 'export-import', 'danger-zone'];
+      panels.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+      if (i === 0) {
+        document.getElementById('bootstrap-panel')?.remove();
+      } else if (i === 1) {
+        document.getElementById('export-import').style.display = 'block';
+      } else if (i === 2) {
+        document.getElementById('danger-zone').style.display = 'block';
+      }
+    });
+  });
+</script>
+</body>
+</html>

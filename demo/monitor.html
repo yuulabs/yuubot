@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Monitor — yuubot Admin</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-brand"><div class="logo">Y</div><div class="name">yuubot</div><div class="tag">admin</div></div>
+    <div class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-section-title">Overview</div>
+        <a class="nav-item" href="index.html"><span class="icon">◉</span> Dashboard</a>
+        <a class="nav-item" href="chat.html"><span class="icon">◈</span> Web Chat</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Resources</div>
+        <a class="nav-item" href="actors.html"><span class="icon">⬡</span> Actors</a>
+        <a class="nav-item" href="characters.html"><span class="icon">✎</span> Characters</a>
+        <a class="nav-item" href="routes.html"><span class="icon">⇌</span> Ingress Rules</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Providers</div>
+        <a class="nav-item" href="providers.html"><span class="icon">⚡</span> LLM Backends</a>
+        <a class="nav-item" href="integrations.html"><span class="icon">⬡</span> Integrations</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">System</div>
+        <a class="nav-item active" href="monitor.html"><span class="icon">◉</span> Monitor</a>
+        <a class="nav-item" href="settings.html"><span class="icon">⚙</span> Settings</a>
+      </div>
+    </div>
+    <div class="sidebar-footer"><div class="avatar">A</div><div class="user-name">admin</div></div>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="topbar-title">Monitor</span>
+      <span class="topbar-breadcrumb">System</span>
+      <div class="topbar-actions">
+        <button class="btn btn-sm btn-ghost">⟳ Refresh</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="tabs">
+        <div class="tab active">Overview</div>
+        <div class="tab">Traces</div>
+        <div class="tab">Cost Dashboard</div>
+        <div class="tab">Web PTY</div>
+        <div class="tab">Web FS</div>
+      </div>
+
+      <!-- System status -->
+      <div class="grid grid-4 mb-4">
+        <div class="stat-card">
+          <div class="label"><span class="status-dot online"></span> Daemon</div>
+          <div class="value" style="font-size:18px;">Running</div>
+          <div class="sub">127.0.0.1:8780 · uptime 4h 23m</div>
+        </div>
+        <div class="stat-card">
+          <div class="label"><span class="status-dot online"></span> Admin</div>
+          <div class="value" style="font-size:18px;">Running</div>
+          <div class="sub">0.0.0.0:8781 · 1 session</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Mailbox Queue</div>
+          <div class="value">0</div>
+          <div class="sub">messages pending</div>
+        </div>
+        <div class="stat-card">
+          <div class="label">Active Dialogs</div>
+          <div class="value">3</div>
+          <div class="sub">web-chat conversations</div>
+        </div>
+      </div>
+
+      <!-- Trace preview -->
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3>Recent Traces</h3>
+          <a href="#" class="btn btn-sm btn-ghost">Open Trace UI →</a>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Trace ID</th>
+                <th>Actor</th>
+                <th>Model</th>
+                <th>Duration</th>
+                <th>Tokens</th>
+                <th>Cost</th>
+                <th>Status</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code style="font-size:11px;">tr-8f2a3c</code></td>
+                <td><span class="tag tag-blue">shiori-web</span></td>
+                <td>gpt-4o</td>
+                <td>3.2s</td>
+                <td>1.2K / 384</td>
+                <td>$0.007</td>
+                <td><span class="tag tag-green">ok</span></td>
+                <td class="text-muted text-sm">2m ago</td>
+              </tr>
+              <tr>
+                <td><code style="font-size:11px;">tr-7e1b9d</code></td>
+                <td><span class="tag tag-blue">shiori-web</span></td>
+                <td>gpt-4o</td>
+                <td>8.1s</td>
+                <td>2.4K / 812</td>
+                <td>$0.015</td>
+                <td><span class="tag tag-green">ok</span></td>
+                <td class="text-muted text-sm">5m ago</td>
+              </tr>
+              <tr>
+                <td><code style="font-size:11px;">tr-6d0a4e</code></td>
+                <td><span class="tag tag-blue">yuu-group</span></td>
+                <td>deepseek-chat</td>
+                <td>12.4s</td>
+                <td>3.8K / 1.2K</td>
+                <td>$0.001</td>
+                <td><span class="tag tag-green">ok</span></td>
+                <td class="text-muted text-sm">15m ago</td>
+              </tr>
+              <tr>
+                <td><code style="font-size:11px;">tr-5c9f70</code></td>
+                <td><span class="tag tag-blue">ops-monitor</span></td>
+                <td>gpt-4o-mini</td>
+                <td>—</td>
+                <td>—</td>
+                <td>—</td>
+                <td><span class="tag tag-red">error</span></td>
+                <td class="text-muted text-sm">1h ago</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Cost dashboard -->
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3>Cost Dashboard</h3>
+          <span class="text-sm text-muted">Today</span>
+        </div>
+        <div class="card-body">
+          <div class="grid grid-3">
+            <div style="padding:12px;background:var(--bg-primary);border-radius:var(--radius-md);">
+              <div class="text-muted text-sm">Total Spend</div>
+              <div style="font-size:24px;font-weight:700;margin-top:4px;">$0.47</div>
+              <div style="margin-top:8px;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden;">
+                <div style="width:5%;height:100%;background:var(--accent);border-radius:2px;"></div>
+              </div>
+              <div class="text-sm text-muted" style="margin-top:4px;">$0.47 / $23.00 daily budget</div>
+            </div>
+            <div style="padding:12px;background:var(--bg-primary);border-radius:var(--radius-md);">
+              <div class="text-muted text-sm">By Actor</div>
+              <div style="margin-top:8px;font-size:13px;">
+                <div class="flex items-center justify-between" style="margin-bottom:4px;">
+                  <span>shiori-web</span><span>$0.32</span>
+                </div>
+                <div style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-bottom:8px;">
+                  <div style="width:68%;height:100%;background:var(--accent);border-radius:2px;"></div>
+                </div>
+                <div class="flex items-center justify-between" style="margin-bottom:4px;">
+                  <span>yuu-group</span><span>$0.08</span>
+                </div>
+                <div style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-bottom:8px;">
+                  <div style="width:17%;height:100%;background:var(--success);border-radius:2px;"></div>
+                </div>
+                <div class="flex items-center justify-between" style="margin-bottom:4px;">
+                  <span>research-agent</span><span>$0.07</span>
+                </div>
+                <div style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;">
+                  <div style="width:15%;height:100%;background:var(--warning);border-radius:2px;"></div>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px;background:var(--bg-primary);border-radius:var(--radius-md);">
+              <div class="text-muted text-sm">By Model</div>
+              <div style="margin-top:8px;font-size:13px;">
+                <div class="flex items-center justify-between" style="margin-bottom:4px;">
+                  <span>gpt-4o</span><span>$0.32 (68%)</span>
+                </div>
+                <div style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-bottom:8px;">
+                  <div style="width:68%;height:100%;background:var(--accent);border-radius:2px;"></div>
+                </div>
+                <div class="flex items-center justify-between" style="margin-bottom:4px;">
+                  <span>deepseek-chat</span><span>$0.08 (17%)</span>
+                </div>
+                <div style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-bottom:8px;">
+                  <div style="width:17%;height:100%;background:var(--success);border-radius:2px;"></div>
+                </div>
+                <div class="flex items-center justify-between" style="margin-bottom:4px;">
+                  <span>gpt-4o-mini</span><span>$0.07 (15%)</span>
+                </div>
+                <div style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;">
+                  <div style="width:15%;height:100%;background:var(--warning);border-radius:2px;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Web PTY & Web FS preview -->
+      <div class="grid grid-2">
+        <div class="card">
+          <div class="card-header">
+            <h3>Web PTY</h3>
+            <span class="tag tag-green">connected</span>
+          </div>
+          <div class="card-body">
+            <div style="background:#1a1b26;border-radius:var(--radius-md);padding:12px;font-family:'JetBrains Mono','Fira Code',monospace;font-size:12px;color:#a9b1d6;line-height:1.6;min-height:160px;">
+              <div><span style="color:#7aa2f7;">$</span> docker ps</div>
+              <div style="color:#565f89;">CONTAINER ID&nbsp;&nbsp;IMAGE&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;STATUS</div>
+              <div>a1b2c3d4&nbsp;&nbsp;&nbsp;&nbsp;yuubot:latest&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#9ece6a;">Up 4 hours</span></div>
+              <div style="color:#7aa2f7;">$ <span style="animation:blink 1s step-end infinite;">_</span></div>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px;">
+              <button class="btn btn-sm">Open Full PTY</button>
+              <button class="btn btn-sm btn-ghost">Disconnect</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h3>Web FS</h3>
+            <span class="text-sm text-muted">data*/workspace</span>
+          </div>
+          <div class="card-body">
+            <div style="background:var(--bg-primary);border-radius:var(--radius-md);padding:12px;font-size:13px;min-height:160px;">
+              <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle);">
+                <span>📁</span> <span>shiori-web/</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle);">
+                <span>📁</span> <span>yuu-group/</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle);">
+                <span>📄</span> <span>config.yaml</span> <span style="font-size:11px;color:var(--text-dimmed);margin-left:auto;">2.3 KB</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle);">
+                <span>📄</span> <span>runtime-state.json</span> <span style="font-size:11px;color:var(--text-dimmed);margin-left:auto;">1.1 KB</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+                <span>📁</span> <span>skills/</span>
+              </div>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px;">
+              <button class="btn btn-sm">Open File Manager</button>
+              <button class="btn btn-sm btn-ghost">Upload</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

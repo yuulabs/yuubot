@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Chat — yuubot Admin</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo">Y</div>
+      <div class="name">yuubot</div>
+      <div class="tag">admin</div>
+    </div>
+    <div class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-section-title">Overview</div>
+        <a class="nav-item" href="index.html">
+          <span class="icon">◉</span> Dashboard
+        </a>
+        <a class="nav-item active" href="chat.html">
+          <span class="icon">◈</span> Web Chat
+          <span class="nav-badge">3</span>
+        </a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Resources</div>
+        <a class="nav-item" href="actors.html"><span class="icon">⬡</span> Actors</a>
+        <a class="nav-item" href="characters.html"><span class="icon">✎</span> Characters</a>
+        <a class="nav-item" href="routes.html"><span class="icon">⇌</span> Ingress Rules</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">Providers</div>
+        <a class="nav-item" href="providers.html"><span class="icon">⚡</span> LLM Backends</a>
+        <a class="nav-item" href="integrations.html"><span class="icon">⬡</span> Integrations</a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-section-title">System</div>
+        <a class="nav-item" href="monitor.html"><span class="icon">◉</span> Monitor</a>
+        <a class="nav-item" href="settings.html"><span class="icon">⚙</span> Settings</a>
+      </div>
+    </div>
+    <div class="sidebar-footer">
+      <div class="avatar">A</div>
+      <div class="user-name">admin</div>
+    </div>
+  </nav>
+
+  <div class="main">
+    <div class="topbar">
+      <span class="topbar-title">Web Chat</span>
+      <span class="topbar-breadcrumb">shiori-private-test</span>
+      <div class="topbar-actions">
+        <button class="btn btn-sm" onclick="document.getElementById('new-dialog').style.display='flex'">+ New Dialog</button>
+        <button class="btn btn-sm btn-ghost">⟳</button>
+      </div>
+    </div>
+
+    <div class="chat-layout">
+      <!-- Dialog list sidebar -->
+      <div class="chat-sidebar">
+        <div class="chat-sidebar-header">
+          <div class="search-input">
+            <input type="text" placeholder="Search dialogs...">
+          </div>
+        </div>
+        <div class="chat-list">
+          <div class="chat-item active">
+            <div class="flex items-center justify-between">
+              <div class="name">shiori-private-test</div>
+              <div class="text-sm text-muted">2m</div>
+            </div>
+            <div class="preview">帮我看一下这个错误日志</div>
+            <div class="flex gap-2 mt-2">
+              <span class="tag tag-blue" style="font-size:10px;">private</span>
+              <span class="tag tag-green" style="font-size:10px;">active</span>
+            </div>
+          </div>
+          <div class="chat-item">
+            <div class="flex items-center justify-between">
+              <div class="name">yuu-group-test</div>
+              <div class="text-sm text-muted">15m</div>
+            </div>
+            <div class="preview">好的，我来分析一下这个数据</div>
+            <div class="flex gap-2 mt-2">
+              <span class="tag tag-yellow" style="font-size:10px;">group</span>
+            </div>
+          </div>
+          <div class="chat-item">
+            <div class="flex items-center justify-between">
+              <div class="name">debug-session-01</div>
+              <div class="text-sm text-muted">1h</div>
+            </div>
+            <div class="preview">Traceback (most recent call…)</div>
+          </div>
+          <div class="chat-item" style="opacity:0.5;">
+            <div class="flex items-center justify-between">
+              <div class="name">api-test-quick</div>
+              <div class="text-sm text-muted">3h</div>
+            </div>
+            <div class="preview">[closed]</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Chat main area -->
+      <div class="chat-main">
+        <div class="chat-header">
+          <div>
+            <div style="font-size:14px;font-weight:600;">shiori-private-test</div>
+            <div style="font-size:12px;color:var(--text-muted);">
+              kind: private · target: <span class="tag tag-blue" style="font-size:10px;">shiori-web</span>
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <button class="btn btn-sm btn-ghost">⚙ Settings</button>
+            <button class="btn btn-sm btn-danger">Close Dialog</button>
+          </div>
+        </div>
+
+        <div class="chat-messages">
+          <div class="message-group assistant">
+            <div class="message-avatar">S</div>
+            <div class="message-content">
+              <div class="sender">shiori-web <span class="text-sm text-muted">· 10:02</span></div>
+              <div class="message-bubble">你好！我是 shiori，有什么可以帮你的吗？</div>
+              <div class="react-bar">
+                <span class="react-emoji">👍 2</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="message-group user">
+            <div class="message-avatar">U</div>
+            <div class="message-content">
+              <div class="sender" style="text-align:right;">You <span class="text-sm text-muted">· 10:03</span></div>
+              <div class="message-bubble">帮我看一下这个错误日志，服务启动后一直在报错</div>
+            </div>
+          </div>
+
+          <div class="message-group assistant">
+            <div class="message-avatar">S</div>
+            <div class="message-content">
+              <div class="sender">shiori-web <span class="text-sm text-muted">· 10:03</span></div>
+              <div class="message-bubble">好的，请把错误日志贴过来，我来帮你分析。<br><br>你也可以直接把日志文件拖拽上传，我可以通过文件系统访问更多上下文。</div>
+            </div>
+          </div>
+
+          <div class="message-group user">
+            <div class="message-avatar">U</div>
+            <div class="message-content">
+              <div class="sender" style="text-align:right;">You <span class="text-sm text-muted">· 10:04</span></div>
+              <div class="message-bubble">日志如下：<br><br><code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">TypeError: Cannot read property 'id' of undefined<br>&nbsp;&nbsp;at Gateway.ingest (gateway.py:42)<br>&nbsp;&nbsp;at IntegrationIngress.emit (integration.py:18)</code><br><br>看上去是 Gateway 路由找不到对应的 Actor</div>
+            </div>
+          </div>
+
+          <div class="message-group assistant">
+            <div class="message-avatar">S</div>
+            <div class="message-content">
+              <div class="sender">shiori-web <span class="text-sm text-muted">· 10:04 · <span class="tag tag-green" style="font-size:10px;">tools: 3</span></span></div>
+              <div class="message-bubble">
+                我来看一下 Gateway 的路由配置和 Actor 注册情况。<br><br>
+                <div style="background:var(--bg-primary);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 14px;margin:8px 0;font-family:monospace;font-size:12px;">
+                  <pre style="margin:0;color:var(--text-secondary);">Ingress rules for source <span style="color:var(--accent);">"web-admin"</span>:
+
+  Rule 1: shiori-web ← dialog:* (enabled)
+  Rule 2: yuu-group  ← group:*  (enabled)
+
+Actor mailbox status:
+  shiori-web: <span style="color:var(--success);">active</span> (0 pending)
+  yuu-group:  <span style="color:var(--success);">active</span> (2 pending)</pre>
+                </div>
+                问题找到了！这个错误是因为 <code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">IntegrationIngress.emit()</code> 在构造 <code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">MessageSource</code> 时，<code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">source.id</code> 为空字符串，但 Gateway 路由规则没有匹配到空 source pattern。
+                <br><br>
+                修复建议：在 <code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">integration.py:18</code> 行附近确认 <code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">integration_id</code> 正确传入了 <code style="background:var(--bg-primary);padding:2px 6px;border-radius:3px;">MessageSource</code>。
+              </div>
+              <div class="react-bar">
+                <span class="react-emoji">👍 1</span>
+                <span class="react-emoji">🎯</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Typing indicator -->
+          <div class="message-group assistant" style="opacity:0.6;">
+            <div class="message-avatar">S</div>
+            <div class="message-content">
+              <div class="typing-indicator">
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <span style="margin-left:8px;">shiori-web is thinking…</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-input">
+          <div class="chat-input-box">
+            <textarea placeholder="Type a message… (Shift+Enter for new line)" rows="1" style="flex:1;"></textarea>
+            <button class="btn btn-primary" style="height:44px;">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- New Dialog Modal -->
+<div class="dialog-overlay" id="new-dialog" style="display:none;">
+  <div class="dialog">
+    <div class="dialog-header">
+      <h3>New Dialog</h3>
+      <button class="btn btn-sm btn-ghost" onclick="document.getElementById('new-dialog').style.display='none'">✕</button>
+    </div>
+    <div class="dialog-body">
+      <div class="form-group">
+        <label class="form-label">Dialog Name</label>
+        <input type="text" placeholder="e.g. shiori-private-test" value="">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Kind</label>
+        <select>
+          <option>private</option>
+          <option>group</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Target Actor</label>
+        <select>
+          <option>shiori-web</option>
+          <option>yuu-group</option>
+          <option>research-agent</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Context Key (optional)</label>
+        <input type="text" placeholder="web/dialog:<name>">
+        <div class="form-hint">Defaults to web/dialog:&lt;dialog_name&gt;</div>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <button class="btn" onclick="document.getElementById('new-dialog').style.display='none'">Cancel</button>
+      <button class="btn btn-primary">Create Dialog</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('.chat-item').forEach(item => {
+    item.addEventListener('click', function() {
+      document.querySelectorAll('.chat-item').forEach(i => i.classList.remove('active'));
+      this.classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>
