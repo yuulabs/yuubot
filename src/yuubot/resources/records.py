@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, TypeVar
 
 import msgspec
+from yuuagents import ToolSpecConfig
 
 from yuubot.core.validation import LLMProviderOptions, StreamOptions
+
+ConfigT = TypeVar("ConfigT", bound=msgspec.Struct)
 
 
 class ModelCapabilities(msgspec.Struct):
@@ -49,7 +52,6 @@ class LLMBackendRecord(msgspec.Struct):
     budget: BudgetPolicy
     id: str = ""
     provider_options: LLMProviderOptions = msgspec.field(default_factory=LLMProviderOptions)
-    api_key_secret_id: str | None = None
     default_model: str = ""
     default_stream_options: StreamOptions = msgspec.field(default_factory=StreamOptions)
     version: int = 1
@@ -71,6 +73,10 @@ class IntegrationRecord(msgspec.Struct):
     version: int = 1
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    def typed_config(self, schema: type[ConfigT]) -> ConfigT:
+        """Convert raw config dict to a typed Struct at the consumption boundary."""
+        return msgspec.convert(self.config, type=schema, strict=False)
 
 
 class YuuAgentBudget(msgspec.Struct):
@@ -102,18 +108,12 @@ class YuuAgentLLMOptions(msgspec.Struct):
     stream_options: StreamOptions = msgspec.field(default_factory=StreamOptions)
 
 
-class CapabilityConfig(msgspec.Struct):
-    """One yuuagents AgentDefinition.capabilities entry."""
+class ToolConfig(msgspec.Struct):
+    """One yuuagents AgentDefinition.tools entry."""
 
     provider_key: str
     config: dict[str, object] = msgspec.field(default_factory=dict)
-
-
-class PromptProviderConfig(msgspec.Struct):
-    """One yuuagents PromptDefinition.providers entry."""
-
-    provider_key: str
-    config: dict[str, object] = msgspec.field(default_factory=dict)
+    spec: ToolSpecConfig = msgspec.field(default_factory=ToolSpecConfig)
 
 
 class PromptTemplateRecord(msgspec.Struct):
@@ -139,6 +139,7 @@ class RuntimePolicy(msgspec.Struct):
     memory_enabled: bool = False
     memory_curator_enabled: bool = False
     rollover_enabled: bool = False
+    idle_timeout_s: float = 0.0
     summarize_steps_span: int = 20
     strict_usage_sink: bool = False
 
@@ -154,7 +155,6 @@ class CharacterRecord(msgspec.Struct):
     name: str
     description: str
     system_prompt: str
-    default_prompt_providers: tuple[PromptProviderConfig, ...]
     facade_module: str
     default_hints: CharacterHints
     id: str = ""
@@ -175,8 +175,7 @@ class ActorRecord(msgspec.Struct):
     model: str
     llm_options: YuuAgentLLMOptions
     budget: YuuAgentBudget
-    agent_capabilities: tuple[CapabilityConfig, ...]
-    agent_prompt_providers: tuple[PromptProviderConfig, ...]
+    agent_tools: tuple[ToolConfig, ...]
     allowed_capability_ids: tuple[str, ...]
     runtime_policy: RuntimePolicy
     resource_policy: ResourcePolicy
@@ -187,6 +186,10 @@ class ActorRecord(msgspec.Struct):
     version: int = 1
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    def typed_config(self, schema: type[ConfigT]) -> ConfigT:
+        """Convert raw config dict to a typed Struct at the consumption boundary."""
+        return msgspec.convert(self.config, type=schema, strict=False)
 
 
 class ActorIngressRuleRecord(msgspec.Struct):
@@ -199,3 +202,41 @@ class ActorIngressRuleRecord(msgspec.Struct):
     version: int = 1
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+class ChatMessageRecord(msgspec.Struct):
+    """Persisted web chat message, keyed by dialog_id for conversation grouping.
+
+    ``text_content`` is a pre-rendered human-readable line used for
+    FTS indexing and agent-facing history retrieval.
+    """
+
+    dialog_id: str
+    message_id: str
+    role: str
+    raw_content: str
+    text_content: str
+    actor_id: str
+    sender_id: str
+    sender_name: str
+    timestamp: int
+    id: int = 0
+    created_at: datetime | None = None
+
+
+class ConversationRecord(msgspec.Struct):
+    conversation_id: str
+    actor_id: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ConversationMessageRecord(msgspec.Struct):
+    message_id: str
+    conversation_id: str
+    role: str
+    raw_content: str
+    metadata: dict[str, object]
+    timestamp: int
+    id: int = 0
+    created_at: datetime | None = None

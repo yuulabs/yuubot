@@ -34,6 +34,7 @@ class AdminConfig(msgspec.Struct, frozen=True):
     host: str = "127.0.0.1"
     port: int = 8781
     secret: str = ""
+    web_dist_dir: str = "web/dist"
 
 
 class ServerConfig(msgspec.Struct, frozen=True):
@@ -81,7 +82,7 @@ class YuuAgentsConfig(msgspec.Struct, frozen=True):
     """Static yuuagents infrastructure config; daemon restart required."""
 
     strict: bool = False
-    providers: dict[str, dict[str, object]] = msgspec.field(default_factory=dict)
+    tool_backends: dict[str, dict[str, object]] = msgspec.field(default_factory=dict)
 
 
 class BootstrapConfig(msgspec.Struct, frozen=True):

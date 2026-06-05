@@ -12,6 +12,8 @@ from typing import Any, Literal, Union, cast, get_args, get_origin
 import msgspec
 from tortoise import Model, fields
 
+from yuubot.resources.store.protocol import schema_type_of
+
 FieldKind = Literal["auto", "char", "text", "json", "datetime", "bool", "int", "float"]
 
 
@@ -142,9 +144,10 @@ def _reference_field(
     spec: ReferenceSpec,
 ) -> fields.Field[Any]:
     field_type, nullable = _unwrap_optional(field.type)
-    referenced_schema = getattr(spec.row_type, "_yuubot_schema_type", None)
-    if referenced_schema is None:
-        raise TypeError(f"{spec.row_type.__name__} is not a resource model")
+    try:
+        referenced_schema = schema_type_of(spec.row_type)
+    except AttributeError:
+        raise TypeError(f"{spec.row_type.__name__} is not a resource model") from None
     if field_type is not referenced_schema:
         raise TypeError(
             f"{field.name} must be {referenced_schema.__name__} "

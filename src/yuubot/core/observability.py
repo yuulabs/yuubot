@@ -1,234 +1,119 @@
-"""Trace observer — bridges yuuagents EventBus to yuutrace SDK.
-
-A daemon-level singleton that subscribes to each actor's Stage eventbus,
-translates framework events into yuutrace calls, and injects yuubot context
-(conversation_id, character_name, model) so trace events are queryable by
-these dimensions in the trace UI.
-
-Context is registered per *agent_name* before the actor starts processing
-messages, and unregistered when the actor stops.  The observer itself has
-no dependency on actor lifecycle — it is a passive event translator.
-"""
+"""yuubot-specific trace context for yuuagents observability."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, TypeGuard, cast
+from typing import Any, TypeGuard
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
-import msgspec
-import yuutrace
 from opentelemetry.util.types import AttributeValue
-from yuuagents.eventbus import RuntimeEvent
-from yuutrace.otel import (
-    ATTR_TOOL_CALL_ID,
-    ATTR_TOOL_NAME,
-    ATTR_TOOL_USAGE_QUANTITY,
-    ATTR_TOOL_USAGE_UNIT,
-    EVENT_TOOL_USAGE,
-    OtelAttributes,
-)
-
-
-TOOL_COST_UNITS = {"usd", "USD"}
-
-
-class TraceAgentContext(msgspec.Struct):
-    """Fixed-structure context attached to each agent's trace events."""
-
-    conversation_id: str
-    character_name: str
-    model: str
+from yuuagents import RuntimeEvent
 
 
 @dataclass
-class TraceObserver:
-    """Subscribe to yuuagents runtime events and record them via yuutrace.
+class YuubotTraceContext:
+    conversation_id: UUID | None = None
+    character_name: str = ""
+    model: str = ""
 
-    Usage::
 
-        observer = TraceObserver()
-        observer.register("my-agent", conversation_id="...",
-                          character_name="yuu", model="gpt-4")
-        stage.eventbus.subscribe(observer)
+@dataclass
+class YuubotTraceContextProvider:
+    """Adds yuubot actor/character/integration attributes to yuuagents traces."""
 
-        # ... agent runs, events fire, observer translates them ...
-
-        observer.unregister("my-agent")
-    """
-
-    _contexts: dict[str, TraceAgentContext] = field(default_factory=dict, init=False)
-    _agent_id_contexts: dict[str, TraceAgentContext] = field(default_factory=dict, init=False)
-
-    # ------------------------------------------------------------------
-    # Context registration
-    # ------------------------------------------------------------------
+    _contexts: dict[str, YuubotTraceContext] = field(default_factory=dict, init=False)
+    _agent_contexts: dict[str, YuubotTraceContext] = field(
+        default_factory=dict, init=False
+    )
+    _agent_names: dict[str, str] = field(default_factory=dict, init=False)
 
     def register(
         self,
         agent_name: str,
         *,
-        conversation_id: str,
-        character_name: str,
-        model: str,
+        character_name: str = "",
+        model: str = "",
     ) -> None:
-        """Register yuubot context for *agent_name*.
+        ctx = self._contexts.setdefault(agent_name, YuubotTraceContext())
+        if character_name:
+            ctx.character_name = character_name
+        if model:
+            ctx.model = model
+        for agent_id, mapped_name in self._agent_names.items():
+            if mapped_name != agent_name:
+                continue
+            agent_ctx = self._agent_contexts.get(agent_id)
+            if agent_ctx is None:
+                continue
+            if character_name:
+                agent_ctx.character_name = character_name
+            if model:
+                agent_ctx.model = model
 
-        Called by the actor on start / reload, before any messages are
-        processed.  The observer uses this context to enrich trace events.
-        """
-        self._contexts[agent_name] = TraceAgentContext(
-            conversation_id=conversation_id,
-            character_name=character_name,
-            model=model,
-        )
-
-    def unregister(self, agent_name: str) -> None:
-        """Remove context for *agent_name* (actor stopped or reloading)."""
-        ctx = self._contexts.pop(agent_name, None)
-        if ctx is None:
-            return
-        stale_ids = [
-            agent_id
-            for agent_id, agent_ctx in self._agent_id_contexts.items()
-            if agent_ctx == ctx
-        ]
-        for agent_id in stale_ids:
-            self._agent_id_contexts.pop(agent_id, None)
-
-    # ------------------------------------------------------------------
-    # Event handling
-    # ------------------------------------------------------------------
-
-    async def on_event(self, event: RuntimeEvent) -> None:
+    def conversation_id(self, event: RuntimeEvent) -> UUID | str | None:
         ctx = self._context_for(event)
-        if ctx is None:
-            return
-        if event.name == "llm.finished":
-            self._on_llm_finished(event.data, ctx)
-        elif event.name == "runtime.usage_reported":
-            self._on_usage_reported(event.data, ctx)
-        elif event.name in {
-            "llm.started",
-            "runtime.task_created",
-            "runtime.task_completed",
-            "runtime.task_error",
-            "budget.exceeded",
-        }:
-            self._record_runtime_event(event, ctx)
+        if ctx.conversation_id is None:
+            if not event.agent_id:
+                return None
+            ctx.conversation_id = uuid5(NAMESPACE_DNS, event.agent_id)
+        return ctx.conversation_id
 
-    def _context_for(self, event: RuntimeEvent) -> TraceAgentContext | None:
-        ctx = self._contexts.get(event.agent_name)
-        if ctx is not None:
-            if event.agent_id:
-                self._agent_id_contexts[event.agent_id] = ctx
-            return ctx
-        return self._agent_id_contexts.get(event.agent_id)
+    def agent_name(self, event: RuntimeEvent) -> str:
+        return event.agent_name
 
-    def _on_llm_finished(self, data: Mapping[str, object], ctx: TraceAgentContext) -> None:
-        usage_raw = data.get("usage")
-        if usage_raw is None:
-            return
-        # usage is yuullm.Usage which satisfies yuutrace.LlmUsage Protocol
-        usage = cast(yuutrace.LlmUsage, usage_raw)
-        cost_raw = data.get("cost")
-        cost = cast("yuutrace.LlmCost | None", cost_raw)
-        yuutrace.record_llm_usage(usage, cost=cost)
+    def model(self, event: RuntimeEvent) -> str:
+        ctx = self._context_for(event)
+        if ctx.model:
+            return ctx.model
+        value = event.data.get("model")
+        return value if isinstance(value, str) else ""
 
-    def _on_usage_reported(self, data: Mapping[str, object], ctx: TraceAgentContext) -> None:
-        service = cast(str, data.get("service", ""))
-        unit = cast(str, data.get("unit", ""))
-        amount = float(cast("float | int", data.get("amount", 0.0)))
-        task_id = cast("str | None", data.get("task_id"))
-        if service and unit:
-            yuutrace.add_event(
-                EVENT_TOOL_USAGE,
-                _tool_usage_attributes(data, ctx, service, unit, amount, task_id),
-            )
-            if unit in TOOL_COST_UNITS:
-                yuutrace.record_cost(
-                    category="tool",
-                    currency="USD",
-                    amount=amount,
-                    source="runtime.usage_reported",
-                    tool_name=service,
-                    tool_call_id=task_id,
-                )
+    def tags(self, event: RuntimeEvent) -> list[str] | None:
+        return ["yuubot-v2"]
 
-    def _record_runtime_event(
-        self,
-        event: RuntimeEvent,
-        ctx: TraceAgentContext,
-    ) -> None:
-        yuutrace.add_event(
-            event.name,
-            _runtime_event_attributes(event.data, ctx),
-        )
-
-
-def _tool_usage_attributes(
-    data: Mapping[str, object],
-    ctx: TraceAgentContext,
-    service: str,
-    unit: str,
-    amount: float,
-    task_id: str | None,
-) -> OtelAttributes:
-    attrs = _yuubot_context_attributes(ctx)
-    attrs.update(
-        {
-            ATTR_TOOL_NAME: service,
-            ATTR_TOOL_USAGE_UNIT: unit,
-            ATTR_TOOL_USAGE_QUANTITY: amount,
+    def event_attributes(self, event: RuntimeEvent) -> dict[str, AttributeValue]:
+        ctx = self._context_for(event)
+        attrs: dict[str, AttributeValue] = {
+            "yuubot.character_name": ctx.character_name,
+            "yuubot.model": self.model(event),
         }
-    )
-    _set_string(attrs, ATTR_TOOL_CALL_ID, task_id)
-    _copy_string(data, attrs, "actor_id", "yuubot.actor_id")
-    _copy_string(data, attrs, "integration_id", "yuubot.integration_id")
-    _copy_string(data, attrs, "capability_id", "yuubot.capability_id")
-    _copy_string(data, attrs, "task_id", "yuubot.task_id")
-    return attrs
+        if ctx.conversation_id is not None:
+            attrs["yuubot.conversation_id"] = str(ctx.conversation_id)
+        _copy_string(event.data, attrs, "actor_id", "yuubot.actor_id")
+        _copy_string(event.data, attrs, "integration_id", "yuubot.integration_id")
+        _copy_string(event.data, attrs, "capability_id", "yuubot.capability_id")
+        _copy_string(event.data, attrs, "task_id", "yuubot.task_id")
+        return {k: v for k, v in attrs.items() if _is_attribute_value(v)}
 
-
-def _runtime_event_attributes(
-    data: Mapping[str, object],
-    ctx: TraceAgentContext,
-) -> OtelAttributes:
-    attrs = _yuubot_context_attributes(ctx)
-    for key, value in data.items():
-        if _is_attribute_value(value):
-            attrs[f"yuu.event.{key}"] = value
-    return attrs
-
-
-def _yuubot_context_attributes(
-    ctx: TraceAgentContext,
-) -> OtelAttributes:
-    return {
-        "yuubot.conversation_id": ctx.conversation_id,
-        "yuubot.character_name": ctx.character_name,
-        "yuubot.model": ctx.model,
-    }
+    def _context_for(self, event: RuntimeEvent) -> YuubotTraceContext:
+        if event.agent_id and event.agent_id in self._agent_contexts:
+            return self._agent_contexts[event.agent_id]
+        if event.agent_name:
+            if event.agent_id:
+                self._agent_names[event.agent_id] = event.agent_name
+                base = self._contexts.setdefault(event.agent_name, YuubotTraceContext())
+                ctx = YuubotTraceContext(
+                    character_name=base.character_name,
+                    model=base.model,
+                )
+                self._agent_contexts[event.agent_id] = ctx
+                return ctx
+            return self._contexts.setdefault(event.agent_name, YuubotTraceContext())
+        if event.agent_id:
+            return self._agent_contexts.setdefault(event.agent_id, YuubotTraceContext())
+        return YuubotTraceContext()
 
 
 def _copy_string(
-    source: Mapping[str, object],
-    target: OtelAttributes,
+    source: Mapping[str, Any],
+    target: dict[str, AttributeValue],
     source_key: str,
     target_key: str,
 ) -> None:
     value = source.get(source_key)
     if isinstance(value, str) and value:
         target[target_key] = value
-
-
-def _set_string(
-    target: OtelAttributes,
-    key: str,
-    value: str | None,
-) -> None:
-    if value:
-        target[key] = value
 
 
 def _is_attribute_value(value: Any) -> TypeGuard[AttributeValue]:

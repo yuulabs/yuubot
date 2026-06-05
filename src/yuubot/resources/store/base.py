@@ -64,6 +64,40 @@ class DB:
 
     async def _migrate_orm(self) -> None:
         await self._ctx.generate_schemas(safe=True)
+        await self._init_chat_fts()
+
+    async def _init_chat_fts(self) -> None:
+        """Create FTS5 virtual table and sync triggers for chat message search."""
+        from tortoise import connections
+
+        conn = connections.get("default")
+        await conn.execute_script("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS chat_messages_fts USING fts5(
+                text_content,
+                content='chat_messages',
+                content_rowid='id'
+            );
+            CREATE TRIGGER IF NOT EXISTS chat_messages_ai
+            AFTER INSERT ON chat_messages
+            BEGIN
+                INSERT INTO chat_messages_fts(rowid, text_content)
+                VALUES (new.id, new.text_content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS chat_messages_ad
+            AFTER DELETE ON chat_messages
+            BEGIN
+                INSERT INTO chat_messages_fts(chat_messages_fts, rowid, text_content)
+                VALUES ('delete', old.id, old.text_content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS chat_messages_au
+            AFTER UPDATE ON chat_messages
+            BEGIN
+                INSERT INTO chat_messages_fts(chat_messages_fts, rowid, text_content)
+                VALUES ('delete', old.id, old.text_content);
+                INSERT INTO chat_messages_fts(rowid, text_content)
+                VALUES (new.id, new.text_content);
+            END;
+        """)
 
     async def _close_orm(self) -> None:
         await self._ctx.close_connections()

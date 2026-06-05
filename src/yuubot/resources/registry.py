@@ -21,6 +21,28 @@ class ResourceRefreshHandler(Protocol):
     async def __call__(self, event: ResourceChanged) -> list[str]: ...
 
 
+class LifecycleHandler(Protocol):
+    """A callable that handles enable/disable lifecycle for a resource type.
+
+    Called by ``ResourceService.set_enabled`` when a resource has lifecycle
+    behavior.  Receives the row ID and the enabled/disabled label, returns
+    a list of action strings.
+    """
+
+    async def __call__(self, row_id: str, label: str) -> list[str]: ...
+
+
+@dataclass
+class ResourceTypeDescriptor:
+    """Metadata about a resource type, including its lifecycle behavior."""
+
+    slug: str
+    orm_type: type[Model]
+    lifecycle_realm: str = ""
+    has_lifecycle: bool = False
+    lifecycle_handler: LifecycleHandler | None = None
+
+
 @dataclass
 class ResourceTypeRegistry:
     """Maps URL slug strings to ORM model types for resource CRUD routing.
@@ -35,27 +57,52 @@ class ResourceTypeRegistry:
         slug = registry.get_slug(IntegrationORM)
     """
 
-    _slug_to_orm: dict[str, type[Model]] = field(default_factory=dict)
+    _descriptors: dict[str, ResourceTypeDescriptor] = field(default_factory=dict)
     _orm_to_slug: dict[type[Model], str] = field(default_factory=dict)
 
-    def register(self, slug: str, orm_type: type[Model]) -> None:
-        """Associate a URL slug with its ORM model class."""
-        if slug in self._slug_to_orm:
+    def register(
+        self,
+        slug: str,
+        orm_type: type[Model],
+        *,
+        lifecycle_realm: str = "",
+        has_lifecycle: bool = False,
+        lifecycle_handler: LifecycleHandler | None = None,
+    ) -> None:
+        """Associate a URL slug with its ORM model class and lifecycle metadata."""
+        if slug in self._descriptors:
             raise ValueError(f"slug {slug!r} is already registered")
-        self._slug_to_orm[slug] = orm_type
+        descriptor = ResourceTypeDescriptor(
+            slug=slug,
+            orm_type=orm_type,
+            lifecycle_realm=lifecycle_realm,
+            has_lifecycle=has_lifecycle,
+            lifecycle_handler=lifecycle_handler,
+        )
+        self._descriptors[slug] = descriptor
         self._orm_to_slug[orm_type] = slug
 
     def get_orm_type(self, slug: str) -> type[Model] | None:
         """Return the ORM model class for a URL slug, or None."""
-        return self._slug_to_orm.get(slug)
+        descriptor = self._descriptors.get(slug)
+        return descriptor.orm_type if descriptor else None
 
     def get_slug(self, orm_type: type[Model]) -> str | None:
         """Return the URL slug for an ORM model class, or None."""
         return self._orm_to_slug.get(orm_type)
 
+    def get_descriptor(self, slug_or_type: str | type[Model]) -> ResourceTypeDescriptor | None:
+        """Return the descriptor for a slug or ORM type, or None."""
+        if isinstance(slug_or_type, str):
+            return self._descriptors.get(slug_or_type)
+        slug = self._orm_to_slug.get(slug_or_type)
+        if slug is None:
+            return None
+        return self._descriptors.get(slug)
+
     def slugs(self) -> list[str]:
         """Return all registered URL slugs."""
-        return sorted(self._slug_to_orm)
+        return sorted(self._descriptors)
 
 
 @dataclass

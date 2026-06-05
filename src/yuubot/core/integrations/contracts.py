@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import msgspec
 
@@ -13,15 +13,17 @@ from yuubot.core.secrets import secret_schema_hook
 from yuubot.resources.records import IntegrationRecord
 
 if TYPE_CHECKING:
+    from starlette.routing import Route
+
     from yuubot.core.gateway import Gateway
+    from yuubot.core.integrations.core import IntegrationCore
 
 
-ReactionKind = Literal["working", "get", "OK", "YES", "NO", "Done"]
+ReactionKind = str
 """Fast acknowledgement signals for `IntegrationInstance.response`.
 
-Only `"working"` is currently emitted by the system (to indicate the actor is
-processing an inbound message). The remaining values are advisory and
-reserved for future use, possibly exposed to agents.
+Agents can emit platform-specific reaction strings through ``yb.im.react()``.
+Integrations that cannot represent a reaction should silently ignore it.
 """
 
 
@@ -46,6 +48,12 @@ class IntegrationFactory(Protocol):
     @property
     def name(self) -> str: ...
 
+    @property
+    def description(self) -> str: ...
+
+    @property
+    def config_schema(self) -> type[msgspec.Struct] | dict[str, object]: ...
+
     def capability_specs(self) -> list[AnyCapabilitySpec]: ...
 
     async def create(
@@ -55,6 +63,8 @@ class IntegrationFactory(Protocol):
         gateway: Gateway,
         storage: IntegrationStorage,
     ) -> IntegrationInstance: ...
+
+    def routes(self, integrations: IntegrationCore) -> list[Route]: ...
 
 
 class IntegrationStorage(Protocol):
@@ -91,23 +101,18 @@ class IntegrationInstance(Protocol):
 
 
 def integration_kind_info(factory: IntegrationFactory) -> IntegrationKindInfo:
-    """Project a factory to its admin-facing kind descriptor.
-
-    `config_schema` and `description` are optional; factories that do not
-    declare them yield an empty schema dict and empty description.
-    """
-    config_type = getattr(factory, "config_schema", None)
+    """Project a factory to its admin-facing kind descriptor."""
+    config_type = factory.config_schema
     schema: dict[str, object] = {}
     if isinstance(config_type, type) and issubclass(config_type, msgspec.Struct):
         schema = _inline_root_schema(
             msgspec.json.schema(config_type, schema_hook=secret_schema_hook)
         )
     elif isinstance(config_type, dict):
-        schema = dict(cast(dict[str, object], config_type))
-    description = getattr(factory, "description", "") or ""
+        schema = dict(config_type)
     return IntegrationKindInfo(
         name=factory.name,
-        description=description,
+        description=factory.description,
         config_schema=schema,
         capabilities=tuple(factory.capability_specs()),
     )

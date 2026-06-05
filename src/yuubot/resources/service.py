@@ -17,9 +17,8 @@ from tortoise.exceptions import BaseORMException
 from yuubot.core.actors.manager import ActorManager
 from yuubot.core.integrations.core import IntegrationCore
 from yuubot.resources.events import ResourceAction, ResourceChanged
-from yuubot.resources.registry import EventDrivenRefreshDispatcher
+from yuubot.resources.registry import EventDrivenRefreshDispatcher, ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
-from yuubot.resources.store.models import ActorORM, IntegrationORM
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,7 @@ class ResourceService:
     refresh: EventDrivenRefreshDispatcher
     integrations: IntegrationCore
     actors: ActorManager
+    type_registry: ResourceTypeRegistry
 
     async def create(
         self,
@@ -45,7 +45,7 @@ class ResourceService:
         record: object,
     ) -> tuple[object, list[str], list[str]]:
         """Insert a resource record and trigger reconcile after commit."""
-        row_id = getattr(record, "id")
+        row_id: str = getattr(record, "id")
         try:
             inserted = await self.repository.insert(orm_type, record)
         except BaseORMException as exc:
@@ -104,26 +104,20 @@ class ResourceService:
         if updated is None:
             return None, [], []
 
-        realm = _lifecycle_realm(orm_type)
+        descriptor = self.type_registry.get_descriptor(orm_type)
+        if descriptor is None or not descriptor.has_lifecycle:
+            return updated, [], []
+
+        handler = descriptor.lifecycle_handler
+        if handler is None:
+            return updated, [], []
+
         try:
-            if realm == "integrations":
-                await self.integrations.reconcile(
-                    ResourceChanged(
-                        table="integrations",
-                        action="updated",
-                        row_ids=(row_id,),
-                        changed_fields=("enabled",),
-                    )
-                )
-                return updated, [f"integration.{label}d"], []
-            elif realm == "actors":
-                await self.actors.reconcile()
-                return updated, [f"actor.{label}d"], []
-            else:
-                return updated, [], []
+            actions = await handler(row_id, label)
+            return updated, actions, []
         except Exception as exc:
-            logger.exception("%s %s failed for %s", realm, label, row_id)
-            return updated, [], [f"{realm} {label} failed: {exc}"]
+            logger.exception("lifecycle %s failed for %s", label, row_id)
+            return updated, [], [f"lifecycle {label} failed: {exc}"]
 
     async def _reconcile(
         self,
@@ -145,12 +139,3 @@ class ResourceService:
         except Exception as exc:
             logger.exception("reconcile failed after %s on %s", action, table)
             return [], [str(exc)]
-
-
-def _lifecycle_realm(orm_type: type[Model]) -> str:
-    """Return the lifecycle category for an ORM type."""
-    if orm_type is IntegrationORM:
-        return "integrations"
-    if orm_type is ActorORM:
-        return "actors"
-    return "unknown"

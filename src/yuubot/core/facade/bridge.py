@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -17,6 +17,7 @@ from yuuagents.mailbox import BackgroundCompletedMessage, MailBox, MailMessage
 from yuubot.core.capabilities import struct_to_dict
 from yuubot.core.integrations.context import InvocationContext
 from yuubot.core.integrations.core import IntegrationCore
+from yuubot.core.system_caps import SystemCapHandler
 
 if TYPE_CHECKING:
     from yuubot.core.facade.workspace import FacadeEndpoint
@@ -38,7 +39,7 @@ class FacadeRpcRequest(msgspec.Struct):
     summary: str = ""
 
 
-class YextBackgroundTaskStarted(MailMessage, msgspec.Struct):
+class FacadeBackgroundTaskStarted(MailMessage, msgspec.Struct):
     task_id: str
     actor_id: str
     agent_name: str
@@ -47,7 +48,7 @@ class YextBackgroundTaskStarted(MailMessage, msgspec.Struct):
     summary: str = ""
 
 
-class YextBackgroundTaskEnded(MailMessage, msgspec.Struct):
+class FacadeBackgroundTaskEnded(MailMessage, msgspec.Struct):
     task_id: str
     actor_id: str
     agent_name: str
@@ -57,12 +58,36 @@ class YextBackgroundTaskEnded(MailMessage, msgspec.Struct):
     summary: str = ""
 
 
+class FacadeImResponse(MailMessage, msgspec.Struct):
+    actor_id: str
+    agent_name: str
+    session_id: str
+    mailbox_id: str
+    target_msg_id: str = ""
+    text: str = ""
+    react: str = ""
+
+
+class FacadeDelegateTask(MailMessage, msgspec.Struct):
+    task_id: str
+    actor_id: str
+    agent_name: str
+    session_id: str
+    mailbox_id: str
+    prompt: str
+    delegate_name: str = ""
+
+
 @dataclass
 class IntegrationInvokeBridge:
     """Local daemon-owned RPC bridge used by generated yext modules."""
 
     integrations: IntegrationCore
+    system_caps: SystemCapHandler | None = None
     mailbox_for_actor: Callable[[str], MailBox | None] | None = None
+    schedule_for_actor: Callable[
+        [str, str, str, dict[str, object]], Awaitable[object]
+    ] | None = None
     host: str = "127.0.0.1"
     _token: str = ""
     _server: asyncio.Server | None = None
@@ -116,6 +141,14 @@ class IntegrationInvokeBridge:
             return await self._background_started(request)
         if request.kind == "background_finished":
             return await self._background_finished(request)
+        if request.kind == "im_response":
+            return await self._im_response(request)
+        if request.kind == "delegate_submit":
+            return await self._delegate_submit(request)
+        if request.kind == "schedule":
+            return await self._schedule(request)
+        if request.kind == "system":
+            return await self._system_invoke(request)
         if request.kind != "invoke":
             raise ValueError(f"unknown facade request kind: {request.kind}")
 
@@ -134,7 +167,7 @@ class IntegrationInvokeBridge:
         mailbox = self._mailbox(request.actor_id)
         if mailbox is not None:
             await mailbox.send(
-                YextBackgroundTaskStarted(
+                FacadeBackgroundTaskStarted(
                     task_id=request.task_id,
                     actor_id=request.actor_id,
                     agent_name=request.agent_name,
@@ -152,7 +185,7 @@ class IntegrationInvokeBridge:
         mailbox = self._mailbox(request.actor_id)
         if mailbox is not None:
             await mailbox.send(
-                YextBackgroundTaskEnded(
+                FacadeBackgroundTaskEnded(
                     task_id=request.task_id,
                     actor_id=request.actor_id,
                     agent_name=request.agent_name,
@@ -172,6 +205,63 @@ class IntegrationInvokeBridge:
                 )
             )
         return {"ok": True, "result": {}}
+
+    async def _im_response(self, request: FacadeRpcRequest) -> dict[str, object]:
+        mailbox = self._mailbox(request.actor_id)
+        if mailbox is not None:
+            await mailbox.send(
+                FacadeImResponse(
+                    actor_id=request.actor_id,
+                    agent_name=request.agent_name,
+                    session_id=request.session_id,
+                    mailbox_id=request.mailbox_id,
+                    target_msg_id=str(request.payload.get("msg_id") or ""),
+                    text=str(request.payload.get("text") or ""),
+                    react=str(request.payload.get("react") or ""),
+                )
+            )
+        return {"ok": True, "result": {}}
+
+    async def _delegate_submit(self, request: FacadeRpcRequest) -> dict[str, object]:
+        prompt = str(request.payload.get("prompt") or "")
+        if not prompt.strip():
+            raise ValueError("delegate prompt is required")
+        task_id = request.task_id or secrets.token_hex(8)
+        mailbox = self._mailbox(request.actor_id)
+        if mailbox is not None:
+            await mailbox.send(
+                FacadeDelegateTask(
+                    task_id=task_id,
+                    actor_id=request.actor_id,
+                    agent_name=request.agent_name,
+                    session_id=request.session_id,
+                    mailbox_id=request.mailbox_id,
+                    prompt=prompt,
+                    delegate_name=str(request.payload.get("delegate_name") or ""),
+                )
+            )
+        return {"ok": True, "result": {"task_id": task_id}}
+
+    async def _system_invoke(self, request: FacadeRpcRequest) -> dict[str, object]:
+        if self.system_caps is None:
+            raise RuntimeError("system capabilities are not available")
+        result = await self.system_caps.handle(
+            capability_id=request.capability_id,
+            payload=request.payload,
+            actor_id=request.actor_id,
+        )
+        return {"ok": True, "result": result}
+
+    async def _schedule(self, request: FacadeRpcRequest) -> dict[str, object]:
+        if self.schedule_for_actor is None:
+            raise RuntimeError("schedule capabilities are not available")
+        result = await self.schedule_for_actor(
+            request.actor_id,
+            request.agent_name,
+            request.capability_id,
+            request.payload,
+        )
+        return {"ok": True, "result": {"output": result}}
 
     def _mailbox(self, actor_id: str) -> MailBox | None:
         if self.mailbox_for_actor is None:

@@ -82,29 +82,14 @@ def facade_call_path(
     return f"{package_name}." + ".".join((*_module_parts(capability), function_name))
 
 
-def render_context_module(
+def facade_module_name(
+    capability: AnyCapabilitySpec,
     *,
-    actor_id: str,
-    agent_name: str,
-    session_id: str,
-    mailbox_id: str,
-    host: str,
-    port: int,
-    token: str,
+    package_name: str = YEXT_PACKAGE,
 ) -> str:
-    return f'''"""Actor-local yext runtime context."""
-
-from __future__ import annotations
-
-HOST = {host!r}
-PORT = {port!r}
-TOKEN = {token!r}
-TIMEOUT_S = 10.0
-ACTOR_ID = {actor_id!r}
-AGENT_NAME = {agent_name!r}
-SESSION_ID = {session_id!r}
-MAILBOX_ID = {mailbox_id!r}
-'''
+    if _exports_at_package_root(capability):
+        return package_name
+    return f"{package_name}." + ".".join(_module_parts(capability))
 
 
 def _render_package_init(root_exports: list[str], module_exports: list[str]) -> str:
@@ -113,9 +98,8 @@ def _render_package_init(root_exports: list[str], module_exports: list[str]) -> 
         lines.append(f"from .{name} import {name}")
     for name in module_exports:
         lines.append(f"from . import {name}")
-    lines.append("from ._client import submit_bg")
     lines.append("")
-    exports = ["submit_bg", *[name for name in root_exports if name != "submit_bg"], *module_exports]
+    exports = [*root_exports, *module_exports]
     lines.append(f"__all__ = {exports!r}")
     lines.append("")
     return "\n".join(lines)

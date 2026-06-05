@@ -48,6 +48,8 @@ class IntegrationCore:
         default_factory=dict,
         init=False,
     )
+    _capability_by_id: dict[str, AnyCapability] = field(default_factory=dict, init=False)
+    _integration_by_capability: dict[str, str] = field(default_factory=dict, init=False)
     _enabled_capability_ids: Cached[set[str]] = field(init=False)
     _actor_allowed: dict[str, Cached[set[str]]] = field(default_factory=dict, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
@@ -126,6 +128,9 @@ class IntegrationCore:
             raise
         self._instances[integration_id] = instance
         self._capabilities_index.update(capabilities)
+        for (intg_id, cap_id), capability in capabilities.items():
+            self._capability_by_id[cap_id] = capability
+            self._integration_by_capability[cap_id] = intg_id
 
     async def disable(self, integration_id: str) -> None:
         async with self._lock:
@@ -136,6 +141,8 @@ class IntegrationCore:
         for key in list(self._capabilities_index):
             if key[0] == integration_id:
                 self._capabilities_index.pop(key, None)
+                self._capability_by_id.pop(key[1], None)
+                self._integration_by_capability.pop(key[1], None)
         if instance is not None:
             await instance.close()
 
@@ -175,16 +182,16 @@ class IntegrationCore:
         self._actor_allowed.pop(actor_id, None)
 
     def _find_capability(self, capability_id: str) -> AnyCapability:
-        for (_, cap_id), capability in self._capabilities_index.items():
-            if cap_id == capability_id:
-                return capability
-        raise LookupError(f"capability {capability_id!r} is not provided by any integration")
+        capability = self._capability_by_id.get(capability_id)
+        if capability is None:
+            raise LookupError(f"capability {capability_id!r} is not provided by any integration")
+        return capability
 
     def _integration_id_for(self, capability_id: str) -> str:
-        for (integration_id, cap_id) in self._capabilities_index:
-            if cap_id == capability_id:
-                return integration_id
-        raise LookupError(f"capability {capability_id!r} is not provided by any integration")
+        integration_id = self._integration_by_capability.get(capability_id)
+        if integration_id is None:
+            raise LookupError(f"capability {capability_id!r} is not provided by any integration")
+        return integration_id
 
     async def _get_actor_allowed(self, actor_id: str) -> set[str]:
         cache = self._actor_allowed.get(actor_id)

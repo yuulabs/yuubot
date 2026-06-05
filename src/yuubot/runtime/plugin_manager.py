@@ -394,6 +394,10 @@ class ExternalPluginFactory:
             manager=self.manager,
         )
 
+    def routes(self, integrations: object) -> list:
+        """External plugins have no HTTP routes; they push via /ingest."""
+        return []
+
 
 @dataclass
 class ExternalPluginIntegration:

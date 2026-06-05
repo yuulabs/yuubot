@@ -69,20 +69,18 @@ class IntegrationFactoryRegistry:
 
         routes: list[Route] = []
         for factory in self._all_factories():
-            routes_fn = getattr(factory, "routes", None)
-            if routes_fn is not None:
-                routes_list = routes_fn(integrations)
-                if routes_list:
-                    prefix = f"/integration/{factory.name}"
-                    for route in routes_list:
-                        path = route.path if route.path != "/" else ""
-                        routes.append(
-                            Route(
-                                f"{prefix}{path}",
-                                route.endpoint,
-                                methods=route.methods,
-                            )
+            routes_list = factory.routes(integrations)
+            if routes_list:
+                prefix = f"/integration/{factory.name}"
+                for route in routes_list:
+                    path = route.path if route.path != "/" else ""
+                    routes.append(
+                        Route(
+                            f"{prefix}{path}",
+                            route.endpoint,
+                            methods=route.methods,
                         )
+                    )
         return routes
 
     def _all_capabilities(self) -> Iterable[AnyCapabilitySpec]:
@@ -120,7 +118,7 @@ def _unique_capabilities(
 
 def default_integration_factories() -> IntegrationFactoryRegistry:
     """Factories available to a normal daemon process."""
-    from yuubot.core.integrations.echo import EchoIntegrationFactory
+    from yuubot.core.integrations.impls.echo import EchoIntegrationFactory
 
     registry = IntegrationFactoryRegistry()
     registry.register(EchoIntegrationFactory())

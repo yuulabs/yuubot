@@ -5,10 +5,16 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 
 import click
 
-from yuubot.bootstrap.config import load_bootstrap_config
+from yuubot.bootstrap.config import BootstrapConfig, load_bootstrap_config
 from yuubot.bootstrap.layout import DataLayout
 from yuubot.runtime.admin import build_admin
 from yuubot.runtime.archive import ArchiveError, export_data, import_data
@@ -63,24 +69,128 @@ def admin(ctx: click.Context) -> None:
 @click.pass_context
 def dev(ctx: click.Context) -> None:
     """Start daemon and admin as two local child processes."""
+    raise SystemExit(_run_dev(ctx.obj["config_path"]))
+
+
+@dataclass(frozen=True)
+class DevChild:
+    name: str
+    process: subprocess.Popen[bytes]
+    health_url: str
+
+
+def _run_dev(
+    config_path: str | None,
+    *,
+    popen: Callable[[list[str]], subprocess.Popen[bytes]] = subprocess.Popen,
+    health_probe: Callable[[str], bool] | None = None,
+    startup_timeout_s: float = 15.0,
+    poll_interval_s: float = 0.1,
+) -> int:
+    """Run daemon/admin children and fail fast when startup health fails."""
+    config = load_bootstrap_config(config_path)
+    health_probe = health_probe or _health_probe
+
+    _build_web(config)
 
     base = [sys.executable, "-m", "yuubot.cli"]
-    config_args = ["--config", ctx.obj["config_path"]] if ctx.obj["config_path"] else []
-    daemon_proc = subprocess.Popen([*base, *config_args, "daemon"])
-    admin_proc = subprocess.Popen([*base, *config_args, "admin"])
+    config_args = ["--config", config_path] if config_path else []
+    children = (
+        DevChild(
+            name="daemon",
+            process=popen([*base, *config_args, "daemon"]),
+            health_url=f"http://{config.server.daemon_host}:{config.server.daemon_port}/healthz",
+        ),
+        DevChild(
+            name="admin",
+            process=popen([*base, *config_args, "admin"]),
+            health_url=f"http://{config.admin.host}:{config.admin.port}/healthz",
+        ),
+    )
     try:
-        first = None
-        while first is None:
-            for proc in (daemon_proc, admin_proc):
-                code = proc.poll()
+        healthy = set[str]()
+        deadline = time.monotonic() + startup_timeout_s
+        while len(healthy) < len(children):
+            for child in children:
+                code = child.process.poll()
+                if code is not None and child.name not in healthy:
+                    click.echo(
+                        f"{child.name} exited before startup completed with code {code}",
+                        err=True,
+                    )
+                    return code if code else 1
+                if child.name not in healthy and health_probe(child.health_url):
+                    healthy.add(child.name)
+            if time.monotonic() >= deadline:
+                pending = ", ".join(child.name for child in children if child.name not in healthy)
+                click.echo(f"startup timed out waiting for: {pending}", err=True)
+                return 1
+            time.sleep(poll_interval_s)
+
+        while True:
+            for child in children:
+                code = child.process.poll()
                 if code is not None:
-                    first = code
-                    break
-        raise SystemExit(first)
+                    return code
+            time.sleep(poll_interval_s)
+    except KeyboardInterrupt:
+        return 130
     finally:
-        for proc in (daemon_proc, admin_proc):
-            if proc.poll() is None:
-                proc.terminate()
+        for child in children:
+            if child.process.poll() is None:
+                child.process.terminate()
+
+
+def _health_probe(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=0.2) as response:
+            return 200 <= response.status < 500
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def _build_web(config: BootstrapConfig) -> None:
+    """Build the admin frontend if the web project is present."""
+    web_root = Path(config.admin.web_dist_dir).resolve().parent
+    if not (web_root / "package.json").exists():
+        return
+    click.echo(f"building frontend in {web_root} ...")
+    result = subprocess.run(
+        ["npm", "run", "build"],
+        cwd=str(web_root),
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        click.echo(result.stderr.strip(), err=True)
+        raise click.ClickException("frontend build failed")
+
+
+@cli.group("trace")
+@click.pass_context
+def trace(ctx: click.Context) -> None:
+    """Trace inspection commands."""
+
+
+@trace.command("ui")
+@click.option("--host", "host", default=None, help="Override trace UI host (default: from config)")
+@click.option("--port", "port", default=None, type=int, help="Override trace UI port (default: from config)")
+@click.pass_context
+def trace_ui(ctx: click.Context, host: str | None, port: int | None) -> None:
+    """Launch the yuutrace Web UI to browse agent traces."""
+    from yuutrace.cli.ui import run_ui
+
+    config = load_bootstrap_config(ctx.obj["config_path"])
+    layout = DataLayout.from_path(config.paths.data_dir)
+    db_path = str(layout.traces_db_path)
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    ui_host = host or config.trace.ui_host
+    ui_port = port or config.trace.ui_port
+
+    click.echo(f"starting trace UI on http://{ui_host}:{ui_port}")
+    click.echo(f"database: {db_path}")
+    run_ui(db_path=db_path, host=ui_host, port=ui_port)
 
 
 @cli.command("export")

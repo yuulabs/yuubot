@@ -22,12 +22,10 @@ class PricingAwareLlmClient:
 
     async def stream(
         self,
-        messages: list[yuullm.Message],
-        *,
-        tools: list[dict[str, Any]] | None = None,
+        history: yuullm.History,
         **kwargs: Any,
     ) -> yuullm.StreamResult:
-        stream, store = await self.inner.stream(messages, tools=tools, **kwargs)
+        stream, store = await self.inner.stream(history, **kwargs)
         return self._with_cost(stream, store), store
 
     async def _with_cost(

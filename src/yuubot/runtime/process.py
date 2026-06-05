@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
-from typing import Protocol
+from typing import Iterator, Protocol
 
 import yuutrace
 from starlette.types import ASGIApp
@@ -150,24 +152,51 @@ class TraceService:
         return "starting"
 
 
-async def open_store(config: DatabaseConfig, *, layout: DataLayout) -> Store:
+async def open_store(
+    config: DatabaseConfig,
+    *,
+    layout: DataLayout,
+    migrate: bool = True,
+) -> Store:
     path = config.path or str(layout.db_path)
     if path != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
+    if migrate:
+        with _sqlite_schema_lock(path):
+            store = await Store.open(path)
+            await store.migrate()
+        return store
     store = await Store.open(path)
-    await store.migrate()
     return store
+
+
+@contextmanager
+def _sqlite_schema_lock(path: str) -> Iterator[None]:
+    if path == ":memory:":
+        yield
+        return
+
+    db_path = Path(path).expanduser()
+    lock_path = db_path.with_name(f"{db_path.name}.schema.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        flock(lock_file.fileno(), LOCK_EX)
+        try:
+            yield
+        finally:
+            flock(lock_file.fileno(), LOCK_UN)
 
 
 async def open_resources(
     config: BootstrapConfig,
     create_store: Callable[[DatabaseConfig], Awaitable[Store]] | None = None,
+    migrate: bool = True,
 ) -> Resources:
     layout = DataLayout.from_path(config.paths.data_dir)
     if create_store is not None:
         store = await create_store(config.database)
     else:
-        store = await open_store(config.database, layout=layout)
+        store = await open_store(config.database, layout=layout, migrate=migrate)
     return await Resources.from_store(
         store, secret_codec=SecretCodec(config.secrets.master_key)
     )

@@ -7,14 +7,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from yuuagents.python_runtime import JsonObject
+
 from yuubot.core.capabilities import AnyCapabilitySpec
-from yuubot.core.facade.client import YEXT_CONTEXT_MODULE
 from yuubot.core.facade.codegen import (
     YEXT_PACKAGE,
     clear_facade_module_cache,
-    render_context_module,
     write_facade_package,
 )
+from yuubot.core.facade.context import FACADE_CONTEXT_MODULE, render_context_module
 
 
 @dataclass
@@ -30,10 +31,11 @@ class ActorFacadeBinding:
     agent_name: str
     session_id: str
     mailbox_id: str
+    capabilities: tuple[AnyCapabilitySpec, ...]
     root: Path
     sys_path: list[str]
     startup_code: str
-    session_state: dict[str, object]
+    session_state: JsonObject
 
 
 @dataclass
@@ -69,11 +71,12 @@ class FacadeWorkspace:
         path_id = safe_actor_path_id(actor_id)
         actor_root = self.root / "actors" / path_id
         source_root = self.root / "actor-packages" / path_id
+        visible_capabilities = tuple(capabilities)
 
         _replace_dir(source_root)
         write_facade_package(
             source_root,
-            capabilities=capabilities,
+            capabilities=visible_capabilities,
             package_name=self.package_name,
         )
         clear_facade_module_cache(self.package_name)
@@ -83,7 +86,7 @@ class FacadeWorkspace:
             source_root / self.package_name,
             target_is_directory=True,
         )
-        (actor_root / f"{YEXT_CONTEXT_MODULE}.py").write_text(
+        (actor_root / f"{FACADE_CONTEXT_MODULE}.py").write_text(
             render_context_module(
                 actor_id=actor_id,
                 agent_name=agent_name,
@@ -100,18 +103,21 @@ class FacadeWorkspace:
             agent_name=agent_name,
             session_id=session_id,
             mailbox_id=mailbox_id,
+            capabilities=visible_capabilities,
             root=actor_root,
             sys_path=[str(actor_root)],
             startup_code=(
+                "import yb\n"
                 f"import {self.package_name}\n"
-                f"import {YEXT_CONTEXT_MODULE} as yext_context"
+                f"import {FACADE_CONTEXT_MODULE} as facade_context"
             ),
             session_state={
                 "actor_id": actor_id,
                 "agent_name": agent_name,
                 "session_id": session_id,
                 "mailbox_id": mailbox_id,
-                "facade_package": self.package_name,
+                "yb_package": "yb",
+                "yext_package": self.package_name,
             },
         )
 

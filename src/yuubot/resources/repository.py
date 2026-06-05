@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
+import msgspec
 from tortoise import Model
 
 from yuubot.core.events import EventBus
@@ -16,6 +17,7 @@ from yuubot.resources.orm import (
     to_orm_fields,
     to_orm_update_fields,
 )
+from yuubot.resources.store.protocol import schema_type_of
 from yuubot.resources.store.resource import Store
 
 RecordT = TypeVar("RecordT")
@@ -100,8 +102,8 @@ class ResourceRepository:
         self._publish(row_type, "deleted", row_id)
         return True
 
-    async def _record_from_row(self, row: Model) -> object:
-        schema_type = getattr(type(row), "_yuubot_schema_type")
+    async def _record_from_row(self, row: Model) -> msgspec.Struct:
+        schema_type = schema_type_of(type(row))
         return await from_orm(row, schema_type, secret_codec=self.secret_codec)
 
     def _publish(

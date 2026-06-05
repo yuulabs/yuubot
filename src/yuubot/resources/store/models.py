@@ -6,11 +6,20 @@ from yuubot.resources.records import (
     ActorRecord,
     ActorIngressRuleRecord,
     CharacterRecord,
+    ChatMessageRecord,
+    ConversationMessageRecord,
+    ConversationRecord,
     IntegrationRecord,
     LLMBackendRecord,
     PromptTemplateRecord,
 )
-from yuubot.resources.store.model_factory import char, reference, resource_model, text
+from yuubot.resources.store.model_factory import (
+    FieldSpec,
+    char,
+    reference,
+    resource_model,
+    text,
+)
 
 LLMBackendORM = resource_model(
     "LLMBackendORM",
@@ -88,5 +97,54 @@ ActorIngressRuleORM = resource_model(
         "id": char(max_length=512, primary_key=True),
         "source_id_pattern": char(max_length=512),
         "source_path_pattern": char(max_length=1024),
+    },
+)
+
+ChatMessageORM = resource_model(
+    "ChatMessageORM",
+    ChatMessageRecord,
+    table="chat_messages",
+    module=__name__,
+    field_specs={
+        "id": FieldSpec(kind="int", primary_key=True),
+        "dialog_id": char(max_length=255),
+        "message_id": char(max_length=255),
+        "role": char(max_length=16),
+        "raw_content": text(),
+        "text_content": text(),
+        "actor_id": char(max_length=255),
+        "sender_id": char(max_length=255),
+        "sender_name": char(max_length=255),
+        "timestamp": FieldSpec(kind="int"),
+        "created_at": FieldSpec(kind="datetime"),
+    },
+)
+
+ConversationORM = resource_model(
+    "ConversationORM",
+    ConversationRecord,
+    table="conversations",
+    module=__name__,
+    field_specs={
+        "conversation_id": char(max_length=255, primary_key=True),
+        "actor_id": char(max_length=255),
+        "created_at": FieldSpec(kind="datetime"),
+        "updated_at": FieldSpec(kind="datetime"),
+    },
+)
+
+ConversationMessageORM = resource_model(
+    "ConversationMessageORM",
+    ConversationMessageRecord,
+    table="conversation_messages",
+    module=__name__,
+    field_specs={
+        "id": FieldSpec(kind="int", primary_key=True),
+        "message_id": char(max_length=255),
+        "conversation_id": char(max_length=255),
+        "role": char(max_length=16),
+        "raw_content": text(),
+        "timestamp": FieldSpec(kind="int"),
+        "created_at": FieldSpec(kind="datetime"),
     },
 )
