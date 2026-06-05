@@ -49,11 +49,11 @@ paths:
 
 # yuuagents is daemon infrastructure, not a hot-reload runtime resource.
 # Edit this manually and restart the daemon (Admin UI may offer a restart
-# button). Actor resources reference these provider keys in their
-# AgentDefinition-shaped capability/prompt fields.
+# button). Actor resources reference these backend keys in their
+# AgentDefinition.tools fields.
 yuuagents:
   strict: false
-  providers:
+  tool_backends:
     background: {}
     schedule:
       db_path: ${YUU_DATA_DIR}/schedule.sqlite3

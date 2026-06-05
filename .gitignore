@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+# JavaScript-generated files
+node_modules/
+
 # Virtual environments
 .venv
 
@@ -228,6 +231,9 @@ __marimo__/
 config.yaml
 yuuagents.config.yaml
 .omx/
+
+# OpenAgentControl dev configuration (see https://github.com/OpenAgentControl)
+.opencode/
 
 # Vendor (downloaded binaries, e.g. libsimple)
 vendor/

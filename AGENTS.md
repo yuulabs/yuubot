@@ -1,57 +1,103 @@
 # AGENTS.md
 
-## Critical gotchas
-
-- **Python 3.14** (`.python-version`, `requires-python = ">=3.14"`). Agents defaulting to 3.11–3.12 will fail.
-- **`config.yaml` is gitignored** — clone won't work without copying `config.example.yaml` → `config.yaml`. Same for `.env`.
-- **Type checker is `ty`**, not mypy/pyright. `uv run ty check`.
-- **Monorepo**: sibling packages (`yuuagents`, `yuullm`, `yuutools`, `yuutrace`) live in `../` from repo root (read them first for api understanding). `ty check` resolves them via `extra-paths` in pyproject.toml. If type-check errors appear in these packages, the source is one level up.
-- **No `ConversationRoute` type exists** despite older docs. Routing returns only `CommandRoute` (with `command_path=("llm",)` for agent triggers) or `None`.
-- **Docker is not production-hardened yet**: Admin is published by compose and currently includes unauthenticated file/terminal surfaces when `admin.secret` is empty or not enforced. Keep it local-only unless `issues/013-docker-deploy-hardening.md` is resolved.
-
 ## Commands
 
 ```bash
-uv run ruff check src/          # lint
-uv run ty check                 # type check
-uv run pytest                   # all tests (async by default via asyncio_mode=auto)
-uv run pytest -k "pattern" -v   # single test
-uv run pytest --markers         # list markers; @pytest.mark.live skips external services
+uv run ruff check src tests
+uv run ty check
+uv run pytest
+uv run ybot check
+uv run ybot daemon
+uv run ybot admin
+uv run ybot dev
 ```
 
-Tests are end-to-end only (no unit tests). Key fixtures in `tests/conftest.py`: `db` (temp SQLite), `yuubot_config` (programmatic Config), `make_group_event` / `make_private_event` (OneBot event builders).
+Python is 3.14. Type checking uses `ty`.
 
-## Config loading
+## Navigation Map
 
-`load_config()` merges **llm.yaml (base) → config.yaml (override)**, then env-var substitution (`${VAR}`) via `.env`. LLM-provider config lives in `llm.yaml`; operational config in `config.yaml`. The key `agent_llm_refs` maps agent names to `"provider/model"` refs.
+### Product Direction
 
-## Architecture
+- `design/checklist.md` — current hand-written product and architecture checklist.
+- `demo/` — static Web Admin UI exploration pages.
+- `config.example.yaml` — bootstrap config shape for local runtime startup.
 
-- **`src/yuubot/cli.py`** is the real entrypoint (`ybot` command via `[project.scripts]`). `main.py` is a stub.
-- **Message boundary**: raw OneBot event dicts → `IncomingMessage` (`core/messages.py`) at the dispatcher ingress. Never pass raw events downstream.
-- **Routing** (`daemon/routing.py`): pure function `resolve_route()` → `CommandRoute | None`. LLM-triggered conversations are `CommandRoute(command_path=("llm",), entry="@")` or `entry="master"`.
-- **Agent functions** (`agent_fns/`): agents use `import yb; yb.send_message(...)` via execute_python tool. HTTP POST → `/agent-fns/{service}/{action}` → `services/`.
-- **Dual Python backends**: `master` uses long-lived kernel sessions; `group` uses sandboxed restricted sessions per turn.
-- **Characters** store a complete `system_prompt` explicitly. Prompt Templates are UI editing aids only — no hidden runtime injections.
+### Entrypoints
 
-## Request flow
+- `src/yuubot/cli.py` — `ybot` command group: config validation, daemon/admin processes, dev launcher, archive import/export.
+- `src/yuubot/runtime/daemon/app.py` — daemon assembly, ASGI routes, service lifecycle, resource refresh, plugin ingest.
+- `src/yuubot/runtime/admin/app.py` — admin ASGI routes, integration kind metadata, secret reveal, plugin install/uninstall, trace UI mount.
+- `src/yuubot/runtime/process.py` — local service host, uvicorn server wrapper, trace service, shared resource opening.
+- `src/yuubot/runtime/archive.py` — data directory archive import/export.
+- `src/yuubot/runtime/plugin_manager.py` — external integration plugin manifest, install, subprocess lifecycle, HTTP facade calls.
 
-```
-NapCat WS → recorder/relay.py → daemon/ws_client.py → dispatcher.py
-  → routing.py (IncomingMessage → CommandRoute)
-    → commands/tree.py (click command tree) or agent_runner.py
-```
+### Bootstrap And Layout
 
-## Debugging
+- `src/yuubot/bootstrap/config.py` — typed bootstrap config, env substitution, path expansion, startup validation.
+- `src/yuubot/bootstrap/layout.py` — canonical `data_dir` layout for database, traces, logs, facades, plugins, integrations, workspaces, and skills.
 
-```bash
-# Logs
-cd ~/.local/share/yuubot-docker
-# Conversation traces (span-based DB)
-uv run python scripts/conv.py          # list recent
-uv run python scripts/conv.py -l -n    # latest, compact
-uv run python scripts/conv.py ID       # by short ID prefix
-```
+### Resource Storage
 
+- `src/yuubot/resources/records.py` — persisted msgspec resource records.
+- `src/yuubot/resources/store/models.py` — Tortoise ORM models generated from resource records.
+- `src/yuubot/resources/repository.py` — CRUD boundary with table-level resource change events.
+- `src/yuubot/resources/service.py` — domain operations for resource CRUD and runtime reconciliation.
+- `src/yuubot/resources/registry.py` — resource type registry and event-driven refresh dispatcher.
+- `src/yuubot/resources/orm.py` — record/ORM conversion, references, encrypted secret handling.
+- `src/yuubot/core/secrets.py` — `Secret` wrapper, master key validation, AES-GCM codec, schema hooks, config secret wrapping.
 
-非必要不使用frozen类。
+### Messages And Routing
+
+- `src/yuubot/core/messages.py` — `IncomingMessage`, `MessageSource`, system source helpers.
+- `src/yuubot/core/gateway.py` — integration ingress, actor mailboxes, message fanout.
+- `src/yuubot/core/routing.py` — source glob route projection and resolution.
+- `src/yuubot/core/bindings.py` — actor resource binding loader.
+
+### Integrations
+
+- `src/yuubot/core/integrations/contracts.py` — integration factory/instance/storage protocols and admin-facing kind metadata.
+- `src/yuubot/core/integrations/registry.py` — builtin and external integration factory registry and route collection.
+- `src/yuubot/core/integrations/core.py` — integration enable/disable/reconcile, capability indexing, actor capability authorization, storage cleanup.
+- `src/yuubot/core/integrations/context.py` — invocation context for actor-visible capability calls.
+- `src/yuubot/core/integrations/impls/echo.py` — loopback integration used by runtime and HTTP E2E tests.
+- `src/yuubot/core/integrations/impls/echo_routes.py` — HTTP ingress routes for the echo integration.
+
+### Actors And Agents
+
+- `src/yuubot/core/actors/contracts.py` — actor and actor factory protocols.
+- `src/yuubot/core/actors/manager.py` — actor lifecycle, reconciliation, mailbox ownership.
+- `src/yuubot/core/actors/registry.py` — actor factory registry.
+- `src/yuubot/core/actors/workspace.py` — actor workspace path resolution.
+- `src/yuubot/core/actors/impls/simple_loop.py` — default yuuagents-backed actor runtime.
+- `src/yuubot/core/actors/impls/python_session.py` — generated facade package lifecycle and execute_python bridge.
+- `src/yuubot/core/actors/impls/echo.py` — test actor for integration/facade plumbing.
+- `src/yuubot/core/assembly.py` — yuuagents `Stage` and `AgentDefinition` assembly from an `ActorBinding`.
+- `src/yuubot/core/llm.py` — bound LLM data shape.
+- `src/yuubot/core/costing.py` — pricing-aware LLM client wrapper.
+- `src/yuubot/core/observability.py` — trace context registration.
+
+### Actor Facade
+
+- `src/yuubot/core/facade/codegen.py` — generated Python facade source for actor capability access.
+- `src/yuubot/core/facade/bridge.py` — facade RPC server and background task mailbox messages.
+- `src/yuubot/core/facade/client.py` — generated facade client request helpers.
+- `src/yuubot/core/facade/workspace.py` — generated package paths and startup code.
+
+### Daemon APIs
+
+- `src/yuubot/runtime/daemon/commands.py` — `/api/resources` CRUD and lifecycle HTTP handlers.
+- `src/yuubot/runtime/daemon/validators.py` — resource reference and deletion validation.
+- `src/yuubot/runtime/http_utils.py` — shared JSON error response helper.
+
+### Tests
+
+- `tests/test_daemon_commands.py` — resource API CRUD and validation.
+- `tests/test_daemon_refresh_api.py` — admin-triggered daemon refresh.
+- `tests/test_actor_lifecycle.py` — actor start/stop/reconcile behavior.
+- `tests/test_actor_workspace.py` — workspace path behavior.
+- `tests/test_integration_actor_echo.py` — integration-to-actor facade path.
+- `tests/test_echo_http_e2e.py` — HTTP ingress round trip.
+- `tests/test_route_bindings.py` — Gateway route matching.
+- `tests/test_trace_cost_e2e.py` — trace and pricing plumbing.
+- `tests/test_external_plugin.py` — external plugin manifest and subprocess integration.
+- `tests/test_archive_export_import.py` — data archive import/export.

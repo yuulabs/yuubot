@@ -15,6 +15,7 @@ dependencies = [
     "yuuagents",
     "yuutrace",
     "cryptography>=48.0.0",
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +39,7 @@ yuuagents = { path = "../yuuagents", editable = true }
 yuutrace = { path = "../yuutrace", editable = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/yuubot"]
+packages = ["src/yuubot", "src/yb"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

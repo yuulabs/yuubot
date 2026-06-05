@@ -1249,6 +1249,7 @@ source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "cryptography" },
+    { name = "httpx" },
     { name = "msgspec" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
@@ -1277,6 +1278,7 @@ dev = [
 requires-dist = [
     { name = "click" },
     { name = "cryptography", specifier = ">=48.0.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "msgspec" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
