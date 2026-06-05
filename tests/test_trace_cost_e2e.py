@@ -13,21 +13,21 @@ import msgspec
 import pytest
 import yuullm
 import yuutrace
-import yuuagents.stage as yuuagents_stage
-from yuuagents import Budget, UsageSink
+from yuuagents import Budget, UsageSink, YuuTraceObserver
 from yuuagents.eventbus import EventBus
 
 from helpers import (
     assert_cost_event,
     assert_tool_usage,
     insert_echo_actor_resources,
+    register_test_llm_provider,
 )
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.actors import SimpleLoopActor
 from yuubot.core.assembly import start_yuuagents_actor
 from yuubot.core.bindings import load_actor_binding
 from yuubot.core.integrations.context import InvocationContext
-from yuubot.core.observability import TraceObserver
+from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.core.validation import ConfigurationError
 from yuubot.resources.records import (
     BudgetPolicy,
@@ -53,7 +53,7 @@ async def test_llm_usage_and_priced_cost_recorded_in_trace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = _UsageProvider()
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
@@ -98,7 +98,7 @@ async def test_llm_usage_and_priced_cost_recorded_in_trace(
 
         actor = daemon.actors.running_actor(resources.actor.id)
         assert isinstance(actor, SimpleLoopActor)
-        await actor.next_turn_result()
+        await _wait_for_trace_conversations(store)
 
         result = store.list_conversations()
         assert result["total"] >= 1, "expected at least one conversation trace"
@@ -108,9 +108,7 @@ async def test_llm_usage_and_priced_cost_recorded_in_trace(
         assert conv is not None
 
         all_event_names = [
-            ev["name"]
-            for span in conv["spans"]
-            for ev in span["events"]
+            ev["name"] for span in conv["spans"] for ev in span["events"]
         ]
         assert "yuu.llm.usage" in all_event_names, (
             f"expected yuu.llm.usage event in trace, got: {all_event_names}"
@@ -127,7 +125,7 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = _UsageProvider()
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
@@ -163,7 +161,7 @@ async def test_pricing_check_raises_when_backend_budget_set_without_pricing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = _UsageProvider()
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
@@ -198,7 +196,7 @@ async def test_pricing_check_passes_when_pricing_entry_exists(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = _UsageProvider()
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
@@ -210,7 +208,13 @@ async def test_pricing_check_passes_when_pricing_entry_exists(
             source_path=SOURCE_PATH,
         )
         # Patch backend to have pricing for gpt-4, and actor to have max_usd
-        pricing = PricingTable(entries=(PricingEntry(model="gpt-4", input_per_million=1.0, output_per_million=2.0),))
+        pricing = PricingTable(
+            entries=(
+                PricingEntry(
+                    model="gpt-4", input_per_million=1.0, output_per_million=2.0
+                ),
+            )
+        )
         await daemon.resources.repository.update(
             LLMBackendORM,
             resources.llm_backend.id,
@@ -241,7 +245,7 @@ async def test_provider_cost_takes_precedence_over_pricing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = _UsageProvider(provider_cost=0.25)
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
@@ -280,7 +284,7 @@ async def test_provider_cost_takes_precedence_over_pricing(
 
         actor = daemon.actors.running_actor(resources.actor.id)
         assert isinstance(actor, SimpleLoopActor)
-        await actor.next_turn_result()
+        await _wait_for_trace_conversations(store)
 
         conv_id = store.list_conversations()["conversations"][0]["id"]
         conv = store.get_conversation(conv_id)
@@ -292,12 +296,12 @@ async def test_provider_cost_takes_precedence_over_pricing(
 
 async def test_integration_charge_usage_recorded_in_trace() -> None:
     store = yuutrace.init_memory()
-    observer = TraceObserver()
+    trace_context = YuubotTraceContextProvider()
+    observer = YuuTraceObserver(context_provider=trace_context)
     eventbus = EventBus()
     eventbus.subscribe(observer)
-    observer.register(
+    trace_context.register(
         "trace-agent",
-        conversation_id="00000000-0000-0000-0000-000000000001",
         character_name="trace-character",
         model="gpt-4",
     )
@@ -308,26 +312,47 @@ async def test_integration_charge_usage_recorded_in_trace() -> None:
         budget=Budget(limits={}),
         attributes={"agent_name": "trace-agent", "agent_id": "trace-agent-id"},
     )
-    context = InvocationContext(
-        actor_id=ACTOR_ID,
-        integration_id=INTEGRATION_ID,
-        capability_id="echo",
-        usage=sink,
-    )
 
-    conv = yuutrace.conversation(
-        id=UUID("00000000-0000-0000-0000-000000000001"),
-        agent="trace-agent",
-        model="gpt-4",
+    # agent.started creates the conversation via EventBus
+    await eventbus.emit(
+        "agent.started",
+        {
+            "agent_id": "trace-agent-id",
+            "agent_name": "trace-agent",
+            "history": [],
+        },
     )
-    with conv:
-        turn = conv.start_turn("assistant")
-        with turn:
-            context.charge_usage("echo-api", 3, "request")
-            await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
-    conv_record = store.get_conversation("00000000-0000-0000-0000-000000000001")
+    async with eventbus.scope(
+        "agent.turn",
+        {
+            "agent_id": "trace-agent-id",
+            "agent_name": "trace-agent",
+        },
+    ):
+        context = InvocationContext(
+            actor_id=ACTOR_ID,
+            integration_id=INTEGRATION_ID,
+            capability_id="echo",
+            usage=sink,
+        )
+        context.charge_usage("echo-api", 3, "request")
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    conversations = store.list_conversations()
+    assert conversations["total"] >= 1, "expected at least one conversation"
+    conv_id = conversations["conversations"][0]["id"]
+    conv_record = store.get_conversation(conv_id)
     assert conv_record is not None
+
+    all_event_names = [
+        ev["name"] for span in conv_record["spans"] for ev in span["events"]
+    ]
+    assert "yuu.tool.usage" in all_event_names, (
+        f"expected yuu.tool.usage event in trace, got: {all_event_names}"
+    )
     turn_span = conv_record["spans"][-1]
     events = assert_tool_usage(turn_span, tool_name="echo-api", call_id=str(task_id))
     attrs = events[0]["attributes"]
@@ -355,13 +380,14 @@ class _UsageProvider:
 
     async def stream(
         self,
-        messages: list[yuullm.Message],
+        history: yuullm.History,
         *,
         model: str,
-        tools: list[dict[str, Any]] | None = None,
         on_raw_chunk: yuullm.RawChunkHook | None = None,
         **kwargs: Any,
     ) -> yuullm.StreamResult:
+        _ = history, model, on_raw_chunk, kwargs
+
         async def _items() -> AsyncIterator[yuullm.StreamItem]:
             yield yuullm.Response({"type": "text", "text": "done"})
 
@@ -393,3 +419,15 @@ def _client(daemon: YuubotDaemon) -> httpx.AsyncClient:
         transport=httpx.ASGITransport(app=daemon.asgi_app()),
         base_url="http://testserver",
     )
+
+
+async def _wait_for_trace_conversations(
+    store,
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while store.list_conversations()["total"] < 1:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("expected at least one trace conversation")
+        await asyncio.sleep(0.01)

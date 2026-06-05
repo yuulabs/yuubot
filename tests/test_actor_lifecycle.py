@@ -15,7 +15,7 @@ from yuubot.core.actors import (
 from yuubot.core.bindings import ActorBinding
 from yuubot.core.gateway import Gateway, Mailbox
 from yuubot.core.messages import IncomingMessage
-from yuubot.core.routing import RouteBindings
+from yuubot.core.routing import ActorIngressRule, RouteBindings
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.records import (
     ActorRecord,
@@ -90,6 +90,39 @@ async def test_running_actor_receives_relevant_resource_events(
     assert actor.events == [event]
 
 
+async def test_reconcile_quarantines_actor_startup_failure(
+    resources: Resources,
+    tmp_path: Path,
+):
+    registry = ActorFactoryRegistry()
+    registry.register(FakeActorFactory(failing_actor_ids={"broken"}))
+    gateway = Gateway(
+        routes=RouteBindings(
+            rules=[
+                ActorIngressRule(
+                    actor_id="broken",
+                    source_id_pattern="*",
+                    source_path_pattern="**",
+                    kind_patterns=["*"],
+                ),
+            ]
+        )
+    )
+    manager = ActorManager(
+        repository=resources.repository,
+        factories=registry,
+        gateway=gateway,
+        workspace_resolver=ActorWorkspaceResolver(tmp_path / "workspaces"),
+    )
+    await _insert_actor_bundle(resources, "broken", actor_type="fake")
+
+    await manager.reconcile()
+
+    assert manager.running_actor_ids() == []
+    assert manager.startup_failures()[0].actor_id == "broken"
+    assert "boom" in manager.startup_failures()[0].detail
+
+
 @dataclass
 class FakeActor:
     binding: ActorBinding
@@ -117,10 +150,13 @@ class FakeActor:
 class FakeActorFactory:
     actor_type: str = "fake"
     started_actor_types: list[str] = field(default_factory=list)
+    failing_actor_ids: set[str] = field(default_factory=set)
 
     async def create(self, binding: ActorBinding, mailbox: Mailbox) -> Actor:
         _ = mailbox
         self.started_actor_types.append(binding.actor.type)
+        if binding.actor.id in self.failing_actor_ids:
+            raise RuntimeError(f"boom: {binding.actor.id}")
         return FakeActor(binding)
 
 
@@ -150,7 +186,6 @@ async def _insert_actor_bundle(
             name=f"{actor_id}-char",
             description="",
             system_prompt="You are test",
-            default_prompt_providers=(),
             facade_module="yuubot.core.facade",
             default_hints=CharacterHints(),
         ),
@@ -179,8 +214,7 @@ async def _insert_actor_bundle(
             budget=YuuAgentBudget(),
             llm_options=YuuAgentLLMOptions(),
             model="",
-            agent_capabilities=(),
-            agent_prompt_providers=(),
+            agent_tools=(),
             allowed_capability_ids=(),
             runtime_policy=RuntimePolicy(),
             resource_policy=ResourcePolicy(),

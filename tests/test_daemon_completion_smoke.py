@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,11 +13,10 @@ import httpx
 import msgspec
 import pytest
 import yuullm
-import yuuagents.stage as yuuagents_stage
 
+from helpers import register_test_llm_provider
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
-from yuubot.core.actors import SimpleLoopActor
-from yuubot.core.integrations.echo import (
+from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
     EchoIntegration,
@@ -51,7 +51,7 @@ async def test_daemon_completion_smoke_runs_real_daemon_turn_and_refreshes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = ScriptedProvider(_simple_loop_turns())
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
     daemon = await _build_daemon(yuubot_config, tmp_path)
 
     await daemon.start()
@@ -84,9 +84,7 @@ async def test_daemon_completion_smoke_runs_real_daemon_turn_and_refreshes(
         assert context["actor_id"] == actor.id
         assert context["raw"] == {}
 
-        turn = await _next_simple_loop_turn(daemon, actor.id)
-        assert turn.message_id == "msg-1"
-        assert turn.assistant_text == "done"
+        await _wait_for_llm_calls(llm, 2)
         assert len(llm.calls) == 2
         assert "hello daemon" in yuullm.render_message_text(llm.calls[0][-1])
 
@@ -135,14 +133,14 @@ class ScriptedProvider:
 
     async def stream(
         self,
-        messages: list[yuullm.Message],
+        history: yuullm.History,
         *,
         model: str,
-        tools: list[dict[str, Any]] | None = None,
         on_raw_chunk: yuullm.RawChunkHook | None = None,
         **kwargs: Any,
     ) -> yuullm.StreamResult:
         _ = model, on_raw_chunk, kwargs
+        messages, tools = yuullm.split_history(history)
         self.calls.append(list(messages))
         self.tools.append(list(tools or ()))
         turn = self.turns.pop(0)
@@ -339,7 +337,6 @@ def _character_record(actor_id: str) -> CharacterRecord:
         name=f"{actor_id}-char",
         description="",
         system_prompt="You are a smoke-test actor.",
-        default_prompt_providers=(),
         facade_module="yuubot.core.facade",
         default_hints=CharacterHints(),
     )
@@ -385,8 +382,7 @@ def _actor_record(actor_id: str) -> ActorRecord:
         model="",
         llm_options=YuuAgentLLMOptions(),
         budget=YuuAgentBudget(max_steps=4),
-        agent_capabilities=(),
-        agent_prompt_providers=(),
+        agent_tools=(),
         allowed_capability_ids=(ECHO_CAPABILITY_ID,),
         runtime_policy=RuntimePolicy(),
         resource_policy=ResourcePolicy(workspace_access="read_write"),
@@ -413,7 +409,6 @@ def _simple_loop_turns() -> list[list[yuullm.StreamItem]]:
                 arguments=json.dumps(
                     {
                         "code": code,
-                        "timeout_s": 10,
                         "capture": ["stdout", "stderr"],
                     }
                 ),
@@ -443,10 +438,17 @@ def _echo_instance(daemon: YuubotDaemon, integration_id: str) -> EchoIntegration
     return instance
 
 
-async def _next_simple_loop_turn(daemon: YuubotDaemon, actor_id: str):
-    actor = daemon.actors.running_actor(actor_id)
-    assert isinstance(actor, SimpleLoopActor)
-    return await actor.next_turn_result()
+async def _wait_for_llm_calls(
+    llm: ScriptedProvider,
+    count: int,
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while len(llm.calls) < count:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"expected {count} LLM calls, got {len(llm.calls)}")
+        await asyncio.sleep(0.01)
 
 
 def _client(daemon: YuubotDaemon) -> httpx.AsyncClient:

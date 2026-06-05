@@ -8,7 +8,10 @@ import shlex
 from dataclasses import dataclass
 from typing import Any
 
-from yuubot.core.integrations.echo import (
+import msgspec
+import yuuagents.stage as yuuagents_stage
+
+from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
     ECHO_REPLY_CAPABILITY_ID,
@@ -96,6 +99,18 @@ def llm_user_texts(calls: list) -> list[str]:
 
 def history_text(history: list) -> str:
     return "\n".join(str(item) for item in history)
+
+
+class TestLlmProviderConfig(msgspec.Struct, forbid_unknown_fields=False):
+    pass
+
+
+def register_test_llm_provider(name: str, llm: object) -> None:
+    yuuagents_stage.register_llm_provider(
+        name,
+        TestLlmProviderConfig,
+        lambda _config: yuuagents_stage.LlmClientBundle(client=llm),
+    )
 
 
 async def wait_worker(dispatcher, key: str, timeout: float = 5.0) -> None:
@@ -197,7 +212,6 @@ def make_character_record(
         name=character_id,
         description="",
         system_prompt=system_prompt,
-        default_prompt_providers=(),
         facade_module="yuubot.core.facade",
         default_hints=CharacterHints(),
     )
@@ -239,8 +253,7 @@ def make_actor_record(
         model="",
         llm_options=YuuAgentLLMOptions(),
         budget=YuuAgentBudget(max_steps=max_steps),
-        agent_capabilities=(),
-        agent_prompt_providers=(),
+        agent_tools=(),
         allowed_capability_ids=(ECHO_CAPABILITY_ID, ECHO_REPLY_CAPABILITY_ID),
         runtime_policy=RuntimePolicy(),
         resource_policy=ResourcePolicy(workspace_access="read_write"),

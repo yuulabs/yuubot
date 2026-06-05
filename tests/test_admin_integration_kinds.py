@@ -2,19 +2,31 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import msgspec
 import pytest
+import yuullm
 
 from yuubot.bootstrap.config import BootstrapConfig
 from yuubot.core.gateway import Gateway
 from yuubot.core.integrations import IntegrationFactoryRegistry, default_integration_factories
 from yuubot.core.integrations.contracts import IntegrationInstance, IntegrationStorage
-from yuubot.core.integrations.echo import ECHO_CAPABILITY_ID
+from yuubot.core.integrations.impls.echo import ECHO_CAPABILITY_ID
 from yuubot.core.secrets import Secret
-from yuubot.resources.records import IntegrationRecord
+from yuubot.core.validation import LLMProviderOptions
+from yuubot.resources.records import (
+    BudgetPolicy,
+    IntegrationRecord,
+    LLMBackendRecord,
+    ModelCapabilities,
+    ModelCatalog,
+    PricingTable,
+)
 from yuubot.resources.root import Resources
-from yuubot.resources.store.models import IntegrationORM
+from yuubot.resources.store.models import IntegrationORM, LLMBackendORM
+import yuubot.runtime.admin.app as admin_module
 from yuubot.runtime.admin import DaemonClient, build_admin_asgi_app
 
 
@@ -103,6 +115,291 @@ async def test_secret_config_schema_and_reveal_endpoint(
     assert revealed.json()["data"]["value"] == "plain-token"
 
 
+async def test_admin_resource_proxy_injects_daemon_secret(
+    resources: Resources,
+    yuubot_config: BootstrapConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_send_daemon_request(
+        daemon: DaemonClient,
+        path: str,
+        *,
+        method: str,
+        body: bytes,
+        content_type: str,
+    ) -> admin_module.DaemonResponse:
+        captured.update(
+            {
+                "daemon_secret": daemon.daemon_secret,
+                "path": path,
+                "method": method,
+                "body": body,
+                "content_type": content_type,
+            }
+        )
+        return admin_module.DaemonResponse(
+            status_code=201,
+            body=b'{"status":"ok","data":{"id":"backend-1"},"actions":["refresh"]}',
+        )
+
+    monkeypatch.setattr(admin_module, "_send_daemon_request", fake_send_daemon_request)
+    app = build_admin_asgi_app(
+        config=yuubot_config.admin,
+        resources=resources,
+        daemon=DaemonClient(base_url="http://daemon", daemon_secret="server-only"),
+        integration_factories=default_integration_factories(),
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/resources/llm-backends?refresh=true",
+            json={"name": "backend-1"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["actions"] == ["refresh"]
+    assert captured["daemon_secret"] == "server-only"
+    assert captured["path"] == "/api/resources/llm-backends?refresh=true"
+    assert captured["method"] == "POST"
+    assert b"backend-1" in captured["body"]
+    assert captured["content_type"].startswith("application/json")
+
+
+async def test_admin_resource_proxy_preserves_daemon_errors(
+    resources: Resources,
+    yuubot_config: BootstrapConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_send_daemon_request(
+        daemon: DaemonClient,
+        path: str,
+        *,
+        method: str,
+        body: bytes,
+        content_type: str,
+    ) -> admin_module.DaemonResponse:
+        _ = daemon, path, method, body, content_type
+        return admin_module.DaemonResponse(
+            status_code=400,
+            body=b'{"status":"error","code":"validation_error","detail":"bad actor"}',
+        )
+
+    monkeypatch.setattr(admin_module, "_send_daemon_request", fake_send_daemon_request)
+    app = build_admin_asgi_app(
+        config=yuubot_config.admin,
+        resources=resources,
+        daemon=DaemonClient(base_url="http://daemon", daemon_secret="server-only"),
+        integration_factories=default_integration_factories(),
+    )
+
+    async with _client(app) as client:
+        response = await client.put(
+            "/api/resources/actors/actor-1",
+            json={"character": {"id": "missing"}},
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "status": "error",
+        "code": "validation_error",
+        "detail": "bad actor",
+    }
+
+
+async def test_provider_models_endpoint_fetches_models_server_side(
+    resources: Resources,
+    yuubot_config: BootstrapConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = await resources.repository.insert(
+        LLMBackendORM,
+        LLMBackendRecord(
+            id="deepseek-main",
+            name="deepseek-main",
+            yuuagents_provider="openai",
+            model_capabilities=ModelCapabilities(chat=True),
+            models=ModelCatalog(),
+            pricing=PricingTable(),
+            budget=BudgetPolicy(),
+            provider_options=LLMProviderOptions(
+                base_url="https://api.deepseek.com",
+                provider_name="deepseek",
+            ),
+        ),
+    )
+    captured: dict[str, str] = {}
+
+    def fake_create_provider_model_client(
+        record: LLMBackendRecord,
+        *,
+        api_key: str = "",
+        base_url: str = "",
+    ) -> FakeModelClient:
+        captured["backend_id"] = record.id
+        captured["api_key"] = api_key
+        captured["base_url"] = base_url
+        return FakeModelClient()
+
+    monkeypatch.setattr(
+        admin_module,
+        "_create_provider_model_client",
+        fake_create_provider_model_client,
+    )
+    app = build_admin_asgi_app(
+        config=yuubot_config.admin,
+        resources=resources,
+        daemon=DaemonClient(base_url="http://daemon"),
+        integration_factories=default_integration_factories(),
+    )
+
+    async with _client(app) as client:
+        response = await client.post(
+            f"/api/providers/{backend.id}/models",
+            json={
+                "api_key": "sk-test",
+                "base_url": "https://api.deepseek.com",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "data": [
+            {"id": "deepseek-chat", "displayName": "DeepSeek Chat"},
+            {"id": "deepseek-reasoner"},
+        ],
+    }
+    assert captured == {
+        "backend_id": "deepseek-main",
+        "api_key": "sk-test",
+        "base_url": "https://api.deepseek.com",
+    }
+
+
+async def test_provider_models_endpoint_reports_missing_backend(
+    admin_app,
+) -> None:
+    async with _client(admin_app) as client:
+        response = await client.post("/api/providers/missing/models")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "llm backend not found"
+
+
+async def test_provider_validate_reports_default_model_and_capabilities(
+    resources: Resources,
+    yuubot_config: BootstrapConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = await resources.repository.insert(
+        LLMBackendORM,
+        LLMBackendRecord(
+            id="provider-main",
+            name="provider-main",
+            yuuagents_provider="openai",
+            default_model="deepseek-chat",
+            model_capabilities=ModelCapabilities(chat=True, tool_calling=True),
+            models=ModelCatalog(),
+            pricing=PricingTable(),
+            budget=BudgetPolicy(),
+        ),
+    )
+
+    monkeypatch.setattr(
+        admin_module,
+        "_create_provider_model_client",
+        lambda *args, **kwargs: FakeModelClient(),
+    )
+    app = build_admin_asgi_app(
+        config=yuubot_config.admin,
+        resources=resources,
+        daemon=DaemonClient(base_url="http://daemon"),
+        integration_factories=default_integration_factories(),
+    )
+
+    async with _client(app) as client:
+        response = await client.post(f"/api/providers/{backend.id}/validate")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "data": {
+            "valid": True,
+            "detail": "",
+            "default_model_valid": True,
+            "models": [
+                {"id": "deepseek-chat", "displayName": "DeepSeek Chat"},
+                {"id": "deepseek-reasoner"},
+            ],
+            "capabilities": {
+                "chat": True,
+                "vision": False,
+                "tool_calling": True,
+                "reasoning": False,
+                "embedding": False,
+                "structured_output": False,
+            },
+        },
+    }
+
+
+async def test_monitor_spa_route_is_not_shadowed_by_trace_ui(
+    resources: Resources,
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+) -> None:
+    web_dist = tmp_path / "web-dist"
+    web_dist.mkdir()
+    (web_dist / "index.html").write_text("<main>yuubot monitor</main>", encoding="utf-8")
+    app = build_admin_asgi_app(
+        config=msgspec.structs.replace(
+            yuubot_config.admin,
+            web_dist_dir=str(web_dist),
+        ),
+        resources=resources,
+        daemon=DaemonClient(base_url="http://daemon"),
+        integration_factories=default_integration_factories(),
+        trace_db_path=str(tmp_path / "traces.db"),
+    )
+
+    async with _client(app) as client:
+        monitor = await client.get("/monitor")
+
+    assert monitor.status_code == 200
+    assert "yuubot monitor" in monitor.text
+
+
+def test_provider_model_client_uses_provider_name_from_backend() -> None:
+    """_create_provider_model_client derives provider_name from
+    backend.provider_options.provider_name."""
+    backend = LLMBackendRecord(
+        id="deepseek-main",
+        name="deepseek-main",
+        yuuagents_provider="openai",
+        model_capabilities=ModelCapabilities(chat=True),
+        models=ModelCatalog(),
+        pricing=PricingTable(),
+        budget=BudgetPolicy(),
+        provider_options=LLMProviderOptions(
+            base_url="https://api.deepseek.com",
+            provider_name="deepseek",
+            api_key="sk-example",
+        ),
+    )
+
+    # api_key from request body parameter takes priority over
+    # provider_options.api_key; both paths construct without error
+    from_request = admin_module._create_provider_model_client(
+        backend, api_key="sk-from-request"
+    )
+    assert from_request._provider_name == "deepseek"
+
+    from_provider_options = admin_module._create_provider_model_client(backend)
+    assert from_provider_options._provider_name == "deepseek"
+
+
 class SecretIntegrationConfig(msgspec.Struct, forbid_unknown_fields=False):
     bot_token: Secret
     label: str = ""
@@ -125,3 +422,14 @@ class SecretIntegrationFactory:
     ) -> IntegrationInstance:
         _ = record, gateway, storage
         raise NotImplementedError
+
+    def routes(self, integrations: object) -> list:
+        return []
+
+
+class FakeModelClient:
+    async def list_models(self) -> list[yuullm.ProviderModel]:
+        return [
+            yuullm.ProviderModel(id="deepseek-chat", display_name="DeepSeek Chat"),
+            yuullm.ProviderModel(id="deepseek-reasoner"),
+        ]

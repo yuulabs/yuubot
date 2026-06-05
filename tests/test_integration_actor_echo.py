@@ -8,13 +8,13 @@ from yuubot.core.actors import (
     ActorPythonSessionFactory,
     ActorWorkspaceResolver,
 )
-from yuubot.core.actors.echo import ECHO_ACTOR_TYPE, EchoOnceActorFactory
+from yuubot.core.actors.impls.echo import ECHO_ACTOR_TYPE, EchoOnceActorFactory
 from yuubot.core.gateway import Gateway
 from yuubot.core.integrations import (
     IntegrationCore,
     IntegrationFactoryRegistry,
 )
-from yuubot.core.integrations.echo import (
+from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
     EchoPayload,
@@ -161,8 +161,7 @@ async def _create_actor_bundle(
             budget=YuuAgentBudget(),
             llm_options=YuuAgentLLMOptions(),
             model="",
-            agent_capabilities=(),
-            agent_prompt_providers=(),
+            agent_tools=(),
             allowed_capability_ids=(ECHO_CAPABILITY_ID,),
             runtime_policy=RuntimePolicy(),
             resource_policy=ResourcePolicy(),
@@ -181,7 +180,6 @@ async def _create_character(
             name=character_id,
             description="",
             system_prompt="You echo messages.",
-            default_prompt_providers=(),
             facade_module="yuubot.core.facade",
             default_hints=CharacterHints(),
         ),

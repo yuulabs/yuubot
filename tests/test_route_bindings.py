@@ -272,7 +272,6 @@ async def _create_character(
         name=name,
         description="",
         system_prompt=f"You are {name}",
-        default_prompt_providers=(),
         facade_module="yuubot.core.facade",
         default_hints=CharacterHints(),
     )
@@ -310,8 +309,7 @@ async def _create_actor(
         budget=YuuAgentBudget(),
         llm_options=YuuAgentLLMOptions(),
         model="",
-        agent_capabilities=(),
-        agent_prompt_providers=(),
+        agent_tools=(),
         allowed_capability_ids=(),
         runtime_policy=RuntimePolicy(),
         resource_policy=ResourcePolicy(),

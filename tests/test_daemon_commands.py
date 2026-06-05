@@ -26,11 +26,13 @@ from yuubot.resources.records import (
 )
 from yuubot.resources.root import Resources
 from yuubot.resources.registry import EventDrivenRefreshDispatcher, ResourceTypeRegistry
-from yuubot.runtime.commands import build_default_resource_type_registry
+from yuubot.runtime.daemon.commands import build_default_resource_type_registry
 from yuubot.runtime.daemon import (
     ActorLifecycleService,
     IntegrationLifecycleService,
     RouteBindingService,
+    _actor_lifecycle_handler,
+    _integration_lifecycle_handler,
     build_daemon_asgi_app,
     build_refresh_dispatcher,
 )
@@ -90,6 +92,8 @@ class FakeIntegrationInstance:
 @dataclass
 class FakeIntegrationFactory:
     name: str = "fake"
+    description: str = ""
+    config_schema: dict[str, object] = field(default_factory=dict)
     instances: dict[str, FakeIntegrationInstance] = field(default_factory=dict)
     storage_dirs: dict[str, Path] = field(default_factory=dict)
 
@@ -108,6 +112,9 @@ class FakeIntegrationFactory:
         self.instances[record.id] = instance
         self.storage_dirs[record.id] = storage.data_dir
         return instance
+
+    def routes(self, integrations: object) -> list:
+        return []
 
 
 class SecretFakeIntegrationConfig(msgspec.Struct, forbid_unknown_fields=False):
@@ -168,7 +175,10 @@ def _build_runtime(
         )
     )
     refresh = build_refresh_dispatcher(routes=routes, actors=actors, integrations=integrations)
-    type_registry = build_default_resource_type_registry()
+    type_registry = build_default_resource_type_registry(
+        integration_lifecycle_handler=_integration_lifecycle_handler(integrations),
+        actor_lifecycle_handler=_actor_lifecycle_handler(actors),
+    )
     trace_service = TraceService(config=TraceConfig(enabled=False), db_path=":memory:")
     app = build_daemon_asgi_app(
         config=ServerConfig(daemon_secret=SECRET),
@@ -256,13 +266,12 @@ async def test_create_actor_validates_character_reference(
                 json={
                     "name": "bad-actor",
                     "type": "fake",
-                    "character": {"id": "nonexistent", "name": "x", "description": "", "system_prompt": "", "default_prompt_providers": [], "facade_module": "x", "default_hints": {}},
+                    "character": {"id": "nonexistent", "name": "x", "description": "", "system_prompt": "", "facade_module": "x", "default_hints": {}},
                     "llm_backend": {"id": "also-nonexistent", "name": "x", "yuuagents_provider": "openai", "model_capabilities": {}, "models": {}, "pricing": {}, "budget": {}},
                     "model": "",
                     "llm_options": {},
                     "budget": {},
-                    "agent_capabilities": [],
-                    "agent_prompt_providers": [],
+                    "agent_tools": [],
                     "allowed_capability_ids": [],
                     "runtime_policy": {},
                     "resource_policy": {},
@@ -299,8 +308,7 @@ async def test_delete_referenced_llm_backend_returns_conflict(
     character = await repo.insert(
         CharacterORM,
         CharacterRecord(
-            id="char-1", name="char-1", description="", system_prompt="test",
-            default_prompt_providers=(), facade_module="x", default_hints=CharacterHints(),
+            id="char-1", name="char-1", description="", system_prompt="test", facade_module="x", default_hints=CharacterHints(),
         ),
     )
     backend = await repo.insert(
@@ -317,7 +325,7 @@ async def test_delete_referenced_llm_backend_returns_conflict(
             id="actor-1", name="actor-1", type="fake",
             character=character, llm_backend=backend, model="",
             llm_options=YuuAgentLLMOptions(), budget=YuuAgentBudget(),
-            agent_capabilities=(), agent_prompt_providers=(),
+            agent_tools=(),
             allowed_capability_ids=(), runtime_policy=RuntimePolicy(),
             resource_policy=ResourcePolicy(),
         ),

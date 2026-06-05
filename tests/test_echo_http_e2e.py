@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -11,12 +12,10 @@ import httpx
 import msgspec
 import pytest
 import yuullm
-import yuuagents.stage as yuuagents_stage
 
-from helpers import insert_echo_actor_resources
+from helpers import insert_echo_actor_resources, register_test_llm_provider
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
-from yuubot.core.actors import SimpleLoopActor
-from yuubot.core.integrations.echo import EchoIntegration, EchoPayload, EchoReplyPayload
+from yuubot.core.integrations.impls.echo import EchoIntegration, EchoPayload, EchoReplyPayload
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
 
@@ -36,7 +35,7 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = EchoRoundTripProvider()
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
@@ -83,10 +82,7 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
         context = await instance.next_echo_context()
         assert context["actor_id"] == resources.actor.id
 
-        turn = await _next_simple_loop_turn(daemon, resources.actor.id)
-        assert turn.message_id == MESSAGE_ID
-        assert turn.assistant_text == "done"
-
+        await _wait_for_llm_calls(llm, 2)
         assert len(llm.calls) == 2
         first_user_message = yuullm.render_message_text(llm.calls[0][-1])
         assert ORIGINAL_TEXT in first_user_message
@@ -107,7 +103,7 @@ async def test_echo_round_trip_waits_for_llm_reply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     llm = ReplyRoundTripProvider()
-    monkeypatch.setitem(yuuagents_stage._PROVIDER_CLASSES, "openai", lambda **_: llm)
+    register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
@@ -147,10 +143,7 @@ async def test_echo_round_trip_waits_for_llm_reply(
             )
         )
 
-        turn = await _next_simple_loop_turn(daemon, resources.actor.id)
-        assert turn.message_id == MESSAGE_ID
-        assert turn.assistant_text == "done"
-
+        await _wait_for_llm_calls(llm, 2)
         assert len(llm.calls) == 2
         first_user_message = yuullm.render_message_text(llm.calls[0][-1])
         assert ORIGINAL_TEXT in first_user_message
@@ -181,14 +174,14 @@ class EchoRoundTripProvider:
 
     async def stream(
         self,
-        messages: list[yuullm.Message],
+        history: yuullm.History,
         *,
         model: str,
-        tools: list[dict[str, Any]] | None = None,
         on_raw_chunk: yuullm.RawChunkHook | None = None,
         **kwargs: Any,
     ) -> yuullm.StreamResult:
         _ = model, on_raw_chunk, kwargs
+        messages, tools = yuullm.split_history(history)
         self.calls.append(list(messages))
         self.tools.append(list(tools or ()))
         turn = self._tool_turn() if len(self.calls) == 1 else self._done_turn()
@@ -225,7 +218,6 @@ class EchoRoundTripProvider:
                 arguments=json.dumps(
                     {
                         "code": code,
-                        "timeout_s": 10,
                         "capture": ["stdout", "stderr"],
                     }
                 ),
@@ -256,7 +248,6 @@ class ReplyRoundTripProvider(EchoRoundTripProvider):
                 arguments=json.dumps(
                     {
                         "code": code,
-                        "timeout_s": 10,
                         "capture": ["stdout", "stderr"],
                     }
                 ),
@@ -292,10 +283,17 @@ def _echo_instance(daemon: YuubotDaemon, integration_id: str) -> EchoIntegration
     return instance
 
 
-async def _next_simple_loop_turn(daemon: YuubotDaemon, actor_id: str):
-    actor = daemon.actors.running_actor(actor_id)
-    assert isinstance(actor, SimpleLoopActor)
-    return await actor.next_turn_result()
+async def _wait_for_llm_calls(
+    llm: EchoRoundTripProvider,
+    count: int,
+    *,
+    timeout_s: float = 5.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while len(llm.calls) < count:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"expected {count} LLM calls, got {len(llm.calls)}")
+        await asyncio.sleep(0.01)
 
 
 def _execute_python_description(tools: list[dict[str, Any]]) -> str:

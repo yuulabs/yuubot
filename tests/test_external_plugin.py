@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 
 import httpx
+import pytest
 
 from yuubot.bootstrap.config import BootstrapConfig
 from yuubot.core.gateway import Gateway
@@ -15,6 +17,8 @@ from yuubot.core.integrations.contracts import LocalIntegrationStorage
 from yuubot.core.routing import RouteBindings
 from yuubot.resources.records import IntegrationRecord
 from yuubot.resources.root import Resources
+from yuubot.resources.store.models import IntegrationORM
+import yuubot.runtime.admin.app as admin_module
 from yuubot.runtime.admin import DaemonClient, build_admin_asgi_app
 from yuubot.runtime.plugin_manager import ExternalPluginManager
 
@@ -50,6 +54,7 @@ async def test_admin_installs_external_plugin_record(
     tmp_path: Path,
     resources: Resources,
     yuubot_config: BootstrapConfig,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _write_plugin_source(tmp_path / "source", package_name="demo_plugin")
     manager = ExternalPluginManager(
@@ -58,10 +63,39 @@ async def test_admin_installs_external_plugin_record(
     )
     registry = IntegrationFactoryRegistry()
     registry.register_loader(manager.loader())
+    captured: dict[str, object] = {}
+
+    async def fake_request_daemon(
+        daemon: DaemonClient,
+        path: str,
+        *,
+        method: str,
+        body: bytes = b"",
+        content_type: str = "application/json",
+    ) -> admin_module.DaemonResponse:
+        _ = daemon, content_type
+        captured.update({"path": path, "method": method, "body": body})
+        payload = json.loads(body.decode())
+        record = await resources.repository.insert(
+            IntegrationORM,
+            IntegrationRecord(
+                id=payload["id"],
+                name=payload["name"],
+                config=payload["config"],
+                enabled=payload["enabled"],
+            ),
+        )
+        response_body = json.dumps(
+            {"status": "ok", "data": {"id": record.id, "name": record.name}},
+            ensure_ascii=True,
+        ).encode()
+        return admin_module.DaemonResponse(status_code=201, body=response_body)
+
+    monkeypatch.setattr(admin_module, "_request_daemon", fake_request_daemon)
     app = build_admin_asgi_app(
         config=yuubot_config.admin,
         resources=resources,
-        daemon=DaemonClient(base_url="http://daemon"),
+        daemon=DaemonClient(base_url="http://daemon", daemon_secret="server-only"),
         integration_factories=registry,
         plugin_manager=manager,
     )
@@ -80,7 +114,9 @@ async def test_admin_installs_external_plugin_record(
 
     assert installed.status_code == 201
     assert installed.json()["plugin"]["name"] == "demo"
-    assert "daemon_secret not set" in installed.json()["warnings"][0]
+    assert installed.json()["warnings"] == []
+    assert captured["path"] == "/api/resources/integrations"
+    assert captured["method"] == "POST"
     assert listed.json()["plugins"][0]["integration_id"] == "demo"
     assert kinds.json()["kinds"][0]["name"] == "demo"
 

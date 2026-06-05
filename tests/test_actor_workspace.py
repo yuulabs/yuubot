@@ -68,11 +68,14 @@ async def test_actor_python_session_uses_actor_workspace_cwd(
     session = await python_sessions.create(binding)
     try:
         output = await session.execute("import os\nprint(os.getcwd())")
+        context_output = await session.execute("import yb\nprint(yb.actor.context())")
     finally:
         await session.close()
         await python_sessions.stop()
 
     assert str(workspace) in repr(output)
+    assert "'actor_id': 'python actor'" in repr(context_output)
+    assert "'agent_name': 'python actor'" in repr(context_output)
 
 
 async def test_each_actor_gets_a_distinct_workspace(tmp_path: Path) -> None:
@@ -97,7 +100,6 @@ async def _create_actor_bundle(
             name=f"{actor_id}-char",
             description="",
             system_prompt="You are test",
-            default_prompt_providers=(),
             facade_module="yuubot.core.facade",
             default_hints=CharacterHints(),
         ),
@@ -125,8 +127,7 @@ async def _create_actor_bundle(
             model="",
             llm_options=YuuAgentLLMOptions(),
             budget=YuuAgentBudget(),
-            agent_capabilities=(),
-            agent_prompt_providers=(),
+            agent_tools=(),
             allowed_capability_ids=(),
             runtime_policy=RuntimePolicy(),
             resource_policy=ResourcePolicy(),

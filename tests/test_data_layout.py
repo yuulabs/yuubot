@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import msgspec
+import pytest
 
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.bootstrap.layout import DataLayout
+from yuubot.resources.store.resource import Store
+from yuubot.runtime.admin import build_admin
 from yuubot.runtime.daemon import build_daemon
 
 
@@ -34,6 +37,32 @@ async def test_build_daemon_materializes_canonical_layout(
         assert layout.skills_dir.is_dir()
     finally:
         await daemon.resources.close()
+
+
+async def test_build_admin_does_not_run_schema_migration(
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    config = msgspec.structs.replace(
+        yuubot_config,
+        database=DatabaseConfig(path=str(data_dir / "yuubot" / "yuubot.db")),
+        paths=PathsConfig(data_dir=str(data_dir)),
+    )
+
+    async def fail_migrate(self: Store) -> None:
+        _ = self
+        raise AssertionError("admin must not migrate the resource database")
+
+    monkeypatch.setattr(Store, "migrate", fail_migrate)
+    admin = await build_admin(config)
+    try:
+        layout = DataLayout.from_path(data_dir)
+        assert layout.yuubot_dir.is_dir()
+        assert layout.plugins_dir.is_dir()
+    finally:
+        await admin.close()
 
 
 def test_layout_resolves_subpaths(tmp_path: Path) -> None:

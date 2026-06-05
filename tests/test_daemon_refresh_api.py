@@ -45,7 +45,7 @@ from yuubot.resources.store.models import (
     IntegrationORM,
     LLMBackendORM,
 )
-from yuubot.runtime.commands import build_default_resource_type_registry
+from yuubot.runtime.daemon.commands import build_default_resource_type_registry
 from yuubot.runtime.daemon import (
     ActorLifecycleService,
     IntegrationLifecycleService,
@@ -287,6 +287,8 @@ class FakeIntegrationInstance:
 @dataclass
 class FakeIntegrationFactory:
     name: str = "fake"
+    description: str = ""
+    config_schema: dict[str, object] = field(default_factory=dict)
     instances: dict[str, FakeIntegrationInstance] = field(default_factory=dict)
 
     def capability_specs(self) -> tuple[AnyCapabilitySpec, ...]:
@@ -303,6 +305,9 @@ class FakeIntegrationFactory:
         instance = FakeIntegrationInstance()
         self.instances[record.id] = instance
         return instance
+
+    def routes(self, integrations: object) -> list:
+        return []
 
 
 def _build_runtime(
@@ -403,7 +408,6 @@ async def _create_actor_bundle(
             name=f"{actor_id}-char",
             description="",
             system_prompt="You are test.",
-            default_prompt_providers=(),
             facade_module="yuubot.core.facade",
             default_hints=CharacterHints(),
         ),
@@ -432,8 +436,7 @@ async def _create_actor_bundle(
             budget=YuuAgentBudget(),
             llm_options=YuuAgentLLMOptions(),
             model="",
-            agent_capabilities=(),
-            agent_prompt_providers=(),
+            agent_tools=(),
             allowed_capability_ids=(),
             runtime_policy=RuntimePolicy(),
             resource_policy=ResourcePolicy(),
