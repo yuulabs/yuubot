@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web Chat 幕后流程 — yuubot-v2</title>
+<style>
+:root {
+  --bg: #fafafa;
+  --card: #ffffff;
+  --border: #d4d4d4;
+  --border-light: #e5e5e5;
+  --text: #1a1a1a;
+  --text2: #525252;
+  --text3: #a3a3a3;
+  --accent-blue: #2563eb;
+  --accent-purple: #7c3aed;
+  --accent-green: #16a34a;
+  --accent-orange: #d97706;
+  --accent-red: #dc2626;
+  --accent-pink: #db2777;
+  --accent-cyan: #0891b2;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.08);
+  --radius: 6px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: Georgia, "Noto Serif SC", "Source Han Serif SC", serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.8;
+  padding: 40px 32px;
+  font-size: 16px;
+}
+
+h1 {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--text);
+}
+
+.subtitle {
+  color: var(--text2);
+  font-size: 15px;
+  margin-bottom: 36px;
+}
+
+/* ===== Flow Container ===== */
+.flow-container {
+  max-width: 960px;
+  margin: 0 auto 40px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 32px;
+}
+
+/* ===== Layer Label ===== */
+.layer-label {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text2);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-light);
+  margin-bottom: 20px;
+}
+
+/* ===== Flow Row ===== */
+.flow-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
+  position: relative;
+}
+.flow-row:last-child { margin-bottom: 0; }
+
+/* Data tag */
+.flow-tag {
+  font-family: "Cascadia Code", "Fira Code", "SF Mono", monospace;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  background: #f0f4ff;
+  border: 1px solid #c7d2fe;
+  color: var(--accent-blue);
+  white-space: nowrap;
+  flex-shrink: 0;
+  align-self: center;
+}
+.flow-tag.tag-purple { background: #f3f0ff; border-color: #c4b5fd; color: var(--accent-purple); }
+.flow-tag.tag-cyan   { background: #ecfeff; border-color: #a5f3fc; color: var(--accent-cyan); }
+.flow-tag.tag-green  { background: #f0fdf4; border-color: #86efac; color: var(--accent-green); }
+.flow-tag.tag-orange { background: #fffbeb; border-color: #fcd34d; color: var(--accent-orange); }
+
+/* Arrow */
+.arrow {
+  font-size: 22px;
+  color: var(--text3);
+  flex-shrink: 0;
+  align-self: center;
+  font-weight: 400;
+  line-height: 1;
+}
+
+/* ===== Node ===== */
+.node {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  min-width: 140px;
+  flex-shrink: 0;
+}
+
+.node .name {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text);
+}
+.node .hint {
+  font-size: 13px;
+  color: var(--text3);
+  margin-top: 2px;
+  font-family: "Cascadia Code", "Fira Code", monospace;
+}
+
+/* Color-coded left borders */
+.node.browser     { border-left: 3px solid var(--accent-blue); }
+.node.admin       { border-left: 3px solid var(--accent-purple); }
+.node.daemon      { border-left: 3px solid var(--accent-cyan); }
+.node.actor       { border-left: 3px solid var(--accent-green); }
+.node.llm         { border-left: 3px solid var(--accent-orange); }
+.node.facade      { border-left: 3px solid var(--accent-pink); }
+.node.integration { border-left: 3px solid var(--accent-red); }
+
+/* ===== Inline Annotation Bubble ===== */
+.annotation {
+  background: #f9fafb;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--text2);
+  line-height: 1.7;
+  align-self: center;
+  flex: 1;
+  min-width: 0;
+}
+.annotation strong {
+  color: var(--text);
+}
+.annotation code {
+  font-family: "Cascadia Code", "Fira Code", monospace;
+  font-size: 12px;
+  background: #f0f0f0;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--text);
+}
+
+/* ===== Vertical Flow Layout ===== */
+.flow-vertical {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.flow-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  width: 100%;
+}
+
+.flow-step-left {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.flow-step-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.flow-step-right {
+  flex: 1;
+  padding-top: 8px;
+}
+
+/* Connector line */
+.connector {
+  width: 2px;
+  height: 28px;
+  background: var(--border);
+}
+
+.connector-arrow {
+  font-size: 18px;
+  color: var(--text3);
+  line-height: 1;
+  margin: -2px 0;
+}
+
+/* ===== Gap Section ===== */
+.flow-container.gap-section {
+  border-left: 3px solid var(--accent-orange);
+}
+
+.flow-container.actor-section {
+  border-left: 3px solid var(--accent-purple);
+}
+
+/* ===== Table ===== */
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 14px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.compare-table th {
+  background: #f5f5f5;
+  padding: 10px 14px;
+  text-align: left;
+  font-weight: 700;
+  border-bottom: 2px solid var(--border);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text2);
+}
+.compare-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-light);
+  vertical-align: top;
+}
+.compare-table tr:last-child td { border-bottom: none; }
+
+.gap-row td {
+  background: #fffbeb;
+  border-left: 3px solid var(--accent-orange);
+}
+
+/* ===== Badge ===== */
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+  margin-right: 4px;
+  font-family: "Cascadia Code", "Fira Code", monospace;
+}
+.badge-green { background: #dcfce7; color: #15803d; }
+.badge-red   { background: #fee2e2; color: #b91c1c; }
+.badge-blue  { background: #dbeafe; color: #1d4ed8; }
+.badge-purple{ background: #ede9fe; color: #6d28d9; }
+.badge-orange{ background: #fef3c7; color: #b45309; }
+.badge-cyan  { background: #cffafe; color: #0e7490; }
+.badge-pink  { background: #fce7f3; color: #be185d; }
+.badge-red   { background: #fee2e2; color: #b91c1c; }
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  body { padding: 20px 16px; font-size: 15px; }
+  h1 { font-size: 24px; }
+  .flow-container { padding: 20px 16px; }
+  .flow-step { flex-direction: column; align-items: center; gap: 12px; }
+  .flow-step-left { align-items: center; text-align: center; flex: none; }
+  .flow-step-right { text-align: center; }
+  .node { min-width: 120px; }
+}
+</style>
+</head>
+<body>
+
+<div style="max-width:960px;margin:0 auto 8px;">
+<h1>Web Chat 幕后流程</h1>
+<p class="subtitle">
+  用户浏览器 → Admin → Daemon → Actor → LLM → 回复。<br>
+  <span style="color:var(--accent-orange);font-weight:600;">⚠ 橙色高亮 = Actor 产生但客户端收不到的数据</span>
+</p>
+</div>
+
+<!-- ==================== FLOW DIAGRAM ==================== -->
+
+<div class="flow-container">
+
+  <!-- Step 1: Browser → Admin -->
+  <div class="flow-step">
+    <div class="flow-step-left">
+      <div class="flow-tag">POST /api/chat/{id}/messages</div>
+      <div class="node browser" style="margin-top:8px;">
+        <div class="name">🌐 浏览器 (React)</div>
+        <div class="hint">chat.$dialogId.tsx</div>
+      </div>
+    </div>
+    <div class="flow-step-center">
+      <div class="connector-arrow">→</div>
+    </div>
+    <div class="flow-step-right">
+      <div class="annotation">
+        <strong>前端发送消息</strong>：用户输入文本后，先创建一条<strong>乐观消息</strong>（optimistic update），
+        然后调用 <code>sendChatMessage()</code> POST 到 Admin。
+        收到 reply 后<strong>忽略返回值</strong>，重新 GET 消息历史来渲染。
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"></div>
+  <div class="connector-arrow">↓</div>
+  <div class="connector"></div>
+
+  <!-- Step 2: Admin → Daemon -->
+  <div class="flow-step">
+    <div class="flow-step-left">
+      <div class="flow-tag tag-purple">X-Daemon-Secret + raw body</div>
+      <div class="node admin" style="margin-top:8px;">
+        <div class="name">⚙️ Admin Server :8781</div>
+        <div class="hint">proxy → daemon (sync HTTP)</div>
+      </div>
+    </div>
+    <div class="flow-step-center">
+      <div class="connector-arrow">→</div>
+    </div>
+    <div class="flow-step-right">
+      <div class="annotation">
+        <strong>纯代理层</strong>：不解析 chat 数据。读取请求 body → 通过<strong>同步 HTTP（线程池）</strong>转发到 Daemon → 原样返回响应。
+        Admin 和 Daemon 是<strong>独立进程</strong>，通过 <code>DaemonClient.base_url</code> (http://127.0.0.1:8780) 通信，10 秒超时。
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"></div>
+  <div class="connector-arrow">↓</div>
+  <div class="connector"></div>
+
+  <!-- Step 3: Daemon → Actor -->
+  <div class="flow-step">
+    <div class="flow-step-left">
+      <div class="flow-tag tag-cyan">IncomingMessage + mailbox.put()</div>
+      <div class="node daemon" style="margin-top:8px;">
+        <div class="name">🔧 Daemon Server :8780</div>
+        <div class="hint">web_chat_message() handler</div>
+      </div>
+    </div>
+    <div class="flow-step-center">
+      <div class="connector-arrow">→</div>
+    </div>
+    <div class="flow-step-right">
+      <div class="annotation">
+        <strong>核心编排器</strong>：验证 secret → 解析 JSON → 找到/启动 actor → 投递消息到 mailbox → 等待回复（<strong>5 秒超时</strong>）→ 持久化消息 → 返回 JSON。
+        构造 <code>IncomingMessage</code> 包含 message_id、sender、source、content。
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"></div>
+  <div class="connector-arrow">↓</div>
+  <div class="connector"></div>
+
+  <!-- Step 4: Actor → Assembly/LLM -->
+  <div class="flow-step">
+    <div class="flow-step-left">
+      <div class="flow-tag tag-green">ScheduleTriggerMessage</div>
+      <div class="node actor" style="margin-top:8px;">
+        <div class="name">🤖 SimpleLoopActor</div>
+        <div class="hint">_consume_messages() loop</div>
+      </div>
+    </div>
+    <div class="flow-step-center">
+      <div class="connector-arrow">→</div>
+    </div>
+    <div class="flow-step-right">
+      <div class="annotation">
+        <strong>消息消费循环</strong>：后台运行 <code>_consume_messages()</code> 无限循环。
+        从 <code>mailbox.recv()</code> 取出消息 → 转为 <code>ScheduleTriggerMessage</code> → 交给 <code>YuuAgentsActorRuntime</code> 处理 LLM 交互 → 结果放入 <code>turn_results</code> 队列。
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"></div>
+  <div class="connector-arrow">↓</div>
+  <div class="connector"></div>
+
+  <!-- Step 5: Assembly + LLM -->
+  <div class="flow-step">
+    <div class="flow-step-left">
+      <div class="node llm">
+        <div class="name">🧠 Assembly + LLM</div>
+        <div class="hint">build_agent_definition()</div>
+      </div>
+    </div>
+    <div class="flow-step-center">
+      <div class="connector-arrow">→</div>
+    </div>
+    <div class="flow-step-right">
+      <div class="annotation">
+        <strong>大脑组装</strong>：每次 Actor 启动时创建 yuuagents Stage + Agent + LLM Client + Trace Observer。
+        LLM 客户端包裹在 <code>PricingAwareLlmClient</code> 中，自动计算费用。
+        费用数据写入 trace 数据库，<strong>不返回给浏览器</strong>。
+      </div>
+    </div>
+  </div>
+
+  <div class="connector"></div>
+  <div class="connector-arrow">↓</div>
+  <div class="connector"></div>
+
+  <!-- Step 6: Facade ↔ Integrations -->
+  <div class="flow-step">
+    <div class="flow-step-left">
+      <div class="flow-tag tag-orange">yext.* RPC → bridge → invoke</div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <div class="node facade">
+          <div class="name">📦 Facade (yext)</div>
+          <div class="hint">Generated Python package</div>
+        </div>
+        <div class="arrow" style="align-self:center;">⇄</div>
+        <div class="node integration">
+          <div class="name">🔌 Integrations</div>
+          <div class="hint">capability.invoke()</div>
+        </div>
+      </div>
+    </div>
+    <div class="flow-step-center">
+      <div class="connector-arrow">→</div>
+    </div>
+    <div class="flow-step-right">
+      <div class="annotation">
+        <strong>集成桥梁</strong>：每次 Actor 启动时根据 <code>allowed_capability_ids</code> 动态生成 Python 包 <code>yext/</code>。
+        当 LLM 调用工具（如 <code>yext.discord.send_message()</code>），通过 <strong>TCP RPC</strong> 向 Daemon 的 <code>IntegrationInvokeBridge</code> 发送请求，
+        再委托给真正的集成实现。调用前强制检查权限白名单。
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ==================== THE CRITICAL GAP ==================== -->
+
+<div class="flow-container gap-section" style="margin-top: 32px;">
+  <div class="layer-label" style="color:var(--accent-orange);border-bottom:2px solid var(--accent-orange);">
+    ⚠ Actor 产生但客户端收不到的数据
+  </div>
+
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th style="width:18%;">数据维度</th>
+        <th style="width:41%;">Actor 内部产生</th>
+        <th style="width:41%;">客户端实际收到</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>文本回复</strong></td>
+        <td><span class="badge badge-green">✅ 可见</span> agent.history 最后一条 assistant message</td>
+        <td><span class="badge badge-green">✅ 收到</span> <code>data.reply</code>（纯文本）</td>
+      </tr>
+      <tr class="gap-row">
+        <td><strong>工具调用</strong></td>
+        <td><span class="badge badge-green">✅ 可见</span> run_agent_loop() 中 yext.* 调用、Python 执行</td>
+        <td><span class="badge badge-red">❌ 不可见</span> 只返回最终文本，工具调用轨迹丢失</td>
+      </tr>
+      <tr class="gap-row">
+        <td><strong>Trace ID</strong></td>
+        <td><span class="badge badge-green">✅ 可见</span> eventbus.scope("agent.turn", {agent_id, ...})</td>
+        <td><span class="badge badge-red">❌ 不可见</span> 客户端无法关联到 trace 视图</td>
+      </tr>
+      <tr class="gap-row">
+        <td><strong>Token / 费用</strong></td>
+        <td><span class="badge badge-green">✅ 可见</span> PricingAwareLlmClient 计算 input/output cost</td>
+        <td><span class="badge badge-red">❌ 不可见</span> 费用数据写入 trace store，不返回</td>
+      </tr>
+      <tr class="gap-row">
+        <td><strong>后台任务</strong></td>
+        <td><span class="badge badge-green">✅ 可见</span> FacadeBackgroundTaskStarted/Ended</td>
+        <td><span class="badge badge-red">❌ 不可见</span> 后台任务状态不通知客户端</td>
+      </tr>
+      <tr class="gap-row">
+        <td><strong>对话历史长度</strong></td>
+        <td><span class="badge badge-green">✅ 可见</span> turn_result.history_length</td>
+        <td><span class="badge badge-red">❌ 不可见</span> history_length 在服务端丢弃</td>
+      </tr>
+      <tr class="gap-row">
+        <td><strong>集成调用结果</strong></td>
+        <td><span class="badge badge-green">✅ 可见</span> capability.invoke() 返回值</td>
+        <td><span class="badge badge-red">❌ 不可见</span> 只有 LLM 能处理，客户端看不到</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ==================== ACTOR VS USER PERSPECTIVE ==================== -->
+
+<div class="flow-container actor-section" style="margin-top: 32px;">
+  <div class="layer-label" style="color:var(--accent-purple);border-bottom:2px solid var(--accent-purple);">
+    🔮 Actor 看到的 vs 用户看到的
+  </div>
+
+  <table class="compare-table">
+    <thead>
+      <tr>
+        <th style="width:25%;">维度</th>
+        <th style="width:37%;">Actor 的视角</th>
+        <th style="width:38%;">用户在浏览器看到的</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>用户身份</strong></td>
+        <td><code>[Web Chat 14:30:00]</code> 前缀（render_metadata）</td>
+        <td>角色徽章 "user" / "actor"</td>
+      </tr>
+      <tr>
+        <td><strong>消息内容</strong></td>
+        <td><code>yuullm.Message(user, text)</code> 结构化消息</td>
+        <td><code>ChatMessage.raw_content</code> JSON → 渲染文本</td>
+      </tr>
+      <tr>
+        <td><strong>可用函数</strong></td>
+        <td><code>yb.*</code> + <code>yext.*</code>（动态生成）+ Python 执行</td>
+        <td>不可见（用户看不到 actor 的工具列表）</td>
+      </tr>
+      <tr>
+        <td><strong>集成权限</strong></td>
+        <td>只有 <code>allowed_capability_ids</code> 中的能力可用</td>
+        <td>不可见</td>
+      </tr>
+      <tr>
+        <td><strong>系统提示词</strong></td>
+        <td><code>character.system_prompt</code></td>
+        <td>不可见</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+</body>
+</html>

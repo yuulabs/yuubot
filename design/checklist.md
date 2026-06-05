@@ -1,6 +1,6 @@
 ## Milestones
 
-1. web ui发布
+1. Web UI发布
 2. skills管理 + skills配置 + opencode集成
 3. linear/plane 的python functions集成（从而使得bot可以参与project management）
 4. w&b + swanlab + github集成
@@ -44,25 +44,90 @@ Gateway的前端面板将会比较简单：
 一个表格
 
 |Source|Pattern|Actor| (以及其他必要字段)
-|System|*|*|
 |telegram|group.*|Amy|
 
 具体消息来源之类的由各Integration自己渲染好。
 
-#### 插件系统
+Gateway只负责外部Integration消息的分流。前端Gateway配置表只展示Integration source，不展示System路径。System消息不再伪装成Integration消息，也不再走Gateway glob路由；System消息由yuubot内部组件直接投递到Actor mailbox。
 
-1. 插件系统规范 初始化 （资源分配） & 调用（input/output schema） & 配置 约定。 每个Integration提供一组Capability供Actor/Agent调用。
-2. 无论是builtin integration还是external integration
+System消息包括但不限于：
+
+1. Web UI消息
+2. 定时任务触发
+3. Admin操作触发
+4. bridge回连触发
+5. 后台任务状态变化
+
+System消息应当优先复用yuuagents基础设施：
+
+1. 统一进入`yuuagents.mailbox.MailBox`
+2. 具体消息类型继承`yuuagents.mailbox.MailMessage`
+3. 后台任务完成继续复用`BackgroundCompletedMessage`
+4. Actor运行、Agent loop、Runtime、EventBus、trace等能力继续由yuuagents承担
+
+yuubot只在自身边界内定义具体的System消息类型，例如Web UI消息、Admin消息、系统通知消息等。`MailMessage`本身已经是通用mailbox消息抽象，不需要为了yuubot再改yuuagents增加新的通用基类。
+
+系统内投递通过一个很薄的System ingress完成：
+
+```py
+await system_ingress.send(actor_id, message)
+```
+
+该入口只负责Actor存活检查、权限/来源校验、trace元数据等系统边界工作；不负责Integration格式转换。
+
+#### System/Web Chat通道
+
+这些能力属于yuubot自身运行时：
+
+1. Web Chat / Web UI对话
+2. 定时任务触发
+3. Admin操作触发
+4. bridge回连触发
+5. 后台任务状态变化
+
+##### Web Chat
+
+Web Chat属于yuubot的first-party System/UI通道。
+
+- Admin持有浏览器WebSocket连接并负责session认证。
+- 用户消息由Admin通过内部System ingress直接投递到目标Actor mailbox。
+- Web UI消息使用yuubot定义的`MailMessage`子类表达，例如携带`actor_id`、`agent_name`、`session_id`、`message_id`、`content`等字段。
+- Actor runtime在yuubot适配层识别Web UI消息，将其追加到目标Agent上下文并运行一轮。
+- Actor回复、流式输出、复杂交互状态通过Web UI delivery/stream channel返回给Admin，再由Admin推送给浏览器WebSocket连接。
+
+Dialog（`dialog:<uuid>`）作为Web UI session/thread标识。数据（历史消息、dialog列表、前端交互状态等）存放在Web UI/System通道自己的持久化目录中，不需要进入Integration storage，也不需要进入平台DB，除非后续明确需要资源化管理。
+
+Web UI通道不是Integration，因此不提供`integration.response()`。它可以直接支持Integration消息难以表达的内容，例如：
+
+1. token级流式输出
+2. partial message更新
+3. buttons/forms/files等复杂交互
+4. cancel/interrupt/approve/continue等控制消息
+5. 与前端session绑定的状态同步
+
+#### Integration插件系统
+
+Integration插件指连接外部平台、外部工具、外部服务或外部运行时的能力模块。它可以产生外部消息，也可以向Actor/Agent暴露一组Capability。
+
+Integration插件分为两类：
+
+1. 内置Integration：提前写在yuubot代码里的Integration插件，由代码中的factory注册和维护。
+2. 外部Integration：安装到数据目录中的外部插件，通常通过manifest、子进程和HTTP facade与daemon通信。
+
+System/Web Chat通道不属于Integration插件系统。Web UI、定时任务、Admin操作、bridge回连、后台任务状态变化等System能力不应出现在插件列表、Integration列表、Gateway source选择器或Actor的Integration启用列表中。
+
+Integration插件系统规范包括 初始化（资源分配） & 调用（input/output schema） & 配置 约定。每个Integration提供一组Capability供Actor/Agent调用。
+
+1. 无论是内置Integration还是外部Integration，都遵守相同的Integration生命周期和Capability调用边界。
+2. 内置Integration可以复用代码内的实现细节，但对Actor暴露的边界仍然是Integration capability，而不是System facade。
 3. 插件产生的每一条消息有一个唯一id. 插件必须提供一个response方法，该方法传入消息id和需要发送的消息，表示“对该消息id的原路返回回应”，用于系统进行反馈。api为 `response(target_msg_id, msg, react)`.  `react`对应贴表情（如果平台支持，不支持可静默），用于系统快速响应输入（以避免用户干等）。`msg`则是文字内容，通常用于报错。二者传一个即可。
 
-插件有自己的专门面板进行特定的配置。
-Actor页面中，每个Actor可以选择启用哪些Integration（对应着它们是否能看到这些Integration对应的facade functions）
+Integration插件有自己的专门面板进行特定的配置。
+Actor页面中，每个Actor可以选择启用哪些Integration插件（对应着它们是否能看到这些Integration对应的facade functions）。
 
-##### 内置Integration
+##### 内置Integration（代码内置插件）
 
-##### Admin Chat
-
-该插件提供借由Admin WebUI进行协作的 1v1 对话能力。
+以下条目是计划中的内置Integration插件。它们提前写在yuubot代码里，但仍然属于Integration插件系统，和System/Web Chat通道是两类能力。
 
 ##### OpenCode/Codex集成
 
@@ -146,6 +211,46 @@ if hang 1 hour: 关闭agent. 关闭其他资源例如python session.
 
 yuubot会提供一些预设Character & Agent & Actor. 这是通过直接往数据库里插入数据做到的，仅限初次启动或者恢复初始状态时触发。
 
+#### Actor Facade
+
+Actor可见的Python facade分为两类：
+
+1. `yb`：yuubot内置、手写、first-party facade
+2. `yext`：Integration/外部插件生成的facade
+
+这是一个明确的架构边界，而不是两套实现的临时过渡：
+
+1. 不删除自动生成框架。外部Integration和外部插件的函数集合在运行时才由manifest/capability schema确定，仍然必须通过生成代码暴露给Actor。
+2. 不在生成目录里合并手写代码。生成产物可以被随时重建，手写模块不能放进`yext`包或actor-local generated package中，否则会产生覆盖、缓存、命名冲突和调试困难。
+3. 手写facade只进入`yb`。所有yuubot first-party/system能力都应当通过`yb`表达。
+4. 生成facade只进入`yext`。`yext`只表达Integration capability，不承载yuubot system helper。
+
+`yb`用于暴露yuubot系统内能力，例如：
+
+1. `yb.actor`：Actor自身状态、当前上下文、必要的控制能力
+2. `yb.webui`：Web UI delivery、流式输出、复杂交互
+3. `yb.tasks`：后台任务提交、取消、状态查询
+4. `yb.schedule`：定时任务查询和管理
+5. `yb.delegate`: 将任务代理给其他Agent. 
+
+`yb`是手写模块。它可以直接表达yuubot内部对象和复杂交互，不需要被Integration capability schema限制。`yb`仍然需要遵守Actor权限边界，不能因为是内置模块就绕过权限控制。
+
+`yext`继续用于Integration和外部插件。由于yuubot不能提前知道外部插件暴露的函数内容，`yext`通过capability schema生成Python facade是合理的。
+
+Actor启动时，Python runtime同时注入`yb`和`yext`：
+
+```py
+import yb
+import yext
+```
+
+`yb`和`yext`共享Actor上下文（actor id、agent name、session id、mailbox id等），但调用边界不同：
+
+1. `yb`调用yuubot内置System bridge或直接使用内部受控接口
+2. `yext`调用Integration invoke bridge，并最终进入Integration capability
+
+因此，后台任务、Web UI streaming、Actor自身状态等system helper应当从`yext`移出，放在`yb.tasks`、`yb.webui`、`yb.actor`等手写模块中。`yext`生成代码只保留schema驱动的Integration function wrapper。
+
 #### SKILLS管理
 
 yuubot在自身的持久化资源下自带了一个skills仓库。在前端页面中，可以方便地浏览所有SKILLS和编辑（非常类似于Character管理，都是大量条目 + description + 编辑器）
@@ -156,10 +261,59 @@ yuubot通过提供工具 load_skills 来允许Agent动态阅读skills. load_skil
 
 #### Yuu Network
 
-一个类似于Tailscale的网络，主要的特点在于网络的异质性（Agent Node & Resource Node）。是Ybot bridge的更进一步想法。bot可以维护一个ssh网络，资源节点通过yuu network加入网络，向bot公开自己的资源使其访问。
+Yuu Network是Ybot bridge的进一步想法。它不应当强依赖完整ybot安装，而应当抽成一个独立的轻量工具，暂称`ynet`。
 
-1. bot验证资源节点：需要防止恶意资源节点进行prompt injection（例如资源节点上的命令被特殊伪装，返回值诱导bot运行危险命令）
-2. 资源节点验证bot：需要防止冒充bot导致自己的资源泄漏。
+`ynet`负责把外部机器接入到某个Actor维护的资源网络中。对于很多资源节点来说，它们并不希望安装完整ybot，只需要安装`ynet client`，然后向ybot中的指定Actor公开自己的资源即可。
+
+0.1版本只考虑一个Yuu Network绑定一个Actor。这个Actor对应网络中的agent node，也是唯一能看到和使用resource node的主体。多Actor共享、授权、隔离等问题暂不设计。
+
+节点类型暂定如下：
+
+1. agent node: 由ybot中的某个Actor持有，负责建立Yuu Network、接收节点加入、维护节点列表，并把资源变化通知给Actor。
+2. resource node: 安装`ynet client`的外部机器，向agent node公开自己的资源。
+3. relay node: 未来可选的中继节点。0.1版本可以不实现。
+
+核心安全目标保持简单：
+
+1. resource node需要确认自己加入的是正确的agent node，避免资源泄漏。
+2. agent node需要把resource node返回的内容视作外部输入，避免把资源节点上的命令输出、文件内容、HTTP响应等当作系统指令执行。
+
+##### 建立
+
+当某个Actor启用Yuu Network时，ybot会为它启动agent node，并开放一个加入端点。该加入端点称为yuu network gate，记作YNetG。
+
+YNetG可以是一个URL。用户把这个URL和一次性join token交给外部机器，外部机器通过`ynet client`加入网络。
+
+##### 加入
+
+一个节点可通过访问ynet gate加入网络。该节点必须向网络传递身份验证材料：
+
+1. 在agent node上预先生成的join token。join token用于首次加入，不应复用Admin master key。
+
+resource node加入时由`ynet client`在本机生成密钥对。私钥留在resource node本机，公钥发送给agent node。join token验证通过后，agent node记录该公钥，后续通讯改用密钥对完成身份确认和加密。
+
+当身份验证通过之后，节点必须立刻向网络声明自己的属性。列表如下：
+
+1. version. 表明自己的协议版本。以便于网络确定是否兼容。x.y.z格式。
+2. name. 一个易读的标记名。
+3. node type. 表明自己的节点类型。0.1版本主要是resource。
+4. profile. 表明自己所具有的资源/能力。
+    description: 字符串，用于向agent汇报可读的能力内容。例如，“This machine contains 2 cpu cores and 2 A100s. It's good for ML experiments workload.”
+    resources: 一个列表，声明自己的可用资源。每个元素形如 {type: cpu, count: 2}, {type: gpu, spec: A100, count: 2}, {type: http, endpoint: ~, description: "使用post传递xx, yy参数，可以达到zz效果"}
+
+`description`主要给Actor理解资源节点用途。实际调用资源时，仍以具体的resource条目和后续暴露的访问方式为准。
+
+一旦校验通过，agent node将会为resource node生成一个uuid作为网内唯一索引，并生成一个<name>-<hex6>的short id便于Actor理解和检索。agent node随后返回uuid、short id和反向隧道连接信息。
+
+随后，resource node上的`ynet client`将与agent node建立反向隧道。反向隧道成为该节点的访问路径。网络中会产生一条通知，通知Actor有新节点加入，并同时附上其profile。
+
+##### 退出
+
+当resource node退出时，它需要通过`ynet client`向agent node发送退出消息。agent node清理该节点的连接状态，然后通知Actor。
+
+##### 故障
+
+当resource node故障时（掉线，或者resources被查出来不能用，例如http端点掉线），agent node会通知Actor该节点故障；如果resource node还活着，也会向该节点发还一条提醒消息。如果该节点彻底故障了（整机挂掉），通常只能依赖人工重连。
 
 ### 用户使用流程
 

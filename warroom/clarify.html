@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenCoder: Agent-User Communication Flow</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  
+  :root {
+    --bg: #ffffff; --card: #f8f9fb; --border: #e2e5ea; --text: #1a1a2e;
+    --text2: #6b7280; --blue: #2563eb; --cyan: #0891b2; --green: #16a34a;
+    --purple: #7c3aed; --orange: #d97706; --red: #dc2626; --pink: #db2777;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-lg: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
+  }
+
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 32px 24px; max-width: 1100px; margin: 0 auto; line-height: 1.6; }
+
+  h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+  h2 { font-size: 18px; font-weight: 600; margin: 32px 0 12px; }
+  h3 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+  .subtitle { color: var(--text2); font-size: 14px; margin-bottom: 28px; }
+
+  /* ── Pipeline ── */
+  .pipeline { display: flex; align-items: flex-start; gap: 0; margin: 20px 0 40px; flex-wrap: wrap; position: relative; }
+  .phase { flex: 1; min-width: 280px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; position: relative; }
+  .phase-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .phase-badge { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; }
+  .phase-badge.p1 { background: rgba(37,99,235,0.08); color: var(--blue); border: 1px solid rgba(37,99,235,0.2); }
+  .phase-badge.p2 { background: rgba(22,163,74,0.08); color: var(--green); border: 1px solid rgba(22,163,74,0.2); }
+  .phase-title { font-size: 15px; font-weight: 700; }
+
+  /* ── Arrow between phases ── */
+  .phase-arrow { display: flex; align-items: center; justify-content: center; padding: 0 12px; min-width: 60px; }
+  .phase-arrow svg { width: 40px; height: 24px; }
+  .arrow-label { font-size: 10px; color: var(--green); font-weight: 600; text-transform: uppercase; text-align: center; line-height: 1.2; }
+
+  /* ── Flow steps ── */
+  .flow { display: flex; flex-direction: column; gap: 8px; }
+  .flow-step { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #fff; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: all 0.15s; font-size: 13px; }
+  .flow-step:hover { border-color: var(--blue); box-shadow: var(--shadow-lg); }
+  .flow-step .step-num { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+  .flow-step .step-num.agent { background: rgba(124,58,237,0.1); color: var(--purple); }
+  .flow-step .step-num.user { background: rgba(8,145,178,0.1); color: var(--cyan); }
+  .flow-step .step-num.gate { background: rgba(22,163,74,0.1); color: var(--green); }
+  
+  .loop-indicator { display: flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(217,119,6,0.06); border: 1px dashed rgba(217,119,6,0.3); border-radius: 8px; font-size: 11px; color: var(--orange); font-weight: 600; margin-top: 4px; }
+  .loop-indicator::before { content: "⟳"; font-size: 16px; }
+
+  .exception-path { margin-top: 12px; padding: 10px 12px; background: rgba(220,38,38,0.04); border: 1px dashed rgba(220,38,38,0.25); border-radius: 8px; font-size: 12px; color: var(--red); }
+  .exception-path .label { font-weight: 700; font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
+
+  /* ── Patterns section ── */
+  .patterns { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin: 20px 0 40px; }
+  .pattern-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; cursor: pointer; transition: all 0.15s; }
+  .pattern-card:hover { border-color: var(--blue); box-shadow: var(--shadow-lg); }
+  .pattern-card .pattern-icon { font-size: 24px; margin-bottom: 8px; }
+  .pattern-card .pattern-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+  .pattern-card .pattern-summary { font-size: 12px; color: var(--text2); line-height: 1.5; }
+  .pattern-card .click-hint { font-size: 10px; color: var(--text2); margin-top: 12px; opacity: 0.6; }
+
+  /* ── Modal ── */
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.2); z-index: 100; align-items: center; justify-content: center; }
+  .modal-overlay.active { display: flex; }
+  .modal { background: #fff; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); max-width: 640px; width: 90%; max-height: 85vh; overflow-y: auto; padding: 28px; position: relative; animation: modalIn 0.15s ease; }
+  @keyframes modalIn { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+  .modal-close { position: absolute; top: 16px; right: 16px; width: 32px; height: 32px; border-radius: 50%; border: none; background: #f1f5f9; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; color: var(--text2); }
+  .modal-close:hover { background: #e2e8f0; color: var(--text); }
+
+  .modal .badge { display: inline-block; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-right: 4px; }
+  .badge.user { background: rgba(8,145,178,0.08); color: var(--cyan); border: 1px solid rgba(8,145,178,0.2); }
+  .badge.agent { background: rgba(124,58,237,0.08); color: var(--purple); border: 1px solid rgba(124,58,237,0.2); }
+  .badge.both { background: rgba(217,119,6,0.08); color: var(--orange); border: 1px solid rgba(217,119,6,0.2); }
+  .badge.gate { background: rgba(22,163,74,0.08); color: var(--green); border: 1px solid rgba(22,163,74,0.2); }
+
+  .narrative { margin: 16px 0; padding: 14px 16px; background: rgba(37,99,235,0.03); border-left: 3px solid var(--blue); border-radius: 0 8px 8px 0; font-size: 13px; line-height: 1.7; color: var(--text); }
+
+  .example-block { margin: 12px 0; padding: 14px; background: #f1f5f9; border-radius: 8px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; white-space: pre-wrap; color: var(--text); }
+
+  .do-dont { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; }
+  .do { padding: 12px; background: rgba(22,163,74,0.05); border: 1px solid rgba(22,163,74,0.2); border-radius: 8px; font-size: 12px; }
+  .do::before { content: "✅ DO"; display: block; font-weight: 700; font-size: 10px; color: var(--green); margin-bottom: 6px; }
+  .dont { padding: 12px; background: rgba(220,38,38,0.04); border: 1px solid rgba(220,38,38,0.2); border-radius: 8px; font-size: 12px; }
+  .dont::before { content: "❌ DON'T"; display: block; font-weight: 700; font-size: 10px; color: var(--red); margin-bottom: 6px; }
+
+  /* ── Gates ── */
+  .gates { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0; }
+  .gate { padding: 12px 14px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; font-size: 12px; display: flex; align-items: flex-start; gap: 8px; }
+  .gate .checkbox { width: 20px; height: 20px; border: 2px solid var(--border); border-radius: 4px; flex-shrink: 0; margin-top: 1px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--green); }
+
+  /* ── War room note ── */
+  .warroom-note { padding: 14px 18px; background: rgba(124,58,237,0.04); border: 1px solid rgba(124,58,237,0.2); border-radius: 12px; font-size: 12px; margin: 20px 0; display: flex; align-items: flex-start; gap: 10px; }
+  .warroom-note .icon { font-size: 20px; flex-shrink: 0; }
+
+  @media (max-width: 700px) {
+    .pipeline { flex-direction: column; }
+    .phase-arrow { transform: rotate(90deg); padding: 8px 0; }
+    .do-dont { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<h1>OpenCoder: Agent-User Communication</h1>
+<p class="subtitle">Two-phase interaction model: clarify+verify → silent execution. Click any component for details.</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- PIPELINE OVERVIEW                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Interaction Pipeline</h2>
+<div class="pipeline">
+
+  <!-- Phase 1 -->
+  <div class="phase">
+    <div class="phase-header">
+      <span class="phase-badge p1">PHASE 1</span>
+      <span class="phase-title">Clarify + Quick-Verify</span>
+    </div>
+    <div class="flow">
+      <div class="flow-step" onclick="openModal('step1')">
+        <span class="step-num user">U</span>
+        <span>User describes problem / gives repro steps</span>
+      </div>
+      <div class="flow-step" onclick="openModal('step2')">
+        <span class="step-num agent">A</span>
+        <span>Agent <strong>immediately</strong> verifies (run command, check file)</span>
+      </div>
+      <div class="flow-step" onclick="openModal('step3')">
+        <span class="step-num agent">A</span>
+        <span>If no repro → Agent reports gap → User clarifies</span>
+      </div>
+    </div>
+    <div class="loop-indicator">REPEAT until info is sufficient</div>
+    <div class="flow" style="margin-top:10px">
+      <div class="flow-step" onclick="openModal('step4')">
+        <span class="step-num agent">A</span>
+        <span>Agent presents understanding + exit criteria</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Approval Gate -->
+  <div class="phase-arrow">
+    <div style="text-align:center">
+      <svg viewBox="0 0 40 24"><path d="M4 12h28M26 6l6 6-6 6" stroke="#16a34a" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <div class="arrow-label">User<br>Approves</div>
+    </div>
+  </div>
+
+  <!-- Phase 2 -->
+  <div class="phase">
+    <div class="phase-header">
+      <span class="phase-badge p2">PHASE 2</span>
+      <span class="phase-title">Agent Executes Silently</span>
+    </div>
+    <div class="flow">
+      <div class="flow-step" onclick="openModal('step5')">
+        <span class="step-num agent">A</span>
+        <span>Plan → implement → validate → handoff</span>
+      </div>
+      <div class="flow-step" style="border-style:dashed; opacity:0.7">
+        <span class="step-num gate" style="background:rgba(100,116,139,0.1);color:#64748b">—</span>
+        <span style="color:var(--text2)">Minimize interruptions — no progress pings</span>
+      </div>
+    </div>
+    <!-- Exception path -->
+    <div class="exception-path">
+      <div class="label">⚠ Exception: Unexpected Blocker</div>
+      <span style="font-size:11px">Third-party behavior differs from docs → interrupt user.<br>
+      "Expected X, got Y. Options: {A, B}. Which direction?"</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- THREE PATTERNS                                                      -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Three Communication Patterns</h2>
+<div class="patterns">
+  <div class="pattern-card" onclick="openModal('bug')">
+    <div class="pattern-icon">🐛</div>
+    <div class="pattern-name">Bug Reports</div>
+    <div class="pattern-summary">Stack trace → demand repro steps → run immediately → report gap if no repro. Never debug blind.</div>
+    <div class="click-hint">Click for template &amp; example →</div>
+  </div>
+  <div class="pattern-card" onclick="openModal('feature')">
+    <div class="pattern-icon">💡</div>
+    <div class="pattern-name">Feature Requests</div>
+    <div class="pattern-summary">Vague idea → embed in concrete scenario → point at exact gap → ask. No options menus.</div>
+    <div class="click-hint">Click for scenario-first technique →</div>
+  </div>
+  <div class="pattern-card" onclick="openModal('refactor')">
+    <div class="pattern-icon">🔧</div>
+    <div class="pattern-name">Refactoring</div>
+    <div class="pattern-summary">Explain current state (Scenario-First) → align on pain point → define success metric → then code.</div>
+    <div class="click-hint">Click for 3-step process →</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- EXIT CRITERIA + GATES                                              -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<h2>Cross-Cutting: Exit Criteria &amp; Verification Gates</h2>
+<p style="font-size:13px;color:var(--text2);margin-bottom:12px">Every task must answer: <strong>"How do I know this is done?"</strong> — behavioral, verifiable, falsifiable.</p>
+
+<div class="do-dont">
+  <div class="do">
+    <code>✅ [ ] pytest tests/test_export.py passes (12 tests)</code><br>
+    <code>✅ [ ] curl /api/export returns valid PDF (not JSON error)</code><br>
+    <code>✅ [ ] Export 10k rows in &lt; 5s</code>
+  </div>
+  <div class="dont">
+    <code>❌ [ ] Export feature is implemented</code><br>
+    <code>❌ [ ] Performance is improved</code><br>
+    <span style="color:var(--red)">Too vague — can't verify, can't falsify</span>
+  </div>
+</div>
+
+<h3 style="margin-top:20px">Before Stage 1 Exit — Check All Gates</h3>
+<div class="gates">
+  <div class="gate" onclick="openModal('bug')"><span class="checkbox">☐</span><span>Bug: repro steps exist AND agent has reproduced the issue</span></div>
+  <div class="gate" onclick="openModal('feature')"><span class="checkbox">☐</span><span>Feature: at least ONE concrete use case is fully articulated</span></div>
+  <div class="gate" onclick="openModal('refactor')"><span class="checkbox">☐</span><span>Refactoring: user confirmed understanding of current architecture</span></div>
+  <div class="gate"><span class="checkbox">☐</span><span>All tasks: exit criteria defined and agreed upon</span></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- WAR ROOM NOTE                                                       -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="warroom-note">
+  <span class="icon">📁</span>
+  <div>
+    <strong>War Room:</strong> For complex discussions, agent creates <code>warroom/clarify.md</code> 
+    (user can edit in-place) and <code>warroom/clarify.html</code> (interactive diagrams).<br>
+    <span style="color:var(--text2)">This avoids "copy-paste from chat" friction for non-trivial alignment.</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!-- MODALS                                                              -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+  <div class="modal" id="modalContent" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+const modals = {
+  step1: {
+    title: "Step 1: User Describes Problem",
+    body: `
+      <p><span class="badge user">USER</span> The entry point. User may provide:</p>
+      <ul style="font-size:13px;margin:8px 0;padding-left:20px;line-height:1.8">
+        <li>A bug report with just a stack trace (common)</li>
+        <li>A vague feature idea ("make it smarter")</li>
+        <li>A refactoring goal ("make it faster")</li>
+      </ul>
+      <div class="narrative">
+        <strong>Agent's job here:</strong> Recognize what's MISSING. A stack trace without repro steps 
+        is incomplete. "Make it faster" without a baseline is meaningless. The agent must identify 
+        the gap before proceeding.
+      </div>`
+  },
+  step2: {
+    title: "Step 2: Agent Verifies Immediately",
+    body: `
+      <p><span class="badge agent">AGENT</span> <strong>Do NOT investigate first. Reproduce first.</strong></p>
+      <div class="example-block"># User says: "Running ybot daemon crashes with KeyError"
+# Agent immediately runs:
+$ uv run ybot daemon --config config.yaml
+
+# If it reproduces → Agent now has the exact error context
+# If it does NOT reproduce → Agent reports back IMMEDIATELY</div>
+      <div class="narrative">
+        <strong>Why this matters:</strong> Environment differences, stale state, and user 
+        misremembering are common. If the agent starts "debugging" before confirming the 
+        repro, it may waste hours on a phantom bug.
+      </div>`
+  },
+  step3: {
+    title: "Step 3: Gap Report (The Loop)",
+    body: `
+      <p><span class="badge agent">AGENT</span> When verification fails, the agent reports the gap 
+      precisely — what was expected vs. what was observed.</p>
+      <div class="example-block"># Agent's response:
+"I ran `uv run ybot daemon --config config.yaml` and it started 
+successfully on port 8000. No KeyError. 
+
+Expected: crash at bootstrap/config.py:42
+Actual:   server started normally
+
+What's different between your environment and what I tried? 
+Different config.yaml? Different working directory?"</div>
+      <div class="do-dont">
+        <div class="do">Report gap immediately. Give user the info they need to correct.</div>
+        <div class="dont">Disappear for 5 minutes of "investigation" without reporting back.</div>
+      </div>
+      <div class="narrative">
+        <strong>The loop continues</strong> until the agent can reliably reproduce the issue 
+        and feels confident it fully understands the problem.
+      </div>`
+  },
+  step4: {
+    title: "Step 4: Agent Presents Understanding",
+    body: `
+      <p><span class="badge agent">AGENT</span> → <span class="badge gate">GATE</span> The handoff 
+      point from Phase 1 to Phase 2.</p>
+      <div class="example-block"># Agent's summary before requesting approval:
+"Here's what I understand:
+
+When config.yaml is missing the 'master_key' field and 
+YUBOT_MASTER_KEY env var is also unset, ybot daemon crashes 
+at bootstrap/config.py:42 with KeyError.
+
+Fix: Add validation at config load time that raises a clear 
+error message instead of letting KeyError propagate.
+
+Exit criteria:
+- [ ] Missing master_key produces: 'master_key is required. 
+      Set YUBOT_MASTER_KEY env var or add to config.yaml'
+- [ ] pytest tests/test_config_validation.py::test_missing_master_key passes
+- [ ] Existing tests still pass
+
+Ready to proceed?"</div>
+      <div class="narrative">
+        <strong>This is the approval gate.</strong> The user reviews the understanding, 
+        exit criteria, and gives the green light. Only then does the agent enter Phase 2.
+      </div>`
+  },
+  step5: {
+    title: "Phase 2: Silent Execution",
+    body: `
+      <p><span class="badge agent">AGENT</span> <span class="badge gate">AFTER APPROVAL</span></p>
+      <div class="flow" style="margin:12px 0">
+        <div class="flow-step" style="cursor:default"><span class="step-num agent" style="font-size:10px">1</span>Plan — break into subtasks if needed</div>
+        <div class="flow-step" style="cursor:default"><span class="step-num agent" style="font-size:10px">2</span>Implement — one step at a time, validate each</div>
+        <div class="flow-step" style="cursor:default"><span class="step-num agent" style="font-size:10px">3</span>Validate — type check, lint, tests</div>
+        <div class="flow-step" style="cursor:default"><span class="step-num agent" style="font-size:10px">4</span>Handoff — summarize, suggest cleanup</div>
+      </div>
+      <div class="do-dont">
+        <div class="do">Work silently. The user approved the plan — execute it.</div>
+        <div class="dont">Send progress pings ("Step 3 done!", "File X written!"). 
+        The user doesn't need to micromanage.</div>
+      </div>
+      <div style="margin-top:12px;padding:10px 14px;background:rgba(220,38,38,0.04);border:1px dashed rgba(220,38,38,0.25);border-radius:8px;font-size:12px">
+        <strong style="color:var(--red)">⚠ Only interrupt for UNEXPECTED blockers:</strong><br>
+        • Third-party library behaves differently than documented<br>
+        • Internal constraint discovered that invalidates the plan<br>
+        <em>Then:</em> "Expected X, got Y. Options: {A, B}. Which direction?"<br>
+        <span style="color:var(--text2)">Note: listing options here is OK — agent has investigated and is narrowing, not expanding.</span>
+      </div>`
+  },
+
+  bug: {
+    title: "🐛 Pattern: Bug Reports",
+    body: `
+      <p><span class="badge user">ANTI-PATTERN</span> User: "I got a KeyError at line 42"</p>
+      <div class="dont" style="margin:10px 0">Agent tries to fix line 42 without knowing HOW to trigger it. 
+      Fixes the wrong thing. Breaks something else.</div>
+      
+      <p style="margin-top:16px"><span class="badge agent">CORRECT FLOW</span></p>
+      <div class="example-block">1. Agent asks for repro template:
+   "Exact command / expected behavior / actual result.
+    Example: 'I ran X, expected Y, got Z at file:line'"
+
+2. Agent runs the command IMMEDIATELY.
+
+3a. If reproduces → Agent now knows the trigger → proceed
+3b. If doesn't reproduce → Agent reports:
+    "I ran {cmd} and got {actual} instead of {expected}. 
+     What's different in your environment?"
+
+4. Loop until agent can reliably reproduce.</div>
+      <div class="narrative">
+        <strong>Key insight:</strong> The stack trace is a symptom, not a reproduction. 
+        The agent MUST be able to trigger the bug before it can fix it.
+      </div>`
+  },
+
+  feature: {
+    title: "💡 Pattern: Feature Requests",
+    body: `
+      <p><span class="badge user">ANTI-PATTERN</span> User: "Make the export system smarter"</p>
+      <div class="dont" style="margin:10px 0">Agent interprets "smarter" as "AI-powered" and builds 
+      a complex ML pipeline. User meant "add a filter dropdown."</div>
+      
+      <p style="margin-top:16px"><span class="badge agent">CORRECT: Scenario-First narrowing</span></p>
+      <div class="narrative">
+        <strong>Do NOT respond with options:</strong> "Smarter could mean A, B, or C — which one?" 
+        This expands uncertainty and offloads decisions onto the user.<br><br>
+        <strong>Instead, embed the ambiguity in a scenario:</strong>
+      </div>
+      <div class="example-block">"Let me walk through a scenario to narrow this down.
+
+A user opens the web app → clicks 'Export' → 
+[HERE IS WHERE I'M LOST: what should 'smarter' actually DO here? 
+ Suggest columns based on past exports? Auto-detect date range? 
+ Pre-fill filters?]
+
+Walk me through what one complete 'smart export' looks like."</div>
+      <div class="narrative">
+        <strong>Why this works:</strong> The user sees exactly where the gap is in a familiar 
+        flow. They can fill it with one answer instead of choosing from an abstract menu.
+      </div>
+      <p style="margin-top:12px;font-size:12px;color:var(--red);font-weight:600">
+        If user cannot walk through ONE complete scenario → feature is not ready → don't build.
+      </p>`
+  },
+
+  refactor: {
+    title: "🔧 Pattern: Refactoring / Optimization",
+    body: `
+      <p><span class="badge user">ANTI-PATTERN</span> User: "Refactor the resource system"</p>
+      <div class="dont" style="margin:10px 0">Agent starts rewriting without knowing what's wrong 
+      with the current system. New design has the same problems.</div>
+      
+      <p style="margin-top:16px"><span class="badge agent">CORRECT: 3-step alignment</span></p>
+      <div class="example-block" style="line-height:1.8">
+<strong>Step 1: Explain current state (Scenario-First)</strong>
+Trace ONE real request through the system.
+Show data shapes (DB rows, JSON payloads).
+Use visual-explain (warroom/clarify.html) for diagrams.
+→ User confirms: "Yes, that's how it works."
+
+<strong>Step 2: Align on what "better" means</strong>
+"At which SPECIFIC step is the pain?"
+"What metric? From X → to Y?"
+"Under what conditions?"
+
+<strong>Step 3: Agree on exit criteria</strong>
+Before touching code:
+✅ "10k-row export: 30s → < 5s at p50"
+✅ "pytest tests/test_resource_refactor.py passes"
+❌ "Performance is better" (can't verify)</div>
+      <div class="narrative">
+        <strong>Key insight:</strong> If agent and user don't share a mental model of the 
+        CURRENT system, they can't agree on what needs to change. Explain first, then propose.
+      </div>`
+  }
+};
+
+function openModal(id) {
+  const m = modals[id];
+  if (!m) return;
+  document.getElementById('modalBody').innerHTML = `<h3>${m.title}</h3>${m.body}`;
+  document.getElementById('modalOverlay').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('modalOverlay')) return;
+  document.getElementById('modalOverlay').classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+</script>
+
+</body>
+</html>
