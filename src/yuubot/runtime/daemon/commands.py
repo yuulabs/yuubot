@@ -23,9 +23,10 @@ from tortoise import Model
 
 from yuubot.bootstrap.config import ServerConfig
 from yuubot.core.secrets import redact_secret_for_json, wrap_config_secrets
-from yuubot.resources.registry import ResourceTypeRegistry
+from yuubot.resources.registry import LifecycleHandler, ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.service import ResourceService
+from yuubot.resources.store.protocol import schema_type_of
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
@@ -34,7 +35,7 @@ from yuubot.resources.store.models import (
     LLMBackendORM,
     PromptTemplateORM,
 )
-from yuubot.runtime.validators import (
+from yuubot.runtime.daemon.validators import (
     ValidationError,
     validate_actor_references,
     validate_delete_not_referenced,
@@ -44,13 +45,67 @@ logger = logging.getLogger(__name__)
 
 in_command_context: ContextVar[bool] = ContextVar("in_command_context", default=False)
 
-def build_default_resource_type_registry() -> ResourceTypeRegistry:
+
+# -- Request Structs: typed boundary for HTTP payloads --
+
+
+class CreateActorRequest(msgspec.Struct, forbid_unknown_fields=False):
+    """Typed boundary for actor creation/update requests.
+
+    Captures the simplified/flat form used by the admin UI and startup guide,
+    where ``character_id``/``llm_backend_id`` and convenience fields like
+    ``max_steps`` are expanded into nested structs by
+    ``_normalize_actor_payload``.
+    """
+
+    id: str = ""
+    name: str = ""
+    type: str = "simple_loop"
+    character_id: str = ""
+    llm_backend_id: str = ""
+    model: str = ""
+    config: dict[str, object] = msgspec.field(default_factory=dict)
+    enabled: bool = True
+    # Flattened convenience fields that map to nested structs
+    max_steps: int | None = None
+    memory_enabled: bool | None = None
+    workspace_access: str = ""
+    daily_budget: float | None = None
+    capability_ids: list[str] = msgspec.field(default_factory=list)
+
+
+class CreateIntegrationRequest(msgspec.Struct, forbid_unknown_fields=False):
+    """Typed boundary for integration creation/update requests."""
+
+    id: str = ""
+    name: str = ""
+    config: dict[str, object] = msgspec.field(default_factory=dict)
+    enabled: bool = True
+
+
+def build_default_resource_type_registry(
+    *,
+    integration_lifecycle_handler: LifecycleHandler | None = None,
+    actor_lifecycle_handler: LifecycleHandler | None = None,
+) -> ResourceTypeRegistry:
     """Create a ResourceTypeRegistry with all known resource types."""
     registry = ResourceTypeRegistry()
     registry.register("llm-backends", LLMBackendORM)
-    registry.register("integrations", IntegrationORM)
+    registry.register(
+        "integrations",
+        IntegrationORM,
+        lifecycle_realm="integrations",
+        has_lifecycle=True,
+        lifecycle_handler=integration_lifecycle_handler,
+    )
     registry.register("characters", CharacterORM)
-    registry.register("actors", ActorORM)
+    registry.register(
+        "actors",
+        ActorORM,
+        lifecycle_realm="actors",
+        has_lifecycle=True,
+        lifecycle_handler=actor_lifecycle_handler,
+    )
     registry.register("ingress-rules", ActorIngressRuleORM)
     registry.register("prompt-templates", PromptTemplateORM)
     return registry
@@ -129,14 +184,15 @@ class ResourceCommandHandlers:
         if config_error is not None:
             return config_error
 
-        record = self._decode_payload(orm_type, payload)
-        if isinstance(record, JSONResponse):
-            return record
-
         if orm_type is ActorORM:
+            payload = await self._normalize_actor_payload(payload)
             ref_error = await self._validate_actor_refs(payload)
             if ref_error is not None:
                 return ref_error
+
+        record = self._decode_payload(orm_type, payload)
+        if isinstance(record, JSONResponse):
+            return record
 
         token = in_command_context.set(True)
         try:
@@ -189,6 +245,7 @@ class ResourceCommandHandlers:
             return _error("validation_error", "no fields to update", 400)
 
         if orm_type is ActorORM:
+            payload = await self._normalize_actor_payload(payload)
             ref_error = await self._validate_actor_refs(payload)
             if ref_error is not None:
                 return ref_error
@@ -283,8 +340,8 @@ class ResourceCommandHandlers:
             return _error("validation_error", "body must be a JSON object", 400)
         return payload  # type: ignore[return-value]
 
-    def _decode_payload(self, orm_type: type[Model], payload: dict[str, object]) -> object | JSONResponse:
-        schema_type = getattr(orm_type, "_yuubot_schema_type")
+    def _decode_payload(self, orm_type: type[Model], payload: dict[str, object]) -> msgspec.Struct | JSONResponse:
+        schema_type = schema_type_of(orm_type)
         try:
             return msgspec.convert(payload, type=schema_type, strict=False)
         except (msgspec.ValidationError, msgspec.DecodeError) as exc:
@@ -296,6 +353,59 @@ class ResourceCommandHandlers:
         except ValidationError as exc:
             return _error(exc.code, exc.detail, 400)
         return None
+
+    async def _normalize_actor_payload(self, payload: dict[str, object]) -> dict[str, object]:
+        """Accept the simplified actor form used by the admin UI/startup guide.
+
+        Parses the raw dict into ``CreateActorRequest`` for typed field access,
+        then performs FK resolution and expands convenience fields into the
+        nested structs expected by ``ActorRecord``.
+        """
+        req = msgspec.convert(payload, type=CreateActorRequest, strict=False)
+
+        # Start from the original payload, removing convenience keys that
+        # are expanded into nested structs below.
+        normalized = {k: v for k, v in payload.items()
+                      if k not in {"character_id", "llm_backend_id", "max_steps",
+                                   "memory_enabled", "workspace_access",
+                                   "daily_budget", "capability_ids"}}
+
+        # FK resolution — character_id / llm_backend_id → full objects
+        if req.character_id and "character" not in normalized:
+            character = await self.repository.get(CharacterORM, req.character_id)
+            if character is not None:
+                normalized["character"] = msgspec.to_builtins(character)
+        if req.llm_backend_id and "llm_backend" not in normalized:
+            llm_backend = await self.repository.get(LLMBackendORM, req.llm_backend_id)
+            if llm_backend is not None:
+                normalized["llm_backend"] = msgspec.to_builtins(llm_backend)
+
+        # Nested struct defaults — only set when absent from the payload
+        if "llm_options" not in normalized:
+            normalized["llm_options"] = {}
+        if "budget" not in normalized:
+            budget: dict[str, object] = {}
+            if req.max_steps is not None:
+                budget["max_steps"] = req.max_steps
+            normalized["budget"] = budget
+        if "agent_tools" not in normalized:
+            normalized["agent_tools"] = []
+        if "allowed_capability_ids" not in normalized:
+            normalized["allowed_capability_ids"] = req.capability_ids
+        if "runtime_policy" not in normalized:
+            runtime_policy: dict[str, object] = {}
+            if req.memory_enabled is not None:
+                runtime_policy["memory_enabled"] = req.memory_enabled
+            normalized["runtime_policy"] = runtime_policy
+        if "resource_policy" not in normalized:
+            resource_policy: dict[str, object] = {}
+            if req.workspace_access:
+                resource_policy["workspace_access"] = req.workspace_access
+            if req.daily_budget is not None:
+                resource_policy["budget_usd_daily"] = req.daily_budget
+            normalized["resource_policy"] = resource_policy
+
+        return normalized
 
     async def _prepare_integration_config(
         self,
@@ -317,10 +427,9 @@ class ResourceCommandHandlers:
             if existing is None:
                 return None
 
-        name = payload.get("name")
-        if name is None and existing is not None:
-            name = existing.name
-        if not isinstance(name, str) or not name:
+        req = msgspec.convert(payload, type=CreateIntegrationRequest, strict=False)
+        name = req.name or (existing.name if existing is not None else "")
+        if not name:
             return _error("validation_error", "integration name must be set", 400)
 
         try:
@@ -331,7 +440,7 @@ class ResourceCommandHandlers:
         try:
             payload["config"] = wrap_config_secrets(
                 config,
-                schema=getattr(factory, "config_schema", None),
+                schema=factory.config_schema,
                 existing=existing.config if existing is not None else None,
             )
         except ValueError as exc:

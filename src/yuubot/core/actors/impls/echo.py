@@ -9,15 +9,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from yuubot.core.actors.contracts import Actor
-from yuubot.core.actors.python_session import (
+from yuubot.core.actors.impls.python_session import (
     ActorPythonSessionFactory,
     ExecutePythonSession,
 )
 from yuubot.core.bindings import ActorBinding
 from yuubot.core.facade import facade_call_path
 from yuubot.core.gateway import Mailbox
-from yuubot.core.integrations import IntegrationCore
-from yuubot.core.integrations.echo import ECHO_CAPABILITY_SPEC
+from yuubot.core.integrations.core import IntegrationCore
+from yuubot.core.integrations.impls.echo import ECHO_CAPABILITY_SPEC
 from yuubot.core.messages import IncomingMessage
 from yuubot.resources.events import ResourceChanged
 

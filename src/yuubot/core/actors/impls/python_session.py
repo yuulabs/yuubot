@@ -1,10 +1,10 @@
-"""Actor-owned Python sessions with generated yext bindings."""
+"""Actor-owned Python sessions with yb/yext facade bindings."""
 
 from __future__ import annotations
 
 import ast
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,8 +12,10 @@ from typing import cast
 from uuid import uuid4
 
 import yuullm
+import msgspec
 from yuuagents import Budget, EventBus, MailBox, PythonKernelConfig, Runtime
-from yuuagents.providers import IpykernelProvider
+from yuuagents.tool_backends import IpykernelToolBackend
+from yuuagents.tool_backends.ipykernel import PythonToolConfig
 
 from yuubot.core.bindings import ActorBinding
 from yuubot.core.capabilities import AnyCapabilitySpec
@@ -40,6 +42,9 @@ class ActorPythonSessionFactory:
         integrations: IntegrationCore,
         root: Path,
         mailbox_for_actor: Callable[[str], MailBox | None] | None = None,
+        schedule_for_actor: Callable[
+            [str, str, str, dict[str, object]], Awaitable[object]
+        ] | None = None,
     ) -> "ActorPythonSessionFactory":
         return cls(
             integrations=integrations,
@@ -47,6 +52,7 @@ class ActorPythonSessionFactory:
             bridge=IntegrationInvokeBridge(
                 integrations,
                 mailbox_for_actor=mailbox_for_actor,
+                schedule_for_actor=schedule_for_actor,
             ),
         )
 
@@ -118,21 +124,22 @@ class ExecutePythonSession:
     bridge: IntegrationInvokeBridge
     cwd: Path
     submit_timeout_s: float = 15.0
-    cell_timeout_s: float = 10.0
     budget: Budget = field(default_factory=lambda: Budget(limits={}))
     _runtime: Runtime = field(init=False)
 
     def __post_init__(self) -> None:
         eventbus = EventBus()
         self._runtime = Runtime(eventbus=eventbus)
-        provider = IpykernelProvider(
+        backend = IpykernelToolBackend(
             config=PythonKernelConfig(
                 cwd=str(self.cwd),
                 sys_path=tuple(self.facade.sys_path),
                 startup_code=self.facade.startup_code,
             ),
         )
-        executor = provider.create_executor({"state": self.facade.session_state})
+        executor = backend.create_executor(
+            msgspec.to_builtins(PythonToolConfig(state=self.facade.session_state))
+        )
         self._runtime.add_executors(
             self.session_id,
             {"ipykernel": executor},
@@ -158,7 +165,6 @@ class ExecutePythonSession:
             arguments=json.dumps(
                 {
                     "code": code,
-                    "timeout_s": self.cell_timeout_s,
                     "capture": ["stdout", "stderr"],
                 },
                 ensure_ascii=True,

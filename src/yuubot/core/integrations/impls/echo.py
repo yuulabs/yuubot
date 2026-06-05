@@ -23,12 +23,12 @@ from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.context import InvocationContext
 from yuubot.core.integrations.contracts import IntegrationStorage, ReactionKind
 from yuubot.core.messages import IncomingMessage, MessageSource
-from yuubot.core.validation import validate_integration_config
 from yuubot.resources.records import IntegrationRecord
 
 ECHO_CAPABILITY_ID = "echo.echo"
 ECHO_REPLY_CAPABILITY_ID = "echo.reply"
 ECHO_INTEGRATION_NAME = "echo"
+ECHO_TEST_TIMEOUT_S = 5.0
 
 
 class EchoPayload(msgspec.Struct):
@@ -143,21 +143,16 @@ class EchoIntegrationFactory:
         storage: IntegrationStorage,
     ) -> "EchoIntegration":
         _ = storage
-        validate_integration_config(
-            record.name,
-            dict(record.config),
-            schema=EchoIntegrationConfig,
-            context=f"integration[{record.id}]",
-        )
+        config = record.typed_config(EchoIntegrationConfig)
         instance = EchoIntegration(
             ingress=gateway.open_integration(record.id),
-            default_source_path=_source_path(record),
+            default_source_path=config.source_path or config.channel_id,
         )
         self._instances[record.id] = instance
         return instance
 
     def routes(self, integrations: "IntegrationCore") -> list:
-        from yuubot.core.integrations.echo_routes import echo_routes
+        from yuubot.core.integrations.impls.echo_routes import echo_routes
 
         return echo_routes(integrations)
 
@@ -310,19 +305,34 @@ class EchoIntegration:
         )
 
     async def next_response(self) -> EchoResponseRecord:
-        return await asyncio.wait_for(self.response_calls.get(), timeout=1.0)
+        return await asyncio.wait_for(
+            self.response_calls.get(),
+            timeout=ECHO_TEST_TIMEOUT_S,
+        )
 
     async def next_echo_call(self) -> EchoPayload:
-        return await asyncio.wait_for(self.echo_calls.get(), timeout=1.0)
+        return await asyncio.wait_for(
+            self.echo_calls.get(),
+            timeout=ECHO_TEST_TIMEOUT_S,
+        )
 
     async def next_echo_context(self) -> dict[str, object]:
-        return await asyncio.wait_for(self.echo_contexts.get(), timeout=1.0)
+        return await asyncio.wait_for(
+            self.echo_contexts.get(),
+            timeout=ECHO_TEST_TIMEOUT_S,
+        )
 
     async def next_reply_call(self) -> EchoReplyPayload:
-        return await asyncio.wait_for(self.reply_calls.get(), timeout=1.0)
+        return await asyncio.wait_for(
+            self.reply_calls.get(),
+            timeout=ECHO_TEST_TIMEOUT_S,
+        )
 
     async def next_reply_context(self) -> dict[str, object]:
-        return await asyncio.wait_for(self.reply_contexts.get(), timeout=1.0)
+        return await asyncio.wait_for(
+            self.reply_contexts.get(),
+            timeout=ECHO_TEST_TIMEOUT_S,
+        )
 
     async def wait_for_reply(self, timeout_s: float) -> EchoReplyPayload:
         return await asyncio.wait_for(self.reply_calls.get(), timeout=timeout_s)
@@ -332,10 +342,3 @@ def _text_content(text: str) -> list[dict[str, object]]:
     if not text:
         return []
     return [{"type": "text", "text": text}]
-
-
-def _source_path(record: IntegrationRecord) -> str:
-    value = record.config.get("source_path", record.config.get("channel_id", ""))
-    if not isinstance(value, str):
-        raise TypeError("echo integration source_path must be a string")
-    return value

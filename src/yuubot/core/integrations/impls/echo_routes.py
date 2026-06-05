@@ -10,7 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from yuubot.core.integrations.core import IntegrationCore
-from yuubot.core.integrations.echo import EchoIngressPayload, EchoIntegration
+from yuubot.core.integrations.impls.echo import EchoIngressPayload, EchoIntegration
 from yuubot.runtime.http_utils import error_response
 
 
