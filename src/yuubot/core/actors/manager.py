@@ -152,6 +152,8 @@ class ActorManager:
             if actor_id not in self._actors:
                 try:
                     await self._start_actor_locked(actor_id)
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     logger.exception("actor %s failed to start during reconcile", actor_id)
 

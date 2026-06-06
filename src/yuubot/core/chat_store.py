@@ -10,8 +10,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
-
 import msgspec
 from tortoise import connections
 
@@ -38,21 +36,8 @@ class BrowseResult:
     has_more: bool
 
 
-def _dict_to_record(d: dict[str, Any]) -> ChatMessageRecord:
-    """Convert a raw SQL query result dict to a ChatMessageRecord."""
-    return ChatMessageRecord(
-        id=d.get("id", 0),
-        dialog_id=str(d.get("dialog_id", "")),
-        message_id=str(d.get("message_id", "")),
-        role=str(d.get("role", "")),
-        raw_content=str(d.get("raw_content", "")),
-        text_content=str(d.get("text_content", "")),
-        actor_id=str(d.get("actor_id", "")),
-        sender_id=str(d.get("sender_id", "")),
-        sender_name=str(d.get("sender_name", "")),
-        timestamp=int(d.get("timestamp", 0)),
-        created_at=d.get("created_at"),
-    )
+def _dict_to_record(d: dict[str, object]) -> ChatMessageRecord:
+    return msgspec.convert(d, type=ChatMessageRecord, strict=False)
 
 
 @dataclass

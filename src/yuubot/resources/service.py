@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
+import msgspec
 from tortoise import Model
 from tortoise.exceptions import BaseORMException
 
 from yuubot.core.actors.manager import ActorManager
 from yuubot.core.integrations.core import IntegrationCore
+from yuubot.resources.errors import StorageError
 from yuubot.resources.events import ResourceAction, ResourceChanged
 from yuubot.resources.registry import EventDrivenRefreshDispatcher, ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
@@ -42,14 +44,14 @@ class ResourceService:
     async def create(
         self,
         orm_type: type[Model],
-        record: object,
-    ) -> tuple[object, list[str], list[str]]:
+        record: msgspec.Struct,
+    ) -> tuple[msgspec.Struct, list[str], list[str]]:
         """Insert a resource record and trigger reconcile after commit."""
         row_id: str = getattr(record, "id")
         try:
             inserted = await self.repository.insert(orm_type, record)
         except BaseORMException as exc:
-            raise ValueError(str(exc)) from exc
+            raise StorageError(str(exc)) from exc
         table = orm_type._meta.db_table
         actions, warnings = await self._reconcile(table, "inserted", row_id)
         return inserted, actions, warnings
@@ -58,13 +60,13 @@ class ResourceService:
         self,
         orm_type: type[Model],
         row_id: str,
-        **fields: Any,
-    ) -> tuple[object | None, list[str], list[str]]:
+        **fields: object,
+    ) -> tuple[msgspec.Struct | None, list[str], list[str]]:
         """Update a resource record and trigger reconcile after commit."""
         try:
             updated = await self.repository.update(orm_type, row_id, **fields)
         except BaseORMException as exc:
-            raise ValueError(str(exc)) from exc
+            raise StorageError(str(exc)) from exc
         if updated is None:
             return None, [], []
         table = orm_type._meta.db_table
@@ -82,7 +84,7 @@ class ResourceService:
         try:
             deleted = await self.repository.delete(orm_type, row_id)
         except BaseORMException as exc:
-            raise ValueError(str(exc)) from exc
+            raise StorageError(str(exc)) from exc
         if not deleted:
             return False, [], []
         table = orm_type._meta.db_table
@@ -94,13 +96,13 @@ class ResourceService:
         orm_type: type[Model],
         row_id: str,
         enabled: bool,
-    ) -> tuple[object | None, list[str], list[str]]:
+    ) -> tuple[msgspec.Struct | None, list[str], list[str]]:
         """Enable or disable a resource and trigger lifecycle reconcile."""
         label = "enable" if enabled else "disable"
         try:
             updated = await self.repository.update(orm_type, row_id, enabled=enabled)
         except BaseORMException as exc:
-            raise ValueError(str(exc)) from exc
+            raise StorageError(str(exc)) from exc
         if updated is None:
             return None, [], []
 

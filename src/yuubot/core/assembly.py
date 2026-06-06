@@ -540,10 +540,12 @@ def _positive_span(value: int) -> int:
 
 
 def _reset_token_usage(agent: Agent) -> None:
-    usage = agent.budget._usage if hasattr(agent.budget, "_usage") else None
-    if isinstance(usage, dict):
-        usage.pop("tokens", None)
-        return
+    """Reset token usage by replacing the budget with a fresh instance.
+
+    Budget.usage returns a copy, so mutation through the public API is not
+    possible. Instead, create a new Budget with the same limits — the new
+    instance starts with empty _usage.
+    """
     agent.budget = Budget(limits=agent.budget.limits)
 
 

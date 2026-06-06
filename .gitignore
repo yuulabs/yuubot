@@ -238,6 +238,9 @@ yuuagents.config.yaml
 # Vendor (downloaded binaries, e.g. libsimple)
 vendor/
 .claude/
+.agents/skills/python-purist/
 docker_config.yaml
 
 .tmp/
+warroom/
+pnpm-lock.yaml

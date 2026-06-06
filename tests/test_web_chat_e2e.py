@@ -39,8 +39,8 @@ async def test_user_can_create_actor_and_chat_through_admin_web_path(
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
     try:
-        admin_app = _build_admin_app(daemon, yuubot_config, tmp_path)
         await _connect_admin_proxy_to_daemon(monkeypatch, daemon)
+        admin_app = _build_admin_app(daemon, yuubot_config, tmp_path)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=admin_app),
@@ -119,8 +119,8 @@ async def test_web_chat_reports_missing_model_pricing_as_configuration_error(
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
     try:
-        admin_app = _build_admin_app(daemon, yuubot_config, tmp_path)
         await _connect_admin_proxy_to_daemon(monkeypatch, daemon)
+        admin_app = _build_admin_app(daemon, yuubot_config, tmp_path)
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=admin_app),

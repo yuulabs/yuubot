@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, TypeGuard
+from typing import Any
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from opentelemetry.util.types import AttributeValue
@@ -84,7 +84,7 @@ class YuubotTraceContextProvider:
         _copy_string(event.data, attrs, "integration_id", "yuubot.integration_id")
         _copy_string(event.data, attrs, "capability_id", "yuubot.capability_id")
         _copy_string(event.data, attrs, "task_id", "yuubot.task_id")
-        return {k: v for k, v in attrs.items() if _is_attribute_value(v)}
+        return {k: v for k, v in attrs.items() if isinstance(v, (str, int, float, bool))}
 
     def _context_for(self, event: RuntimeEvent) -> YuubotTraceContext:
         if event.agent_id and event.agent_id in self._agent_contexts:
@@ -115,6 +115,3 @@ def _copy_string(
     if isinstance(value, str) and value:
         target[target_key] = value
 
-
-def _is_attribute_value(value: Any) -> TypeGuard[AttributeValue]:
-    return isinstance(value, str | int | float | bool)

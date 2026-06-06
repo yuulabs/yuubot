@@ -5,21 +5,34 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, cast
 
 import msgspec
 import yuullm
-from tortoise import connections
 from yuuagents.eventbus import RuntimeEvent
 
+from yuubot.core.actors.impls.simple_loop import SimpleLoopActor
 from yuubot.core.actors.manager import ActorManager
+from yuubot.core.conversation_utils import (
+    _agent_event,
+    _chunk_content,
+    _chunk_event_type,
+    _content_to_builtins,
+    _decode_content,
+    _entity_content,
+    _entity_end_event_type,
+    _event_metadata,
+    _json_safe_dict,
+)
 from yuubot.resources.records import (
     ConversationMessageRecord,
     ConversationRecord,
 )
+from yuubot.resources.store.models import ConversationMessageORM, ConversationORM
+from yuubot.resources.store.protocol import to_builtins
 from yuubot.resources.store.resource import Store
 
 
@@ -114,11 +127,11 @@ class LLMFinishedData:
     """Typed extraction of llm.finished fields from RuntimeEvent.data."""
 
     model: str = ""
-    usage: object = None
-    cost: object = None
-    duration_s: object = None
-    tool_calls: tuple[object, ...] = ()
-    message: object = None
+    usage: dict[str, object] | None = None
+    cost: dict[str, object] | float | None = None
+    duration_s: float | None = None
+    tool_calls: tuple[dict[str, object], ...] = ()
+    message: object | None = None
 
     @classmethod
     def from_event(cls, event: RuntimeEvent) -> LLMFinishedData:
@@ -139,103 +152,68 @@ class LLMFinishedData:
 class ConversationStore:
     store: Store
 
-    def _conn(self):
-        return connections.get("default")
-
     async def create_conversation(
         self,
         *,
         conversation_id: str,
         actor_id: str,
     ) -> ConversationRecord:
-        now = datetime.now(timezone.utc).isoformat()
         with self.store.db.activate():
-            conn = self._conn()
-            await conn.execute_query(
-                """INSERT OR IGNORE INTO conversations
-                   (conversation_id, actor_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?)""",
-                [conversation_id, actor_id, now, now],
+            row, _created = await ConversationORM.get_or_create(
+                conversation_id=conversation_id,
+                defaults={"actor_id": actor_id},
             )
-        existing = await self.get_conversation(conversation_id)
-        if existing is None:
+        if row is None:
             raise RuntimeError(f"conversation {conversation_id!r} was not created")
-        return existing
+        return msgspec.convert(to_builtins(row), type=ConversationRecord, strict=False)
 
     async def get_conversation(
         self,
         conversation_id: str,
     ) -> ConversationRecord | None:
         with self.store.db.activate():
-            rows = await self._conn().execute_query_dict(
-                "SELECT * FROM conversations WHERE conversation_id = ? LIMIT 1",
-                [conversation_id],
-            )
-        if not rows:
+            row = await ConversationORM.get_or_none(conversation_id=conversation_id)
+        if row is None:
             return None
-        return _conversation_from_row(rows[0])
+        return msgspec.convert(to_builtins(row), type=ConversationRecord, strict=False)
 
     async def list_conversations(
         self,
         *,
         actor_id: str | None = None,
     ) -> list[ConversationRecord]:
-        where = ""
-        params: list[object] = []
-        if actor_id:
-            where = "WHERE actor_id = ?"
-            params.append(actor_id)
         with self.store.db.activate():
-            rows = await self._conn().execute_query_dict(
-                f"SELECT * FROM conversations {where} ORDER BY updated_at DESC",
-                params,
-            )
-        return [_conversation_from_row(row) for row in rows]
+            if actor_id:
+                rows = await ConversationORM.filter(actor_id=actor_id)
+            else:
+                rows = await ConversationORM.all()
+        return [msgspec.convert(to_builtins(r), type=ConversationRecord, strict=False) for r in rows]
 
     async def append_message(
         self,
         *,
-        conversation_id: str,
         message_id: str,
+        conversation_id: str,
         role: str,
         content: list[dict[str, object]],
         metadata: dict[str, object] | None = None,
         timestamp: int | None = None,
     ) -> ConversationMessageRecord:
         msg_ts = timestamp if timestamp is not None else int(time.time())
-        raw_content = msgspec.json.encode(content).decode()
-        raw_metadata = msgspec.json.encode(metadata or {}).decode()
         with self.store.db.activate():
-            conn = self._conn()
-            now = datetime.now(timezone.utc).isoformat()
-            row_id = await conn.execute_insert(
-                """INSERT INTO conversation_messages
-                   (message_id, conversation_id, role, raw_content, metadata,
-                    timestamp, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    message_id,
-                    conversation_id,
-                    role,
-                    raw_content,
-                    raw_metadata,
-                    msg_ts,
-                    now,
-                ],
+            row = await ConversationMessageORM.create(
+                message_id=message_id,
+                conversation_id=conversation_id,
+                role=role,
+                raw_content=msgspec.json.encode(content).decode(),
+                metadata=metadata or {},
+                timestamp=msg_ts,
             )
-            await conn.execute_query(
-                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
-                [now, conversation_id],
+            now = datetime.now(timezone.utc)
+            await ConversationORM.filter(conversation_id=conversation_id).update(
+                updated_at=now,
             )
-        return ConversationMessageRecord(
-            id=row_id,
-            message_id=message_id,
-            conversation_id=conversation_id,
-            role=role,
-            raw_content=raw_content,
-            metadata=metadata or {},
-            timestamp=msg_ts,
-        )
+        return msgspec.convert(to_builtins(row), type=ConversationMessageRecord, strict=False)
 
     async def list_messages(
         self,
@@ -244,14 +222,10 @@ class ConversationStore:
         limit: int = 100,
     ) -> list[ConversationMessageRecord]:
         with self.store.db.activate():
-            rows = await self._conn().execute_query_dict(
-                """SELECT * FROM conversation_messages
-                   WHERE conversation_id = ?
-                   ORDER BY timestamp, id
-                   LIMIT ?""",
-                [conversation_id, limit],
-            )
-        return [_message_from_row(row) for row in rows]
+            rows = await ConversationMessageORM.filter(
+                conversation_id=conversation_id,
+            ).order_by("timestamp", "id").limit(limit)
+        return [msgspec.convert(to_builtins(r), type=ConversationMessageRecord, strict=False) for r in rows]
 
     async def history(self, conversation_id: str) -> yuullm.History:
         messages = await self.list_messages(conversation_id, limit=1000)
@@ -263,6 +237,25 @@ class ConversationStore:
             for record in messages
             if record.role in {"user", "assistant", "system", "tool"}
         ]
+
+
+# ---------------------------------------------------------------------------
+# Event dispatch table for _record_event
+# ---------------------------------------------------------------------------
+
+_EventRecordHandler = Callable[
+    ["ConversationManager", str, RuntimeEvent],
+    "asyncio.Future[AgentEvent | None]",
+]
+
+_EVENT_DISPATCH: Mapping[str, str] = {
+    "output.entity": "_handle_output_entity",
+    "output.chunk": "_handle_output_chunk",
+    "output.entity_end": "_handle_output_entity_end",
+    "llm.finished": "_handle_llm_finished",
+    "agent.turn.error": "_handle_error",
+    "budget.exceeded": "_handle_error",
+}
 
 
 @dataclass
@@ -352,9 +345,7 @@ class ConversationManager:
             raise LookupError(f"conversation {conversation_id!r} does not exist")
         return conversation
 
-    async def _require_standard_actor(self, actor_id: str):
-        from yuubot.core.actors.impls.simple_loop import SimpleLoopActor
-
+    async def _require_standard_actor(self, actor_id: str) -> SimpleLoopActor:
         actor = self.actors.running_actor(actor_id)
         if actor is None:
             actor = await self.actors.start_actor(actor_id)
@@ -362,9 +353,7 @@ class ConversationManager:
             raise TypeError(f"actor {actor_id!r} does not support conversations")
         return actor
 
-    def _observe_actor(self, actor_id: str, actor: Any) -> None:
-        from yuubot.core.actors.impls.simple_loop import SimpleLoopActor
-
+    def _observe_actor(self, actor_id: str, actor: object) -> None:
         if not isinstance(actor, SimpleLoopActor) or actor._runtime is None:
             return
         runtime = actor._runtime
@@ -399,220 +388,80 @@ class ConversationManager:
         conversation_id: str,
         event: RuntimeEvent,
     ) -> AgentEvent | None:
-        if event.name == "output.entity":
-            return _agent_event(conversation_id, event, "entity", _entity_content(event))
-        if event.name == "output.chunk":
-            return _agent_event(
-                conversation_id,
-                event,
-                _chunk_event_type(event),
-                _chunk_content(event),
+        method_name = _EVENT_DISPATCH.get(event.name)
+        if method_name is None:
+            return None
+        handler = getattr(self, method_name)
+        return await handler(conversation_id, event)
+
+    # -- Event handler methods (called via dispatch table) --
+
+    async def _handle_output_entity(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> AgentEvent:
+        return _agent_event(
+            conversation_id, event, "entity", _entity_content(event)
+        )
+
+    async def _handle_output_chunk(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> AgentEvent:
+        return _agent_event(
+            conversation_id,
+            event,
+            _chunk_event_type(event),
+            _chunk_content(event),
+        )
+
+    async def _handle_output_entity_end(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> AgentEvent:
+        return _agent_event(
+            conversation_id,
+            event,
+            _entity_end_event_type(event),
+            _entity_content(event),
+        )
+
+    async def _handle_llm_finished(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> AgentEvent | None:
+        finished = LLMFinishedData.from_event(event)
+        message = finished.message
+        if isinstance(message, yuullm.Message):
+            content = _content_to_builtins(message.content)
+            await self.store.append_message(
+                conversation_id=conversation_id,
+                message_id=uuid.uuid4().hex,
+                role=message.role,
+                content=content,
+                metadata=_event_metadata(event),
+                timestamp=int(event.timestamp),
             )
-        if event.name == "output.entity_end":
             return _agent_event(
                 conversation_id,
                 event,
-                _entity_end_event_type(event),
-                _entity_content(event),
-            )
-        if event.name == "llm.finished":
-            finished = LLMFinishedData.from_event(event)
-            message = finished.message
-            if isinstance(message, yuullm.Message):
-                content = _content_to_builtins(message.content)
-                await self.store.append_message(
-                    conversation_id=conversation_id,
-                    message_id=uuid.uuid4().hex,
-                    role=message.role,
-                    content=content,
-                    metadata=_event_metadata(event),
-                    timestamp=int(event.timestamp),
-                )
-                return _agent_event(
-                    conversation_id,
-                    event,
-                    "message",
-                    {"role": message.role, "content": content},
-                )
-        if event.name in {"agent.turn.error", "budget.exceeded"}:
-            return _agent_event(
-                conversation_id,
-                event,
-                "error",
-                _json_safe_dict(event.data),
+                "message",
+                {"role": message.role, "content": content},
             )
         return None
 
-def _conversation_from_row(row: dict[str, Any]) -> ConversationRecord:
-    return ConversationRecord(
-        conversation_id=str(row["conversation_id"]),
-        actor_id=str(row["actor_id"]),
-        created_at=row.get("created_at"),
-        updated_at=row.get("updated_at"),
-    )
-
-
-def _message_from_row(row: dict[str, Any]) -> ConversationMessageRecord:
-    return ConversationMessageRecord(
-        id=int(row.get("id", 0)),
-        message_id=str(row["message_id"]),
-        conversation_id=str(row["conversation_id"]),
-        role=str(row["role"]),
-        raw_content=str(row["raw_content"]),
-        metadata=_decode_metadata(row.get("metadata", {})),
-        timestamp=int(row["timestamp"]),
-        created_at=row.get("created_at"),
-    )
-
-
-def _agent_event(
-    conversation_id: str,
-    event: RuntimeEvent,
-    event_type: str,
-    content: dict[str, object],
-) -> AgentEvent:
-    return AgentEvent(
-        conversation_id=conversation_id,
-        agent_id=_agent_id_for_event(event),
-        agent_name=event.agent_name,
-        event_type=event_type,
-        content=content,
-        timestamp=event.timestamp,
-    )
-
-
-def _agent_id_for_event(event: RuntimeEvent) -> str:
-    identity = AgentEventIdentity.from_event(event)
-    if identity.agent_id:
-        return identity.agent_id
-    if identity.parent_id:
-        return identity.parent_id
-    return identity.entity_id
-
-
-def _entity_content(event: RuntimeEvent) -> dict[str, object]:
-    entity = EntityData.from_event(event)
-    return _json_safe_dict({
-        "entity_id": entity.entity_id or None,
-        "entity_type": entity.entity_type or None,
-        "parent_id": entity.parent_id or None,
-        "tool_call_id": entity.tool_call_id or None,
-        "status": entity.status or None,
-    })
-
-
-def _chunk_event_type(event: RuntimeEvent) -> str:
-    if _is_tool_entity(event):
-        return "tool_result"
-    kinds = {_block_content_kind(block) for block in _event_blocks(event)}
-    if "tool_call" in kinds:
-        return "tool_call"
-    if "thinking" in kinds:
-        return "thinking"
-    if "text" in kinds:
-        return "text"
-    return "output"
-
-
-def _entity_end_event_type(event: RuntimeEvent) -> str:
-    return "tool_result" if _is_tool_entity(event) else "entity_end"
-
-
-def _chunk_content(event: RuntimeEvent) -> dict[str, object]:
-    chunk = ChunkData.from_event(event)
-    result: dict[str, object] = {}
-    if chunk.entity_id:
-        result["entity_id"] = chunk.entity_id
-    if chunk.entity_type:
-        result["entity_type"] = chunk.entity_type
-    if chunk.parent_id:
-        result["parent_id"] = chunk.parent_id
-    if chunk.tool_call_id:
-        result["tool_call_id"] = chunk.tool_call_id
-    result["chunk_index"] = chunk.chunk_index
-    if chunk.blocks:
-        result["blocks"] = _json_safe(list(chunk.blocks))
-    return result
-
-
-def _event_blocks(event: RuntimeEvent) -> list[object]:
-    chunk = ChunkData.from_event(event)
-    return list(chunk.blocks)
-
-
-def _is_tool_entity(event: RuntimeEvent) -> bool:
-    entity = EntityData.from_event(event)
-    return bool(entity.parent_id)
-
-
-def _block_content_kind(block: object) -> str:
-    raw = msgspec.to_builtins(block)
-    if not isinstance(raw, dict):
-        return "text"
-    content = raw.get("content")
-    if isinstance(content, str):
-        return "text"
-    if isinstance(content, dict):
-        kind = content.get("type")
-        if isinstance(kind, str):
-            if "thinking" in kind:
-                return "thinking"
-            if kind == "tool_call":
-                return "tool_call"
-            if kind == "text":
-                return "text"
-            return kind
-    return "output"
-
-
-def _decode_content(raw_content: str) -> list[dict[str, object]]:
-    return msgspec.json.decode(raw_content.encode())
-
-
-def _decode_metadata(raw_metadata: object) -> dict[str, object]:
-    if isinstance(raw_metadata, dict):
-        return _json_safe_dict(raw_metadata)
-    if isinstance(raw_metadata, str) and raw_metadata:
-        return _json_safe_dict(msgspec.json.decode(raw_metadata.encode()))
-    return {}
-
-
-def _content_to_builtins(content: object) -> list[dict[str, object]]:
-    value = msgspec.to_builtins(content)
-    if not isinstance(value, list):
-        return [{"type": "text", "text": str(value)}]
-    result: list[dict[str, object]] = []
-    for item in value:
-        if isinstance(item, dict):
-            result.append(_json_safe_dict(item))
-        else:
-            result.append({"type": "text", "text": str(item)})
-    return result
-
-
-def _event_metadata(event: RuntimeEvent) -> dict[str, object]:
-    llm = LLMFinishedData.from_event(event)
-    return _json_safe_dict({
-        "model": llm.model or None,
-        "usage": llm.usage,
-        "cost": llm.cost,
-        "duration_s": llm.duration_s,
-        "tool_calls": list(llm.tool_calls) if llm.tool_calls else None,
-    })
-
-
-def _json_safe_dict(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        return {}
-    return {
-        str(key): _json_safe(raw)
-        for key, raw in value.items()
-        if raw is not None
-    }
-
-
-def _json_safe(value: object) -> object:
-    try:
-        return msgspec.to_builtins(value)
-    except TypeError:
-        return repr(value)
+    async def _handle_error(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> AgentEvent:
+        return _agent_event(
+            conversation_id,
+            event,
+            "error",
+            _json_safe_dict(event.data),
+        )

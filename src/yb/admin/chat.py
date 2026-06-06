@@ -2,7 +2,7 @@
 
 Usage from an agent's Python session:
     dialog = await yb.admin.chat.get_dialog("dialog-abc-123")
-    print('\\n\\n'.join(dialog[-5:]))  # last 5 messages
+    recent = "\\n\\n".join(dialog[-5:])  # gather last 5 messages for processing
 """
 
 from __future__ import annotations

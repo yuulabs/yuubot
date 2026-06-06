@@ -128,6 +128,36 @@ def resource_model(
     attrs["_yuubot_schema_fields"] = frozenset(field_names)
     attrs["_yuubot_generated_fields"] = frozenset(generated_fields)
     attrs["_yuubot_references"] = dict(refs)
+
+    def _to_builtins(self, *, recursive: bool = False) -> dict[str, object]:
+        """Serialize model instance to a plain dict for msgspec.convert.
+
+        Design trade-off — our models are created via ``type()`` at module
+        level, so no type checker can see their attributes.  We *could* use
+        ``getattr()`` with silent defaults at every call site (hides both
+        type errors and schema drift), or we centralise the dynamic access
+        here in the factory and expose a typed boundary via
+        ``protocol.to_builtins()``.
+
+        When *recursive* is ``False`` (default), FK/reference fields are
+        skipped — ``getattr(self, name)`` on a scalar column is a pure
+        Python attribute read, never a DB round-trip.  Pass
+        ``recursive=True`` when you accept that FK traversal may trigger
+        lazy loads.
+        """
+        refs = self._yuubot_references
+        result: dict[str, object] = {}
+        for name in self._yuubot_schema_fields:
+            if not recursive and name in refs:
+                continue
+            value = getattr(self, name)
+            if recursive and name in refs and value is not None:
+                value = value._to_builtins(recursive=True)
+            result[name] = value
+        return result
+
+    attrs["_to_builtins"] = _to_builtins
+
     attrs["Meta"] = type(
         "Meta",
         (),

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import Any, Protocol, TypeVar, cast
 
 import msgspec
 from tortoise import Model
@@ -20,8 +20,12 @@ from yuubot.resources.orm import (
 from yuubot.resources.store.protocol import schema_type_of
 from yuubot.resources.store.resource import Store
 
-RecordT = TypeVar("RecordT")
+RecordT = TypeVar("RecordT", bound=msgspec.Struct)
 OrmT = TypeVar("OrmT", bound=Model)
+
+
+class HasId(Protocol):
+    id: str
 
 
 @dataclass
@@ -72,7 +76,7 @@ class ResourceRepository:
         self,
         row_type: type[OrmT],
         row_id: str,
-        **fields: Any,
+        **fields: object,
     ) -> RecordT | None:
         if not fields:
             return await self.get(row_type, row_id)
@@ -80,7 +84,7 @@ class ResourceRepository:
             with self.store.db.activate():
                 orm_fields = to_orm_update_fields(
                     row_type,
-                    fields,
+                    cast(dict[str, Any], fields),
                     secret_codec=self.secret_codec,
                 )
                 count = await row_type.filter(id=row_id).update(**orm_fields)
@@ -123,6 +127,12 @@ class ResourceRepository:
         )
 
     def _row_id(self, record: object) -> str:
+        """Extract the string id from a record.
+
+        Accepts ``object`` for compatibility with ``msgspec.Struct`` types
+        that declare ``id: str`` at the concrete level but not on the base
+        class.  The ``HasId`` Protocol documents the required shape.
+        """
         row_id = getattr(record, "id", None)
         if not isinstance(row_id, str):
             raise ValueError(f"{type(record).__name__} must have a string id")

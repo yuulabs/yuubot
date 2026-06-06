@@ -84,6 +84,7 @@ def to_orm_update_fields(
     secret_codec: SecretCodec | None = None,
 ) -> dict[str, Any]:
     prepared = encrypt_secret_values(fields, secret_codec) if secret_codec else fields
+    prepared = msgspec.to_builtins(prepared) if secret_codec else prepared
     return _replace_references_with_ids(dict(cast(dict[str, Any], prepared)), row_type)
 
 
@@ -94,7 +95,7 @@ def referenced_field_names(row_type: type[Model]) -> tuple[str, ...]:
 async def _referenced_resource(
     row: Model,
     name: str,
-    reference: object,
+    reference: ReferenceSpec,
     secret_codec: SecretCodec | None,
 ) -> msgspec.Struct | None:
     if getattr(row, f"{name}_id", None) is None:
@@ -140,4 +141,4 @@ def _reference_id(value: object, reference: ReferenceSpec) -> str | None:
 
 
 def _references(row_type: type[Model]) -> dict[str, ReferenceSpec]:
-    return cast(dict[str, ReferenceSpec], references_of(row_type))
+    return references_of(row_type)

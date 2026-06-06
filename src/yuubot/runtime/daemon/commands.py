@@ -10,7 +10,8 @@ import json
 import logging
 import uuid
 from contextvars import ContextVar
-from typing import Any, cast
+from datetime import datetime
+from typing import Any, Literal, TypeVar
 
 import msgspec
 from starlette.applications import Starlette
@@ -22,7 +23,26 @@ from starlette.routing import Route
 from tortoise import Model
 
 from yuubot.bootstrap.config import ServerConfig
+from yuubot.resources.errors import StorageError
 from yuubot.core.secrets import redact_secret_for_json, wrap_config_secrets
+from yuubot.core.validation import LLMProviderOptions, StreamOptions
+from yuubot.resources.records import (
+    ActorIngressRuleRecord,
+    ActorRecord,
+    BudgetPolicy,
+    CharacterHints,
+    CharacterRecord,
+    IntegrationRecord,
+    LLMBackendRecord,
+    ModelCapabilities,
+    ModelCatalog,
+    PricingTable,
+    ResourcePolicy,
+    RuntimePolicy,
+    ToolConfig,
+    YuuAgentBudget,
+    YuuAgentLLMOptions,
+)
 from yuubot.resources.registry import LifecycleHandler, ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.service import ResourceService
@@ -37,50 +57,146 @@ from yuubot.resources.store.models import (
 )
 from yuubot.runtime.daemon.validators import (
     ValidationError,
-    validate_actor_references,
     validate_delete_not_referenced,
 )
 
 logger = logging.getLogger(__name__)
 
 in_command_context: ContextVar[bool] = ContextVar("in_command_context", default=False)
+StructT = TypeVar("StructT", bound=msgspec.Struct)
+ValueT = TypeVar("ValueT")
+WorkspaceAccess = Literal["none", "read_only", "read_write"]
 
 
-# -- Request Structs: typed boundary for HTTP payloads --
+# -- Request schemas: typed boundary for HTTP payloads --
 
 
-class CreateActorRequest(msgspec.Struct, forbid_unknown_fields=False):
-    """Typed boundary for actor creation/update requests.
-
-    Captures the simplified/flat form used by the admin UI and startup guide,
-    where ``character_id``/``llm_backend_id`` and convenience fields like
-    ``max_steps`` are expanded into nested structs by
-    ``_normalize_actor_payload``.
-    """
-
+class ActorCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
+    name: str
+    character: CharacterRecord | msgspec.UnsetType = msgspec.UNSET
+    llm_backend: LLMBackendRecord | msgspec.UnsetType = msgspec.UNSET
     id: str = ""
-    name: str = ""
     type: str = "simple_loop"
-    character_id: str = ""
-    llm_backend_id: str = ""
+    character_id: str | msgspec.UnsetType = msgspec.UNSET
+    llm_backend_id: str | msgspec.UnsetType = msgspec.UNSET
     model: str = ""
     config: dict[str, object] = msgspec.field(default_factory=dict)
     enabled: bool = True
-    # Flattened convenience fields that map to nested structs
-    max_steps: int | None = None
-    memory_enabled: bool | None = None
-    workspace_access: str = ""
-    daily_budget: float | None = None
-    capability_ids: list[str] = msgspec.field(default_factory=list)
+    version: int = 1
+    llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
+    budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
+    agent_tools: tuple[ToolConfig, ...] | msgspec.UnsetType = msgspec.UNSET
+    allowed_capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    runtime_policy: RuntimePolicy | msgspec.UnsetType = msgspec.UNSET
+    resource_policy: ResourcePolicy | msgspec.UnsetType = msgspec.UNSET
+    max_steps: int | msgspec.UnsetType = msgspec.UNSET
+    memory_enabled: bool | msgspec.UnsetType = msgspec.UNSET
+    workspace_access: WorkspaceAccess | msgspec.UnsetType = msgspec.UNSET
+    daily_budget: float | msgspec.UnsetType = msgspec.UNSET
+    capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
+    updated_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
 
 
-class CreateIntegrationRequest(msgspec.Struct, forbid_unknown_fields=False):
-    """Typed boundary for integration creation/update requests."""
+class ActorPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
+    id: str | msgspec.UnsetType = msgspec.UNSET
+    name: str | msgspec.UnsetType = msgspec.UNSET
+    type: str | msgspec.UnsetType = msgspec.UNSET
+    character: CharacterRecord | msgspec.UnsetType = msgspec.UNSET
+    llm_backend: LLMBackendRecord | msgspec.UnsetType = msgspec.UNSET
+    character_id: str | msgspec.UnsetType = msgspec.UNSET
+    llm_backend_id: str | msgspec.UnsetType = msgspec.UNSET
+    model: str | msgspec.UnsetType = msgspec.UNSET
+    config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
+    enabled: bool | msgspec.UnsetType = msgspec.UNSET
+    llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
+    budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
+    agent_tools: tuple[ToolConfig, ...] | msgspec.UnsetType = msgspec.UNSET
+    allowed_capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    runtime_policy: RuntimePolicy | msgspec.UnsetType = msgspec.UNSET
+    resource_policy: ResourcePolicy | msgspec.UnsetType = msgspec.UNSET
+    max_steps: int | msgspec.UnsetType = msgspec.UNSET
+    memory_enabled: bool | msgspec.UnsetType = msgspec.UNSET
+    workspace_access: WorkspaceAccess | msgspec.UnsetType = msgspec.UNSET
+    daily_budget: float | msgspec.UnsetType = msgspec.UNSET
+    capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
 
+
+class IntegrationCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
+    name: str
     id: str = ""
-    name: str = ""
-    config: dict[str, object] = msgspec.field(default_factory=dict)
+    config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
     enabled: bool = True
+    version: int = 1
+    created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
+    updated_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
+
+
+class IntegrationPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
+    id: str | msgspec.UnsetType = msgspec.UNSET
+    name: str | msgspec.UnsetType = msgspec.UNSET
+    config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
+    enabled: bool | msgspec.UnsetType = msgspec.UNSET
+    version: int | msgspec.UnsetType = msgspec.UNSET
+
+
+class LLMBackendPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
+    id: str | msgspec.UnsetType = msgspec.UNSET
+    name: str | msgspec.UnsetType = msgspec.UNSET
+    yuuagents_provider: str | msgspec.UnsetType = msgspec.UNSET
+    model_capabilities: ModelCapabilities | msgspec.UnsetType = msgspec.UNSET
+    models: ModelCatalog | msgspec.UnsetType = msgspec.UNSET
+    pricing: PricingTable | msgspec.UnsetType = msgspec.UNSET
+    budget: BudgetPolicy | msgspec.UnsetType = msgspec.UNSET
+    provider_options: LLMProviderOptions | msgspec.UnsetType = msgspec.UNSET
+    default_model: str | msgspec.UnsetType = msgspec.UNSET
+    default_stream_options: StreamOptions | msgspec.UnsetType = msgspec.UNSET
+    version: int | msgspec.UnsetType = msgspec.UNSET
+
+
+class CharacterPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
+    id: str | msgspec.UnsetType = msgspec.UNSET
+    name: str | msgspec.UnsetType = msgspec.UNSET
+    description: str | msgspec.UnsetType = msgspec.UNSET
+    system_prompt: str | msgspec.UnsetType = msgspec.UNSET
+    facade_module: str | msgspec.UnsetType = msgspec.UNSET
+    default_hints: CharacterHints | msgspec.UnsetType = msgspec.UNSET
+    is_builtin: bool | msgspec.UnsetType = msgspec.UNSET
+    builtin_version: str | msgspec.UnsetType = msgspec.UNSET
+    cloned_from: str | msgspec.UnsetType = msgspec.UNSET
+    version: int | msgspec.UnsetType = msgspec.UNSET
+
+
+class PromptTemplatePatchRequest(msgspec.Struct, forbid_unknown_fields=True):
+    id: str | msgspec.UnsetType = msgspec.UNSET
+    name: str | msgspec.UnsetType = msgspec.UNSET
+    content: str | msgspec.UnsetType = msgspec.UNSET
+    description: str | msgspec.UnsetType = msgspec.UNSET
+    is_builtin: bool | msgspec.UnsetType = msgspec.UNSET
+    builtin_version: str | msgspec.UnsetType = msgspec.UNSET
+    version: int | msgspec.UnsetType = msgspec.UNSET
+
+
+class ActorIngressRulePatchRequest(msgspec.Struct, forbid_unknown_fields=True):
+    id: str | msgspec.UnsetType = msgspec.UNSET
+    actor_id: str | msgspec.UnsetType = msgspec.UNSET
+    source_id_pattern: str | msgspec.UnsetType = msgspec.UNSET
+    source_path_pattern: str | msgspec.UnsetType = msgspec.UNSET
+    kind_patterns: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    enabled: bool | msgspec.UnsetType = msgspec.UNSET
+    version: int | msgspec.UnsetType = msgspec.UNSET
+
+
+class ActorIngressRuleCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
+    actor_id: str
+    id: str = ""
+    source_id_pattern: str = "*"
+    source_path_pattern: str = "**"
+    kind_patterns: tuple[str, ...] = ("*",)
+    enabled: bool = True
+    version: int = 1
+    created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
+    updated_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
 
 
 def build_default_resource_type_registry(
@@ -111,7 +227,7 @@ def build_default_resource_type_registry(
     return registry
 
 
-def _encode_record(record: object) -> Any:
+def _encode_record(record: object) -> object:
     return msgspec.json.decode(
         msgspec.json.encode(record, enc_hook=redact_secret_for_json)
     )
@@ -134,6 +250,102 @@ def _error(code: str, detail: str, status_code: int) -> JSONResponse:
     return JSONResponse(
         {"status": "error", "code": code, "detail": detail},
         status_code=status_code,
+    )
+
+
+def _convert_request(raw: object, schema_type: type[StructT]) -> StructT | JSONResponse:
+    try:
+        return msgspec.convert(raw, type=schema_type, strict=False)
+    except (msgspec.ValidationError, msgspec.DecodeError) as exc:
+        return _error("validation_error", str(exc), 400)
+
+
+def _ensure_record_id(record: msgspec.Struct) -> None:
+    row_id = getattr(record, "id", "")
+    if not row_id:
+        setattr(record, "id", str(uuid.uuid4()))
+
+
+def _struct_fields(record: msgspec.Struct) -> dict[str, Any]:
+    raw_fields = msgspec.to_builtins(record)
+    if not isinstance(raw_fields, dict):
+        raise TypeError(f"{type(record).__name__} did not encode to a field object")
+
+    fields: dict[str, Any] = {}
+    for name, value in raw_fields.items():
+        if not isinstance(name, str):
+            raise TypeError(f"{type(record).__name__} encoded a non-string field name")
+        fields[name] = value
+    return fields
+
+
+def _patch_fields(
+    record: msgspec.Struct,
+    *,
+    exclude: frozenset[str] = frozenset({"id"}),
+) -> dict[str, Any]:
+    return {
+        name: value
+        for name, value in _struct_fields(record).items()
+        if name not in exclude
+    }
+
+def _value_or(value: ValueT | msgspec.UnsetType, default: ValueT) -> ValueT:
+    if value is msgspec.UNSET:
+        return default
+    return value
+
+
+_PATCH_TYPES: dict[type[Model], type[msgspec.Struct]] = {
+    LLMBackendORM: LLMBackendPatchRequest,
+    CharacterORM: CharacterPatchRequest,
+    PromptTemplateORM: PromptTemplatePatchRequest,
+    ActorIngressRuleORM: ActorIngressRulePatchRequest,
+}
+
+
+def _patch_request_type(orm_type: type[Model]) -> type[msgspec.Struct] | None:
+    return _PATCH_TYPES.get(orm_type)
+
+
+def _actor_budget(request: ActorCreateRequest) -> YuuAgentBudget:
+    if request.budget is not msgspec.UNSET:
+        return request.budget
+    if request.max_steps is not msgspec.UNSET:
+        return YuuAgentBudget(max_steps=request.max_steps)
+    return YuuAgentBudget()
+
+
+def _actor_capability_ids(request: ActorCreateRequest) -> tuple[str, ...]:
+    if request.allowed_capability_ids is not msgspec.UNSET:
+        return request.allowed_capability_ids
+    if request.capability_ids is not msgspec.UNSET:
+        return request.capability_ids
+    return ()
+
+
+def _actor_runtime_policy(request: ActorCreateRequest) -> RuntimePolicy:
+    if request.runtime_policy is not msgspec.UNSET:
+        return request.runtime_policy
+    if request.memory_enabled is not msgspec.UNSET:
+        return RuntimePolicy(memory_enabled=request.memory_enabled)
+    return RuntimePolicy()
+
+
+def _actor_resource_policy(request: ActorCreateRequest) -> ResourcePolicy:
+    if request.resource_policy is not msgspec.UNSET:
+        return request.resource_policy
+    if request.workspace_access is msgspec.UNSET and request.daily_budget is msgspec.UNSET:
+        return ResourcePolicy()
+    return ResourcePolicy(
+        workspace_access=(
+            request.workspace_access
+            if request.workspace_access is not msgspec.UNSET
+            else "none"
+        ),
+        budget_usd_daily=(
+            request.daily_budget if request.daily_budget is not msgspec.UNSET else None
+        ),
     )
 
 
@@ -173,31 +385,18 @@ class ResourceCommandHandlers:
         if orm_type is None:
             return _error("not_found", f"unknown resource type '{slug}'", 404)
 
-        payload = await self._parse_json_body(request)
-        if isinstance(payload, JSONResponse):
-            return payload
+        raw_payload = await self._read_json_body(request)
+        if isinstance(raw_payload, JSONResponse):
+            return raw_payload
 
-        if not payload.get("id"):
-            payload["id"] = str(uuid.uuid4())
-
-        config_error = await self._prepare_integration_config(orm_type, payload)
-        if config_error is not None:
-            return config_error
-
-        if orm_type is ActorORM:
-            payload = await self._normalize_actor_payload(payload)
-            ref_error = await self._validate_actor_refs(payload)
-            if ref_error is not None:
-                return ref_error
-
-        record = self._decode_payload(orm_type, payload)
+        record = await self._decode_create_payload(orm_type, raw_payload)
         if isinstance(record, JSONResponse):
             return record
 
         token = in_command_context.set(True)
         try:
             inserted, actions, warnings = await self.service.create(orm_type, record)
-        except ValueError as exc:
+        except StorageError as exc:
             return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
@@ -236,34 +435,22 @@ class ResourceCommandHandlers:
         if orm_type is None:
             return _error("not_found", f"unknown resource type '{slug}'", 404)
 
-        payload = await self._parse_json_body(request)
-        if isinstance(payload, JSONResponse):
-            return payload
+        raw_payload = await self._read_json_body(request)
+        if isinstance(raw_payload, JSONResponse):
+            return raw_payload
 
-        payload.pop("id", None)
-        if not payload:
+        fields = await self._decode_update_payload(orm_type, row_id, raw_payload)
+        if isinstance(fields, JSONResponse):
+            return fields
+        if not fields:
             return _error("validation_error", "no fields to update", 400)
-
-        if orm_type is ActorORM:
-            payload = await self._normalize_actor_payload(payload)
-            ref_error = await self._validate_actor_refs(payload)
-            if ref_error is not None:
-                return ref_error
-
-        config_error = await self._prepare_integration_config(
-            orm_type,
-            payload,
-            row_id=row_id,
-        )
-        if config_error is not None:
-            return config_error
 
         token = in_command_context.set(True)
         try:
             updated, actions, warnings = await self.service.update(
-                orm_type, row_id, **payload,
+                orm_type, row_id, **fields,
             )
-        except ValueError as exc:
+        except StorageError as exc:
             return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
@@ -289,7 +476,7 @@ class ResourceCommandHandlers:
         token = in_command_context.set(True)
         try:
             deleted, actions, warnings = await self.service.delete(orm_type, row_id)
-        except ValueError as exc:
+        except StorageError as exc:
             return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
@@ -318,7 +505,7 @@ class ResourceCommandHandlers:
             updated, actions, warnings = await self.service.set_enabled(
                 orm_type, row_id, enabled,
             )
-        except ValueError as exc:
+        except StorageError as exc:
             return _error("validation_error", str(exc), 400)
         finally:
             in_command_context.reset(token)
@@ -331,121 +518,283 @@ class ResourceCommandHandlers:
 
     # -- helpers --
 
-    async def _parse_json_body(self, request: Request) -> dict[str, object] | JSONResponse:
+    async def _read_json_body(self, request: Request) -> object | JSONResponse:
         try:
-            payload = await request.json()
+            return await request.json()
         except json.JSONDecodeError:
             return _error("validation_error", "invalid JSON body", 400)
-        if not isinstance(payload, dict):
-            return _error("validation_error", "body must be a JSON object", 400)
-        return payload  # type: ignore[return-value]
 
-    def _decode_payload(self, orm_type: type[Model], payload: dict[str, object]) -> msgspec.Struct | JSONResponse:
-        schema_type = schema_type_of(orm_type)
-        try:
-            return msgspec.convert(payload, type=schema_type, strict=False)
-        except (msgspec.ValidationError, msgspec.DecodeError) as exc:
-            return _error("validation_error", str(exc), 400)
-
-    async def _validate_actor_refs(self, payload: dict[str, object]) -> JSONResponse | None:
-        try:
-            await validate_actor_references(payload, self.repository)
-        except ValidationError as exc:
-            return _error(exc.code, exc.detail, 400)
-        return None
-
-    async def _normalize_actor_payload(self, payload: dict[str, object]) -> dict[str, object]:
-        """Accept the simplified actor form used by the admin UI/startup guide.
-
-        Parses the raw dict into ``CreateActorRequest`` for typed field access,
-        then performs FK resolution and expands convenience fields into the
-        nested structs expected by ``ActorRecord``.
-        """
-        req = msgspec.convert(payload, type=CreateActorRequest, strict=False)
-
-        # Start from the original payload, removing convenience keys that
-        # are expanded into nested structs below.
-        normalized = {k: v for k, v in payload.items()
-                      if k not in {"character_id", "llm_backend_id", "max_steps",
-                                   "memory_enabled", "workspace_access",
-                                   "daily_budget", "capability_ids"}}
-
-        # FK resolution — character_id / llm_backend_id → full objects
-        if req.character_id and "character" not in normalized:
-            character = await self.repository.get(CharacterORM, req.character_id)
-            if character is not None:
-                normalized["character"] = msgspec.to_builtins(character)
-        if req.llm_backend_id and "llm_backend" not in normalized:
-            llm_backend = await self.repository.get(LLMBackendORM, req.llm_backend_id)
-            if llm_backend is not None:
-                normalized["llm_backend"] = msgspec.to_builtins(llm_backend)
-
-        # Nested struct defaults — only set when absent from the payload
-        if "llm_options" not in normalized:
-            normalized["llm_options"] = {}
-        if "budget" not in normalized:
-            budget: dict[str, object] = {}
-            if req.max_steps is not None:
-                budget["max_steps"] = req.max_steps
-            normalized["budget"] = budget
-        if "agent_tools" not in normalized:
-            normalized["agent_tools"] = []
-        if "allowed_capability_ids" not in normalized:
-            normalized["allowed_capability_ids"] = req.capability_ids
-        if "runtime_policy" not in normalized:
-            runtime_policy: dict[str, object] = {}
-            if req.memory_enabled is not None:
-                runtime_policy["memory_enabled"] = req.memory_enabled
-            normalized["runtime_policy"] = runtime_policy
-        if "resource_policy" not in normalized:
-            resource_policy: dict[str, object] = {}
-            if req.workspace_access:
-                resource_policy["workspace_access"] = req.workspace_access
-            if req.daily_budget is not None:
-                resource_policy["budget_usd_daily"] = req.daily_budget
-            normalized["resource_policy"] = resource_policy
-
-        return normalized
-
-    async def _prepare_integration_config(
+    async def _decode_create_payload(
         self,
         orm_type: type[Model],
-        payload: dict[str, object],
+        raw_payload: object,
+    ) -> msgspec.Struct | JSONResponse:
+        if orm_type is ActorORM:
+            request = _convert_request(raw_payload, ActorCreateRequest)
+            if isinstance(request, JSONResponse):
+                return request
+            return await self._actor_record_from_create(request)
+
+        if orm_type is IntegrationORM:
+            request = _convert_request(raw_payload, IntegrationCreateRequest)
+            if isinstance(request, JSONResponse):
+                return request
+            return await self._integration_record_from_create(request)
+
+        if orm_type is ActorIngressRuleORM:
+            request = _convert_request(raw_payload, ActorIngressRuleCreateRequest)
+            if isinstance(request, JSONResponse):
+                return request
+            if not request.id:
+                request.id = str(uuid.uuid4())
+            return ActorIngressRuleRecord(
+                id=request.id,
+                actor_id=request.actor_id,
+                source_id_pattern=request.source_id_pattern,
+                source_path_pattern=request.source_path_pattern,
+                kind_patterns=request.kind_patterns,
+                enabled=request.enabled,
+                version=request.version,
+            )
+
+        schema_type = schema_type_of(orm_type)
+        record = _convert_request(raw_payload, schema_type)
+        if isinstance(record, JSONResponse):
+            return record
+        _ensure_record_id(record)
+        return record
+
+    async def _decode_update_payload(
+        self,
+        orm_type: type[Model],
+        row_id: str,
+        raw_payload: object,
+    ) -> dict[str, Any] | JSONResponse:
+        if orm_type is ActorORM:
+            request = _convert_request(raw_payload, ActorPatchRequest)
+            if isinstance(request, JSONResponse):
+                return request
+            return await self._actor_fields_from_patch(request)
+
+        if orm_type is IntegrationORM:
+            request = _convert_request(raw_payload, IntegrationPatchRequest)
+            if isinstance(request, JSONResponse):
+                return request
+            return await self._integration_fields_from_patch(row_id, request)
+
+        patch_type = _patch_request_type(orm_type)
+        if patch_type is None:
+            return _error(
+                "validation_error",
+                f"{orm_type.__name__} does not support command updates",
+                400,
+            )
+        patch = _convert_request(raw_payload, patch_type)
+        if isinstance(patch, JSONResponse):
+            return patch
+        return _patch_fields(patch)
+
+    async def _actor_record_from_create(
+        self,
+        request: ActorCreateRequest,
+    ) -> ActorRecord | JSONResponse:
+        character = await self._resolve_character(request.character_id, request.character)
+        if isinstance(character, JSONResponse):
+            return character
+        if character is None:
+            return _error("validation_error", "actor character must be set", 400)
+
+        llm_backend = await self._resolve_llm_backend(
+            request.llm_backend_id,
+            request.llm_backend,
+        )
+        if isinstance(llm_backend, JSONResponse):
+            return llm_backend
+        if llm_backend is None:
+            return _error("validation_error", "actor llm_backend must be set", 400)
+
+        return ActorRecord(
+            id=request.id or str(uuid.uuid4()),
+            name=request.name,
+            type=request.type,
+            character=character,
+            llm_backend=llm_backend,
+            model=request.model,
+            config=request.config,
+            enabled=request.enabled,
+            version=request.version,
+            llm_options=_value_or(request.llm_options, YuuAgentLLMOptions()),
+            budget=_actor_budget(request),
+            agent_tools=_value_or(request.agent_tools, ()),
+            allowed_capability_ids=_actor_capability_ids(request),
+            runtime_policy=_actor_runtime_policy(request),
+            resource_policy=_actor_resource_policy(request),
+        )
+
+    async def _actor_fields_from_patch(
+        self,
+        request: ActorPatchRequest,
+    ) -> dict[str, Any] | JSONResponse:
+        convenience_fields = frozenset(
+            {
+                "id",
+                "character_id",
+                "llm_backend_id",
+                "max_steps",
+                "memory_enabled",
+                "workspace_access",
+                "daily_budget",
+                "capability_ids",
+            }
+        )
+        fields = _patch_fields(request, exclude=convenience_fields)
+
+        character = await self._resolve_character(request.character_id, request.character)
+        if isinstance(character, JSONResponse):
+            return character
+        if character is not None:
+            fields["character"] = character
+
+        llm_backend = await self._resolve_llm_backend(
+            request.llm_backend_id,
+            request.llm_backend,
+        )
+        if isinstance(llm_backend, JSONResponse):
+            return llm_backend
+        if llm_backend is not None:
+            fields["llm_backend"] = llm_backend
+
+        if "budget" not in fields and request.max_steps is not msgspec.UNSET:
+            fields["budget"] = _struct_fields(YuuAgentBudget(max_steps=request.max_steps))
+        if (
+            "allowed_capability_ids" not in fields
+            and request.capability_ids is not msgspec.UNSET
+        ):
+            fields["allowed_capability_ids"] = request.capability_ids
+        if "runtime_policy" not in fields and request.memory_enabled is not msgspec.UNSET:
+            fields["runtime_policy"] = _struct_fields(
+                RuntimePolicy(memory_enabled=request.memory_enabled)
+            )
+        if "resource_policy" not in fields and (
+            request.workspace_access is not msgspec.UNSET
+            or request.daily_budget is not msgspec.UNSET
+        ):
+            fields["resource_policy"] = _struct_fields(
+                ResourcePolicy(
+                    workspace_access=(
+                        request.workspace_access
+                        if request.workspace_access is not msgspec.UNSET
+                        else "none"
+                    ),
+                    budget_usd_daily=(
+                        request.daily_budget
+                        if request.daily_budget is not msgspec.UNSET
+                        else None
+                    ),
+                )
+            )
+        return fields
+
+    async def _integration_record_from_create(
+        self,
+        request: IntegrationCreateRequest,
+    ) -> IntegrationRecord | JSONResponse:
+        config: dict[str, object] = {}
+        if request.config is not msgspec.UNSET:
+            wrapped = await self._wrap_integration_config(
+                name=request.name,
+                config=request.config,
+                existing=None,
+            )
+            if isinstance(wrapped, JSONResponse):
+                return wrapped
+            config = wrapped
+        return IntegrationRecord(
+            id=request.id or str(uuid.uuid4()),
+            name=request.name,
+            config=config,
+            enabled=request.enabled,
+            version=request.version,
+        )
+
+    async def _integration_fields_from_patch(
+        self,
+        row_id: str,
+        request: IntegrationPatchRequest,
+    ) -> dict[str, Any] | JSONResponse:
+        fields = _patch_fields(request)
+        if request.config is msgspec.UNSET:
+            return fields
+
+        existing = await self.repository.get(IntegrationORM, row_id)
+        if existing is None:
+            return fields
+        name = request.name if request.name is not msgspec.UNSET else existing.name
+        wrapped = await self._wrap_integration_config(
+            name=name,
+            config=request.config,
+            existing=existing.config,
+        )
+        if isinstance(wrapped, JSONResponse):
+            return wrapped
+        fields["config"] = wrapped
+        return fields
+
+    async def _wrap_integration_config(
+        self,
         *,
-        row_id: str | None = None,
-    ) -> JSONResponse | None:
-        if orm_type is not IntegrationORM or "config" not in payload:
-            return None
-        config = payload["config"]
-        if not isinstance(config, dict):
-            return _error("validation_error", "integration config must be an object", 400)
-        config = cast(dict[str, object], config)
-
-        existing = None
-        if row_id is not None:
-            existing = await self.repository.get(IntegrationORM, row_id)
-            if existing is None:
-                return None
-
-        req = msgspec.convert(payload, type=CreateIntegrationRequest, strict=False)
-        name = req.name or (existing.name if existing is not None else "")
+        name: str,
+        config: dict[str, object],
+        existing: dict[str, object] | None,
+    ) -> dict[str, object] | JSONResponse:
         if not name:
             return _error("validation_error", "integration name must be set", 400)
-
         try:
             factory = self.service.integrations.factories.get(name)
         except LookupError as exc:
             return _error("validation_error", str(exc), 400)
-
         try:
-            payload["config"] = wrap_config_secrets(
+            return wrap_config_secrets(
                 config,
                 schema=factory.config_schema,
-                existing=existing.config if existing is not None else None,
+                existing=existing,
             )
         except ValueError as exc:
             return _error("validation_error", str(exc), 400)
+
+    async def _resolve_character(
+        self,
+        character_id: str | msgspec.UnsetType,
+        character: CharacterRecord | msgspec.UnsetType,
+    ) -> CharacterRecord | JSONResponse | None:
+        if character is not msgspec.UNSET:
+            return await self._existing_character(character.id)
+        if character_id is not msgspec.UNSET and character_id:
+            return await self._existing_character(character_id)
         return None
+
+    async def _resolve_llm_backend(
+        self,
+        llm_backend_id: str | msgspec.UnsetType,
+        llm_backend: LLMBackendRecord | msgspec.UnsetType,
+    ) -> LLMBackendRecord | JSONResponse | None:
+        if llm_backend is not msgspec.UNSET:
+            return await self._existing_llm_backend(llm_backend.id)
+        if llm_backend_id is not msgspec.UNSET and llm_backend_id:
+            return await self._existing_llm_backend(llm_backend_id)
+        return None
+
+    async def _existing_character(self, character_id: str) -> CharacterRecord | JSONResponse:
+        character = await self.repository.get(CharacterORM, character_id)
+        if character is None:
+            return _error("validation_error", f"character '{character_id}' not found", 400)
+        return character
+
+    async def _existing_llm_backend(self, backend_id: str) -> LLMBackendRecord | JSONResponse:
+        llm_backend = await self.repository.get(LLMBackendORM, backend_id)
+        if llm_backend is None:
+            return _error("validation_error", f"llm_backend '{backend_id}' not found", 400)
+        return llm_backend
 
 
 def build_commands_app(

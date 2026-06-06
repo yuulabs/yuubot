@@ -103,6 +103,8 @@ class EventBus:
                         lambda: asyncio.create_task(subscription.callback(event))
                     )
                     await task
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
                     logger.exception(
                         "event subscriber failed for %s",

@@ -5,12 +5,20 @@ from __future__ import annotations
 import base64
 import binascii
 import os
-from typing import Any, TypeGuard, cast, get_args, get_origin
+from typing import Any, cast, get_args, get_origin
 
+import msgspec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 SECRET_FORMAT = {"type": "string", "format": "secret"}
 ENCRYPTED_SECRET_VERSION = "v1"
+
+
+class EncryptedSecret(msgspec.Struct):
+    """A typed encrypted secret marker — validated once at the boundary, then trusted downstream."""
+
+    enc: str = msgspec.field(name="$enc")
+    ct: str
 
 
 class Secret:
@@ -62,10 +70,10 @@ class SecretCodec:
 
 def encrypt_secret_values(value: object, codec: SecretCodec) -> object:
     if isinstance(value, Secret):
-        return {
-            "$enc": ENCRYPTED_SECRET_VERSION,
-            "ct": codec.encrypt(value.reveal()),
-        }
+        return EncryptedSecret(
+            enc=ENCRYPTED_SECRET_VERSION,
+            ct=codec.encrypt(value.reveal()),
+        )
     if isinstance(value, dict):
         return {key: encrypt_secret_values(item, codec) for key, item in value.items()}
     if isinstance(value, list):
@@ -76,9 +84,15 @@ def encrypt_secret_values(value: object, codec: SecretCodec) -> object:
 
 
 def decrypt_secret_values(value: object, codec: SecretCodec) -> object:
-    if _is_encrypted_secret(value):
-        return Secret(codec.decrypt(value["ct"]))
+    if isinstance(value, EncryptedSecret):
+        return Secret(codec.decrypt(value.ct))
     if isinstance(value, dict):
+        candidate = cast(dict[object, object], value)
+        enc_tag = candidate.get("$enc")
+        if enc_tag == ENCRYPTED_SECRET_VERSION:
+            ct_raw = candidate.get("ct")
+            if isinstance(ct_raw, str):
+                return Secret(codec.decrypt(ct_raw))
         return {key: decrypt_secret_values(item, codec) for key, item in value.items()}
     if isinstance(value, list):
         return [decrypt_secret_values(item, codec) for item in value]
@@ -223,16 +237,6 @@ def _should_keep_existing_secret(
     if field_name not in config:
         return True
     return config[field_name] == ""
-
-
-def _is_encrypted_secret(value: object) -> TypeGuard[dict[str, str]]:
-    if not isinstance(value, dict):
-        return False
-    candidate = cast(dict[object, object], value)
-    return (
-        candidate.get("$enc") == ENCRYPTED_SECRET_VERSION
-        and isinstance(candidate.get("ct"), str)
-    )
 
 
 def _decode_master_key(value: str) -> bytes:

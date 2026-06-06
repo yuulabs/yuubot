@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
+import os
 import secrets
 import shutil
 import socket
@@ -39,7 +41,6 @@ from yuubot.resources.records import IntegrationRecord
 logger = logging.getLogger(__name__)
 
 PLUGIN_TOKEN_CONFIG_KEY = "_plugin_token"
-_INPUT_TYPES: dict[tuple[str, str, tuple[tuple[str, str], ...]], type[msgspec.Struct]] = {}
 
 
 class ExternalPluginError(ValueError):
@@ -233,16 +234,21 @@ class ExternalPluginManager:
                 "YUUBOT_INTERNAL_TOKEN": internal_token,
             },
         )
-        running = ExternalPluginProcess(
-            integration_id=record.id,
-            name=record.name,
-            port=port,
-            process=process,
-            plugin_token=plugin_token,
-            internal_token=internal_token,
-        )
+        try:
+            running = ExternalPluginProcess(
+                integration_id=record.id,
+                name=record.name,
+                port=port,
+                process=process,
+                plugin_token=plugin_token,
+                internal_token=internal_token,
+            )
+            await _wait_for_plugin_health(running)
+        except Exception:
+            process.kill()
+            await process.wait()
+            raise
         self._processes[record.id] = running
-        await _wait_for_plugin_health(running)
         return running
 
     async def stop_plugin(self, integration_id: str) -> None:
@@ -557,7 +563,10 @@ def _health_check_sync(port: int) -> bool:
         with urllib.request.urlopen(request, timeout=0.5) as response:
             response.read()
             return response.status == 200
-    except Exception:
+    except urllib.error.URLError:
+        return False
+    except Exception as exc:
+        logger.debug("unexpected error during plugin health check on port %d: %s", port, exc)
         return False
 
 
@@ -596,25 +605,28 @@ def _input_struct(
     plugin_name: str,
     function: ExternalPluginFunctionSpec,
 ) -> type[msgspec.Struct]:
-    field_kinds = tuple(
+    param_schema = tuple(
         (name, str(schema.get("type", "object")))
         for name, schema in sorted(function.params.items())
     )
-    key = (plugin_name, function.name, field_kinds)
-    cached = _INPUT_TYPES.get(key)
-    if cached is not None:
-        return cached
-    fields = [(name, _schema_type(schema)) for name, schema in sorted(function.params.items())]
-    type_name = _struct_type_name(plugin_name, function.name)
-    struct_type = msgspec.defstruct(
+    return _build_input_struct(plugin_name, function.name, param_schema)
+
+
+@functools.lru_cache(maxsize=128)
+def _build_input_struct(
+    plugin_name: str,
+    function_name: str,
+    param_schema: tuple[tuple[str, str], ...],
+) -> type[msgspec.Struct]:
+    fields = [(name, _schema_type({"type": kind})) for name, kind in param_schema]
+    type_name = _struct_type_name(plugin_name, function_name)
+    return msgspec.defstruct(
         type_name,
         fields,
         module=__name__,
         forbid_unknown_fields=False,
         kw_only=True,
     )
-    _INPUT_TYPES[key] = struct_type
-    return struct_type
 
 
 def _schema_type(schema: Mapping[str, object]) -> type:
@@ -682,6 +694,4 @@ def _text_content(text: str) -> list[dict[str, object]]:
 
 
 def _process_env() -> dict[str, str]:
-    import os
-
     return dict(os.environ)

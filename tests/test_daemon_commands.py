@@ -285,6 +285,73 @@ async def test_create_actor_validates_character_reference(
         await runtime.services.stop()
 
 
+async def test_create_actor_accepts_typed_simplified_request(
+    resources: Resources, tmp_path: Path
+) -> None:
+    from yuubot.resources.records import (
+        BudgetPolicy,
+        CharacterHints,
+        CharacterRecord,
+        LLMBackendRecord,
+        ModelCapabilities,
+        ModelCatalog,
+        PricingTable,
+    )
+    from yuubot.resources.store.models import CharacterORM, LLMBackendORM
+
+    character = await resources.repository.insert(
+        CharacterORM,
+        CharacterRecord(
+            id="char-simple",
+            name="char-simple",
+            description="",
+            system_prompt="test",
+            facade_module="x",
+            default_hints=CharacterHints(),
+        ),
+    )
+    backend = await resources.repository.insert(
+        LLMBackendORM,
+        LLMBackendRecord(
+            id="backend-simple",
+            name="backend-simple",
+            yuuagents_provider="openai",
+            default_model="gpt-4",
+            model_capabilities=ModelCapabilities(),
+            models=ModelCatalog(),
+            pricing=PricingTable(),
+            budget=BudgetPolicy(),
+        ),
+    )
+
+    runtime = _build_runtime(resources, tmp_path)
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.post(
+                "/api/resources/actors",
+                headers=HEADERS,
+                json={
+                    "name": "simple-actor",
+                    "type": "fake",
+                    "character_id": character.id,
+                    "llm_backend_id": backend.id,
+                    "max_steps": 3,
+                    "workspace_access": "read_write",
+                    "capability_ids": ["echo.send"],
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["data"]["character"]["id"] == "char-simple"
+        assert body["data"]["llm_backend"]["id"] == "backend-simple"
+        assert body["data"]["budget"]["max_steps"] == 3
+        assert body["data"]["resource_policy"]["workspace_access"] == "read_write"
+        assert body["data"]["allowed_capability_ids"] == ["echo.send"]
+    finally:
+        await runtime.services.stop()
+
+
 async def test_delete_referenced_llm_backend_returns_conflict(
     resources: Resources, tmp_path: Path
 ) -> None:
@@ -494,6 +561,44 @@ async def test_update_llm_backend(resources: Resources, tmp_path: Path) -> None:
         body = resp.json()
         assert body["status"] == "ok"
         assert body["data"]["default_model"] == "gpt-4o"
+    finally:
+        await runtime.services.stop()
+
+
+async def test_update_llm_backend_rejects_unknown_field(
+    resources: Resources, tmp_path: Path
+) -> None:
+    from yuubot.resources.records import (
+        BudgetPolicy, LLMBackendRecord, ModelCapabilities, ModelCatalog, PricingTable,
+    )
+    from yuubot.resources.store.models import LLMBackendORM
+
+    await resources.repository.insert(
+        LLMBackendORM,
+        LLMBackendRecord(
+            id="backend-schema",
+            name="backend-schema",
+            yuuagents_provider="openai",
+            default_model="gpt-4",
+            model_capabilities=ModelCapabilities(),
+            models=ModelCatalog(),
+            pricing=PricingTable(),
+            budget=BudgetPolicy(),
+        ),
+    )
+
+    runtime = _build_runtime(resources, tmp_path)
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.put(
+                "/api/resources/llm-backends/backend-schema",
+                headers=HEADERS,
+                json={"defualt_model": "typo"},
+            )
+        assert resp.status_code == 400
+        assert resp.json()["code"] == "validation_error"
+        assert "unknown field" in resp.json()["detail"]
     finally:
         await runtime.services.stop()
 

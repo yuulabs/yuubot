@@ -80,7 +80,7 @@ class ServiceHost:
             for service in self.services:
                 await service.start()
                 self._started.append(service)
-        except Exception:
+        except BaseException:
             await self.stop()
             raise
 

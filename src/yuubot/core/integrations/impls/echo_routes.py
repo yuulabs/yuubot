@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import functools
+import json
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import msgspec
@@ -14,72 +17,105 @@ from yuubot.core.integrations.impls.echo import EchoIngressPayload, EchoIntegrat
 from yuubot.runtime.http_utils import error_response
 
 
+def _with_echo_error_handling(
+    func: Callable[..., Awaitable[JSONResponse]],
+) -> Callable[..., Awaitable[JSONResponse]]:
+    """Decorate echo handlers with consistent exception→HTTP status mapping.
+
+    LookupError  → 404
+    ValueError   → 400
+    Exception    → 500
+    """
+
+    @functools.wraps(func)
+    async def wrapper(*args: Any, **kwargs: Any) -> JSONResponse:
+        try:
+            return await func(*args, **kwargs)
+        except LookupError as exc:
+            return error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        except Exception as exc:
+            return error_response(str(exc), status_code=500)
+
+    return wrapper
+
+
 def echo_routes(integrations: IntegrationCore) -> list[Route]:
     """Build Starlette routes for the echo integration.
 
     Mounted by the daemon under ``/integration/echo``.
     """
 
-    async def echo_ingress(request: Request) -> JSONResponse:
-        payload_or_response = await _payload_from_request(request)
-        if isinstance(payload_or_response, JSONResponse):
-            return payload_or_response
+    async def handle_ingress(request: Request) -> JSONResponse:
+        return await _echo_ingress(request, integrations)
 
-        payload = payload_or_response
-        try:
-            instance = _resolve_instance(integrations, payload.integration_id)
-            message = await instance.emit_payload(payload)
-        except LookupError as exc:
-            return error_response(str(exc), status_code=404)
-        except ValueError as exc:
-            return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            return error_response(str(exc), status_code=500)
-
-        return JSONResponse(
-            {
-                "status": "ok",
-                "integration_id": instance.ingress.integration_id,
-                "message_id": message.message_id,
-                "source": msgspec.to_builtins(message.source),
-            },
-            status_code=202,
-        )
-
-    async def echo_round_trip(request: Request) -> JSONResponse:
-        round_trip_or_response = await _round_trip_from_request(request)
-        if isinstance(round_trip_or_response, JSONResponse):
-            return round_trip_or_response
-
-        payload, timeout_s = round_trip_or_response
-        try:
-            instance = _resolve_instance(integrations, payload.integration_id)
-            message = await instance.emit_payload(payload)
-            reply = await instance.wait_for_reply(timeout_s)
-        except TimeoutError:
-            return error_response("echo round-trip timed out", status_code=504)
-        except LookupError as exc:
-            return error_response(str(exc), status_code=404)
-        except ValueError as exc:
-            return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            return error_response(str(exc), status_code=500)
-
-        return JSONResponse(
-            {
-                "status": "ok",
-                "integration_id": instance.ingress.integration_id,
-                "message_id": message.message_id,
-                "source": msgspec.to_builtins(message.source),
-                "reply": msgspec.to_builtins(reply),
-            },
-            status_code=200,
-        )
+    async def handle_round_trip(request: Request) -> JSONResponse:
+        return await _echo_round_trip(request, integrations)
 
     return [
-        Route("/round-trip", echo_round_trip, methods=("POST",)),
-        Route("/", echo_ingress, methods=("POST",)),
+        Route("/round-trip", handle_round_trip, methods=("POST",)),
+        Route("/", handle_ingress, methods=("POST",)),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Module-level handlers
+# ---------------------------------------------------------------------------
+
+
+@_with_echo_error_handling
+async def _echo_ingress(
+    request: Request,
+    integrations: IntegrationCore,
+) -> JSONResponse:
+    payload_or_response = await _payload_from_request(request)
+    if isinstance(payload_or_response, JSONResponse):
+        return payload_or_response
+
+    payload = payload_or_response
+    instance = _resolve_instance(integrations, payload.integration_id)
+    message = await instance.emit_payload(payload)
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "integration_id": instance.ingress.integration_id,
+            "message_id": message.message_id,
+            "source": msgspec.to_builtins(message.source),
+        },
+        status_code=202,
+    )
+
+
+@_with_echo_error_handling
+async def _echo_round_trip(
+    request: Request,
+    integrations: IntegrationCore,
+) -> JSONResponse:
+    round_trip_or_response = await _round_trip_from_request(request)
+    if isinstance(round_trip_or_response, JSONResponse):
+        return round_trip_or_response
+
+    payload, timeout_s = round_trip_or_response
+    instance = _resolve_instance(integrations, payload.integration_id)
+    message = await instance.emit_payload(payload)
+
+    try:
+        reply = await instance.wait_for_reply(timeout_s)
+    except TimeoutError:
+        return error_response("echo round-trip timed out", status_code=504)
+
+    return JSONResponse(
+        {
+            "status": "ok",
+            "integration_id": instance.ingress.integration_id,
+            "message_id": message.message_id,
+            "source": msgspec.to_builtins(message.source),
+            "reply": msgspec.to_builtins(reply),
+        },
+        status_code=200,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +149,6 @@ async def _round_trip_from_request(
 
 
 async def _request_body(request: Request) -> dict[str, Any] | JSONResponse:
-    import json
-
     try:
         payload = await request.json()
     except json.JSONDecodeError:

@@ -1,19 +1,17 @@
-"""Daemon service runtime."""
+"""Daemon service runtime.
+
+Route handlers live in :mod:`yuubot.runtime.daemon.handlers`.
+Authentication middleware lives in :mod:`yuubot.runtime.daemon.middleware`.
+"""
 
 from __future__ import annotations
 
-import json
 import logging
-import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import cast
 
-import msgspec
 from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.middleware import Middleware
 from starlette.routing import Mount, Route
 
 from yuubot.bootstrap.config import BootstrapConfig, ServerConfig
@@ -25,20 +23,52 @@ from yuubot.core.actors import (
     ActorWorkspaceResolver,
     default_actor_factories,
 )
+from yuubot.core.chat_store import ChatStore
+from yuubot.core.conversations import ConversationManager, ConversationStore
+from yuubot.core.events import Event
 from yuubot.core.gateway import Gateway
 from yuubot.core.integrations import (
     IntegrationCore,
     IntegrationFactoryRegistry,
     default_integration_factories,
 )
-from yuubot.core.chat_store import ChatStore
-from yuubot.core.conversations import ConversationManager, ConversationStore
 from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.core.routing import RouteBindings, load_route_bindings
-from yuubot.core.events import Event
 from yuubot.core.system_caps import SystemCapHandler
-from yuubot.core.validation import ConfigurationError
+from yuubot.resources.events import ResourceChanged
+from yuubot.resources.registry import (
+    EventDrivenRefreshDispatcher,
+    LifecycleHandler,
+    ResourceTypeRegistry,
+)
+from yuubot.resources.repository import ResourceRepository
+from yuubot.resources.root import Resources
+from yuubot.resources.service import ResourceService
+from yuubot.runtime.daemon.commands import (
+    build_commands_app,
+    build_default_resource_type_registry,
+    in_command_context,
+)
+from yuubot.runtime.daemon.handlers import (
+    _configuration_error_response,  # noqa: F401  # re-exported for compat
+    _sse_event,  # noqa: F401  # re-exported for tests
+    make_chat_dialog_messages_handler,
+    make_chat_dialogs_handler,
+    make_chat_message_by_id_handler,
+    make_conversation_events_handler,
+    make_conversation_messages_handler,
+    make_create_conversation_handler,
+    make_ensure_conversation_agent_handler,
+    make_health_handler,
+    make_list_conversations_handler,
+    make_plugin_ingest_handler,
+    make_refresh_handler,
+    make_send_conversation_message_handler,
+    make_status_handler,
+)
+from yuubot.runtime.daemon.middleware import DaemonSecretMiddleware
 from yuubot.runtime.http_utils import error_response
+from yuubot.runtime.plugin_manager import ExternalPluginManager
 from yuubot.runtime.process import (
     ASGIServer,
     ServiceHost,
@@ -46,42 +76,16 @@ from yuubot.runtime.process import (
     UvicornServer,
     open_resources,
 )
-from yuubot.resources.events import ResourceChanged
-from yuubot.resources.registry import EventDrivenRefreshDispatcher, LifecycleHandler, ResourceTypeRegistry
-from yuubot.resources.service import ResourceService
-from yuubot.resources.repository import ResourceRepository
-from yuubot.resources.root import Resources
-from yuubot.resources.store.models import ActorIngressRuleORM, IntegrationORM
-from yuubot.runtime.daemon.commands import (
-    build_commands_app,
-    build_default_resource_type_registry,
-    in_command_context,
-)
-from yuubot.runtime.plugin_manager import (
-    ExternalPluginInboundMessage,
-    ExternalPluginIntegration,
-    ExternalPluginManager,
-)
 
 logger = logging.getLogger(__name__)
 
 
-# -- Request Structs: typed boundary for daemon HTTP payloads --
+# -- Backward-compatible aliases (used by tests) --
+
+_error_response = error_response
 
 
-class ConversationRequest(msgspec.Struct, forbid_unknown_fields=False):
-    """Typed boundary for conversation creation requests."""
-
-    actor_id: str = ""
-    conversation_id: str = ""
-
-
-class ConversationMessageRequest(msgspec.Struct, forbid_unknown_fields=False):
-    """Typed boundary for conversation message requests."""
-
-    text: str = ""
-    content: list[dict[str, object]] = msgspec.field(default_factory=list)
-    message_id: str = ""
+# -- Infrastructure dataclasses --
 
 
 @dataclass
@@ -298,405 +302,23 @@ def build_daemon_asgi_app(
     type_registry: ResourceTypeRegistry,
     chat_store: ChatStore | None = None,
 ) -> Starlette:
+    """Construct the daemon ASGI application.
+
+    All route handlers are created by factory functions in
+    :mod:`yuubot.runtime.daemon.handlers`.  Authentication is
+    enforced by :class:`DaemonSecretMiddleware`.
+    """
     if plugin_manager is None:
         layout = DataLayout.from_path("~/.yuubot")
         plugin_manager = ExternalPluginManager(
             plugins_dir=layout.plugins_dir,
             data_root=layout.data_dir,
         )
+
     conversation_manager = ConversationManager(
         store=ConversationStore(resources.store),
         actors=actors,
     )
-
-    @asynccontextmanager
-    async def lifespan(_: Starlette):
-        await services.start()
-        try:
-            yield
-        finally:
-            await services.stop()
-
-    async def health(_: Request) -> JSONResponse:
-        ingress_rules = await resources.repository.list(ActorIngressRuleORM)
-        integrations = await resources.repository.list(IntegrationORM)
-        return JSONResponse(
-            {
-                "status": "ok",
-                "daemon": f"{config.daemon_host}:{config.daemon_port}",
-                "ingress_rules": len(ingress_rules),
-                "integrations": len(integrations),
-                "external_plugins": len(plugin_manager.statuses()),
-            }
-        )
-
-    async def status(request: Request) -> JSONResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return _error_response(error, status_code=403)
-        body: dict[str, object] = {
-            "status": "running" if services.started else "stopped",
-            "running_integration_ids": integrations.running_integration_ids(),
-            "running_actor_ids": actors.running_actor_ids(),
-            "actor_workspaces": actors.running_actor_workspace_paths(),
-            "route_binding_count": gateway.routes.binding_count(),
-            "trace": {
-                "enabled": trace_service.config.enabled,
-                "status": trace_service.status,
-            },
-        }
-        actor_failures = actors.startup_failures()
-        if actor_failures:
-            body["actor_startup_failures"] = [
-                {
-                    "actor_id": failure.actor_id,
-                    "detail": failure.detail,
-                }
-                for failure in actor_failures
-            ]
-        plugin_statuses = plugin_manager.statuses()
-        if plugin_statuses:
-            body["external_plugins"] = [
-                {
-                    "name": status.name,
-                    "integration_id": status.integration_id,
-                    "port": status.port,
-                    "healthy": status.healthy,
-                    "pid": status.pid,
-                }
-                for status in plugin_statuses
-            ]
-        return JSONResponse(body)
-
-    async def refresh_resources(request: Request) -> JSONResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return _error_response(error, status_code=403)
-        event_or_response = await _resource_changed_from_request(request)
-        if isinstance(event_or_response, JSONResponse):
-            return event_or_response
-
-        event = event_or_response
-        try:
-            actions = await refresh.refresh(event)
-        except ConfigurationError as exc:
-            return _configuration_error_response(exc)
-        except Exception as exc:
-            logger.exception("daemon refresh failed")
-            return _error_response(str(exc), status_code=500)
-        return JSONResponse(
-            {
-                "status": "ok",
-                "event": event.to_dict(),
-                "actions": list(actions),
-            }
-        )
-
-    async def plugin_ingest(request: Request) -> JSONResponse:
-        payload_or_response = await _plugin_ingest_from_request(request, plugin_manager)
-        if isinstance(payload_or_response, JSONResponse):
-            return payload_or_response
-        payload = payload_or_response
-
-        try:
-            instance = _resolve_external_plugin_instance(
-                integrations,
-                payload.integration_id,
-            )
-            message = await instance.emit_payload(payload)
-        except PermissionError as exc:
-            return _error_response(str(exc), status_code=403)
-        except LookupError as exc:
-            return _error_response(str(exc), status_code=404)
-        except ValueError as exc:
-            return _error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("external plugin ingest failed")
-            return _error_response(str(exc), status_code=500)
-
-        return JSONResponse(
-            {
-                "status": "ok",
-                "integration_id": payload.integration_id,
-                "message_id": message.message_id,
-                "source": msgspec.to_builtins(message.source),
-            },
-            status_code=202,
-        )
-
-    async def create_conversation(request: Request) -> JSONResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return _error_response(error, status_code=403)
-        payload_or_response = await _conversation_payload_from_request(request)
-        if isinstance(payload_or_response, JSONResponse):
-            return payload_or_response
-        payload = payload_or_response
-        conversation_id = payload.get("conversation_id") or uuid.uuid4().hex
-        try:
-            conversation = await conversation_manager.create_conversation(
-                conversation_id=conversation_id,
-                actor_id=payload["actor_id"],
-            )
-        except Exception as exc:
-            logger.exception("create conversation failed")
-            return _error_response(str(exc), status_code=500)
-        return JSONResponse(
-            {
-                "status": "ok",
-                "data": {
-                    "conversation_id": conversation.conversation_id,
-                    "actor_id": conversation.actor_id,
-                    "created_at": _iso_or_none(conversation.created_at),
-                    "updated_at": _iso_or_none(conversation.updated_at),
-                },
-            },
-            status_code=201,
-        )
-
-    async def list_conversations(request: Request) -> JSONResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return _error_response(error, status_code=403)
-        try:
-            conversations = await conversation_manager.store.list_conversations(
-                actor_id=request.query_params.get("actor_id"),
-            )
-        except Exception as exc:
-            logger.exception("list conversations failed")
-            return _error_response(str(exc), status_code=500)
-        return JSONResponse(
-            {
-                "status": "ok",
-                "data": [
-                    {
-                        "conversation_id": item.conversation_id,
-                        "actor_id": item.actor_id,
-                        "created_at": _iso_or_none(item.created_at),
-                        "updated_at": _iso_or_none(item.updated_at),
-                    }
-                    for item in conversations
-                ],
-            }
-        )
-
-    async def ensure_conversation_agent(request: Request) -> JSONResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return _error_response(error, status_code=403)
-        conversation_id = request.path_params["conversation_id"]
-        try:
-            data = await conversation_manager.ensure_agent(conversation_id)
-        except LookupError as exc:
-            return _error_response(str(exc), status_code=404)
-        except ConfigurationError as exc:
-            return _configuration_error_response(exc)
-        except Exception as exc:
-            logger.exception("ensure conversation agent failed")
-            return _error_response(str(exc), status_code=500)
-        return JSONResponse({"status": "ok", "data": data})
-
-    async def conversation_messages(request: Request) -> JSONResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return _error_response(error, status_code=403)
-        conversation_id = request.path_params["conversation_id"]
-        try:
-            messages = await conversation_manager.store.list_messages(conversation_id)
-        except Exception as exc:
-            logger.exception("list conversation messages failed")
-            return _error_response(str(exc), status_code=500)
-        return JSONResponse(
-            {
-                "status": "ok",
-                "data": [
-                    {
-                        "id": message.id,
-                        "message_id": message.message_id,
-                        "conversation_id": message.conversation_id,
-                        "role": message.role,
-                        "raw_content": message.raw_content,
-                        "metadata": message.metadata,
-                        "timestamp": message.timestamp,
-                    }
-                    for message in messages
-                ],
-            }
-        )
-
-    async def send_conversation_message(request: Request) -> JSONResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return _error_response(error, status_code=403)
-        payload_or_response = await _conversation_message_payload_from_request(request)
-        if isinstance(payload_or_response, JSONResponse):
-            return payload_or_response
-        payload = payload_or_response
-        conversation_id = request.path_params["conversation_id"]
-        try:
-            record = await conversation_manager.send_message(
-                conversation_id=conversation_id,
-                content=cast(list[dict[str, object]], payload["content"]),
-                message_id=cast(str | None, payload.get("message_id")),
-            )
-        except LookupError as exc:
-            return _error_response(str(exc), status_code=404)
-        except ConfigurationError as exc:
-            return _configuration_error_response(exc)
-        except Exception as exc:
-            logger.exception("send conversation message failed")
-            return _error_response(str(exc), status_code=500)
-        return JSONResponse(
-            {
-                "status": "accepted",
-                "data": {
-                    "conversation_id": record.conversation_id,
-                    "message_id": record.message_id,
-                },
-            },
-            status_code=202,
-        )
-
-    async def conversation_events(request: Request) -> StreamingResponse:
-        error = _daemon_secret_error(config, request)
-        if error is not None:
-            return StreamingResponse(
-                iter((_sse_event("error", {"status": "error", "error": error}),)),
-                status_code=403,
-                media_type="text/event-stream",
-            )
-        conversation_id = request.path_params["conversation_id"]
-
-        async def stream():
-            try:
-                async for event in conversation_manager.subscribe_events(conversation_id):
-                    if await request.is_disconnected():
-                        break
-                    yield _sse_event(event.event_type, event.as_dict())
-            except Exception:
-                logger.exception("conversation SSE stream failed for %r", conversation_id)
-                yield _sse_event("error", {
-                    "status": "error",
-                    "error": "conversation stream terminated unexpectedly",
-                })
-
-        return StreamingResponse(stream(), media_type="text/event-stream")
-
-    async def chat_dialogs(request: Request) -> JSONResponse:
-        if chat_store is None:
-            return _error_response("chat store not available", status_code=503)
-        logger.info("chat: listing dialogs")
-        try:
-            dialogs = await chat_store.list_dialogs()
-        except Exception as exc:
-            logger.exception("list dialogs failed")
-            return _error_response(str(exc), status_code=500)
-        return JSONResponse({
-            "status": "ok",
-            "data": [
-                {
-                    "dialog_id": d.dialog_id,
-                    "message_count": d.message_count,
-                    "last_message_preview": d.last_message_preview,
-                    "updated_at": d.updated_at,
-                }
-                for d in dialogs
-            ],
-        })
-
-    async def chat_dialog_messages(request: Request) -> JSONResponse:
-        if chat_store is None:
-            return _error_response("chat store not available", status_code=503)
-        dialog_id = request.path_params["dialog_id"]
-        q = request.query_params.get("q")
-        before = request.query_params.get("before")
-        after = request.query_params.get("after")
-        since_str = request.query_params.get("since")
-        until_str = request.query_params.get("until")
-        limit_str = request.query_params.get("limit", "50")
-        role = request.query_params.get("role")
-
-        logger.info(
-            "chat: browsing messages dialog_id=%s limit=%s q=%s role=%s",
-            dialog_id, limit_str, q, role,
-        )
-
-        try:
-            limit = int(limit_str)
-        except (ValueError, TypeError):
-            return _error_response("limit must be an integer", status_code=400)
-
-        try:
-            since = int(since_str) if since_str is not None else None
-            until = int(until_str) if until_str is not None else None
-
-            if q:
-                result = await chat_store.search_messages(dialog_id, q, limit=limit)
-            else:
-                result = await chat_store.browse_messages(
-                    dialog_id,
-                    before=before,
-                    after=after,
-                    since=since,
-                    until=until,
-                    limit=limit,
-                    role=role,
-                )
-        except Exception as exc:
-            logger.exception("browse messages failed")
-            return _error_response(str(exc), status_code=500)
-
-        return JSONResponse({
-            "status": "ok",
-            "data": {
-                "messages": [
-                    {
-                        "id": m.id,
-                        "dialog_id": m.dialog_id,
-                        "message_id": m.message_id,
-                        "role": m.role,
-                        "raw_content": m.raw_content,
-                        "text_content": m.text_content,
-                        "actor_id": m.actor_id,
-                        "sender_id": m.sender_id,
-                        "sender_name": m.sender_name,
-                        "timestamp": m.timestamp,
-                    }
-                    for m in result.messages
-                ],
-                "has_more": result.has_more,
-            },
-        })
-
-    async def chat_message_by_id(request: Request) -> JSONResponse:
-        if chat_store is None:
-            return _error_response("chat store not available", status_code=503)
-        message_id = request.path_params["message_id"]
-        logger.info("chat: get message message_id=%s", message_id)
-        try:
-            message = await chat_store.get_message(message_id)
-        except Exception as exc:
-            logger.exception("get message failed")
-            return _error_response(str(exc), status_code=500)
-        if message is None:
-            return _error_response(
-                f"message {message_id!r} not found", status_code=404
-            )
-        return JSONResponse({
-            "status": "ok",
-            "data": {
-                "id": message.id,
-                "dialog_id": message.dialog_id,
-                "message_id": message.message_id,
-                "role": message.role,
-                "raw_content": message.raw_content,
-                "text_content": message.text_content,
-                "actor_id": message.actor_id,
-                "sender_id": message.sender_id,
-                "sender_name": message.sender_name,
-                "timestamp": message.timestamp,
-            },
-        })
 
     resource_service = ResourceService(
         repository=resources.repository,
@@ -708,68 +330,106 @@ def build_daemon_asgi_app(
 
     integration_routes = integrations.factories.collect_routes(integrations)
 
-    return Starlette(
-        routes=(
-            Route("/healthz", health, methods=("GET",)),
-            *integration_routes,
-            Route("/ingest", plugin_ingest, methods=("POST",)),
-            Route("/api/status", status, methods=("GET",)),
-            Route("/api/admin/refresh", refresh_resources, methods=("POST",)),
-            Route(
-                "/api/conversations",
-                list_conversations,
-                methods=("GET",),
+    # --- lifespan ---
+
+    @asynccontextmanager
+    async def lifespan(_: Starlette):
+        await services.start()
+        try:
+            yield
+        finally:
+            await services.stop()
+
+    # --- route table ---
+
+    routes: list[Route | Mount] = [
+        Route(
+            "/healthz",
+            make_health_handler(config, resources, plugin_manager),
+            methods=("GET",),
+        ),
+        *integration_routes,
+        Route(
+            "/ingest",
+            make_plugin_ingest_handler(plugin_manager, integrations),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/status",
+            make_status_handler(
+                services, actors, integrations, plugin_manager,
+                gateway, trace_service,
             ),
-            Route(
-                "/api/conversations",
-                create_conversation,
-                methods=("POST",),
-            ),
-            Route(
-                "/api/conversations/{conversation_id}/agents",
-                ensure_conversation_agent,
-                methods=("POST",),
-            ),
-            Route(
-                "/api/conversations/{conversation_id}/events",
-                conversation_events,
-                methods=("GET",),
-            ),
-            Route(
-                "/api/conversations/{conversation_id}/messages",
-                conversation_messages,
-                methods=("GET",),
-            ),
-            Route(
-                "/api/conversations/{conversation_id}/messages",
-                send_conversation_message,
-                methods=("POST",),
-            ),
-            Route(
-                "/api/chat/dialogs",
-                chat_dialogs,
-                methods=("GET",),
-            ),
-            Route(
-                "/api/chat/dialogs/{dialog_id}/messages",
-                chat_dialog_messages,
-                methods=("GET",),
-            ),
-            Route(
-                "/api/chat/messages/{message_id}",
-                chat_message_by_id,
-                methods=("GET",),
-            ),
-            Mount(
-                "/api/resources",
-                app=build_commands_app(
-                    resource_service,
-                    type_registry,
-                    resources.repository,
-                    config,
-                ),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/admin/refresh",
+            make_refresh_handler(refresh),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/conversations",
+            make_list_conversations_handler(conversation_manager),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/conversations",
+            make_create_conversation_handler(conversation_manager),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/conversations/{conversation_id}/agents",
+            make_ensure_conversation_agent_handler(conversation_manager),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/conversations/{conversation_id}/events",
+            make_conversation_events_handler(conversation_manager),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/conversations/{conversation_id}/messages",
+            make_conversation_messages_handler(conversation_manager),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/conversations/{conversation_id}/messages",
+            make_send_conversation_message_handler(conversation_manager),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/chat/dialogs",
+            make_chat_dialogs_handler(chat_store),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/chat/dialogs/{dialog_id}/messages",
+            make_chat_dialog_messages_handler(chat_store),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/chat/messages/{message_id}",
+            make_chat_message_by_id_handler(chat_store),
+            methods=("GET",),
+        ),
+        Mount(
+            "/api/resources",
+            app=build_commands_app(
+                resource_service,
+                type_registry,
+                resources.repository,
+                config,
             ),
         ),
+    ]
+
+    return Starlette(
+        routes=routes,
+        middleware=[
+            Middleware(
+                DaemonSecretMiddleware, secret=config.daemon_secret
+            ),
+        ],
         lifespan=lifespan,
     )
 
@@ -828,7 +488,9 @@ async def build_daemon(
         if actor is None:
             raise LookupError(f"actor is not running: {actor_id!r}")
         if not isinstance(actor, SimpleLoopActor):
-            raise RuntimeError(f"actor does not support schedule tools: {actor_id!r}")
+            raise RuntimeError(
+                f"actor does not support schedule tools: {actor_id!r}"
+            )
         return await actor.run_schedule_tool(
             agent_name=agent_name,
             tool_name=tool_name,
@@ -836,7 +498,9 @@ async def build_daemon(
         )
 
     actor_python_sessions.bridge.schedule_for_actor = schedule_for_actor
-    actor_python_sessions.bridge.system_caps = SystemCapHandler(chat_store=chat_store)
+    actor_python_sessions.bridge.system_caps = SystemCapHandler(
+        chat_store=chat_store
+    )
 
     routes = RouteBindingService(repository=repository, gateway=gateway)
     refresh = build_refresh_dispatcher(
@@ -846,7 +510,9 @@ async def build_daemon(
     )
 
     type_registry = build_default_resource_type_registry(
-        integration_lifecycle_handler=_integration_lifecycle_handler(integrations),
+        integration_lifecycle_handler=_integration_lifecycle_handler(
+            integrations
+        ),
         actor_lifecycle_handler=_actor_lifecycle_handler(actors),
     )
 
@@ -884,176 +550,3 @@ async def build_daemon(
         type_registry=type_registry,
         chat_store=chat_store,
     )
-
-
-def _daemon_secret_error(config: ServerConfig, request: Request) -> str | None:
-    if not config.daemon_secret:
-        return "server.daemon_secret is not configured"
-    if request.headers.get("x-daemon-secret") != config.daemon_secret:
-        return "X-Daemon-Secret is missing or invalid"
-    return None
-
-
-async def _resource_changed_from_request(
-    request: Request,
-) -> ResourceChanged | JSONResponse:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        return _error_response("request body must be valid JSON", status_code=400)
-    if not isinstance(payload, dict):
-        return _error_response("request body must be a JSON object", status_code=400)
-    try:
-        return ResourceChanged.from_dict(cast(dict[str, object], payload))
-    except ValueError as exc:
-        return _error_response(str(exc), status_code=400)
-
-
-async def _conversation_payload_from_request(
-    request: Request,
-) -> dict[str, str] | JSONResponse:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        return _error_response("request body must be valid JSON", status_code=400)
-    if not isinstance(payload, dict):
-        return _error_response("request body must be a JSON object", status_code=400)
-
-    try:
-        req = msgspec.convert(payload, type=ConversationRequest, strict=False)
-    except (msgspec.ValidationError, msgspec.DecodeError):
-        return _error_response("invalid request body", status_code=400)
-
-    if not req.actor_id.strip():
-        return _error_response("actor_id must be a non-empty string", status_code=400)
-
-    return {
-        "actor_id": req.actor_id.strip(),
-        "conversation_id": req.conversation_id.strip(),
-    }
-
-
-async def _conversation_message_payload_from_request(
-    request: Request,
-) -> dict[str, object] | JSONResponse:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        return _error_response("request body must be valid JSON", status_code=400)
-    if not isinstance(payload, dict):
-        return _error_response("request body must be a JSON object", status_code=400)
-
-    try:
-        req = msgspec.convert(payload, type=ConversationMessageRequest, strict=False)
-    except (msgspec.ValidationError, msgspec.DecodeError):
-        return _error_response("invalid request body", status_code=400)
-
-    content = _content_items_from_request(req)
-    if isinstance(content, JSONResponse):
-        return content
-
-    message_id = req.message_id.strip() or None
-
-    return {
-        "content": content,
-        "message_id": message_id,
-    }
-
-
-def _content_items_from_request(
-    req: ConversationMessageRequest,
-) -> list[dict[str, object]] | JSONResponse:
-    if req.text.strip():
-        return [{"type": "text", "text": req.text.strip()}]
-
-    if not req.content:
-        return _error_response(
-            "text or content must be provided",
-            status_code=400,
-        )
-
-    result: list[dict[str, object]] = []
-    for item in req.content:
-        result.append({str(key): value for key, value in item.items()})
-    return result
-
-
-def _iso_or_none(value: object) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value.isoformat()
-    return str(value)
-
-
-def _sse_event(event_type: str, data: object) -> str:
-    return (
-        f"event: {event_type}\n"
-        f"data: {json.dumps(data, ensure_ascii=True)}\n\n"
-    )
-
-
-_error_response = error_response
-
-
-def _configuration_error_response(exc: ConfigurationError) -> JSONResponse:
-    return _error_response(
-        str(exc),
-        status_code=400,
-        code="configuration_error",
-        hint=(
-            "Configure pricing.entries for the selected LLM backend model "
-            "or disable the USD budget before chatting."
-        ),
-    )
-
-
-async def _plugin_ingest_from_request(
-    request: Request,
-    plugin_manager: ExternalPluginManager,
-) -> ExternalPluginInboundMessage | JSONResponse:
-    token = _bearer_token(request)
-    if token is None:
-        return _error_response("Authorization bearer token is missing", status_code=403)
-    try:
-        expected_integration_id = plugin_manager.integration_id_for_token(token)
-    except PermissionError as exc:
-        return _error_response(str(exc), status_code=403)
-
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        return _error_response("request body must be valid JSON", status_code=400)
-    if not isinstance(payload, dict):
-        return _error_response("request body must be a JSON object", status_code=400)
-    try:
-        message = msgspec.convert(
-            payload,
-            type=ExternalPluginInboundMessage,
-            strict=False,
-        )
-    except (msgspec.ValidationError, msgspec.DecodeError) as exc:
-        return _error_response(str(exc), status_code=400)
-    if message.integration_id != expected_integration_id:
-        return _error_response(
-            "integration_id does not match plugin token", status_code=403
-        )
-    return message
-
-
-def _bearer_token(request: Request) -> str | None:
-    authorization = request.headers.get("authorization", "")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        return None
-    return token
-
-
-def _resolve_external_plugin_instance(
-    integrations: IntegrationCore,
-    integration_id: str,
-) -> ExternalPluginIntegration:
-    instance = integrations.running_instance(integration_id)
-    if not isinstance(instance, ExternalPluginIntegration):
-        raise LookupError(f"integration {integration_id!r} is not an external plugin")
-    return instance

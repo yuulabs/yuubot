@@ -122,13 +122,13 @@ async def test_admin_resource_proxy_injects_daemon_secret(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_send_daemon_request(
+    async def fake_request_daemon(
         daemon: DaemonClient,
         path: str,
         *,
         method: str,
-        body: bytes,
-        content_type: str,
+        body: bytes = b"",
+        content_type: str = "application/json",
     ) -> admin_module.DaemonResponse:
         captured.update(
             {
@@ -144,7 +144,7 @@ async def test_admin_resource_proxy_injects_daemon_secret(
             body=b'{"status":"ok","data":{"id":"backend-1"},"actions":["refresh"]}',
         )
 
-    monkeypatch.setattr(admin_module, "_send_daemon_request", fake_send_daemon_request)
+    monkeypatch.setattr(admin_module, "_request_daemon", fake_request_daemon)
     app = build_admin_asgi_app(
         config=yuubot_config.admin,
         resources=resources,
@@ -172,13 +172,13 @@ async def test_admin_resource_proxy_preserves_daemon_errors(
     yuubot_config: BootstrapConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_send_daemon_request(
+    async def fake_request_daemon(
         daemon: DaemonClient,
         path: str,
         *,
         method: str,
-        body: bytes,
-        content_type: str,
+        body: bytes = b"",
+        content_type: str = "application/json",
     ) -> admin_module.DaemonResponse:
         _ = daemon, path, method, body, content_type
         return admin_module.DaemonResponse(
@@ -186,7 +186,7 @@ async def test_admin_resource_proxy_preserves_daemon_errors(
             body=b'{"status":"error","code":"validation_error","detail":"bad actor"}',
         )
 
-    monkeypatch.setattr(admin_module, "_send_daemon_request", fake_send_daemon_request)
+    monkeypatch.setattr(admin_module, "_request_daemon", fake_request_daemon)
     app = build_admin_asgi_app(
         config=yuubot_config.admin,
         resources=resources,
