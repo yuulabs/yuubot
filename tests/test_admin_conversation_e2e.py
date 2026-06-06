@@ -1,4 +1,4 @@
-"""E2E coverage for provisioning an actor and chatting through the admin API."""
+"""E2E coverage for provisioning an actor and using Admin Conversation."""
 
 from __future__ import annotations
 
@@ -15,25 +15,22 @@ import yuullm
 from helpers import register_test_llm_provider
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.integrations import default_integration_factories
-from yuubot.runtime.admin.app import (
-    DaemonClient,
-    DaemonResponse,
-    build_admin_asgi_app,
-)
+from yuubot.runtime.admin.app import DaemonClient, build_admin_asgi_app
+from yuubot.runtime.admin.handlers import DaemonResponse
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 from yuubot.runtime.plugin_manager import ExternalPluginManager
 
 
-CHAT_TEXT = "你好，web chat actor"
-ACTOR_REPLY = "web chat actor 已收到"
+CONVERSATION_TEXT = "你好，admin conversation agent"
+AGENT_REPLY = "admin conversation agent 已收到"
 
 
-async def test_user_can_create_actor_and_chat_through_admin_web_path(
+async def test_user_can_create_actor_and_work_through_admin_conversation(
     yuubot_config: BootstrapConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    llm = WebChatProvider()
+    llm = AdminConversationProvider()
     register_test_llm_provider("openai", llm)
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
@@ -50,42 +47,41 @@ async def test_user_can_create_actor_and_chat_through_admin_web_path(
             character = await _create_character(client)
             actor = await _create_actor(client, character["id"], backend["id"])
 
-            chat_page = await client.get("/chat")
-            assert chat_page.status_code == 200
-            assert "yuubot test admin" in chat_page.text
+            conversation_page = await client.get("/admin/conversations")
+            assert conversation_page.status_code == 200
+            assert "yuubot test admin" in conversation_page.text
 
             created = await client.post(
-                "/api/conversations",
+                "/api/admin/conversations",
                 json={
-                    "conversation_id": "web-chat-e2e",
+                    "conversation_id": "admin-conversation-e2e",
                     "actor_id": actor["id"],
                 },
             )
             assert created.status_code == 201, created.text
 
-            chat = await client.post(
-                "/api/conversations/web-chat-e2e/messages",
+            conversation = await client.post(
+                "/api/admin/conversations/admin-conversation-e2e/messages",
                 json={
-                    "text": CHAT_TEXT,
+                    "text": CONVERSATION_TEXT,
                 },
             )
-            messages = await _conversation_messages(client, "web-chat-e2e")
-            legacy_dialogs = await client.get("/api/chat/dialogs")
+            messages = await _conversation_messages(client, "admin-conversation-e2e")
 
-        assert chat.status_code == 202, chat.text
-        body = chat.json()
+        assert conversation.status_code == 202, conversation.text
+        body = conversation.json()
         assert body["status"] == "accepted"
-        assert body["data"]["conversation_id"] == "web-chat-e2e"
+        assert body["data"]["conversation_id"] == "admin-conversation-e2e"
 
         assert len(llm.calls) == 1
         rendered_user_message = yuullm.render_message_text(llm.calls[0][-1])
-        assert rendered_user_message == CHAT_TEXT
-        assert yuullm.render_message_text(llm.calls[0][0]) == "You are an E2E web chat actor."
+        assert rendered_user_message == CONVERSATION_TEXT
+        assert yuullm.render_message_text(llm.calls[0][0]) == (
+            "You are an E2E admin conversation agent."
+        )
         assert [m["role"] for m in messages] == ["user", "assistant"]
-        assert CHAT_TEXT in messages[0]["raw_content"]
-        assert ACTOR_REPLY in messages[1]["raw_content"]
-        assert legacy_dialogs.status_code == 200, legacy_dialogs.text
-        assert legacy_dialogs.json()["data"] == []
+        assert CONVERSATION_TEXT in messages[0]["raw_content"]
+        assert AGENT_REPLY in messages[1]["raw_content"]
     finally:
         await daemon.stop()
 
@@ -111,7 +107,7 @@ async def test_admin_spa_entry_revalidates_to_avoid_stale_chunks(
         await daemon.stop()
 
 
-async def test_web_chat_reports_missing_model_pricing_as_configuration_error(
+async def test_admin_conversation_reports_missing_model_pricing_as_configuration_error(
     yuubot_config: BootstrapConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -144,23 +140,23 @@ async def test_web_chat_reports_missing_model_pricing_as_configuration_error(
             )
 
             created = await client.post(
-                "/api/conversations",
+                "/api/admin/conversations",
                 json={
-                    "conversation_id": "web-chat-pricing-error",
+                    "conversation_id": "admin-conversation-pricing-error",
                     "actor_id": actor["id"],
                 },
             )
             assert created.status_code == 201, created.text
 
-            chat = await client.post(
-                "/api/conversations/web-chat-pricing-error/messages",
+            conversation = await client.post(
+                "/api/admin/conversations/admin-conversation-pricing-error/messages",
                 json={
-                    "text": CHAT_TEXT,
+                    "text": CONVERSATION_TEXT,
                 },
             )
 
-        assert chat.status_code == 400, chat.text
-        body = chat.json()
+        assert conversation.status_code == 400, conversation.text
+        body = conversation.json()
         assert body["status"] == "error"
         assert body["code"] == "configuration_error"
         assert "deepseek-v4-flash" in body["detail"]
@@ -170,7 +166,7 @@ async def test_web_chat_reports_missing_model_pricing_as_configuration_error(
         await daemon.stop()
 
 
-class WebChatProvider:
+class AdminConversationProvider:
     def __init__(self) -> None:
         self.calls: list[list[yuullm.Message]] = []
 
@@ -198,7 +194,7 @@ class WebChatProvider:
         self.calls.append(list(messages))
 
         async def stream_items() -> AsyncIterator[yuullm.StreamItem]:
-            yield yuullm.Response({"type": "text", "text": ACTOR_REPLY})
+            yield yuullm.Response({"type": "text", "text": AGENT_REPLY})
 
         return stream_items(), yuullm.Store(
             usage=yuullm.Usage(
@@ -218,7 +214,9 @@ async def _conversation_messages(
 ) -> list[dict[str, Any]]:
     deadline = asyncio.get_running_loop().time() + timeout_s
     while True:
-        response = await client.get(f"/api/conversations/{conversation_id}/messages")
+        response = await client.get(
+            f"/api/admin/conversations/{conversation_id}/messages"
+        )
         assert response.status_code == 200, response.text
         messages = response.json()["data"]
         if len(messages) >= 2:
@@ -309,7 +307,7 @@ async def _connect_admin_proxy_to_daemon(
 async def _create_llm_backend(
     client: httpx.AsyncClient,
     *,
-    name: str = "web-chat-openai",
+    name: str = "admin-conversation-openai",
     provider: str = "openai",
     model: str = "gpt-4o",
     daily_budget: float = 0,
@@ -335,9 +333,9 @@ async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
     response = await client.post(
         "/api/resources/characters",
         json={
-            "name": "web-chat-helper",
-            "description": "E2E web chat helper",
-            "system_prompt": "You are an E2E web chat actor.",
+            "name": "admin-conversation-helper",
+            "description": "E2E admin conversation helper",
+            "system_prompt": "You are an E2E admin conversation agent.",
             "facade_module": "yb",
             "default_hints": {"language": "zh-CN", "tone": "friendly"},
         },
@@ -357,7 +355,7 @@ async def _create_actor(
     response = await client.post(
         "/api/resources/actors",
         json={
-            "name": "web-chat-actor",
+            "name": "admin-conversation-actor",
             "type": "simple_loop",
             "model": model,
             "character_id": character_id,

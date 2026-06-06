@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from typing import cast
 
 import msgspec
 import pytest
@@ -38,12 +38,6 @@ def test_handwritten_yb_tasks_exports_submit_bg() -> None:
     from yb.tasks import submit_bg
 
     assert callable(submit_bg)
-
-
-def test_handwritten_yb_admin_exports_chat_helpers() -> None:
-    from yb.admin import chat
-
-    assert callable(chat.get_dialog)
 
 
 def test_handwritten_yb_im_exports_response_helpers() -> None:
@@ -96,13 +90,11 @@ def test_python_tool_facade_imports_follow_visible_capabilities(tmp_path) -> Non
         item["module"] for item in no_capability_tool.config["imports"]
     }
     echo_imports = {item["module"] for item in echo_tool.config["imports"]}
-    assert "yb.admin" in no_capability_imports
     assert "yb.delegate" in no_capability_imports
     assert "yb.im" in no_capability_imports
     assert "yb.schedule" in no_capability_imports
     assert "yext.echo" not in no_capability_imports
     assert "yext.echo" in echo_imports
-    assert "yb.admin.*" in no_capability_tool.config["expand_functions"]
     assert "yb.delegate.*" in no_capability_tool.config["expand_functions"]
     assert "yb.im.*" in no_capability_tool.config["expand_functions"]
     assert "yb.schedule.*" in no_capability_tool.config["expand_functions"]
@@ -280,32 +272,6 @@ async def test_bridge_routes_facade_schedule_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bridge_routes_facade_system_request() -> None:
-    system_caps = FakeSystemCaps()
-    bridge = IntegrationInvokeBridge(
-        cast(IntegrationCore, object()),
-        system_caps=cast(Any, system_caps),
-    )
-    bridge._token = "token"
-
-    response = await bridge._dispatch(
-        _request(
-            kind="system",
-            capability_id="admin.chat.get_dialog",
-            payload={"dialog_id": "dialog-1"},
-        )
-    )
-
-    assert response == {
-        "ok": True,
-        "result": {"dialog_id": "dialog-1", "messages": ["hello"]},
-    }
-    assert system_caps.calls == [
-        ("admin.chat.get_dialog", {"dialog_id": "dialog-1"}, "actor-1")
-    ]
-
-
-@pytest.mark.asyncio
 async def test_simple_loop_actor_counts_facade_background_tasks() -> None:
     actor = object.__new__(SimpleLoopActor)
     actor._background_task_ids = set()
@@ -425,21 +391,6 @@ class FakeDelegateRuntime:
             }
         )
         return self.result
-
-
-class FakeSystemCaps:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, Any], str]] = []
-
-    async def handle(
-        self,
-        capability_id: str,
-        payload: dict[str, Any],
-        *,
-        actor_id: str = "",
-    ) -> dict[str, object]:
-        self.calls.append((capability_id, payload, actor_id))
-        return {"dialog_id": payload["dialog_id"], "messages": ["hello"]}
 
 
 def _facade(tmp_path, *, capabilities):

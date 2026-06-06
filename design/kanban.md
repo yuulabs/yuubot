@@ -7,7 +7,7 @@ Updated: 2026-06-03
 User opens Admin, creates an OpenAI-compatible LLM backend with a custom base URL
 and API key, clones a builtin character, edits its prompt, selects allowed tools
 and integration capabilities, then launches a `simple_loop` actor. The user opens
-Web Chat, sends a test message to that actor, sees the actor reply, and can use
+Admin Conversation, sends a test message to that actor's conversation Agent, sees the agent reply, and can use
 that first-party channel to verify the actor is actually working before wiring
 external integrations. During the turn, the actor sees the intended `yb` system
 facade, sees only the allowed `yext` integration functions, and can use a
@@ -31,10 +31,10 @@ Current code already has the backbone for this:
 
 ## Now
 
-### 1. Backend/Frontend Config And Web Chat Launch Path
+### 1. Backend/Frontend Config And Admin Conversation Launch Path
 
 Goal: a user can configure LLM backends, characters, and actors from Admin and
-launch and test an actor through Web Chat without hand-editing DB payloads.
+launch and test an actor's conversation Agent through Admin Conversation without hand-editing DB payloads.
 
 - [x] Add Admin resource API facade over daemon `/api/resources`.
   - Admin frontend must not need the daemon secret directly.
@@ -61,24 +61,23 @@ launch and test an actor through Web Chat without hand-editing DB payloads.
   - Select integration capabilities.
   - Configure budget/runtime/resource policy.
   - Create actor and trigger daemon reconcile.
-- [ ] Add minimal first-party Web Chat.
-  - Define Web Chat messages as yuubot `MailMessage` subclasses.
-  - Add Admin WebSocket or streaming endpoint with session authentication.
-  - Route user messages through system ingress directly to actor mailbox, not
-    through the integration gateway.
-  - Deliver actor replies and turn errors back to the browser.
-  - Persist enough dialog state to reload recent messages for debugging.
+- [ ] Add minimal first-party Admin Conversation.
+  - Expose `/api/admin/conversations` through Admin and daemon.
+  - Create or reuse a conversation-mode Agent for the selected Actor.
+  - Send user messages directly to that Agent thread, not through the Actor mailbox.
+  - Stream agent replies, events, and turn errors back to the browser.
+  - Persist conversation history for reload and debugging.
 - [ ] Add a launch smoke path in the UI.
-  - After actor creation, offer "Open in Web Chat".
-  - Web Chat actor selector only lists enabled/running actors.
-  - First message should create or reuse a dialog id.
+  - After actor creation, offer "Open in Admin Conversation".
+  - Admin Conversation actor selector only lists enabled/running actors.
+  - First message should create or reuse a conversation id.
   - Actor reply should link to Monitor trace/detail when trace is available.
 - [ ] Acceptance checks:
   - `uv run pytest tests/test_daemon_commands.py tests/test_actor_lifecycle.py`
   - New Admin API tests for resource proxy, secret redaction, actor launch, and
-    Web Chat message delivery.
+    Admin Conversation message delivery.
   - Manual smoke: create backend -> create character -> create actor ->
-    `/api/status` shows actor running -> send Web Chat message -> receive actor
+    `/api/status` shows actor running -> send Admin Conversation message -> receive agent
     reply.
 
 ### 2. Tool, Facade, And Prompt Visibility

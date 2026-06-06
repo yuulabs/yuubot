@@ -21,6 +21,7 @@ from yuubot.core.integrations import (
 )
 from yuubot.runtime.admin.handlers import (
     DaemonClient,
+    DaemonResponse,
     _create_provider_model_client,
     _request_daemon,
     make_admin_health_handler,
@@ -28,7 +29,6 @@ from yuubot.runtime.admin.handlers import (
     make_integration_kinds_handler,
     make_list_plugins_handler,
     make_provider_models_handler,
-    make_proxy_daemon_chat_history_handler,
     make_proxy_daemon_conversations_handler,
     make_proxy_daemon_resource_handler,
     make_reveal_integration_secret_handler,
@@ -43,6 +43,15 @@ from yuubot.runtime.plugin_manager import (
 )
 from yuubot.runtime.process import ASGIServer, UvicornServer, open_resources
 from yuutrace.cli.ui import _build_app as build_trace_app
+
+__all__ = [
+    "AdminInfrastructure",
+    "DaemonClient",
+    "DaemonResponse",
+    "YuubotAdmin",
+    "build_admin",
+    "build_admin_asgi_app",
+]
 
 
 @dataclass
@@ -142,7 +151,7 @@ def build_admin_asgi_app(
             methods=("POST",),
         ),
         Route(
-            "/api/conversations",
+            "/api/admin/conversations",
             make_proxy_daemon_conversations_handler(
                 daemon=daemon,
                 _request_daemon_fn=_request_daemon,
@@ -150,20 +159,12 @@ def build_admin_asgi_app(
             methods=("GET", "POST"),
         ),
         Route(
-            "/api/conversations/{path:path}",
+            "/api/admin/conversations/{path:path}",
             make_proxy_daemon_conversations_handler(
                 daemon=daemon,
                 _request_daemon_fn=_request_daemon,
             ),
             methods=("GET", "POST"),
-        ),
-        Route(
-            "/api/chat/{path:path}",
-            make_proxy_daemon_chat_history_handler(
-                daemon=daemon,
-                _request_daemon_fn=_request_daemon,
-            ),
-            methods=("GET",),
         ),
         Route(
             "/api/integration-kinds",

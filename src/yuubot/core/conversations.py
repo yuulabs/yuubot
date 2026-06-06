@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, cast
 
 import msgspec
@@ -34,6 +34,13 @@ from yuubot.resources.records import (
 from yuubot.resources.store.models import ConversationMessageORM, ConversationORM
 from yuubot.resources.store.protocol import to_builtins
 from yuubot.resources.store.resource import Store
+
+
+def _conversation_sort_key(record: ConversationRecord) -> tuple[float, str]:
+    timestamp = record.updated_at or record.created_at
+    if timestamp is None:
+        return (0.0, record.conversation_id)
+    return (timestamp.timestamp(), record.conversation_id)
 
 
 @dataclass(frozen=True)
@@ -187,7 +194,11 @@ class ConversationStore:
                 rows = await ConversationORM.filter(actor_id=actor_id)
             else:
                 rows = await ConversationORM.all()
-        return [msgspec.convert(to_builtins(r), type=ConversationRecord, strict=False) for r in rows]
+        records = [
+            msgspec.convert(to_builtins(r), type=ConversationRecord, strict=False)
+            for r in rows
+        ]
+        return sorted(records, key=_conversation_sort_key, reverse=True)
 
     async def append_message(
         self,
@@ -209,7 +220,7 @@ class ConversationStore:
                 metadata=metadata or {},
                 timestamp=msg_ts,
             )
-            now = datetime.now(timezone.utc)
+            now = datetime.now()
             await ConversationORM.filter(conversation_id=conversation_id).update(
                 updated_at=now,
             )

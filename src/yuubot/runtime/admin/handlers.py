@@ -319,7 +319,7 @@ def resource_proxy_path(request: Request) -> str:
 
 async def _stream_daemon_sse(daemon: DaemonClient, path: str) -> StreamingResponse:
     """Proxy daemon SSE events endpoint with streaming."""
-    daemon_url = daemon.base_url.rstrip("/") + "/api/conversations/" + path
+    daemon_url = daemon.base_url.rstrip("/") + "/api/admin/conversations/" + path
 
     async def event_stream():
         async with httpx.AsyncClient() as client:
@@ -700,7 +700,7 @@ def make_proxy_daemon_conversations_handler(
         if request.method == "GET" and request.path_params.get("path", "").endswith("/events"):
             return await _stream_daemon_sse(daemon, request.path_params["path"])
         body = await request.body()
-        daemon_path = "/api/conversations"
+        daemon_path = "/api/admin/conversations"
         path = request.path_params.get("path")
         if path:
             daemon_path += "/" + path
@@ -720,35 +720,6 @@ def make_proxy_daemon_conversations_handler(
         )
 
     return proxy_daemon_conversations
-
-
-def make_proxy_daemon_chat_history_handler(
-    *,
-    daemon: DaemonClient,
-    _request_daemon_fn: RequestDaemonFn | None = None,
-):
-    _req = _request_daemon_fn if _request_daemon_fn is not None else _request_daemon
-
-    async def proxy_daemon_chat_history(request: Request) -> Response:
-        """Proxy GET chat history requests to the daemon.
-
-        Catches legacy read-only /api/chat/* history paths.
-        """
-        daemon_path = "/api/chat/" + request.path_params["path"]
-        if request.query_params:
-            daemon_path += "?" + urlencode(tuple(request.query_params.multi_items()))
-        response = await _req(
-            daemon,
-            daemon_path,
-            method="GET",
-        )
-        return Response(
-            response.body,
-            status_code=response.status_code,
-            media_type=response.content_type,
-        )
-
-    return proxy_daemon_chat_history
 
 
 def make_install_plugin_handler(

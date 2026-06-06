@@ -17,7 +17,6 @@ from yuuagents.mailbox import BackgroundCompletedMessage, MailBox, MailMessage
 from yuubot.core.capabilities import struct_to_dict
 from yuubot.core.integrations.context import InvocationContext
 from yuubot.core.integrations.core import IntegrationCore
-from yuubot.core.system_caps import SystemCapHandler
 
 if TYPE_CHECKING:
     from yuubot.core.facade.workspace import FacadeEndpoint
@@ -83,7 +82,6 @@ class IntegrationInvokeBridge:
     """Local daemon-owned RPC bridge used by generated yext modules."""
 
     integrations: IntegrationCore
-    system_caps: SystemCapHandler | None = None
     mailbox_for_actor: Callable[[str], MailBox | None] | None = None
     schedule_for_actor: Callable[
         [str, str, str, dict[str, object]], Awaitable[object]
@@ -147,8 +145,6 @@ class IntegrationInvokeBridge:
             return await self._delegate_submit(request)
         if request.kind == "schedule":
             return await self._schedule(request)
-        if request.kind == "system":
-            return await self._system_invoke(request)
         if request.kind != "invoke":
             raise ValueError(f"unknown facade request kind: {request.kind}")
 
@@ -241,16 +237,6 @@ class IntegrationInvokeBridge:
                 )
             )
         return {"ok": True, "result": {"task_id": task_id}}
-
-    async def _system_invoke(self, request: FacadeRpcRequest) -> dict[str, object]:
-        if self.system_caps is None:
-            raise RuntimeError("system capabilities are not available")
-        result = await self.system_caps.handle(
-            capability_id=request.capability_id,
-            payload=request.payload,
-            actor_id=request.actor_id,
-        )
-        return {"ok": True, "result": result}
 
     async def _schedule(self, request: FacadeRpcRequest) -> dict[str, object]:
         if self.schedule_for_actor is None:

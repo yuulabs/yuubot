@@ -29,8 +29,8 @@ interface RuleFormData {
 
 const defaultForm: RuleFormData = {
   actorId: "",
-  sourceIdPattern: "web-admin",
-  sourcePathPattern: "dialog:*",
+  sourceIdPattern: "im",
+  sourcePathPattern: "**",
   kindPatterns: "*",
 };
 

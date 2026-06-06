@@ -125,7 +125,7 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8781/
 # 预期: 200
 
 # SPA fallback（直接访问子路由）
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8781/chat
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8781/admin/conversations
 # 预期: 200
 ```
 

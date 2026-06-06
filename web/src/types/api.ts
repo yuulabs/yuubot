@@ -31,16 +31,6 @@ export interface DeleteResponse {
   warnings?: string[];
 }
 
-export interface ChatMessageResponse {
-  status: string;
-  data: {
-    actor_id: string;
-    dialog_id: string;
-    message_id: string;
-    reply: string;
-  };
-}
-
 export interface ErrorResponse {
   status: "error";
   code?: string;
@@ -276,49 +266,7 @@ export interface ResourceChangedEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Chat history types
-// ---------------------------------------------------------------------------
-
-export interface DialogSummary {
-  dialog_id: string;
-  message_count: number;
-  last_message_preview: string;
-  updated_at: string;
-}
-
-export interface ChatMessage {
-  id: number;
-  dialog_id: string;
-  message_id: string;
-  role: "user" | "actor";
-  raw_content: string;
-  text_content: string;
-  actor_id: string;
-  sender_id: string;
-  sender_name: string;
-  timestamp: number;
-}
-
-export interface DialogListResponse {
-  status: string;
-  data: DialogSummary[];
-}
-
-export interface DialogMessagesResponse {
-  status: string;
-  data: {
-    messages: ChatMessage[];
-    has_more: boolean;
-  };
-}
-
-export interface SingleMessageResponse {
-  status: string;
-  data: ChatMessage;
-}
-
-// ---------------------------------------------------------------------------
-// Conversation types (SSE-based interactive chat)
+// Admin Conversation types
 // ---------------------------------------------------------------------------
 
 export interface ConversationData {
@@ -370,12 +318,12 @@ export interface ConversationMessagesResponse {
   data: ConversationMessage[];
 }
 
-/** SSE event from /api/conversations/{id}/events */
+/** SSE event from /api/admin/conversations/{id}/events */
 export interface ConversationSSEEvent {
   conversation_id: string;
   agent_id: string;
   agent_name: string;
-  event_type: "entity" | "entity_end" | "thinking" | "text" | "tool_call" | "tool_result" | "message" | "error";
+  event_type: "entity" | "entity_end" | "thinking" | "text" | "output" | "tool_call" | "tool_result" | "message" | "error";
   content: {
     entity_id?: string;
     entity_type?: string;

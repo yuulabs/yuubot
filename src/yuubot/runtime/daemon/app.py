@@ -23,7 +23,6 @@ from yuubot.core.actors import (
     ActorWorkspaceResolver,
     default_actor_factories,
 )
-from yuubot.core.chat_store import ChatStore
 from yuubot.core.conversations import ConversationManager, ConversationStore
 from yuubot.core.events import Event
 from yuubot.core.gateway import Gateway
@@ -34,7 +33,6 @@ from yuubot.core.integrations import (
 )
 from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.core.routing import RouteBindings, load_route_bindings
-from yuubot.core.system_caps import SystemCapHandler
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.registry import (
     EventDrivenRefreshDispatcher,
@@ -52,9 +50,6 @@ from yuubot.runtime.daemon.commands import (
 from yuubot.runtime.daemon.handlers import (
     _configuration_error_response,  # noqa: F401  # re-exported for compat
     _sse_event,  # noqa: F401  # re-exported for tests
-    make_chat_dialog_messages_handler,
-    make_chat_dialogs_handler,
-    make_chat_message_by_id_handler,
     make_conversation_events_handler,
     make_conversation_messages_handler,
     make_create_conversation_handler,
@@ -219,7 +214,6 @@ class YuubotDaemon:
     refresh: EventDrivenRefreshDispatcher
     trace_service: TraceService
     type_registry: ResourceTypeRegistry
-    chat_store: ChatStore | None = None
 
     async def start(self) -> None:
         await self.services.start()
@@ -243,7 +237,6 @@ class YuubotDaemon:
             refresh=self.refresh,
             trace_service=self.trace_service,
             type_registry=self.type_registry,
-            chat_store=self.chat_store,
         )
 
     async def serve(self) -> None:
@@ -300,7 +293,6 @@ def build_daemon_asgi_app(
     refresh: EventDrivenRefreshDispatcher,
     trace_service: TraceService,
     type_registry: ResourceTypeRegistry,
-    chat_store: ChatStore | None = None,
 ) -> Starlette:
     """Construct the daemon ASGI application.
 
@@ -368,49 +360,34 @@ def build_daemon_asgi_app(
             methods=("POST",),
         ),
         Route(
-            "/api/conversations",
+            "/api/admin/conversations",
             make_list_conversations_handler(conversation_manager),
             methods=("GET",),
         ),
         Route(
-            "/api/conversations",
+            "/api/admin/conversations",
             make_create_conversation_handler(conversation_manager),
             methods=("POST",),
         ),
         Route(
-            "/api/conversations/{conversation_id}/agents",
+            "/api/admin/conversations/{conversation_id}/agents",
             make_ensure_conversation_agent_handler(conversation_manager),
             methods=("POST",),
         ),
         Route(
-            "/api/conversations/{conversation_id}/events",
+            "/api/admin/conversations/{conversation_id}/events",
             make_conversation_events_handler(conversation_manager),
             methods=("GET",),
         ),
         Route(
-            "/api/conversations/{conversation_id}/messages",
+            "/api/admin/conversations/{conversation_id}/messages",
             make_conversation_messages_handler(conversation_manager),
             methods=("GET",),
         ),
         Route(
-            "/api/conversations/{conversation_id}/messages",
+            "/api/admin/conversations/{conversation_id}/messages",
             make_send_conversation_message_handler(conversation_manager),
             methods=("POST",),
-        ),
-        Route(
-            "/api/chat/dialogs",
-            make_chat_dialogs_handler(chat_store),
-            methods=("GET",),
-        ),
-        Route(
-            "/api/chat/dialogs/{dialog_id}/messages",
-            make_chat_dialog_messages_handler(chat_store),
-            methods=("GET",),
-        ),
-        Route(
-            "/api/chat/messages/{message_id}",
-            make_chat_message_by_id_handler(chat_store),
-            methods=("GET",),
         ),
         Mount(
             "/api/resources",
@@ -444,8 +421,6 @@ async def build_daemon(
     layout = DataLayout.from_path(config.paths.data_dir)
     layout.ensure()
     resources = await open_resources(config)
-
-    chat_store = ChatStore(resources.store)
 
     repository = resources.repository
     gateway = Gateway(routes=RouteBindings(rules=[]))
@@ -498,10 +473,6 @@ async def build_daemon(
         )
 
     actor_python_sessions.bridge.schedule_for_actor = schedule_for_actor
-    actor_python_sessions.bridge.system_caps = SystemCapHandler(
-        chat_store=chat_store
-    )
-
     routes = RouteBindingService(repository=repository, gateway=gateway)
     refresh = build_refresh_dispatcher(
         routes=routes,
@@ -548,5 +519,4 @@ async def build_daemon(
         refresh=refresh,
         trace_service=trace_svc,
         type_registry=type_registry,
-        chat_store=chat_store,
     )

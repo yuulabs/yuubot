@@ -1,4 +1,4 @@
-"""E2E tests for structured conversation history."""
+"""E2E tests for structured Admin Conversation history."""
 
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
 DAEMON_SECRET = "test-daemon-secret"
-CHAT_TEXT_1 = "Hello, world!"
-CHAT_TEXT_2 = "Python is great"
-ACTOR_REPLY = "web chat actor ack"
+CONVERSATION_TEXT_1 = "Hello, world!"
+CONVERSATION_TEXT_2 = "Python is great"
+AGENT_REPLY = "admin conversation agent ack"
 
 
 class ConversationProvider:
@@ -49,7 +49,7 @@ class ConversationProvider:
         self.calls.append(list(messages))
 
         async def stream_items() -> AsyncIterator[yuullm.StreamItem]:
-            yield yuullm.Response({"type": "text", "text": ACTOR_REPLY})
+            yield yuullm.Response({"type": "text", "text": AGENT_REPLY})
 
         return stream_items(), yuullm.Store(
             usage=yuullm.Usage(
@@ -74,32 +74,35 @@ async def test_conversation_messages_are_persisted(
         async with _client(daemon) as client:
             actor = await _provision_actor(client)
             created = await _create_conversation(client, actor["id"], "history-test-1")
+            await _create_conversation(client, actor["id"], "history-test-older")
             assert created["conversation_id"] == "history-test-1"
             assert created["actor_id"] == actor["id"]
 
             response = await _post_conversation_message(
                 client,
                 "history-test-1",
-                CHAT_TEXT_1,
+                CONVERSATION_TEXT_1,
             )
             assert response.status_code == 202, response.text
 
             messages = await _wait_for_messages(client, "history-test-1", count=2)
             assert [m["role"] for m in messages] == ["user", "assistant"]
-            assert CHAT_TEXT_1 in messages[0]["raw_content"]
-            assert ACTOR_REPLY in messages[1]["raw_content"]
+            assert CONVERSATION_TEXT_1 in messages[0]["raw_content"]
+            assert AGENT_REPLY in messages[1]["raw_content"]
             assert messages[1]["metadata"]["usage"]
 
             conversations = await client.get(
-                "/api/conversations",
+                "/api/admin/conversations",
                 headers=_daemon_headers(),
             )
             assert conversations.status_code == 200, conversations.text
-            ids = [item["conversation_id"] for item in conversations.json()["data"]]
+            data = conversations.json()["data"]
+            ids = [item["conversation_id"] for item in data]
+            assert ids[0] == "history-test-1", data
             assert "history-test-1" in ids
 
         assert len(llm.calls) == 1
-        assert yuullm.render_message_text(llm.calls[0][-1]) == CHAT_TEXT_1
+        assert yuullm.render_message_text(llm.calls[0][-1]) == CONVERSATION_TEXT_1
     finally:
         await daemon.stop()
 
@@ -121,7 +124,7 @@ async def test_conversation_agent_reuses_persisted_history(
             first = await _post_conversation_message(
                 client,
                 "history-test-2",
-                CHAT_TEXT_1,
+                CONVERSATION_TEXT_1,
             )
             assert first.status_code == 202, first.text
             await _wait_for_messages(client, "history-test-2", count=2)
@@ -131,7 +134,7 @@ async def test_conversation_agent_reuses_persisted_history(
             second = await _post_conversation_message(
                 client,
                 "history-test-2",
-                CHAT_TEXT_2,
+                CONVERSATION_TEXT_2,
             )
             assert second.status_code == 202, second.text
             messages = await _wait_for_messages(client, "history-test-2", count=4)
@@ -144,9 +147,9 @@ async def test_conversation_agent_reuses_persisted_history(
         ]
         assert len(llm.calls) == 2
         second_call_text = [yuullm.render_message_text(item) for item in llm.calls[1]]
-        assert CHAT_TEXT_1 in second_call_text
-        assert ACTOR_REPLY in second_call_text
-        assert CHAT_TEXT_2 in second_call_text
+        assert CONVERSATION_TEXT_1 in second_call_text
+        assert AGENT_REPLY in second_call_text
+        assert CONVERSATION_TEXT_2 in second_call_text
     finally:
         await daemon.stop()
 
@@ -205,7 +208,7 @@ async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
         json={
             "name": "conversation-helper",
             "description": "E2E conversation helper",
-            "system_prompt": "You are an E2E conversation actor.",
+            "system_prompt": "You are an E2E admin conversation agent.",
             "facade_module": "yb",
             "default_hints": {"language": "zh-CN", "tone": "friendly"},
         },
@@ -242,7 +245,7 @@ async def _create_conversation(
     conversation_id: str,
 ) -> dict[str, Any]:
     response = await client.post(
-        "/api/conversations",
+        "/api/admin/conversations",
         json={
             "conversation_id": conversation_id,
             "actor_id": actor_id,
@@ -261,7 +264,7 @@ async def _post_conversation_message(
     text: str,
 ) -> httpx.Response:
     return await client.post(
-        f"/api/conversations/{conversation_id}/messages",
+        f"/api/admin/conversations/{conversation_id}/messages",
         json={"text": text},
         headers=_daemon_headers(),
     )
@@ -277,7 +280,7 @@ async def _wait_for_messages(
     deadline = asyncio.get_running_loop().time() + timeout_s
     while True:
         response = await client.get(
-            f"/api/conversations/{conversation_id}/messages",
+            f"/api/admin/conversations/{conversation_id}/messages",
             headers=_daemon_headers(),
         )
         assert response.status_code == 200, response.text

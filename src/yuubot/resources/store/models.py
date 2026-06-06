@@ -6,7 +6,6 @@ from yuubot.resources.records import (
     ActorRecord,
     ActorIngressRuleRecord,
     CharacterRecord,
-    ChatMessageRecord,
     ConversationMessageRecord,
     ConversationRecord,
     IntegrationRecord,
@@ -97,26 +96,6 @@ ActorIngressRuleORM = resource_model(
         "id": char(max_length=512, primary_key=True),
         "source_id_pattern": char(max_length=512),
         "source_path_pattern": char(max_length=1024),
-    },
-)
-
-ChatMessageORM = resource_model(
-    "ChatMessageORM",
-    ChatMessageRecord,
-    table="chat_messages",
-    module=__name__,
-    field_specs={
-        "id": FieldSpec(kind="int", primary_key=True),
-        "dialog_id": char(max_length=255),
-        "message_id": char(max_length=255),
-        "role": char(max_length=16),
-        "raw_content": text(),
-        "text_content": text(),
-        "actor_id": char(max_length=255),
-        "sender_id": char(max_length=255),
-        "sender_name": char(max_length=255),
-        "timestamp": FieldSpec(kind="int"),
-        "created_at": FieldSpec(kind="datetime"),
     },
 )
 

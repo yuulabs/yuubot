@@ -204,26 +204,6 @@ class ActorIngressRuleRecord(msgspec.Struct):
     updated_at: datetime | None = None
 
 
-class ChatMessageRecord(msgspec.Struct):
-    """Persisted web chat message, keyed by dialog_id for conversation grouping.
-
-    ``text_content`` is a pre-rendered human-readable line used for
-    FTS indexing and agent-facing history retrieval.
-    """
-
-    dialog_id: str
-    message_id: str
-    role: str
-    raw_content: str
-    text_content: str
-    actor_id: str
-    sender_id: str
-    sender_name: str
-    timestamp: int
-    id: int = 0
-    created_at: datetime | None = None
-
-
 class ConversationRecord(msgspec.Struct):
     conversation_id: str
     actor_id: str

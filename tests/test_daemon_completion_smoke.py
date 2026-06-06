@@ -41,7 +41,7 @@ from yuubot.resources.records import (
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
 
-SOURCE_PATH = "dialogs/web-chat"
+SOURCE_PATH = "im/admin-smoke"
 DAEMON_HEADERS = {"X-Daemon-Secret": "test-daemon-secret"}
 
 

@@ -67,7 +67,6 @@ IM_MODE_SYSTEM_GUIDANCE = (
 FACADE_IMPORTS = (
     PythonImport(module="yb"),
     PythonImport(module="yb.actor"),
-    PythonImport(module="yb.admin"),
     PythonImport(module="yb.delegate"),
     PythonImport(module="yb.im"),
     PythonImport(module="yb.schedule"),
@@ -76,7 +75,6 @@ FACADE_IMPORTS = (
 )
 FACADE_EXPAND_FUNCTIONS = (
     "yb.*",
-    "yb.admin.*",
     "yb.actor.*",
     "yb.delegate.*",
     "yb.im.*",

@@ -11,9 +11,9 @@ export function ActorActions({ actor }: ActorActionsProps) {
   return (
     <div className="flex items-center gap-1">
       <Button variant="ghost" size="xs" asChild>
-        <Link to="/chat" search={{ dialogId: actor.id }}>
+        <Link to="/admin/conversations/$conversationId" params={{ conversationId: `actor-${actor.id}` }}>
           <MessageSquare size={14} className="mr-1" />
-          Chat
+          Conversation
         </Link>
       </Button>
     </div>

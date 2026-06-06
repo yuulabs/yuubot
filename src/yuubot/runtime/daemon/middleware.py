@@ -19,15 +19,13 @@ class DaemonSecretMiddleware(BaseHTTPMiddleware):
     """Enforce X-Daemon-Secret header for protected API routes.
 
     Not all daemon routes require the daemon secret — /healthz and
-    /ingest use different auth mechanisms, and /api/chat/* routes
-    are intentionally open.  The middleware only guards the
-    administration and conversation management endpoints.
+    /ingest use different auth mechanisms. The middleware guards
+    administration endpoints.
     """
 
     _PROTECTED_PREFIXES: tuple[str, ...] = (
         "/api/status",
         "/api/admin/",
-        "/api/conversations",
     )
 
     def __init__(self, app, *, secret: str) -> None:

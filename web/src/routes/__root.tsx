@@ -18,7 +18,7 @@ const navGroups = [
     label: "Overview",
     items: [
       { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-      { to: "/chat", icon: MessageSquare, label: "Web Chat" },
+      { to: "/admin/conversations", icon: MessageSquare, label: "Admin Conversation" },
     ],
   },
   {
