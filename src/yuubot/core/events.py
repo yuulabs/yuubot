@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 
 class Event:
@@ -105,8 +103,3 @@ class EventBus:
                     await task
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    logger.exception(
-                        "event subscriber failed for %s",
-                        type(event).__name__,
-                    )

@@ -6,8 +6,8 @@ import asyncio
 import json
 import sys
 import uuid
-from contextlib import suppress
 from typing import Any
+
 
 from yb import _client, _context
 
@@ -25,23 +25,21 @@ def submit_bg(coro: Any, tid_suggest: str | None = None) -> str:
 
 
 async def _notify_background_started(task_id: str) -> None:
-    with suppress(Exception):
-        await _client.request(
-            _background_request("background_started", task_id, status="running")
-        )
+    await _client.request(
+        _background_request("background_started", task_id, status="running")
+    )
 
 
 async def _finish_background(task_id: str, task: asyncio.Task[Any]) -> None:
     status, summary = _summarize_task(task)
-    with suppress(Exception):
-        await _client.request(
-            _background_request(
-                "background_finished",
-                task_id,
-                status=status,
-                summary=summary,
-            )
+    await _client.request(
+        _background_request(
+            "background_finished",
+            task_id,
+            status=status,
+            summary=summary,
         )
+    )
 
 
 def _background_request(
@@ -97,9 +95,7 @@ def _summarize_task(task: asyncio.Task[Any]) -> tuple[str, str]:
         return "ok", "completed with no result"
     if isinstance(result, str):
         return "ok", _bounded(result)
-    with suppress(Exception):
-        return "ok", _bounded(json.dumps(result, ensure_ascii=False, default=repr))
-    return "ok", _bounded(repr(result))
+    return "ok", _bounded(json.dumps(result, ensure_ascii=False, default=repr))
 
 
 def _bounded(text: str, limit: int = 2000) -> str:

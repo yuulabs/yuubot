@@ -10,7 +10,12 @@ import pytest
 import yuullm
 from yuuagents.mailbox import ScheduleTriggerMessage
 
-from helpers import make_actor_record, make_character_record, make_llm_backend_record
+from helpers import (
+    ScriptedProviderSessionFactory,
+    make_actor_record,
+    make_character_record,
+    make_llm_backend_record,
+)
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.assembly import start_yuuagents_actor
 from yuubot.core.bindings import ActorBinding
@@ -44,7 +49,7 @@ async def test_runtime_rollover_compacts_history_when_token_threshold_is_reached
     runtime = start_yuuagents_actor(
         binding,
         yuuagents_config=YuuAgentsConfig(),
-        llm_client=llm,
+        llm_session_factory=ScriptedProviderSessionFactory(llm),
     )
     try:
         agent = await runtime.handle_message(
@@ -64,7 +69,8 @@ async def test_runtime_rollover_compacts_history_when_token_threshold_is_reached
         )
         assert "rolled summary" in history_text
         assert "first task details" not in history_text
-        assert agent.budget.usage.get("tokens", 0) == 0
+        budget = runtime._agent_budgets[agent.id]
+        assert budget.usage.get("tokens", 0) == 0
     finally:
         await runtime.close()
 
@@ -94,7 +100,7 @@ async def test_runtime_expires_idle_agent_and_recreates_on_next_message(
     runtime = start_yuuagents_actor(
         binding,
         yuuagents_config=YuuAgentsConfig(),
-        llm_client=llm,
+        llm_session_factory=ScriptedProviderSessionFactory(llm),
     )
     try:
         first = await runtime.handle_message(
@@ -104,7 +110,7 @@ async def test_runtime_expires_idle_agent_and_recreates_on_next_message(
             )
         )
         assert first is not None
-        first_agent_id = first.agent_id
+        first_agent_id = first.id
 
         await asyncio.sleep(0.05)
         assert first_agent_id not in runtime.agents
@@ -117,7 +123,7 @@ async def test_runtime_expires_idle_agent_and_recreates_on_next_message(
             )
         )
         assert second is not None
-        assert second.agent_id != first_agent_id
+        assert second.id != first_agent_id
         assert len(llm.calls) == 2
     finally:
         await runtime.close()
@@ -145,7 +151,7 @@ async def test_runtime_delegate_uses_independent_agent_and_returns_text(
     runtime = start_yuuagents_actor(
         binding,
         yuuagents_config=YuuAgentsConfig(),
-        llm_client=llm,
+        llm_session_factory=ScriptedProviderSessionFactory(llm),
     )
     try:
         result = await runtime.run_delegate(
@@ -192,7 +198,7 @@ async def test_runtime_schedule_tool_uses_actor_schedule_executor(
         yuuagents_config=YuuAgentsConfig(
             tool_backends={"schedule": {"db_path": str(tmp_path / "schedule.db")}}
         ),
-        llm_client=llm,
+        llm_session_factory=ScriptedProviderSessionFactory(llm),
     )
     try:
         created = await runtime.run_schedule_tool(

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 from yuubot.core.actors import (
     Actor,
     ActorFactoryRegistry,
@@ -90,7 +92,7 @@ async def test_running_actor_receives_relevant_resource_events(
     assert actor.events == [event]
 
 
-async def test_reconcile_quarantines_actor_startup_failure(
+async def test_start_actor_raises_on_failure(
     resources: Resources,
     tmp_path: Path,
 ):
@@ -116,11 +118,10 @@ async def test_reconcile_quarantines_actor_startup_failure(
     )
     await _insert_actor_bundle(resources, "broken", actor_type="fake")
 
-    await manager.reconcile()
+    with pytest.raises(RuntimeError, match="boom"):
+        await manager.start_actor("broken")
 
     assert manager.running_actor_ids() == []
-    assert manager.startup_failures()[0].actor_id == "broken"
-    assert "boom" in manager.startup_failures()[0].detail
 
 
 @dataclass

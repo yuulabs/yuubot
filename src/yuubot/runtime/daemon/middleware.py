@@ -42,9 +42,7 @@ class DaemonSecretMiddleware(BaseHTTPMiddleware):
     # -- internal --
 
     def _should_protect(self, path: str) -> bool:
-        return any(
-            path.startswith(prefix) for prefix in self._PROTECTED_PREFIXES
-        )
+        return any(path.startswith(prefix) for prefix in self._PROTECTED_PREFIXES)
 
     def _check_secret(self, request: Request) -> str | None:
         """Return an error message when the daemon secret is missing or invalid."""

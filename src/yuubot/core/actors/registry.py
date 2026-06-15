@@ -18,4 +18,6 @@ class ActorFactoryRegistry:
         try:
             return self._factories[actor_type]
         except KeyError as exc:
-            raise LookupError(f"actor factory {actor_type!r} is not registered") from exc
+            raise LookupError(
+                f"actor factory {actor_type!r} is not registered"
+            ) from exc

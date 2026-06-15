@@ -133,7 +133,7 @@ def _inline_root_schema(schema: dict[str, object]) -> dict[str, object]:
     prefix = "#/$defs/"
     if not ref.startswith(prefix):
         return schema
-    root_name = ref[len(prefix):]
+    root_name = ref[len(prefix) :]
     defs_map = cast(dict[str, object], defs)
     root = defs_map.get(root_name)
     if not isinstance(root, dict):

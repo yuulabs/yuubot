@@ -84,7 +84,9 @@ class YuubotTraceContextProvider:
         _copy_string(event.data, attrs, "integration_id", "yuubot.integration_id")
         _copy_string(event.data, attrs, "capability_id", "yuubot.capability_id")
         _copy_string(event.data, attrs, "task_id", "yuubot.task_id")
-        return {k: v for k, v in attrs.items() if isinstance(v, (str, int, float, bool))}
+        return {
+            k: v for k, v in attrs.items() if isinstance(v, (str, int, float, bool))
+        }
 
     def _context_for(self, event: RuntimeEvent) -> YuubotTraceContext:
         if event.agent_id and event.agent_id in self._agent_contexts:
@@ -114,4 +116,3 @@ def _copy_string(
     value = source.get(source_key)
     if isinstance(value, str) and value:
         target[target_key] = value
-

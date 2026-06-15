@@ -11,7 +11,10 @@ import pytest
 
 from yuubot.bootstrap.config import BootstrapConfig
 from yuubot.core.gateway import Gateway
-from yuubot.core.integrations import IntegrationFactoryRegistry, default_integration_factories
+from yuubot.core.integrations import (
+    IntegrationFactoryRegistry,
+    default_integration_factories,
+)
 from yuubot.core.integrations.context import InvocationContext
 from yuubot.core.integrations.contracts import LocalIntegrationStorage
 from yuubot.core.routing import RouteBindings
@@ -30,7 +33,9 @@ def _client(app) -> httpx.AsyncClient:
     )
 
 
-async def test_external_plugin_loader_exposes_manifest_capabilities(tmp_path: Path) -> None:
+async def test_external_plugin_loader_exposes_manifest_capabilities(
+    tmp_path: Path,
+) -> None:
     source = _write_plugin_source(tmp_path / "source", package_name="demo_plugin")
     manager = ExternalPluginManager(
         plugins_dir=tmp_path / "plugins",

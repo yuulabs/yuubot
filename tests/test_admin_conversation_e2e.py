@@ -12,7 +12,7 @@ import msgspec
 import pytest
 import yuullm
 
-from helpers import register_test_llm_provider
+from helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.integrations import default_integration_factories
 from yuubot.runtime.admin.app import DaemonClient, build_admin_asgi_app
@@ -131,37 +131,27 @@ async def test_admin_conversation_reports_missing_model_pricing_as_configuration
                 pricing_entries=[],
             )
             character = await _create_character(client)
-            actor = await _create_actor(
-                client,
-                character["id"],
-                backend["id"],
-                model="deepseek-v4-flash",
-                allow_partial=True,
-            )
 
-            created = await client.post(
-                "/api/admin/conversations",
+            response = await client.post(
+                "/api/resources/actors",
                 json={
-                    "conversation_id": "admin-conversation-pricing-error",
-                    "actor_id": actor["id"],
-                },
-            )
-            assert created.status_code == 201, created.text
-
-            conversation = await client.post(
-                "/api/admin/conversations/admin-conversation-pricing-error/messages",
-                json={
-                    "text": CONVERSATION_TEXT,
+                    "name": "admin-conversation-actor",
+                    "type": "simple_loop",
+                    "model": "deepseek-v4-flash",
+                    "character_id": character["id"],
+                    "llm_backend_id": backend["id"],
+                    "max_steps": 4,
+                    "daily_budget": 0,
+                    "enabled": True,
                 },
             )
 
-        assert conversation.status_code == 400, conversation.text
-        body = conversation.json()
+        assert response.status_code == 400, response.text
+        body = response.json()
         assert body["status"] == "error"
         assert body["code"] == "configuration_error"
         assert "deepseek-v4-flash" in body["detail"]
         assert "deepseek-main" in body["detail"]
-        assert "pricing.entries" in body["hint"]
     finally:
         await daemon.stop()
 
@@ -236,6 +226,7 @@ async def _build_daemon(
             database=DatabaseConfig(path=":memory:"),
             paths=PathsConfig(data_dir=str(tmp_path / "data")),
         ),
+        components=make_test_daemon_infrastructure(),
     )
 
 

@@ -174,7 +174,9 @@ def _build_runtime(
             ActorLifecycleService(actors),
         )
     )
-    refresh = build_refresh_dispatcher(routes=routes, actors=actors, integrations=integrations)
+    refresh = build_refresh_dispatcher(
+        routes=routes, actors=actors, integrations=integrations
+    )
     type_registry = build_default_resource_type_registry(
         integration_lifecycle_handler=_integration_lifecycle_handler(integrations),
         actor_lifecycle_handler=_actor_lifecycle_handler(actors),
@@ -239,7 +241,9 @@ async def test_create_llm_backend(resources: Resources, tmp_path: Path) -> None:
         await runtime.services.stop()
 
 
-async def test_create_rejects_missing_secret(resources: Resources, tmp_path: Path) -> None:
+async def test_create_rejects_missing_secret(
+    resources: Resources, tmp_path: Path
+) -> None:
     runtime = _build_runtime(resources, tmp_path)
     await runtime.services.start()
     try:
@@ -266,8 +270,23 @@ async def test_create_actor_validates_character_reference(
                 json={
                     "name": "bad-actor",
                     "type": "fake",
-                    "character": {"id": "nonexistent", "name": "x", "description": "", "system_prompt": "", "facade_module": "x", "default_hints": {}},
-                    "llm_backend": {"id": "also-nonexistent", "name": "x", "yuuagents_provider": "openai", "model_capabilities": {}, "models": {}, "pricing": {}, "budget": {}},
+                    "character": {
+                        "id": "nonexistent",
+                        "name": "x",
+                        "description": "",
+                        "system_prompt": "",
+                        "facade_module": "x",
+                        "default_hints": {},
+                    },
+                    "llm_backend": {
+                        "id": "also-nonexistent",
+                        "name": "x",
+                        "yuuagents_provider": "openai",
+                        "model_capabilities": {},
+                        "models": {},
+                        "pricing": {},
+                        "budget": {},
+                    },
                     "model": "",
                     "llm_options": {},
                     "budget": {},
@@ -375,25 +394,41 @@ async def test_delete_referenced_llm_backend_returns_conflict(
     character = await repo.insert(
         CharacterORM,
         CharacterRecord(
-            id="char-1", name="char-1", description="", system_prompt="test", facade_module="x", default_hints=CharacterHints(),
+            id="char-1",
+            name="char-1",
+            description="",
+            system_prompt="test",
+            facade_module="x",
+            default_hints=CharacterHints(),
         ),
     )
     backend = await repo.insert(
         LLMBackendORM,
         LLMBackendRecord(
-            id="backend-1", name="backend-1", yuuagents_provider="openai",
-            default_model="gpt-4", model_capabilities=ModelCapabilities(),
-            models=ModelCatalog(), pricing=PricingTable(), budget=BudgetPolicy(),
+            id="backend-1",
+            name="backend-1",
+            yuuagents_provider="openai",
+            default_model="gpt-4",
+            model_capabilities=ModelCapabilities(),
+            models=ModelCatalog(),
+            pricing=PricingTable(),
+            budget=BudgetPolicy(),
         ),
     )
     await repo.insert(
         ActorORM,
         ActorRecord(
-            id="actor-1", name="actor-1", type="fake",
-            character=character, llm_backend=backend, model="",
-            llm_options=YuuAgentLLMOptions(), budget=YuuAgentBudget(),
+            id="actor-1",
+            name="actor-1",
+            type="fake",
+            character=character,
+            llm_backend=backend,
+            model="",
+            llm_options=YuuAgentLLMOptions(),
+            budget=YuuAgentBudget(),
             agent_tools=(),
-            allowed_capability_ids=(), runtime_policy=RuntimePolicy(),
+            allowed_capability_ids=(),
+            runtime_policy=RuntimePolicy(),
             resource_policy=ResourcePolicy(),
         ),
     )
@@ -421,12 +456,16 @@ async def test_integration_enable_disable_lifecycle(
     await repo.insert(
         IntegrationORM,
         IntegrationRecord(
-            id="int-1", name="fake", enabled=False,
+            id="int-1",
+            name="fake",
+            enabled=False,
         ),
     )
 
     integration_factory = FakeIntegrationFactory()
-    runtime = _build_runtime(resources, tmp_path, integration_factory=integration_factory)
+    runtime = _build_runtime(
+        resources, tmp_path, integration_factory=integration_factory
+    )
     await runtime.services.start()
     try:
         async with _client(runtime) as client:
@@ -463,7 +502,9 @@ async def test_delete_integration_removes_private_storage(
     )
 
     integration_factory = FakeIntegrationFactory()
-    runtime = _build_runtime(resources, tmp_path, integration_factory=integration_factory)
+    runtime = _build_runtime(
+        resources, tmp_path, integration_factory=integration_factory
+    )
     await runtime.services.start()
     try:
         data_dir = integration_factory.storage_dirs["int-delete"]
@@ -534,7 +575,11 @@ async def test_integration_secret_config_is_encrypted_and_redacted(
 
 async def test_update_llm_backend(resources: Resources, tmp_path: Path) -> None:
     from yuubot.resources.records import (
-        BudgetPolicy, LLMBackendRecord, ModelCapabilities, ModelCatalog, PricingTable,
+        BudgetPolicy,
+        LLMBackendRecord,
+        ModelCapabilities,
+        ModelCatalog,
+        PricingTable,
     )
     from yuubot.resources.store.models import LLMBackendORM
 
@@ -542,9 +587,14 @@ async def test_update_llm_backend(resources: Resources, tmp_path: Path) -> None:
     await repo.insert(
         LLMBackendORM,
         LLMBackendRecord(
-            id="backend-u", name="backend-u", yuuagents_provider="openai",
-            default_model="gpt-4", model_capabilities=ModelCapabilities(),
-            models=ModelCatalog(), pricing=PricingTable(), budget=BudgetPolicy(),
+            id="backend-u",
+            name="backend-u",
+            yuuagents_provider="openai",
+            default_model="gpt-4",
+            model_capabilities=ModelCapabilities(),
+            models=ModelCatalog(),
+            pricing=PricingTable(),
+            budget=BudgetPolicy(),
         ),
     )
 
@@ -569,7 +619,11 @@ async def test_update_llm_backend_rejects_unknown_field(
     resources: Resources, tmp_path: Path
 ) -> None:
     from yuubot.resources.records import (
-        BudgetPolicy, LLMBackendRecord, ModelCapabilities, ModelCatalog, PricingTable,
+        BudgetPolicy,
+        LLMBackendRecord,
+        ModelCapabilities,
+        ModelCatalog,
+        PricingTable,
     )
     from yuubot.resources.store.models import LLMBackendORM
 
@@ -605,7 +659,11 @@ async def test_update_llm_backend_rejects_unknown_field(
 
 async def test_get_and_list_resources(resources: Resources, tmp_path: Path) -> None:
     from yuubot.resources.records import (
-        BudgetPolicy, LLMBackendRecord, ModelCapabilities, ModelCatalog, PricingTable,
+        BudgetPolicy,
+        LLMBackendRecord,
+        ModelCapabilities,
+        ModelCatalog,
+        PricingTable,
     )
     from yuubot.resources.store.models import LLMBackendORM
 
@@ -613,9 +671,14 @@ async def test_get_and_list_resources(resources: Resources, tmp_path: Path) -> N
     await repo.insert(
         LLMBackendORM,
         LLMBackendRecord(
-            id="b1", name="b1", yuuagents_provider="openai",
-            default_model="gpt-4", model_capabilities=ModelCapabilities(),
-            models=ModelCatalog(), pricing=PricingTable(), budget=BudgetPolicy(),
+            id="b1",
+            name="b1",
+            yuuagents_provider="openai",
+            default_model="gpt-4",
+            model_capabilities=ModelCapabilities(),
+            models=ModelCatalog(),
+            pricing=PricingTable(),
+            budget=BudgetPolicy(),
         ),
     )
 
@@ -624,10 +687,12 @@ async def test_get_and_list_resources(resources: Resources, tmp_path: Path) -> N
     try:
         async with _client(runtime) as client:
             get_resp = await client.get(
-                "/api/resources/llm-backends/b1", headers=HEADERS,
+                "/api/resources/llm-backends/b1",
+                headers=HEADERS,
             )
             list_resp = await client.get(
-                "/api/resources/llm-backends", headers=HEADERS,
+                "/api/resources/llm-backends",
+                headers=HEADERS,
             )
         assert get_resp.status_code == 200
         assert get_resp.json()["data"]["id"] == "b1"
@@ -637,7 +702,9 @@ async def test_get_and_list_resources(resources: Resources, tmp_path: Path) -> N
         await runtime.services.stop()
 
 
-async def test_delete_nonexistent_returns_404(resources: Resources, tmp_path: Path) -> None:
+async def test_delete_nonexistent_returns_404(
+    resources: Resources, tmp_path: Path
+) -> None:
     runtime = _build_runtime(resources, tmp_path)
     await runtime.services.start()
     try:
@@ -651,7 +718,9 @@ async def test_delete_nonexistent_returns_404(resources: Resources, tmp_path: Pa
         await runtime.services.stop()
 
 
-async def test_unknown_resource_type_returns_404(resources: Resources, tmp_path: Path) -> None:
+async def test_unknown_resource_type_returns_404(
+    resources: Resources, tmp_path: Path
+) -> None:
     runtime = _build_runtime(resources, tmp_path)
     await runtime.services.start()
     try:

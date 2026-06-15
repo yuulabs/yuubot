@@ -11,7 +11,6 @@ from yuubot.resources.events import ResourceChanged
 
 
 class Actor(Protocol):
-
     @property
     def actor_id(self) -> str: ...
 

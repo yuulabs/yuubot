@@ -54,13 +54,15 @@ def _entity_content(event: RuntimeEvent) -> dict[str, object]:
     from yuubot.core.conversations import EntityData
 
     entity = EntityData.from_event(event)
-    return _json_safe_dict({
-        "entity_id": entity.entity_id or None,
-        "entity_type": entity.entity_type or None,
-        "parent_id": entity.parent_id or None,
-        "tool_call_id": entity.tool_call_id or None,
-        "status": entity.status or None,
-    })
+    return _json_safe_dict(
+        {
+            "entity_id": entity.entity_id or None,
+            "entity_type": entity.entity_type or None,
+            "parent_id": entity.parent_id or None,
+            "tool_call_id": entity.tool_call_id or None,
+            "status": entity.status or None,
+        }
+    )
 
 
 def _chunk_event_type(event: RuntimeEvent) -> str:
@@ -159,13 +161,15 @@ def _event_metadata(event: RuntimeEvent) -> dict[str, object]:
     from yuubot.core.conversations import LLMFinishedData
 
     llm = LLMFinishedData.from_event(event)
-    return _json_safe_dict({
-        "model": llm.model or None,
-        "usage": llm.usage,
-        "cost": llm.cost,
-        "duration_s": llm.duration_s,
-        "tool_calls": list(llm.tool_calls) if llm.tool_calls else None,
-    })
+    return _json_safe_dict(
+        {
+            "model": llm.model or None,
+            "usage": llm.usage,
+            "cost": llm.cost,
+            "duration_s": llm.duration_s,
+            "tool_calls": list(llm.tool_calls) if llm.tool_calls else None,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +180,7 @@ def _event_metadata(event: RuntimeEvent) -> dict[str, object]:
 def _json_safe_dict(value: object) -> dict[str, object]:
     if not isinstance(value, dict):
         return {}
-    return {
-        str(key): _json_safe(raw)
-        for key, raw in value.items()
-        if raw is not None
-    }
+    return {str(key): _json_safe(raw) for key, raw in value.items() if raw is not None}
 
 
 def _json_safe(value: object) -> object:

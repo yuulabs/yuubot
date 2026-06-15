@@ -43,9 +43,7 @@ class RouteBindings:
 
     def resolve(self, message: IncomingMessage) -> list[str]:
         actor_ids = list(
-            dict.fromkeys(
-                rule.actor_id for rule in self.rules if rule.matches(message)
-            )
+            dict.fromkeys(rule.actor_id for rule in self.rules if rule.matches(message))
         )
         if not actor_ids:
             raise RouteResolutionError(_unrouted_message(message))
@@ -63,11 +61,7 @@ async def load_route_bindings(repository: ResourceRepository) -> RouteBindings:
     actors = await repository.list(ActorORM)
     enabled_actor_ids = {actor.id for actor in actors if actor.enabled}
     return build_route_bindings(
-        explicit_rules=(
-            rule
-            for rule in rules
-            if rule.actor_id in enabled_actor_ids
-        ),
+        explicit_rules=(rule for rule in rules if rule.actor_id in enabled_actor_ids),
         enabled_actor_ids=enabled_actor_ids,
     )
 
@@ -87,9 +81,8 @@ def build_route_bindings(
     rules.extend(
         _system_rule(actor_id)
         for actor_id in sorted(enabled_actor_ids)
-        if actor_id not in explicit_rule_ids or any(
-            rule.enabled and rule.actor_id == actor_id for rule in explicit_rules
-        )
+        if actor_id not in explicit_rule_ids
+        or any(rule.enabled and rule.actor_id == actor_id for rule in explicit_rules)
     )
     return RouteBindings(rules=rules)
 

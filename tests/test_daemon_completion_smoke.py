@@ -14,7 +14,7 @@ import msgspec
 import pytest
 import yuullm
 
-from helpers import register_test_llm_provider
+from helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,
@@ -62,6 +62,7 @@ async def test_daemon_completion_smoke_runs_real_daemon_turn_and_refreshes(
                 actor_id="actor-main",
                 source_path=SOURCE_PATH,
             )
+        await daemon.actors.start_actor(actor.id)
         instance = _echo_instance(daemon, integration.id)
 
         await instance.send_to_channel(
@@ -172,6 +173,7 @@ async def _build_daemon(
                 data_dir=str(tmp_path / "data"),
             ),
         ),
+        components=make_test_daemon_infrastructure(),
     )
 
 
@@ -204,7 +206,9 @@ async def _assert_refresh_cases(
             source_path,
             second_actor.id,
         )
-    assert daemon.actors.running_actor_ids() == [actor_id, second_actor.id]
+    # Actors are not auto-started by resource writes — only explicit
+    # start_actor() calls.  The first actor was started earlier in the test.
+    assert daemon.actors.running_actor_ids() == [actor_id]
 
     async with _client(daemon) as client:
         disabled_rule = await client.request(
@@ -214,7 +218,7 @@ async def _assert_refresh_cases(
             json={"enabled": False},
         )
     assert disabled_rule.status_code == 200, disabled_rule.json()
-    assert disabled_rule.json()["actions"] == ["routes.reloaded", "actors.reconciled"]
+    assert disabled_rule.json()["actions"] == ["routes.reloaded"]
     assert disabled_rule.json()["data"]["enabled"] is False
     async with _client(daemon) as client:
         list_rules = await client.get(
@@ -229,13 +233,14 @@ async def _assert_refresh_cases(
     assert daemon.gateway.routes.actor_ids() == [actor_id]
     assert daemon.actors.running_actor_ids() == [actor_id]
 
+    # Enable/disable is a DB-only operation — actors are not auto-started/stopped.
     async with _client(daemon) as client:
         disabled_actor = await client.post(
             f"/api/resources/actors/{actor_id}/disable",
             headers=DAEMON_HEADERS,
         )
     assert disabled_actor.status_code == 200
-    assert daemon.actors.running_actor_ids() == []
+    assert daemon.actors.running_actor_ids() == [actor_id]
 
     async with _client(daemon) as client:
         enabled_actor = await client.post(
@@ -276,7 +281,9 @@ async def _post_character(client: httpx.AsyncClient, actor_id: str) -> Character
     return _created(response, CharacterRecord)
 
 
-async def _post_llm_backend(client: httpx.AsyncClient, actor_id: str) -> LLMBackendRecord:
+async def _post_llm_backend(
+    client: httpx.AsyncClient, actor_id: str
+) -> LLMBackendRecord:
     response = await client.post(
         "/api/resources/llm-backends",
         headers=DAEMON_HEADERS,

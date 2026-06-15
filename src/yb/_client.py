@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import suppress
 from typing import Any
+
 
 from yb import _context
 
@@ -25,8 +25,7 @@ async def request(payload: dict[str, Any]) -> dict[str, Any]:
         )
     finally:
         writer.close()
-        with suppress(Exception):
-            await writer.wait_closed()
+        await writer.wait_closed()
     if not raw_response:
         raise RuntimeError("facade bridge returned no response")
     response = json.loads(raw_response.decode())

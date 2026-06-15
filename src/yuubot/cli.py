@@ -165,7 +165,9 @@ def _run_dev(
                 if child.name not in healthy and health_probe(child.health_url):
                     healthy.add(child.name)
             if time.monotonic() >= deadline:
-                pending = ", ".join(child.name for child in children if child.name not in healthy)
+                pending = ", ".join(
+                    child.name for child in children if child.name not in healthy
+                )
                 click.echo(f"startup timed out waiting for: {pending}", err=True)
                 return 1
             time.sleep(poll_interval_s)
@@ -195,7 +197,9 @@ def _shutdown_dev_children(children: tuple[DevChild, ...], *, timeout_s: float) 
         _send_process_signal(child.process, signal.SIGTERM)
 
     deadline = time.monotonic() + timeout_s
-    stragglers = tuple(child for child in running if not _wait_until_exit(child, deadline))
+    stragglers = tuple(
+        child for child in running if not _wait_until_exit(child, deadline)
+    )
     for child in stragglers:
         click.echo(f"{child.name} did not exit after SIGTERM; killing", err=True)
         _send_process_signal(child.process, DEV_FORCE_SIGNAL)
@@ -237,7 +241,7 @@ def _health_probe(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=0.2) as response:
             return 200 <= response.status < 500
-    except (OSError, urllib.error.URLError):
+    except OSError, urllib.error.URLError:
         return False
 
 
@@ -266,7 +270,9 @@ def _web_build_is_fresh(web_root: Path, web_dist: Path) -> bool:
     output_marker = web_dist / "index.html"
     if not output_marker.exists():
         return False
-    return output_marker.stat().st_mtime >= _latest_mtime(_iter_web_build_inputs(web_root))
+    return output_marker.stat().st_mtime >= _latest_mtime(
+        _iter_web_build_inputs(web_root)
+    )
 
 
 def _iter_web_build_inputs(web_root: Path) -> Iterator[Path]:
@@ -294,8 +300,16 @@ def trace(ctx: click.Context) -> None:
 
 
 @trace.command("ui")
-@click.option("--host", "host", default=None, help="Override trace UI host (default: from config)")
-@click.option("--port", "port", default=None, type=int, help="Override trace UI port (default: from config)")
+@click.option(
+    "--host", "host", default=None, help="Override trace UI host (default: from config)"
+)
+@click.option(
+    "--port",
+    "port",
+    default=None,
+    type=int,
+    help="Override trace UI port (default: from config)",
+)
 @click.pass_context
 def trace_ui(ctx: click.Context, host: str | None, port: int | None) -> None:
     """Launch the yuutrace Web UI to browse agent traces."""

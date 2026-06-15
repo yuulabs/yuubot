@@ -13,7 +13,16 @@ from uuid import uuid4
 
 import yuullm
 import msgspec
-from yuuagents import Budget, EventBus, MailBox, PythonKernelConfig, Runtime
+from yuuagents import (
+    Budget,
+    EventBus,
+    MailBox,
+    PythonKernelConfig,
+    Runtime,
+    TaskCompleted,
+    TaskDetached,
+    TaskFailed,
+)
 from yuuagents.tool_backends import IpykernelToolBackend
 from yuuagents.tool_backends.ipykernel import PythonToolConfig
 
@@ -44,7 +53,8 @@ class ActorPythonSessionFactory:
         mailbox_for_actor: Callable[[str], MailBox | None] | None = None,
         schedule_for_actor: Callable[
             [str, str, str, dict[str, object]], Awaitable[object]
-        ] | None = None,
+        ]
+        | None = None,
     ) -> "ActorPythonSessionFactory":
         return cls(
             integrations=integrations,
@@ -174,9 +184,15 @@ class ExecutePythonSession:
             self.session_id,
             tool_call,
             self.budget,
-            timeout=self.submit_timeout_s,
         )
-        return await task.wait_with_error_handling()
+        outcome = await task.wait_foreground(self.submit_timeout_s)
+        if isinstance(outcome, TaskCompleted):
+            return outcome.result
+        if isinstance(outcome, TaskFailed):
+            raise outcome.error
+        if isinstance(outcome, TaskDetached):
+            return outcome.partial
+        raise RuntimeError(f"unexpected execute_python outcome: {outcome!r}")
 
     async def close(self) -> None:
         await self._runtime.remove_agent(self.session_id)

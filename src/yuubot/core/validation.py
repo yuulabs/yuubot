@@ -40,11 +40,15 @@ class LLMProviderOptions(msgspec.Struct, forbid_unknown_fields=False):
     max_retries: int = 2
 
 
-def validate_stream_options(raw: dict[str, object], *, context: str = "") -> dict[str, object]:
+def validate_stream_options(
+    raw: dict[str, object], *, context: str = ""
+) -> dict[str, object]:
     return _validate(raw, StreamOptions, context or "stream_options")
 
 
-def validate_provider_options(raw: dict[str, object], *, context: str = "") -> dict[str, object]:
+def validate_provider_options(
+    raw: dict[str, object], *, context: str = ""
+) -> dict[str, object]:
     return _validate(raw, LLMProviderOptions, context or "provider_options")
 
 

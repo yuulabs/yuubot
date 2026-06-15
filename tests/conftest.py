@@ -27,6 +27,7 @@ def yuubot_config():
 @pytest.fixture
 async def resources(db: Store, yuubot_config: BootstrapConfig):
     """Fully hydrated Resources tree with in-memory store."""
+
     async def _make_store(_):
         return db
 

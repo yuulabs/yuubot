@@ -51,7 +51,9 @@ class LLMBackendRecord(msgspec.Struct):
     pricing: PricingTable
     budget: BudgetPolicy
     id: str = ""
-    provider_options: LLMProviderOptions = msgspec.field(default_factory=LLMProviderOptions)
+    provider_options: LLMProviderOptions = msgspec.field(
+        default_factory=LLMProviderOptions
+    )
     default_model: str = ""
     default_stream_options: StreamOptions = msgspec.field(default_factory=StreamOptions)
     version: int = 1

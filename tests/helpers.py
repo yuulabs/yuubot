@@ -5,17 +5,21 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
-import msgspec
-import yuuagents.stage as yuuagents_stage
+import yuullm
+from yuuagents import ProviderPoolSessionFactory
 
+from yuubot.core.assembly._constants import _resolve_yuuagents_provider
+from yuubot.core.bindings import ActorBinding
 from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
     ECHO_REPLY_CAPABILITY_ID,
 )
+from yuubot.runtime.daemon import DaemonInfrastructure
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
@@ -78,7 +82,9 @@ def llm_system_prompt(calls: list) -> str:
         if msg.get("role") == "system":
             content = msg.get("content", [])
             return "\n".join(
-                item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
             )
     return ""
 
@@ -91,9 +97,13 @@ def llm_user_texts(calls: list) -> list[str]:
     for msg in calls[0].get("messages", []):
         if msg.get("role") == "user":
             content = msg.get("content", [])
-            texts.append("\n".join(
-                item.get("text", "") for item in content if isinstance(item, dict) and item.get("type") == "text"
-            ))
+            texts.append(
+                "\n".join(
+                    item.get("text", "")
+                    for item in content
+                    if isinstance(item, dict) and item.get("type") == "text"
+                )
+            )
     return texts
 
 
@@ -101,16 +111,108 @@ def history_text(history: list) -> str:
     return "\n".join(str(item) for item in history)
 
 
-class TestLlmProviderConfig(msgspec.Struct, forbid_unknown_fields=False):
-    pass
+class ScriptedLlmProvider(Protocol):
+    async def stream(
+        self,
+        history: yuullm.History,
+        *,
+        model: str,
+        **options: Any,
+    ) -> yuullm.StreamResult: ...
 
 
-def register_test_llm_provider(name: str, llm: object) -> None:
-    yuuagents_stage.register_llm_provider(
-        name,
-        TestLlmProviderConfig,
-        lambda _config: yuuagents_stage.LlmClientBundle(client=llm),
+_TEST_LLM_FACTORIES: dict[str, ProviderPoolSessionFactory] = {}
+
+
+def register_test_llm_provider(name: str, llm: ScriptedLlmProvider) -> None:
+    _TEST_LLM_FACTORIES[name] = ScriptedProviderSessionFactory(provider=llm)
+
+
+def make_test_daemon_infrastructure() -> DaemonInfrastructure:
+    return DaemonInfrastructure(
+        llm_session_factory_factory=test_llm_session_factory,
     )
+
+
+def test_llm_session_factory(binding: ActorBinding) -> ProviderPoolSessionFactory | None:
+    provider = _resolve_yuuagents_provider(binding.llm.backend.yuuagents_provider)
+    return _TEST_LLM_FACTORIES.get(provider)
+
+
+@dataclass
+class ScriptedProviderSessionFactory:
+    provider: ScriptedLlmProvider
+    selector: str = ""
+
+    def create_session(self, history: yuullm.History) -> yuullm.YuuSession:
+        if not self.selector:
+            raise ValueError("test LLM session requires a selector")
+        return ScriptedProviderSession(
+            provider=self.provider,
+            selector=self.selector,
+            messages=list(history),
+        )
+
+    def with_selector(self, selector: str) -> "ScriptedProviderSessionFactory":
+        return ScriptedProviderSessionFactory(
+            provider=self.provider,
+            selector=selector,
+        )
+
+
+@dataclass
+class ScriptedProviderSession:
+    provider: ScriptedLlmProvider
+    selector: str
+    messages: yuullm.History
+
+    @property
+    def history(self) -> yuullm.History:
+        return self.messages
+
+    def append(self, msg: yuullm.Message) -> None:
+        self.messages.append(msg)
+
+    async def stream(
+        self,
+        **options: Any,
+    ) -> yuullm.StreamResult:
+        options = dict(options)
+        options.pop("model", None)
+        stream, store = await self.provider.stream(
+            self.messages,
+            model=self.selector,
+            **options,
+        )
+        return self._commit_assistant_message(stream), store
+
+    async def _commit_assistant_message(
+        self,
+        stream: AsyncIterator[yuullm.StreamItem],
+    ) -> AsyncIterator[yuullm.StreamItem]:
+        content: yuullm.MessageContent = []
+        async for item in stream:
+            yield item
+            _accumulate_stream_item(content, item)
+        if content:
+            self.messages.append(yuullm.Message(role="assistant", content=content))
+
+
+def _accumulate_stream_item(
+    content: yuullm.MessageContent,
+    item: yuullm.StreamItem,
+) -> None:
+    match item:
+        case yuullm.Response(item=response):
+            content.append(response)
+        case yuullm.ToolCall() as tool_call:
+            content.append(yuullm.tool_call_item(tool_call))
+        case yuullm.ThinkingBlock() as thinking:
+            content.append(thinking.to_message_item())
+        case yuullm.AttemptRecovery():
+            content.clear()
+        case yuullm.Reasoning() | yuullm.Tick():
+            pass
 
 
 async def wait_worker(dispatcher, key: str, timeout: float = 5.0) -> None:
@@ -144,7 +246,9 @@ async def insert_echo_actor_resources(
         CharacterORM,
         make_character_record(actor_id, system_prompt=system_prompt),
     )
-    llm_backend = await repository.insert(LLMBackendORM, make_llm_backend_record(actor_id))
+    llm_backend = await repository.insert(
+        LLMBackendORM, make_llm_backend_record(actor_id)
+    )
     integration = await repository.insert(
         IntegrationORM,
         make_echo_integration_record(integration_id, source_path),
@@ -360,9 +464,7 @@ def assert_llm_usage(
         )
     if model is not None:
         actual = attrs.get(ATTR_LLM_MODEL)
-        assert actual == model, (
-            f"{ATTR_LLM_MODEL}: expected {model!r}, got {actual!r}"
-        )
+        assert actual == model, f"{ATTR_LLM_MODEL}: expected {model!r}, got {actual!r}"
     return ev
 
 
@@ -457,9 +559,7 @@ def assert_span_timing(
     end = span["end_time_unix_nano"]
     assert start > 0, f"span {span['name']!r}: start_time is {start}"
     assert end > 0, f"span {span['name']!r}: end_time is {end}"
-    assert start <= end, (
-        f"span {span['name']!r}: start ({start}) > end ({end})"
-    )
+    assert start <= end, f"span {span['name']!r}: start ({start}) > end ({end})"
     if min_duration_ns is not None:
         duration = end - start
         assert duration >= min_duration_ns, (
@@ -478,6 +578,6 @@ def _try_parse_json(value: Any) -> Any:
     if isinstance(value, str):
         try:
             return json.loads(value)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             return value
     return value

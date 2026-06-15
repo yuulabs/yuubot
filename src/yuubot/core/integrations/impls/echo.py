@@ -171,15 +171,11 @@ class EchoResponseRecord:
 class EchoIntegration:
     ingress: IntegrationIngress
     default_source_path: str = ""
-    echo_calls: asyncio.Queue[EchoPayload] = field(
-        default_factory=asyncio.Queue
-    )
+    echo_calls: asyncio.Queue[EchoPayload] = field(default_factory=asyncio.Queue)
     echo_contexts: asyncio.Queue[dict[str, object]] = field(
         default_factory=asyncio.Queue
     )
-    reply_calls: asyncio.Queue[EchoReplyPayload] = field(
-        default_factory=asyncio.Queue
-    )
+    reply_calls: asyncio.Queue[EchoReplyPayload] = field(default_factory=asyncio.Queue)
     reply_contexts: asyncio.Queue[dict[str, object]] = field(
         default_factory=asyncio.Queue
     )

@@ -11,7 +11,10 @@ import yuullm
 
 from yuubot.bootstrap.config import BootstrapConfig
 from yuubot.core.gateway import Gateway
-from yuubot.core.integrations import IntegrationFactoryRegistry, default_integration_factories
+from yuubot.core.integrations import (
+    IntegrationFactoryRegistry,
+    default_integration_factories,
+)
 from yuubot.core.integrations.contracts import IntegrationInstance, IntegrationStorage
 from yuubot.core.integrations.impls.echo import ECHO_CAPABILITY_ID
 from yuubot.core.secrets import Secret
@@ -352,7 +355,9 @@ async def test_monitor_spa_route_is_not_shadowed_by_trace_ui(
 ) -> None:
     web_dist = tmp_path / "web-dist"
     web_dist.mkdir()
-    (web_dist / "index.html").write_text("<main>yuubot monitor</main>", encoding="utf-8")
+    (web_dist / "index.html").write_text(
+        "<main>yuubot monitor</main>", encoding="utf-8"
+    )
     app = build_admin_asgi_app(
         config=msgspec.structs.replace(
             yuubot_config.admin,

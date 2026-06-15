@@ -68,10 +68,7 @@ def _iso_or_none(value: object) -> str | None:
 
 def _sse_event(event_type: str, data: object) -> str:
     """Format a Server-Sent Events frame."""
-    return (
-        f"event: {event_type}\n"
-        f"data: {json.dumps(data, ensure_ascii=True)}\n\n"
-    )
+    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=True)}\n\n"
 
 
 def _configuration_error_response(exc: ConfigurationError) -> JSONResponse:
@@ -116,7 +113,7 @@ async def _conversation_payload_from_request(
 
     try:
         req = msgspec.convert(payload, type=ConversationRequest, strict=False)
-    except (msgspec.ValidationError, msgspec.DecodeError):
+    except msgspec.ValidationError, msgspec.DecodeError:
         return error_response("invalid request body", status_code=400)
 
     if not req.actor_id.strip():
@@ -157,10 +154,8 @@ async def _conversation_message_payload_from_request(
         return error_response("request body must be a JSON object", status_code=400)
 
     try:
-        req = msgspec.convert(
-            payload, type=ConversationMessageRequest, strict=False
-        )
-    except (msgspec.ValidationError, msgspec.DecodeError):
+        req = msgspec.convert(payload, type=ConversationMessageRequest, strict=False)
+    except msgspec.ValidationError, msgspec.DecodeError:
         return error_response("invalid request body", status_code=400)
 
     content = _content_items_from_request(req)
@@ -189,9 +184,7 @@ async def _plugin_ingest_from_request(
 ) -> ExternalPluginInboundMessage | JSONResponse:
     token = _bearer_token(request)
     if token is None:
-        return error_response(
-            "Authorization bearer token is missing", status_code=403
-        )
+        return error_response("Authorization bearer token is missing", status_code=403)
     try:
         expected_integration_id = plugin_manager.integration_id_for_token(token)
     except PermissionError as exc:
@@ -224,9 +217,7 @@ def _resolve_external_plugin_instance(
 ) -> ExternalPluginIntegration:
     instance = integrations.running_instance(integration_id)
     if not isinstance(instance, ExternalPluginIntegration):
-        raise LookupError(
-            f"integration {integration_id!r} is not an external plugin"
-        )
+        raise LookupError(f"integration {integration_id!r} is not an external plugin")
     return instance
 
 
@@ -278,15 +269,6 @@ def make_status_handler(
                 "status": trace_service.status,
             },
         }
-        actor_failures = actors.startup_failures()
-        if actor_failures:
-            body["actor_startup_failures"] = [
-                {
-                    "actor_id": failure.actor_id,
-                    "detail": failure.detail,
-                }
-                for failure in actor_failures
-            ]
         plugin_statuses = plugin_manager.statuses()
         if plugin_statuses:
             body["external_plugins"] = [
@@ -317,9 +299,6 @@ def make_refresh_handler(
             actions = await refresh.refresh(event)
         except ConfigurationError as exc:
             return _configuration_error_response(exc)
-        except Exception as exc:
-            logger.exception("daemon refresh failed")
-            return error_response(str(exc), status_code=500)
         return JSONResponse(
             {
                 "status": "ok",
@@ -336,9 +315,7 @@ def make_plugin_ingest_handler(
     integrations: IntegrationCore,
 ):
     async def plugin_ingest(request: Request) -> JSONResponse:
-        payload_or_response = await _plugin_ingest_from_request(
-            request, plugin_manager
-        )
+        payload_or_response = await _plugin_ingest_from_request(request, plugin_manager)
         if isinstance(payload_or_response, JSONResponse):
             return payload_or_response
         payload = payload_or_response
@@ -355,9 +332,6 @@ def make_plugin_ingest_handler(
             return error_response(str(exc), status_code=404)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("external plugin ingest failed")
-            return error_response(str(exc), status_code=500)
 
         return JSONResponse(
             {
@@ -392,9 +366,6 @@ def make_create_conversation_handler(
             return error_response(str(exc), status_code=400)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("create conversation failed")
-            return error_response(str(exc), status_code=500)
         return JSONResponse(
             {
                 "status": "ok",
@@ -423,9 +394,6 @@ def make_list_conversations_handler(
             return error_response(str(exc), status_code=404)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("list conversations failed")
-            return error_response(str(exc), status_code=500)
         return JSONResponse(
             {
                 "status": "ok",
@@ -459,9 +427,6 @@ def make_ensure_conversation_agent_handler(
             return error_response(str(exc), status_code=400)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("ensure conversation agent failed")
-            return error_response(str(exc), status_code=500)
         return JSONResponse({"status": "ok", "data": data})
 
     return ensure_conversation_agent
@@ -473,16 +438,11 @@ def make_conversation_messages_handler(
     async def conversation_messages(request: Request) -> JSONResponse:
         conversation_id = request.path_params["conversation_id"]
         try:
-            messages = await conversation_manager.store.list_messages(
-                conversation_id
-            )
+            messages = await conversation_manager.store.list_messages(conversation_id)
         except LookupError as exc:
             return error_response(str(exc), status_code=404)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("list conversation messages failed")
-            return error_response(str(exc), status_code=500)
         return JSONResponse(
             {
                 "status": "ok",
@@ -508,9 +468,7 @@ def make_send_conversation_message_handler(
     conversation_manager: ConversationManager,
 ):
     async def send_conversation_message(request: Request) -> JSONResponse:
-        payload_or_response = await _conversation_message_payload_from_request(
-            request
-        )
+        payload_or_response = await _conversation_message_payload_from_request(request)
         if isinstance(payload_or_response, JSONResponse):
             return payload_or_response
         payload = payload_or_response
@@ -529,9 +487,6 @@ def make_send_conversation_message_handler(
             return error_response(str(exc), status_code=400)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
-        except Exception as exc:
-            logger.exception("send conversation message failed")
-            return error_response(str(exc), status_code=500)
         return JSONResponse(
             {
                 "status": "accepted",
@@ -561,17 +516,6 @@ def make_conversation_events_handler(
                         break
                     yield _sse_event(event.event_type, event.as_dict())
             except LookupError:
-                logger.exception(
-                    "conversation SSE stream failed for %r", conversation_id
-                )
-                yield _sse_event(
-                    "error",
-                    {
-                        "status": "error",
-                        "error": "conversation stream terminated unexpectedly",
-                    },
-                )
-            except Exception:
                 logger.exception(
                     "conversation SSE stream failed for %r", conversation_id
                 )

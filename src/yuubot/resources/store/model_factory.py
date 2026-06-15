@@ -103,7 +103,9 @@ def resource_model(
     duplicate_specs = set(specs).intersection(refs)
     if duplicate_specs:
         names = ", ".join(sorted(duplicate_specs))
-        raise ValueError(f"{name} cannot define field_specs and references for: {names}")
+        raise ValueError(
+            f"{name} cannot define field_specs and references for: {names}"
+        )
     unknown_unique_fields = set(chain.from_iterable(unique_together)).difference(
         field_names
     )

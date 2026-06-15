@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import msgspec
 import yuullm
+from yuuagents import Agent
 from yuuagents.eventbus import RuntimeEvent
 
 from yuubot.core.actors.impls.simple_loop import SimpleLoopActor
@@ -124,7 +125,7 @@ class ChunkData:
             entity_type=str(data.get("entity_type") or ""),
             parent_id=str(data.get("parent_id") or ""),
             tool_call_id=str(data.get("tool_call_id") or ""),
-            chunk_index=int(data.get("chunk_index") or 0),
+            chunk_index=_int_value(data.get("chunk_index")),
             blocks=blocks,
         )
 
@@ -144,15 +145,60 @@ class LLMFinishedData:
     def from_event(cls, event: RuntimeEvent) -> LLMFinishedData:
         data = event.data
         raw_calls = data.get("tool_calls", [])
-        tool_calls = tuple(raw_calls) if isinstance(raw_calls, list) else ()
+        tool_calls = _tool_calls(raw_calls)
         return cls(
             model=str(data.get("model") or ""),
-            usage=data.get("usage"),
-            cost=data.get("cost"),
-            duration_s=data.get("duration_s"),
+            usage=_dict_value(data.get("usage")),
+            cost=_cost_value(data.get("cost")),
+            duration_s=_float_value(data.get("duration_s")),
             tool_calls=tool_calls,
             message=data.get("message"),
         )
+
+
+def _agent_id(agent: Agent) -> str:
+    return agent.id
+
+
+def _int_value(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _float_value(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _dict_value(value: object) -> dict[str, object] | None:
+    raw = msgspec.to_builtins(value)
+    if not isinstance(raw, dict):
+        return None
+    return {str(key): item for key, item in raw.items()}
+
+
+def _cost_value(value: object) -> dict[str, object] | float | None:
+    if isinstance(value, int | float):
+        return float(value)
+    return _dict_value(value)
+
+
+def _tool_calls(value: object) -> tuple[dict[str, object], ...]:
+    if not isinstance(value, list):
+        return ()
+    result: list[dict[str, object]] = []
+    for item in value:
+        data = _dict_value(item)
+        if data is not None:
+            result.append(data)
+    return tuple(result)
 
 
 @dataclass
@@ -224,7 +270,9 @@ class ConversationStore:
             await ConversationORM.filter(conversation_id=conversation_id).update(
                 updated_at=now,
             )
-        return msgspec.convert(to_builtins(row), type=ConversationMessageRecord, strict=False)
+        return msgspec.convert(
+            to_builtins(row), type=ConversationMessageRecord, strict=False
+        )
 
     async def list_messages(
         self,
@@ -233,10 +281,19 @@ class ConversationStore:
         limit: int = 100,
     ) -> list[ConversationMessageRecord]:
         with self.store.db.activate():
-            rows = await ConversationMessageORM.filter(
-                conversation_id=conversation_id,
-            ).order_by("timestamp", "id").limit(limit)
-        return [msgspec.convert(to_builtins(r), type=ConversationMessageRecord, strict=False) for r in rows]
+            rows = (
+                await ConversationMessageORM.filter(
+                    conversation_id=conversation_id,
+                )
+                .order_by("timestamp", "id")
+                .limit(limit)
+            )
+        return [
+            msgspec.convert(
+                to_builtins(r), type=ConversationMessageRecord, strict=False
+            )
+            for r in rows
+        ]
 
     async def history(self, conversation_id: str) -> yuullm.History:
         messages = await self.list_messages(conversation_id, limit=1000)
@@ -299,12 +356,13 @@ class ConversationManager:
             conversation_id,
             await self.store.history(conversation_id),
         )
-        self._agent_to_conversation[agent.agent_id] = conversation_id
+        agent_id = _agent_id(agent)
+        self._agent_to_conversation[agent_id] = conversation_id
         return {
             "conversation_id": conversation_id,
             "actor_id": conversation.actor_id,
-            "agent_id": agent.agent_id,
-            "agent_name": agent.agent_name,
+            "agent_id": agent_id,
+            "agent_name": agent.name,
         }
 
     async def send_message(
@@ -319,7 +377,7 @@ class ConversationManager:
         self._observe_actor(conversation.actor_id, actor)
         history = await self.store.history(conversation_id)
         agent = await actor.ensure_conversation_agent(conversation_id, history)
-        self._agent_to_conversation[agent.agent_id] = conversation_id
+        self._agent_to_conversation[_agent_id(agent)] = conversation_id
         message_id = message_id or uuid.uuid4().hex
         record = await self.store.append_message(
             conversation_id=conversation_id,
@@ -412,9 +470,7 @@ class ConversationManager:
         conversation_id: str,
         event: RuntimeEvent,
     ) -> AgentEvent:
-        return _agent_event(
-            conversation_id, event, "entity", _entity_content(event)
-        )
+        return _agent_event(conversation_id, event, "entity", _entity_content(event))
 
     async def _handle_output_chunk(
         self,

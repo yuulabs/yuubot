@@ -7,7 +7,11 @@ from typing import Any, TypeVar, cast
 import msgspec
 from tortoise import Model
 
-from yuubot.core.secrets import SecretCodec, decrypt_secret_values, encrypt_secret_values
+from yuubot.core.secrets import (
+    SecretCodec,
+    decrypt_secret_values,
+    encrypt_secret_values,
+)
 from yuubot.resources.store.model_factory import ReferenceSpec
 from yuubot.resources.store.protocol import (
     generated_fields_of,
@@ -43,7 +47,9 @@ def to_orm_fields(
     try:
         schema_type = schema_type_of(row_type)
     except AttributeError:
-        raise TypeError(f"{row_type.__name__} is not derived from a resource schema") from None
+        raise TypeError(
+            f"{row_type.__name__} is not derived from a resource schema"
+        ) from None
     if not isinstance(resource, schema_type):
         raise TypeError(
             f"{row_type.__name__} expects {schema_type.__name__}, "
@@ -65,14 +71,16 @@ def to_orm_fields(
     if actual_fields != expected_fields:
         missing = ", ".join(sorted(expected_fields - actual_fields))
         extra = ", ".join(sorted(actual_fields - expected_fields))
-        detail = ", ".join(part for part in (f"missing: {missing}", f"extra: {extra}") if part)
-        raise ValueError(f"{row_type.__name__} fields are not schema-aligned ({detail})")
+        detail = ", ".join(
+            part for part in (f"missing: {missing}", f"extra: {extra}") if part
+        )
+        raise ValueError(
+            f"{row_type.__name__} fields are not schema-aligned ({detail})"
+        )
 
     generated_fields = generated_fields_of(row_type)
     orm_fields = {
-        name: value
-        for name, value in values.items()
-        if name not in generated_fields
+        name: value for name, value in values.items() if name not in generated_fields
     }
     return _replace_references_with_ids(orm_fields, row_type)
 

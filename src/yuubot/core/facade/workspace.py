@@ -7,8 +7,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from yuuagents.python_runtime import JsonObject
-
 from yuubot.core.capabilities import AnyCapabilitySpec
 from yuubot.core.facade.codegen import (
     YEXT_PACKAGE,
@@ -35,7 +33,7 @@ class ActorFacadeBinding:
     root: Path
     sys_path: list[str]
     startup_code: str
-    session_state: JsonObject
+    session_state: dict[str, object]
 
 
 @dataclass

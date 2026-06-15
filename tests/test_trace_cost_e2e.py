@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -13,18 +13,20 @@ import msgspec
 import pytest
 import yuullm
 import yuutrace
-from yuuagents import Budget, UsageSink, YuuTraceObserver
+from yuuagents import YuuTraceObserver
 from yuuagents.eventbus import EventBus
+from yuuagents.values import EventPayload
 
 from helpers import (
     assert_cost_event,
     assert_tool_usage,
     insert_echo_actor_resources,
     register_test_llm_provider,
+    make_test_daemon_infrastructure,
 )
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.actors import SimpleLoopActor
-from yuubot.core.assembly import start_yuuagents_actor
+from yuubot.core.assembly._stage import _check_pricing_for_budget
 from yuubot.core.bindings import load_actor_binding
 from yuubot.core.integrations.context import InvocationContext
 from yuubot.core.observability import YuubotTraceContextProvider
@@ -80,6 +82,8 @@ async def test_llm_usage_and_priced_cost_recorded_in_trace(
             pricing=msgspec.to_builtins(pricing),
         )
         await daemon.resources.event_bus.drain()
+
+        await daemon.actors.start_actor(resources.actor.id)
 
         async with _client(daemon) as client:
             response = await client.post(
@@ -150,7 +154,7 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
             workspace_path=tmp_path / "ws",
         )
         with pytest.raises(ConfigurationError, match="USD budget requires pricing"):
-            start_yuuagents_actor(binding, yuuagents_config=yuubot_config.yuuagents)
+            _check_pricing_for_budget(binding)
     finally:
         await daemon.stop()
 
@@ -185,7 +189,7 @@ async def test_pricing_check_raises_when_backend_budget_set_without_pricing(
             workspace_path=tmp_path / "ws",
         )
         with pytest.raises(ConfigurationError, match="USD budget requires pricing"):
-            start_yuuagents_actor(binding, yuuagents_config=yuubot_config.yuuagents)
+            _check_pricing_for_budget(binding)
     finally:
         await daemon.stop()
 
@@ -232,9 +236,8 @@ async def test_pricing_check_passes_when_pricing_entry_exists(
             resources.actor.id,
             workspace_path=tmp_path / "ws",
         )
-        # Should not raise
-        actor = start_yuuagents_actor(binding, yuuagents_config=yuubot_config.yuuagents)
-        await actor.close()
+        # Should not raise — pricing entry exists for the budgeted model
+        _check_pricing_for_budget(binding)
     finally:
         await daemon.stop()
 
@@ -266,6 +269,8 @@ async def test_provider_cost_takes_precedence_over_pricing(
             pricing=msgspec.to_builtins(pricing),
         )
         await daemon.resources.event_bus.drain()
+
+        await daemon.actors.start_actor(resources.actor.id)
 
         async with _client(daemon) as client:
             response = await client.post(
@@ -306,10 +311,9 @@ async def test_integration_charge_usage_recorded_in_trace() -> None:
         model="gpt-4",
     )
     task_id = UUID("00000000-0000-0000-0000-000000000002")
-    sink = UsageSink(
+    recorder = _TraceUsageRecorder(
         eventbus=eventbus,
         task_id=task_id,
-        budget=Budget(limits={}),
         attributes={"agent_name": "trace-agent", "agent_id": "trace-agent-id"},
     )
 
@@ -335,7 +339,7 @@ async def test_integration_charge_usage_recorded_in_trace() -> None:
             actor_id=ACTOR_ID,
             integration_id=INTEGRATION_ID,
             capability_id="echo",
-            usage=sink,
+            usage=recorder,
         )
         context.charge_usage("echo-api", 3, "request")
         await asyncio.sleep(0)
@@ -359,6 +363,42 @@ async def test_integration_charge_usage_recorded_in_trace() -> None:
     assert attrs["yuubot.actor_id"] == ACTOR_ID
     assert attrs["yuubot.integration_id"] == INTEGRATION_ID
     assert attrs["yuubot.capability_id"] == "echo"
+
+
+class _TraceUsageRecorder:
+    def __init__(
+        self,
+        *,
+        eventbus: EventBus,
+        task_id: UUID,
+        attributes: Mapping[str, object],
+    ) -> None:
+        self._eventbus = eventbus
+        self._task_id = task_id
+        self._attributes = dict(attributes)
+
+    def charge(
+        self,
+        service: str,
+        amount: float,
+        unit: str,
+        *,
+        category: str | None = None,
+        metadata: Mapping[str, object] | None = None,
+        attributes: Mapping[str, object] | None = None,
+    ) -> None:
+        del category, metadata
+        payload = {
+            **self._attributes,
+            **(attributes or {}),
+            "service": service,
+            "amount": amount,
+            "unit": unit,
+            "task_id": str(self._task_id),
+        }
+        asyncio.create_task(
+            self._eventbus.emit("runtime.usage_reported", cast(EventPayload, payload))
+        )
 
 
 class _UsageProvider:
@@ -411,6 +451,7 @@ async def _build_daemon(base_config: BootstrapConfig, tmp_path: Path) -> YuubotD
                 data_dir=str(tmp_path / "data"),
             ),
         ),
+        components=make_test_daemon_infrastructure(),
     )
 
 

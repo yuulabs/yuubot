@@ -97,7 +97,9 @@ class TraceService:
     config: TraceConfig
     db_path: str
     name: str = "trace"
-    _collector_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _collector_thread: threading.Thread | None = field(
+        default=None, init=False, repr=False
+    )
     _ui_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     async def start(self) -> None:

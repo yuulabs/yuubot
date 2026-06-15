@@ -6,7 +6,6 @@ import asyncio
 import json
 import secrets
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
@@ -83,9 +82,9 @@ class IntegrationInvokeBridge:
 
     integrations: IntegrationCore
     mailbox_for_actor: Callable[[str], MailBox | None] | None = None
-    schedule_for_actor: Callable[
-        [str, str, str, dict[str, object]], Awaitable[object]
-    ] | None = None
+    schedule_for_actor: (
+        Callable[[str, str, str, dict[str, object]], Awaitable[object]] | None
+    ) = None
     host: str = "127.0.0.1"
     _token: str = ""
     _server: asyncio.Server | None = None
@@ -125,8 +124,7 @@ class IntegrationInvokeBridge:
         writer.write(json.dumps(response, ensure_ascii=True).encode() + b"\n")
         await writer.drain()
         writer.close()
-        with suppress(Exception):
-            await writer.wait_closed()
+        await writer.wait_closed()
 
     async def _dispatch(self, raw: bytes) -> dict[str, object]:
         try:

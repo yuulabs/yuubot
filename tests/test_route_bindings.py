@@ -160,7 +160,9 @@ class TestRouteBindings:
         mb1 = gateway.get_mailbox(actor1.id)
 
         await gateway.ingest(_msg("slack-main", "channels/dev", text="first"))
-        assert (await asyncio.wait_for(mb1.get(), timeout=1.0)).content[0]["text"] == "first"
+        assert (await asyncio.wait_for(mb1.get(), timeout=1.0)).content[0][
+            "text"
+        ] == "first"
 
         await repository.delete(ActorIngressRuleORM, rule1.id)
         await _create_rule(repository, "slack-main", "channels/dev", actor2.id)
@@ -168,7 +170,9 @@ class TestRouteBindings:
         mb2 = gateway.get_mailbox(actor2.id)
 
         await gateway.ingest(_msg("slack-main", "channels/dev", text="second"))
-        assert (await asyncio.wait_for(mb2.get(), timeout=1.0)).content[0]["text"] == "second"
+        assert (await asyncio.wait_for(mb2.get(), timeout=1.0)).content[0][
+            "text"
+        ] == "second"
 
     async def test_actor_reads_latest_llm_backend_details(self, resources: Resources):
         repository = resources.repository
@@ -207,9 +211,7 @@ class TestRouteBindings:
         with pytest.raises(LookupError):
             await gateway.ingest(_msg("unknown", "channels/dev", text="lost"))
 
-    async def test_table_change_event_drives_route_reload(
-        self, resources: Resources
-    ):
+    async def test_table_change_event_drives_route_reload(self, resources: Resources):
         repository = resources.repository
         actor = await _create_actor_bundle(repository, "test-actor")
         gateway = Gateway(routes=RouteBindings(rules=()))
@@ -240,9 +242,7 @@ class TestRouteBindings:
         with pytest.raises(LookupError):
             gateway.routes.resolve(_msg("slack-main", "channels/dev"))
 
-    async def test_resource_events_broadcast_table_change(
-        self, resources: Resources
-    ):
+    async def test_resource_events_broadcast_table_change(self, resources: Resources):
         events: list[ResourceChanged] = []
 
         async def on_changed(event: Event) -> None:

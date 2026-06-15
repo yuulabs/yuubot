@@ -98,7 +98,10 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
         if not _is_loopback_host(self.admin.host) and not self.admin.secret:
             msg = "admin.secret is required when admin.host is not loopback"
             raise BootstrapConfigError(msg)
-        if not _is_loopback_host(self.server.daemon_host) and not self.server.daemon_secret:
+        if (
+            not _is_loopback_host(self.server.daemon_host)
+            and not self.server.daemon_secret
+        ):
             msg = "server.daemon_secret is required when daemon_host is not loopback"
             raise BootstrapConfigError(msg)
         if not self.secrets.master_key:
@@ -168,7 +171,11 @@ def _walk_expand_paths(value: Any) -> Any:
     if isinstance(value, dict):
         expanded: dict[str, Any] = {}
         for key, item in value.items():
-            if key in path_keys and isinstance(item, str) and item not in {":memory:", ""}:
+            if (
+                key in path_keys
+                and isinstance(item, str)
+                and item not in {":memory:", ""}
+            ):
                 expanded[key] = str(Path(item).expanduser())
             else:
                 expanded[key] = _walk_expand_paths(item)

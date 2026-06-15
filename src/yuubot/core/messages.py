@@ -43,7 +43,9 @@ class IncomingMessage(MailMessage, msgspec.Struct):
     def render_metadata(self) -> str:
         """Render sender identity as a human-readable prefix for the LLM."""
         name = self.sender_name or self.sender_id
-        ts = datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime("%H:%M:%S")
+        ts = datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime(
+            "%H:%M:%S"
+        )
         return f"[{name} {ts}] "
 
     def content_items(self) -> list[ContentItem]:

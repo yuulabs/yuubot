@@ -13,9 +13,17 @@ import msgspec
 import pytest
 import yuullm
 
-from helpers import insert_echo_actor_resources, register_test_llm_provider
+from helpers import (
+    insert_echo_actor_resources,
+    register_test_llm_provider,
+    make_test_daemon_infrastructure,
+)
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
-from yuubot.core.integrations.impls.echo import EchoIntegration, EchoPayload, EchoReplyPayload
+from yuubot.core.integrations.impls.echo import (
+    EchoIntegration,
+    EchoPayload,
+    EchoReplyPayload,
+)
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
 
@@ -49,21 +57,22 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
         )
         await daemon.resources.event_bus.drain()
 
+        await daemon.actors.start_actor(resources.actor.id)
         assert daemon.actors.running_actor_ids() == [resources.actor.id]
         instance = _echo_instance(daemon, resources.integration.id)
 
         async with _client(daemon) as client:
             response = await client.post(
                 "/integration/echo",
-                    json={
-                        "integration_id": resources.integration.id,
-                        "message_id": MESSAGE_ID,
-                        "sender_id": SENDER_ID,
-                        "sender_name": "External User",
-                        "kind": "private",
-                        "text": ORIGINAL_TEXT,
-                        "content": [{"type": "text", "text": ORIGINAL_TEXT}],
-                    },
+                json={
+                    "integration_id": resources.integration.id,
+                    "message_id": MESSAGE_ID,
+                    "sender_id": SENDER_ID,
+                    "sender_name": "External User",
+                    "kind": "private",
+                    "text": ORIGINAL_TEXT,
+                    "content": [{"type": "text", "text": ORIGINAL_TEXT}],
+                },
             )
 
         assert response.status_code == 202, response.json()
@@ -116,6 +125,7 @@ async def test_echo_round_trip_waits_for_llm_reply(
             system_prompt="You reply through echo round-trip.",
         )
         await daemon.resources.event_bus.drain()
+        await daemon.actors.start_actor(resources.actor.id)
 
         async with _client(daemon) as client:
             response = await client.post(
@@ -151,7 +161,10 @@ async def test_echo_round_trip_waits_for_llm_reply(
 
         execute_python_description = _execute_python_description(llm.tools[0])
         assert "async def yext.echo.reply" in execute_python_description
-        assert "Records an outbound reply for echo round-trip tests." in execute_python_description
+        assert (
+            "Records an outbound reply for echo round-trip tests."
+            in execute_python_description
+        )
     finally:
         await daemon.stop()
 
@@ -267,6 +280,7 @@ async def _build_daemon(
                 data_dir=str(tmp_path / "data"),
             ),
         ),
+        components=make_test_daemon_infrastructure(),
     )
 
 

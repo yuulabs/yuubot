@@ -11,7 +11,7 @@ import httpx
 import msgspec
 import yuullm
 
-from helpers import register_test_llm_provider
+from helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
@@ -130,6 +130,8 @@ async def test_conversation_agent_reuses_persisted_history(
             await _wait_for_messages(client, "history-test-2", count=2)
 
             await daemon.actors.stop_actor(actor["id"])
+            await daemon.actors.start_actor(actor["id"])
+            await asyncio.sleep(0.05)
 
             second = await _post_conversation_message(
                 client,
@@ -164,6 +166,7 @@ async def _build_daemon(
             database=DatabaseConfig(path=":memory:"),
             paths=PathsConfig(data_dir=str(tmp_path / "data")),
         ),
+        components=make_test_daemon_infrastructure(),
     )
 
 

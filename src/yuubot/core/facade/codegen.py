@@ -32,18 +32,22 @@ def write_facade_package(
     for capability in _unique_capabilities(capabilities):
         modules.setdefault(_module_parts(capability), []).append(capability)
 
-    root_exports = sorted({
-        _function_name(capability)
-        for capabilities_for_module in modules.values()
-        for capability in capabilities_for_module
-        if _exports_at_package_root(capability)
-    })
-    module_exports = sorted({
-        _module_parts(capability)[0]
-        for capabilities_for_module in modules.values()
-        for capability in capabilities_for_module
-        if not _exports_at_package_root(capability)
-    })
+    root_exports = sorted(
+        {
+            _function_name(capability)
+            for capabilities_for_module in modules.values()
+            for capability in capabilities_for_module
+            if _exports_at_package_root(capability)
+        }
+    )
+    module_exports = sorted(
+        {
+            _module_parts(capability)[0]
+            for capabilities_for_module in modules.values()
+            for capability in capabilities_for_module
+            if not _exports_at_package_root(capability)
+        }
+    )
     (package / "__init__.py").write_text(
         _render_package_init(root_exports, module_exports),
         encoding="utf-8",
@@ -181,7 +185,10 @@ def _render_payload_assignment(field: msgspec.structs.FieldInfo) -> str:
 
 
 def _field_is_required(field: msgspec.structs.FieldInfo) -> bool:
-    return field.default is msgspec.NODEFAULT and field.default_factory is msgspec.NODEFAULT
+    return (
+        field.default is msgspec.NODEFAULT
+        and field.default_factory is msgspec.NODEFAULT
+    )
 
 
 def _function_doc(capability: AnyCapabilitySpec) -> str:
@@ -193,7 +200,7 @@ def _function_doc(capability: AnyCapabilitySpec) -> str:
         "Output schema:",
         _indent(_schema_json(capability.output_schema), "    "),
     ]
-    return "\n    ".join(line.replace('"""', r'\"\"\"') for line in lines)
+    return "\n    ".join(line.replace('"""', r"\"\"\"") for line in lines)
 
 
 def _schema_json(schema: dict[str, object]) -> str:

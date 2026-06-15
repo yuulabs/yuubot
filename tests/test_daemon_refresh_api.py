@@ -121,6 +121,9 @@ async def test_daemon_start_restores_runtime_status(
     )
     await runtime.services.start()
     try:
+        # Actors require explicit start — daemon boot does not auto-start.
+        await runtime.actors.start_actor(actor.id)
+
         async with _client(runtime) as client:
             response = await client.get(
                 "/api/status",
@@ -141,7 +144,7 @@ async def test_daemon_start_restores_runtime_status(
         await runtime.services.stop()
 
 
-async def test_refresh_actor_ingress_rule_reloads_routes_and_actors(
+async def test_refresh_actor_ingress_rule_reloads_routes(
     resources: Resources,
     tmp_path: Path,
 ) -> None:
@@ -169,11 +172,12 @@ async def test_refresh_actor_ingress_rule_reloads_routes_and_actors(
             )
 
         assert response.status_code == 200
-        assert response.json()["actions"] == ["routes.reloaded", "actors.reconciled"]
-        assert runtime.gateway.routes.resolve(_message("slack-main", "channels/dev")) == [
+        assert response.json()["actions"] == ["routes.reloaded"]
+        assert runtime.gateway.routes.resolve(
+            _message("slack-main", "channels/dev")
+        ) == [
             actor.id,
         ]
-        assert runtime.actors.running_actor_ids() == [actor.id]
     finally:
         await runtime.services.stop()
 

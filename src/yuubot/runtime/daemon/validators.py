@@ -26,7 +26,9 @@ async def validate_delete_not_referenced(
     """Prevent deletion of resources that are referenced by actors."""
     if orm_type is CharacterORM:
         actors = await repository.list(ActorORM)
-        referencing = [a for a in actors if a.character is not None and a.character.id == row_id]
+        referencing = [
+            a for a in actors if a.character is not None and a.character.id == row_id
+        ]
         if referencing:
             raise ValidationError(
                 "conflict",
@@ -34,7 +36,11 @@ async def validate_delete_not_referenced(
             )
     elif orm_type is LLMBackendORM:
         actors = await repository.list(ActorORM)
-        referencing = [a for a in actors if a.llm_backend is not None and a.llm_backend.id == row_id]
+        referencing = [
+            a
+            for a in actors
+            if a.llm_backend is not None and a.llm_backend.id == row_id
+        ]
         if referencing:
             raise ValidationError(
                 "conflict",

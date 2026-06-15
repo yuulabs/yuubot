@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,14 +47,20 @@ class IntegrationCore:
         default_factory=dict,
         init=False,
     )
-    _capability_by_id: dict[str, AnyCapability] = field(default_factory=dict, init=False)
+    _capability_by_id: dict[str, AnyCapability] = field(
+        default_factory=dict, init=False
+    )
     _integration_by_capability: dict[str, str] = field(default_factory=dict, init=False)
     _enabled_capability_ids: Cached[set[str]] = field(init=False)
-    _actor_allowed: dict[str, Cached[set[str]]] = field(default_factory=dict, init=False)
+    _actor_allowed: dict[str, Cached[set[str]]] = field(
+        default_factory=dict, init=False
+    )
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._enabled_capability_ids = Cached(loader=self._resolve_enabled_capability_ids)
+        self._enabled_capability_ids = Cached(
+            loader=self._resolve_enabled_capability_ids
+        )
 
     async def refresh_capabilities(self) -> None:
         self._enabled_capability_ids.invalidate()
@@ -83,7 +88,9 @@ class IntegrationCore:
     ) -> msgspec.Struct:
         allowed = await self._get_actor_allowed(actor_id)
         if capability_id not in allowed:
-            raise LookupError(f"actor {actor_id} is not allowed to use {capability_id!r}")
+            raise LookupError(
+                f"actor {actor_id} is not allowed to use {capability_id!r}"
+            )
 
         capability = self._find_capability(capability_id)
         integration_id = self._integration_id_for(capability_id)
@@ -123,8 +130,7 @@ class IntegrationCore:
         try:
             capabilities = _index_capabilities(integration_id, factory, instance)
         except Exception:
-            with suppress(Exception):
-                await instance.close()
+            await instance.close()
             raise
         self._instances[integration_id] = instance
         self._capabilities_index.update(capabilities)
@@ -184,13 +190,17 @@ class IntegrationCore:
     def _find_capability(self, capability_id: str) -> AnyCapability:
         capability = self._capability_by_id.get(capability_id)
         if capability is None:
-            raise LookupError(f"capability {capability_id!r} is not provided by any integration")
+            raise LookupError(
+                f"capability {capability_id!r} is not provided by any integration"
+            )
         return capability
 
     def _integration_id_for(self, capability_id: str) -> str:
         integration_id = self._integration_by_capability.get(capability_id)
         if integration_id is None:
-            raise LookupError(f"capability {capability_id!r} is not provided by any integration")
+            raise LookupError(
+                f"capability {capability_id!r} is not provided by any integration"
+            )
         return integration_id
 
     async def _get_actor_allowed(self, actor_id: str) -> set[str]:

@@ -91,7 +91,9 @@ class ResourceTypeRegistry:
         """Return the URL slug for an ORM model class, or None."""
         return self._orm_to_slug.get(orm_type)
 
-    def get_descriptor(self, slug_or_type: str | type[Model]) -> ResourceTypeDescriptor | None:
+    def get_descriptor(
+        self, slug_or_type: str | type[Model]
+    ) -> ResourceTypeDescriptor | None:
         """Return the descriptor for a slug or ORM type, or None."""
         if isinstance(slug_or_type, str):
             return self._descriptors.get(slug_or_type)

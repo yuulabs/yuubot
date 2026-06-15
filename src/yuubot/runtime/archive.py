@@ -74,9 +74,7 @@ class ArchiveManifest:
         except (KeyError, TypeError, ValueError) as exc:
             raise ArchiveError(f"manifest missing required field: {exc}") from None
         if manifest_version != MANIFEST_VERSION:
-            raise ArchiveError(
-                f"unsupported manifest version {manifest_version}"
-            )
+            raise ArchiveError(f"unsupported manifest version {manifest_version}")
         return cls(
             manifest_version=manifest_version,
             created_at=created_at,
@@ -150,7 +148,7 @@ def import_data(
                 continue
             if not member.filename.startswith(f"{prefix}/"):
                 continue
-            relative = member.filename[len(prefix) + 1:]
+            relative = member.filename[len(prefix) + 1 :]
             if not relative or relative.endswith("/"):
                 continue
             destination = (target / relative).resolve()

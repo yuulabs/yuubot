@@ -7,9 +7,11 @@ Authentication middleware lives in :mod:`yuubot.runtime.daemon.middleware`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+from yuuagents import ProviderPoolSessionFactory
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, Route
@@ -23,6 +25,8 @@ from yuubot.core.actors import (
     ActorWorkspaceResolver,
     default_actor_factories,
 )
+from yuubot.core.assembly import llm_session_factory_for_binding
+from yuubot.core.bindings import ActorBinding
 from yuubot.core.conversations import ConversationManager, ConversationStore
 from yuubot.core.events import Event
 from yuubot.core.gateway import Gateway
@@ -92,6 +96,9 @@ class DaemonInfrastructure:
     trace_context: YuubotTraceContextProvider = field(
         default_factory=YuubotTraceContextProvider
     )
+    llm_session_factory_factory: (
+        Callable[[ActorBinding], ProviderPoolSessionFactory | None] | None
+    ) = llm_session_factory_for_binding
     asgi_server: ASGIServer = field(default_factory=UvicornServer)
 
     def trace_service(self, config: BootstrapConfig) -> TraceService:
@@ -111,6 +118,7 @@ class DaemonInfrastructure:
             repository,
             trace_context=self.trace_context,
             integrations=integrations,
+            llm_session_factory_factory=self.llm_session_factory_factory,
         )
 
 
@@ -148,7 +156,7 @@ class ActorLifecycleService:
     name: str = "actors"
 
     async def start(self) -> None:
-        await self.actors.reconcile()
+        return  # actors must be started explicitly
 
     async def stop(self) -> None:
         await self.actors.stop_all()
@@ -169,8 +177,7 @@ def build_refresh_dispatcher(
 
     async def on_ingress_rules_change(event: ResourceChanged) -> list[str]:
         await routes.reload()
-        await actors.reconcile()
-        return ["routes.reloaded", "actors.reconciled"]
+        return ["routes.reloaded"]
 
     async def on_actor_change(event: ResourceChanged) -> list[str]:
         actions: list[str] = []
@@ -178,8 +185,6 @@ def build_refresh_dispatcher(
         actions.append("routes.reloaded")
         await integrations.handle_resource_changed(event)
         actions.append("integrations.actor_cache_invalidated")
-        await actors.reconcile()
-        actions.append("actors.reconciled")
         return actions
 
     async def on_character_or_llm_change(event: ResourceChanged) -> list[str]:
@@ -272,10 +277,13 @@ def _integration_lifecycle_handler(
 def _actor_lifecycle_handler(
     actors: ActorManager,
 ) -> LifecycleHandler:
-    """Create a lifecycle handler for actor enable/disable."""
+    """Create a lifecycle handler for actor enable/disable.
+
+    Actor start/stop must be explicit operations, not side effects of
+    DB writes.  This handler is intentionally a no-op.
+    """
 
     async def handle(row_id: str, label: str) -> list[str]:
-        await actors.reconcile()
         return [f"actor.{label}d"]
 
     return handle
@@ -349,8 +357,12 @@ def build_daemon_asgi_app(
         Route(
             "/api/status",
             make_status_handler(
-                services, actors, integrations, plugin_manager,
-                gateway, trace_service,
+                services,
+                actors,
+                integrations,
+                plugin_manager,
+                gateway,
+                trace_service,
             ),
             methods=("GET",),
         ),
@@ -403,9 +415,7 @@ def build_daemon_asgi_app(
     return Starlette(
         routes=routes,
         middleware=[
-            Middleware(
-                DaemonSecretMiddleware, secret=config.daemon_secret
-            ),
+            Middleware(DaemonSecretMiddleware, secret=config.daemon_secret),
         ],
         lifespan=lifespan,
     )
@@ -463,9 +473,7 @@ async def build_daemon(
         if actor is None:
             raise LookupError(f"actor is not running: {actor_id!r}")
         if not isinstance(actor, SimpleLoopActor):
-            raise RuntimeError(
-                f"actor does not support schedule tools: {actor_id!r}"
-            )
+            raise RuntimeError(f"actor does not support schedule tools: {actor_id!r}")
         return await actor.run_schedule_tool(
             agent_name=agent_name,
             tool_name=tool_name,
@@ -481,9 +489,7 @@ async def build_daemon(
     )
 
     type_registry = build_default_resource_type_registry(
-        integration_lifecycle_handler=_integration_lifecycle_handler(
-            integrations
-        ),
+        integration_lifecycle_handler=_integration_lifecycle_handler(integrations),
         actor_lifecycle_handler=_actor_lifecycle_handler(actors),
     )
 

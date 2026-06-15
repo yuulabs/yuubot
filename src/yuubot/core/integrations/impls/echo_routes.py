@@ -188,7 +188,9 @@ def _resolve_instance(
     if integration_id:
         instance = integrations.running_instance(integration_id)
         if not isinstance(instance, EchoIntegration):
-            raise LookupError(f"integration {integration_id!r} is not an echo integration")
+            raise LookupError(
+                f"integration {integration_id!r} is not an echo integration"
+            )
         return instance
 
     matches: list[EchoIntegration] = []
@@ -199,5 +201,7 @@ def _resolve_instance(
     if not matches:
         raise LookupError("no running echo integration")
     if len(matches) > 1:
-        raise ValueError("integration_id is required when multiple echo integrations run")
+        raise ValueError(
+            "integration_id is required when multiple echo integrations run"
+        )
     return matches[0]

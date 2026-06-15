@@ -9,7 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 
 import yuullm
-from yuuagents.agent import LlmClient
+from yuuagents import ProviderPoolSessionFactory
 from yuuagents.mailbox import (
     BackgroundCompletedMessage,
     MailMessage,
@@ -37,10 +37,6 @@ from yuubot.resources.repository import ResourceRepository
 
 logger = logging.getLogger(__name__)
 
-MAX_CONSECUTIVE_FAILURES = 5
-BACKOFF_BASE_S = 1.0
-BACKOFF_CAP_S = 32.0
-
 
 @dataclass
 class SimpleLoopActor(Actor):
@@ -52,7 +48,7 @@ class SimpleLoopActor(Actor):
     python_sessions: ActorPythonSessionFactory
     mailbox: Mailbox
     integrations: IntegrationCore | None = None
-    llm_client: LlmClient | None = None
+    llm_session_factory: ProviderPoolSessionFactory | None = None
     trace_context: YuubotTraceContextProvider | None = None
     _runtime: YuuAgentsActorRuntime | None = None
     _message_task: asyncio.Task[None] | None = None
@@ -86,7 +82,7 @@ class SimpleLoopActor(Actor):
             yuuagents_config=self.yuuagents_config,
             facade=facade,
             mailbox=self.mailbox,
-            llm_client=self.llm_client,
+            llm_session_factory=self.llm_session_factory,
             trace_context=self.trace_context,
         )
         self._start_message_loop()
@@ -192,41 +188,11 @@ class SimpleLoopActor(Actor):
         self._delegate_tasks.clear()
 
     async def _consume_messages(self) -> None:
-        consecutive_failures = 0
         while True:
             message = await self.mailbox.recv()
-            try:
-                if self.restart_required:
-                    await self._reload()
-                await self.handle_mail_message(message)
-                consecutive_failures = 0
-            except Exception as exc:
-                logger.warning(
-                    "actor %s failed processing message: %s: %s",
-                    self.actor_id,
-                    type(exc).__name__,
-                    exc,
-                    exc_info=True,
-                )
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    logger.error(
-                        "actor %s failed %d consecutive messages, stopping",
-                        self.actor_id,
-                        consecutive_failures,
-                    )
-                    raise
-                delay = min(
-                    BACKOFF_BASE_S * (2 ** (consecutive_failures - 1)), BACKOFF_CAP_S
-                )
-                logger.warning(
-                    "actor %s failed (%d/%d), backing off %.1fs",
-                    self.actor_id,
-                    consecutive_failures,
-                    MAX_CONSECUTIVE_FAILURES,
-                    delay,
-                )
-                await asyncio.sleep(delay)
+            if self.restart_required:
+                await self._reload()
+            await self.handle_mail_message(message)
 
     def _try_running_instance(self, integration_id: str):
         if self.integrations is None:
@@ -264,19 +230,11 @@ class SimpleLoopActor(Actor):
                 integration_id,
             )
             return
-        try:
-            await instance.response(
-                target_msg_id,
-                msg=response.text,
-                react=response.react or None,
-            )
-        except Exception:
-            logger.warning(
-                "actor %s failed sending IM response for message %s",
-                self.actor_id,
-                target_msg_id,
-                exc_info=True,
-            )
+        await instance.response(
+            target_msg_id,
+            msg=response.text,
+            react=response.react or None,
+        )
 
     def _submit_delegate_task(self, message: FacadeDelegateTask) -> None:
         self._background_task_ids.add(message.task_id)
@@ -343,7 +301,7 @@ class SimpleLoopActor(Actor):
             yuuagents_config=self.yuuagents_config,
             facade=facade,
             mailbox=self.mailbox,
-            llm_client=self.llm_client,
+            llm_session_factory=self.llm_session_factory,
             trace_context=self.trace_context,
         )
 
@@ -372,7 +330,9 @@ class SimpleLoopActorFactory:
     yuuagents_config: YuuAgentsConfig
     python_sessions: ActorPythonSessionFactory
     integrations: IntegrationCore | None = None
-    llm_client_factory: Callable[[ActorBinding], LlmClient | None] | None = None
+    llm_session_factory_factory: (
+        Callable[[ActorBinding], ProviderPoolSessionFactory | None] | None
+    ) = None
     trace_context: YuubotTraceContextProvider | None = None
     actor_type: str = "simple_loop"
     _actors: dict[str, SimpleLoopActor] = field(default_factory=dict)
@@ -385,7 +345,7 @@ class SimpleLoopActorFactory:
             python_sessions=self.python_sessions,
             mailbox=mailbox,
             integrations=self.integrations,
-            llm_client=self._llm_client(binding),
+            llm_session_factory=self._llm_session_factory(binding),
             trace_context=self.trace_context,
         )
         self._actors[actor.actor_id] = actor
@@ -394,7 +354,7 @@ class SimpleLoopActorFactory:
     def actor(self, actor_id: str) -> SimpleLoopActor:
         return self._actors[actor_id]
 
-    def _llm_client(self, binding: ActorBinding) -> LlmClient | None:
-        if self.llm_client_factory is None:
+    def _llm_session_factory(self, binding: ActorBinding) -> ProviderPoolSessionFactory | None:
+        if self.llm_session_factory_factory is None:
             return None
-        return self.llm_client_factory(binding)
+        return self.llm_session_factory_factory(binding)

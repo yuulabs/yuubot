@@ -7,7 +7,7 @@ owns the actual domain operations.
 
 from __future__ import annotations
 
-import logging
+
 from dataclasses import dataclass
 from typing import cast
 
@@ -21,8 +21,6 @@ from yuubot.resources.errors import StorageError
 from yuubot.resources.events import ResourceAction, ResourceChanged
 from yuubot.resources.registry import EventDrivenRefreshDispatcher, ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -114,12 +112,8 @@ class ResourceService:
         if handler is None:
             return updated, [], []
 
-        try:
-            actions = await handler(row_id, label)
-            return updated, actions, []
-        except Exception as exc:
-            logger.exception("lifecycle %s failed for %s", label, row_id)
-            return updated, [], [f"lifecycle {label} failed: {exc}"]
+        actions = await handler(row_id, label)
+        return updated, actions, []
 
     async def _reconcile(
         self,
@@ -135,9 +129,5 @@ class ResourceService:
             row_ids=(row_id,),
             changed_fields=changed_fields,
         )
-        try:
-            actions = await self.refresh.refresh(event)
-            return actions, []
-        except Exception as exc:
-            logger.exception("reconcile failed after %s on %s", action, table)
-            return [], [str(exc)]
+        actions = await self.refresh.refresh(event)
+        return actions, []

@@ -1,5 +1,9 @@
 """Actor lifecycle and typed actor runtime contracts."""
 
+from collections.abc import Callable
+
+from yuuagents import ProviderPoolSessionFactory
+
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.actors.contracts import Actor, ActorFactory
 from yuubot.core.actors.events import ActorLifecycleCommand, StartActor, StopActor
@@ -11,6 +15,7 @@ from yuubot.core.actors.impls.python_session import (
 from yuubot.core.actors.registry import ActorFactoryRegistry
 from yuubot.core.actors.impls.simple_loop import SimpleLoopActor, SimpleLoopActorFactory
 from yuubot.core.actors.workspace import ActorWorkspaceResolver, safe_actor_path_id
+from yuubot.core.bindings import ActorBinding
 from yuubot.core.integrations.core import IntegrationCore
 from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.resources.repository import ResourceRepository
@@ -39,6 +44,9 @@ def default_actor_factories(
     repository: ResourceRepository,
     trace_context: YuubotTraceContextProvider | None = None,
     integrations: IntegrationCore | None = None,
+    llm_session_factory_factory: (
+        Callable[[ActorBinding], ProviderPoolSessionFactory | None] | None
+    ) = None,
 ) -> ActorFactoryRegistry:
     registry = ActorFactoryRegistry()
     registry.register(
@@ -48,6 +56,7 @@ def default_actor_factories(
             python_sessions=python_sessions,
             integrations=integrations,
             trace_context=trace_context,
+            llm_session_factory_factory=llm_session_factory_factory,
         )
     )
     return registry

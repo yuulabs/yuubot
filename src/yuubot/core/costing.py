@@ -1,73 +1,51 @@
-"""Cost calculation helpers for yuubot-owned LLM backend pricing."""
+"""Cost calculation helpers for yuubot-owned LLM backend pricing.
+
+Contains only pure functions for cost calculation — no session wrappers.
+Cost calculation is called by the yuubot orchestrator after each agent.step().
+"""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from typing import Any
-
 import yuullm
-from yuuagents.agent import LlmClient
 
 from yuubot.resources.records import PricingEntry, PricingTable
 
 
-@dataclass
-class PricingAwareLlmClient:
-    """Populate ``store.cost`` from yuubot backend pricing when needed."""
+def calculate_cost(usage: yuullm.Usage | None, pricing: PricingTable, configured_model: str) -> yuullm.Cost | None:
+    """Calculate cost from usage and pricing table.
 
-    inner: LlmClient
-    pricing: PricingTable
-    configured_model: str
-
-    async def stream(
-        self,
-        history: yuullm.History,
-        **kwargs: Any,
-    ) -> yuullm.StreamResult:
-        stream, store = await self.inner.stream(history, **kwargs)
-        return self._with_cost(stream, store), store
-
-    async def _with_cost(
-        self,
-        stream: AsyncIterator[yuullm.StreamItem],
-        store: yuullm.Store,
-    ) -> AsyncIterator[yuullm.StreamItem]:
-        async for item in stream:
-            yield item
-        self._populate_cost(store)
-
-    def _populate_cost(self, store: yuullm.Store) -> None:
-        if store.cost is not None or store.usage is None:
-            return
-        if store.provider_cost is not None:
-            store.cost = yuullm.Cost(
-                input_cost=0.0,
-                output_cost=0.0,
-                total_cost=store.provider_cost,
-                source="provider",
-            )
-            return
-        entry = self._pricing_entry(store.usage.model)
-        if entry is None:
-            return
-        store.cost = _calculate_cost(store.usage, entry)
-
-    def _pricing_entry(self, usage_model: str) -> PricingEntry | None:
-        for model in _candidate_models(usage_model, self.configured_model):
-            for entry in self.pricing.entries:
-                if entry.model == model:
-                    return entry
+    Pure function — no side effects. Returns None if no matching pricing entry.
+    """
+    if usage is None:
         return None
+    entry = _pricing_entry(usage.model, configured_model, pricing)
+    if entry is None:
+        return None
+    return _calculate_cost(usage, entry)
 
 
 def _candidate_models(usage_model: str, configured_model: str) -> tuple[str, ...]:
+    """Ordered list of model names to try when looking up pricing."""
     if usage_model == configured_model:
         return (usage_model,)
     return (usage_model, configured_model)
 
 
+def _pricing_entry(
+    usage_model: str,
+    configured_model: str,
+    pricing: PricingTable,
+) -> PricingEntry | None:
+    """Find the best matching pricing entry."""
+    for model in _candidate_models(usage_model, configured_model):
+        for entry in pricing.entries:
+            if entry.model == model:
+                return entry
+    return None
+
+
 def _calculate_cost(usage: yuullm.Usage, entry: PricingEntry) -> yuullm.Cost:
+    """Pure arithmetic: compute cost from token counts and per-million rates."""
     input_cost = usage.input_tokens * entry.input_per_million / 1_000_000
     output_cost = usage.output_tokens * entry.output_per_million / 1_000_000
     return yuullm.Cost(

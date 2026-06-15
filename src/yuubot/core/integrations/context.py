@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import msgspec
 from collections.abc import Mapping
-from yuuagents import UsageRecorder
+
+
+class UsageRecorder(Protocol):
+    def charge(
+        self,
+        service: str,
+        amount: float,
+        unit: str,
+        *,
+        category: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        attributes: Mapping[str, Any] | None = None,
+    ) -> None: ...
 
 
 class InvocationContext(msgspec.Struct):
@@ -36,16 +48,19 @@ class InvocationContext(msgspec.Struct):
     ) -> None:
         if self.usage_recorder is None:
             return
+        usage_attributes = {
+            "actor_id": self.actor_id,
+            "integration_id": self.integration_id,
+            "capability_id": self.capability_id,
+            **attributes,
+        }
         self.usage_recorder.charge(
             service,
             amount,
             unit,
             category=category,
             metadata=metadata,
-            actor_id=self.actor_id,
-            integration_id=self.integration_id,
-            capability_id=self.capability_id,
-            **attributes,
+            attributes=usage_attributes,
         )
 
 

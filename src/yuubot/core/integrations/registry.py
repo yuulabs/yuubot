@@ -50,10 +50,7 @@ class IntegrationFactoryRegistry:
         The admin UI renders create/edit forms from this list. Ordering
         follows registration order so the UI can display a stable catalog.
         """
-        return [
-            integration_kind_info(factory)
-            for factory in self._all_factories()
-        ]
+        return [integration_kind_info(factory) for factory in self._all_factories()]
 
     def get(self, name: str) -> IntegrationFactory:
         factory = self._factories.get(name)

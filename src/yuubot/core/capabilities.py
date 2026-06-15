@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
@@ -133,8 +132,7 @@ def _field_default_builtins(field: msgspec.structs.FieldInfo) -> object:
     if field.default is not msgspec.NODEFAULT:
         return msgspec.to_builtins(field.default)
     if field.default_factory is not msgspec.NODEFAULT:
-        with suppress(Exception):
-            return msgspec.to_builtins(field.default_factory())
+        return msgspec.to_builtins(field.default_factory())
     return _NO_DEFAULT
 
 
