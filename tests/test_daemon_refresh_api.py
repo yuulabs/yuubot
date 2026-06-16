@@ -8,10 +8,13 @@ from pathlib import Path
 import httpx
 from starlette.types import ASGIApp
 
-from yuubot.bootstrap.config import ServerConfig, TraceConfig
+from yuubot.bootstrap.config import ServerConfig, TraceConfig, YuuAgentsConfig
 from yuubot.core.actors import Actor, ActorFactoryRegistry, ActorManager
 from yuubot.core.actors.workspace import ActorWorkspaceResolver
+from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
+from yuubot.core.assembly import llm_session_factory_for_binding
 from yuubot.core.bindings import ActorBinding
+from yuubot.core.facade import FacadeWorkspace, IntegrationInvokeBridge
 from yuubot.core.capabilities import AnyCapability, AnyCapabilitySpec
 from yuubot.core.gateway import Gateway, Mailbox
 from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
@@ -24,6 +27,7 @@ from yuubot.resources.records import (
     ActorRecord,
     ActorIngressRuleRecord,
     BudgetPolicy,
+    CapabilitySetRecord,
     CharacterHints,
     CharacterRecord,
     IntegrationRecord,
@@ -41,6 +45,7 @@ from yuubot.resources.root import Resources
 from yuubot.resources.store.models import (
     ActorORM,
     ActorIngressRuleORM,
+    CapabilitySetORM,
     CharacterORM,
     IntegrationORM,
     LLMBackendORM,
@@ -369,6 +374,13 @@ def _build_runtime(
         refresh=refresh,
         trace_service=trace_service,
         type_registry=type_registry,
+        yuuagents_config=YuuAgentsConfig(),
+        python_sessions=ActorPythonSessionFactory(
+            integrations=integrations,
+            workspace=FacadeWorkspace(workspace_root / "facades"),
+            bridge=IntegrationInvokeBridge(integrations),
+        ),
+        llm_session_factory_factory=llm_session_factory_for_binding,
     )
     return RuntimeHarness(
         actors=actors,
@@ -429,21 +441,27 @@ async def _create_actor_bundle(
             budget=BudgetPolicy(),
         ),
     )
+    capability_set = await repository.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(
+            id=f"{actor_id}-capabilities",
+            name=f"{actor_id}-capabilities",
+            runtime_policy=RuntimePolicy(),
+            resource_policy=ResourcePolicy(),
+        ),
+    )
     return await repository.insert(
         ActorORM,
         ActorRecord(
             id=actor_id,
             name=actor_id,
             type="fake",
-            character=character,
-            llm_backend=backend,
-            budget=YuuAgentBudget(),
-            llm_options=YuuAgentLLMOptions(),
-            model="",
-            agent_tools=(),
-            allowed_capability_ids=(),
-            runtime_policy=RuntimePolicy(),
-            resource_policy=ResourcePolicy(),
+            default_character=character,
+            capability_set=capability_set,
+            default_llm_backend=backend,
+            default_model="",
+            default_llm_options=YuuAgentLLMOptions(),
+            default_budget=YuuAgentBudget(),
         ),
     )
 

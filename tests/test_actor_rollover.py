@@ -8,19 +8,19 @@ from typing import Any
 import msgspec
 import pytest
 import yuullm
-from yuuagents.mailbox import ScheduleTriggerMessage
+from yuuagents.core.mailbox import ScheduleTriggerMessage
 
 from helpers import (
     ScriptedProviderSessionFactory,
     make_actor_record,
+    make_capability_set_record,
     make_character_record,
     make_llm_backend_record,
 )
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.assembly import start_yuuagents_actor
-from yuubot.core.bindings import ActorBinding
-from yuubot.core.llm import BoundLLM
-from yuubot.resources.records import RuntimePolicy, ToolConfig, YuuAgentBudget
+from yuubot.core.bindings import ActorBinding, AgentBinding
+from yuubot.resources.records import ActorRecord, RuntimePolicy, ToolConfig, YuuAgentBudget
 
 
 @pytest.mark.asyncio
@@ -30,22 +30,24 @@ async def test_runtime_rollover_compacts_history_when_token_threshold_is_reached
     llm = RolloverLlm()
     character = make_character_record("actor-1", system_prompt="Base prompt.")
     backend = make_llm_backend_record("actor-1")
+    capability_set = make_capability_set_record(
+        "actor-1",
+        runtime_policy=RuntimePolicy(
+            rollover_enabled=True,
+            summarize_steps_span=8,
+        ),
+    )
     actor = msgspec.structs.replace(
         make_actor_record(
             "actor-1",
             character=character,
             llm_backend=backend,
+            capability_set=capability_set,
             max_steps=10,
         ),
-        budget=YuuAgentBudget(max_steps=10, max_tokens=10),
-        runtime_policy=RuntimePolicy(rollover_enabled=True, summarize_steps_span=8),
+        default_budget=YuuAgentBudget(max_steps=10, max_tokens=10),
     )
-    binding = ActorBinding(
-        actor=actor,
-        character=character,
-        llm=BoundLLM(backend=backend, model="gpt-4", stream_options={}),
-        workspace_path=tmp_path,
-    )
+    binding = _default_agent_binding(actor, tmp_path)
     runtime = start_yuuagents_actor(
         binding,
         yuuagents_config=YuuAgentsConfig(),
@@ -82,21 +84,17 @@ async def test_runtime_expires_idle_agent_and_recreates_on_next_message(
     llm = SimpleLlm()
     character = make_character_record("actor-1", system_prompt="Base prompt.")
     backend = make_llm_backend_record("actor-1")
-    actor = msgspec.structs.replace(
-        make_actor_record(
-            "actor-1",
-            character=character,
-            llm_backend=backend,
-            max_steps=10,
-        ),
-        runtime_policy=RuntimePolicy(idle_timeout_s=0.01),
-    )
-    binding = ActorBinding(
-        actor=actor,
+    actor = make_actor_record(
+        "actor-1",
         character=character,
-        llm=BoundLLM(backend=backend, model="gpt-4", stream_options={}),
-        workspace_path=tmp_path,
+        llm_backend=backend,
+        capability_set=make_capability_set_record(
+            "actor-1",
+            runtime_policy=RuntimePolicy(idle_timeout_s=0.01),
+        ),
+        max_steps=10,
     )
+    binding = _default_agent_binding(actor, tmp_path)
     runtime = start_yuuagents_actor(
         binding,
         yuuagents_config=YuuAgentsConfig(),
@@ -142,12 +140,7 @@ async def test_runtime_delegate_uses_independent_agent_and_returns_text(
         llm_backend=backend,
         max_steps=10,
     )
-    binding = ActorBinding(
-        actor=actor,
-        character=character,
-        llm=BoundLLM(backend=backend, model="gpt-4", stream_options={}),
-        workspace_path=tmp_path,
-    )
+    binding = _default_agent_binding(actor, tmp_path)
     runtime = start_yuuagents_actor(
         binding,
         yuuagents_config=YuuAgentsConfig(),
@@ -178,21 +171,17 @@ async def test_runtime_schedule_tool_uses_actor_schedule_executor(
     llm = SimpleLlm()
     character = make_character_record("actor-1", system_prompt="Base prompt.")
     backend = make_llm_backend_record("actor-1")
-    actor = msgspec.structs.replace(
-        make_actor_record(
-            "actor-1",
-            character=character,
-            llm_backend=backend,
-            max_steps=10,
-        ),
-        agent_tools=(ToolConfig(provider_key="schedule"),),
-    )
-    binding = ActorBinding(
-        actor=actor,
+    actor = make_actor_record(
+        "actor-1",
         character=character,
-        llm=BoundLLM(backend=backend, model="gpt-4", stream_options={}),
-        workspace_path=tmp_path,
+        llm_backend=backend,
+        capability_set=make_capability_set_record(
+            "actor-1",
+            agent_tools=(ToolConfig(provider_key="schedule"),),
+        ),
+        max_steps=10,
     )
+    binding = _default_agent_binding(actor, tmp_path)
     runtime = start_yuuagents_actor(
         binding,
         yuuagents_config=YuuAgentsConfig(
@@ -264,3 +253,7 @@ class SimpleLlm:
             yield yuullm.Response({"type": "text", "text": "ok"})
 
         return stream_items(), yuullm.Store()
+
+
+def _default_agent_binding(actor: ActorRecord, workspace_path: Path) -> AgentBinding:
+    return ActorBinding(actor=actor, workspace_path=workspace_path).default_agent_binding()

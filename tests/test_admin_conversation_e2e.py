@@ -45,7 +45,10 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
         ) as client:
             backend = await _create_llm_backend(client)
             character = await _create_character(client)
-            actor = await _create_actor(client, character["id"], backend["id"])
+            capability_set = await _create_capability_set(client)
+            actor = await _create_actor(
+                client, character["id"], capability_set["id"], backend["id"]
+            )
 
             conversation_page = await client.get("/admin/conversations")
             assert conversation_page.status_code == 200
@@ -76,9 +79,9 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
         assert len(llm.calls) == 1
         rendered_user_message = yuullm.render_message_text(llm.calls[0][-1])
         assert rendered_user_message == CONVERSATION_TEXT
-        assert yuullm.render_message_text(llm.calls[0][0]) == (
-            "You are an E2E admin conversation agent."
-        )
+        system_prompt = yuullm.render_message_text(llm.calls[0][0])
+        assert "Capability Set: admin-conversation-capabilities" in system_prompt
+        assert "You are an E2E admin conversation agent." in system_prompt
         assert [m["role"] for m in messages] == ["user", "assistant"]
         assert CONVERSATION_TEXT in messages[0]["raw_content"]
         assert AGENT_REPLY in messages[1]["raw_content"]
@@ -131,17 +134,18 @@ async def test_admin_conversation_reports_missing_model_pricing_as_configuration
                 pricing_entries=[],
             )
             character = await _create_character(client)
+            capability_set = await _create_capability_set(client)
 
             response = await client.post(
                 "/api/resources/actors",
                 json={
                     "name": "admin-conversation-actor",
                     "type": "simple_loop",
-                    "model": "deepseek-v4-flash",
-                    "character_id": character["id"],
-                    "llm_backend_id": backend["id"],
-                    "max_steps": 4,
-                    "daily_budget": 0,
+                    "default_model": "deepseek-v4-flash",
+                    "default_character_id": character["id"],
+                    "capability_set_id": capability_set["id"],
+                    "default_llm_backend_id": backend["id"],
+                    "default_budget": {"max_usd": 1},
                     "enabled": True,
                 },
             )
@@ -334,9 +338,21 @@ async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
     return _created(response)
 
 
+async def _create_capability_set(client: httpx.AsyncClient) -> dict[str, Any]:
+    response = await client.post(
+        "/api/resources/capability-sets",
+        json={
+            "name": "admin-conversation-capabilities",
+            "description": "E2E admin conversation capability set",
+        },
+    )
+    return _created(response)
+
+
 async def _create_actor(
     client: httpx.AsyncClient,
     character_id: str,
+    capability_set_id: str,
     backend_id: str,
     *,
     model: str = "gpt-4o",
@@ -348,11 +364,11 @@ async def _create_actor(
         json={
             "name": "admin-conversation-actor",
             "type": "simple_loop",
-            "model": model,
-            "character_id": character_id,
-            "llm_backend_id": backend_id,
-            "max_steps": 4,
-            "daily_budget": 0,
+            "default_model": model,
+            "default_character_id": character_id,
+            "capability_set_id": capability_set_id,
+            "default_llm_backend_id": backend_id,
+            "default_budget": {"max_steps": 4},
             "enabled": enabled,
         },
     )

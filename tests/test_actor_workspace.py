@@ -12,20 +12,22 @@ from yuubot.core.routing import RouteBindings
 from yuubot.resources.records import (
     ActorRecord,
     BudgetPolicy,
+    CapabilitySetRecord,
     CharacterHints,
     CharacterRecord,
     LLMBackendRecord,
     ModelCapabilities,
     ModelCatalog,
     PricingTable,
-    ResourcePolicy,
-    RuntimePolicy,
-    YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
-from yuubot.resources.store.models import ActorORM, CharacterORM, LLMBackendORM
+from yuubot.resources.store.models import (
+    ActorORM,
+    CapabilitySetORM,
+    CharacterORM,
+    LLMBackendORM,
+)
 
 
 async def test_actor_workspace_resolver_keeps_special_ids_under_root(
@@ -49,11 +51,8 @@ async def test_actor_python_session_uses_actor_workspace_cwd(
     actor = await _create_actor_bundle(repository, "python actor")
     resolver = ActorWorkspaceResolver(tmp_path / "workspace")
     workspace = resolver.resolve(actor.id)
-    binding = await load_actor_binding(
-        repository,
-        actor.id,
-        workspace_path=workspace,
-    )
+    actor_binding = await load_actor_binding(repository, actor.id)
+    binding = actor_binding.default_agent_binding(workspace_path=workspace)
     integrations = IntegrationCore(
         repository=repository,
         factories=IntegrationFactoryRegistry(),
@@ -117,19 +116,21 @@ async def _create_actor_bundle(
             budget=BudgetPolicy(),
         ),
     )
+    capability_set = await repository.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(
+            id=f"{actor_id}-capabilities",
+            name=f"{actor_id}-capabilities",
+        ),
+    )
     return await repository.insert(
         ActorORM,
         ActorRecord(
             id=actor_id,
             name=actor_id,
-            character=character,
-            llm_backend=backend,
-            model="",
-            llm_options=YuuAgentLLMOptions(),
-            budget=YuuAgentBudget(),
-            agent_tools=(),
-            allowed_capability_ids=(),
-            runtime_policy=RuntimePolicy(),
-            resource_policy=ResourcePolicy(),
+            default_character=character,
+            capability_set=capability_set,
+            default_llm_backend=backend,
+            default_model="",
         ),
     )

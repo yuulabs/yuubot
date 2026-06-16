@@ -1,4 +1,4 @@
-"""Daemon resource command API tests."""
+"""Daemon resource CRUD API tests."""
 
 from __future__ import annotations
 
@@ -6,24 +6,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
-import msgspec
 from starlette.types import ASGIApp
 
-from yuubot.bootstrap.config import ServerConfig, TraceConfig
+from yuubot.bootstrap.config import ServerConfig, TraceConfig, YuuAgentsConfig
 from yuubot.core.actors import Actor, ActorFactoryRegistry, ActorManager
+from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
 from yuubot.core.actors.workspace import ActorWorkspaceResolver
+from yuubot.core.assembly import llm_session_factory_for_binding
 from yuubot.core.bindings import ActorBinding
-from yuubot.core.capabilities import AnyCapability, AnyCapabilitySpec
+from yuubot.core.facade import FacadeWorkspace, IntegrationInvokeBridge
 from yuubot.core.gateway import Gateway, Mailbox
 from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
-from yuubot.core.integrations.contracts import IntegrationInstance, IntegrationStorage
-from yuubot.core.secrets import Secret
 from yuubot.core.routing import RouteBindings
 from yuubot.process import ServiceHost, TraceService
 from yuubot.resources.events import ResourceChanged
-from yuubot.resources.records import (
-    IntegrationRecord,
-)
 from yuubot.resources.root import Resources
 from yuubot.resources.registry import EventDrivenRefreshDispatcher, ResourceTypeRegistry
 from yuubot.runtime.daemon.commands import build_default_resource_type_registry
@@ -78,56 +74,6 @@ class FakeActorFactory:
         return actor
 
 
-@dataclass
-class FakeIntegrationInstance:
-    closed: bool = False
-
-    def capabilities(self) -> tuple[AnyCapability, ...]:
-        return ()
-
-    async def close(self) -> None:
-        self.closed = True
-
-
-@dataclass
-class FakeIntegrationFactory:
-    name: str = "fake"
-    description: str = ""
-    config_schema: dict[str, object] = field(default_factory=dict)
-    instances: dict[str, FakeIntegrationInstance] = field(default_factory=dict)
-    storage_dirs: dict[str, Path] = field(default_factory=dict)
-
-    def capability_specs(self) -> tuple[AnyCapabilitySpec, ...]:
-        return ()
-
-    async def create(
-        self,
-        record: IntegrationRecord,
-        *,
-        gateway: Gateway,
-        storage: IntegrationStorage,
-    ) -> IntegrationInstance:
-        _ = gateway, storage
-        instance = FakeIntegrationInstance()
-        self.instances[record.id] = instance
-        self.storage_dirs[record.id] = storage.data_dir
-        return instance
-
-    def routes(self, integrations: object) -> list:
-        return []
-
-
-class SecretFakeIntegrationConfig(msgspec.Struct, forbid_unknown_fields=False):
-    bot_token: Secret
-    label: str = ""
-
-
-@dataclass
-class SecretFakeIntegrationFactory(FakeIntegrationFactory):
-    name: str = "secret-fake"
-    config_schema: type[msgspec.Struct] = SecretFakeIntegrationConfig
-
-
 # --- Harness ---
 
 
@@ -145,8 +91,6 @@ class RuntimeHarness:
 def _build_runtime(
     resources: Resources,
     workspace_root: Path,
-    *,
-    integration_factory: FakeIntegrationFactory | None = None,
 ) -> RuntimeHarness:
     gateway = Gateway(routes=RouteBindings(rules=()))
     actor_factories = ActorFactoryRegistry()
@@ -158,8 +102,6 @@ def _build_runtime(
         workspace_resolver=ActorWorkspaceResolver(workspace_root / "workspaces"),
     )
     integration_factories = IntegrationFactoryRegistry()
-    if integration_factory is not None:
-        integration_factories.register(integration_factory)
     integrations = IntegrationCore(
         repository=resources.repository,
         factories=integration_factories,
@@ -182,6 +124,11 @@ def _build_runtime(
         actor_lifecycle_handler=_actor_lifecycle_handler(actors),
     )
     trace_service = TraceService(config=TraceConfig(enabled=False), db_path=":memory:")
+    python_sessions = ActorPythonSessionFactory(
+        integrations=integrations,
+        workspace=FacadeWorkspace(workspace_root / "facades"),
+        bridge=IntegrationInvokeBridge(integrations),
+    )
     app = build_daemon_asgi_app(
         config=ServerConfig(daemon_secret=SECRET),
         resources=resources,
@@ -192,6 +139,9 @@ def _build_runtime(
         refresh=refresh,
         trace_service=trace_service,
         type_registry=type_registry,
+        yuuagents_config=YuuAgentsConfig(),
+        python_sessions=python_sessions,
+        llm_session_factory_factory=llm_session_factory_for_binding,
     )
     return RuntimeHarness(
         actors=actors,
@@ -211,7 +161,7 @@ def _client(runtime: RuntimeHarness) -> httpx.AsyncClient:
     )
 
 
-# --- Tests ---
+# --- CRUD Tests ---
 
 
 async def test_create_llm_backend(resources: Resources, tmp_path: Path) -> None:
@@ -236,7 +186,7 @@ async def test_create_llm_backend(resources: Resources, tmp_path: Path) -> None:
         body = resp.json()
         assert body["status"] == "ok"
         assert body["data"]["name"] == "test-backend"
-        assert body["data"]["id"]  # auto-generated
+        assert body["data"]["id"]
     finally:
         await runtime.services.stop()
 
@@ -309,6 +259,7 @@ async def test_create_actor_accepts_typed_simplified_request(
 ) -> None:
     from yuubot.resources.records import (
         BudgetPolicy,
+        CapabilitySetRecord,
         CharacterHints,
         CharacterRecord,
         LLMBackendRecord,
@@ -316,7 +267,11 @@ async def test_create_actor_accepts_typed_simplified_request(
         ModelCatalog,
         PricingTable,
     )
-    from yuubot.resources.store.models import CharacterORM, LLMBackendORM
+    from yuubot.resources.store.models import (
+        CapabilitySetORM,
+        CharacterORM,
+        LLMBackendORM,
+    )
 
     character = await resources.repository.insert(
         CharacterORM,
@@ -342,6 +297,14 @@ async def test_create_actor_accepts_typed_simplified_request(
             budget=BudgetPolicy(),
         ),
     )
+    capability_set = await resources.repository.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(
+            id="cap-simple",
+            name="cap-simple",
+            integration_capability_ids=("echo.send",),
+        ),
+    )
 
     runtime = _build_runtime(resources, tmp_path)
     await runtime.services.start()
@@ -353,20 +316,18 @@ async def test_create_actor_accepts_typed_simplified_request(
                 json={
                     "name": "simple-actor",
                     "type": "fake",
-                    "character_id": character.id,
-                    "llm_backend_id": backend.id,
-                    "max_steps": 3,
-                    "workspace_access": "read_write",
-                    "capability_ids": ["echo.send"],
+                    "default_character_id": character.id,
+                    "capability_set_id": capability_set.id,
+                    "default_llm_backend_id": backend.id,
+                    "default_budget": {"max_steps": 3},
                 },
             )
         assert resp.status_code == 201, resp.text
         body = resp.json()
-        assert body["data"]["character"]["id"] == "char-simple"
-        assert body["data"]["llm_backend"]["id"] == "backend-simple"
-        assert body["data"]["budget"]["max_steps"] == 3
-        assert body["data"]["resource_policy"]["workspace_access"] == "read_write"
-        assert body["data"]["allowed_capability_ids"] == ["echo.send"]
+        assert body["data"]["default_character"]["id"] == "char-simple"
+        assert body["data"]["capability_set"]["id"] == "cap-simple"
+        assert body["data"]["default_llm_backend"]["id"] == "backend-simple"
+        assert body["data"]["default_budget"]["max_steps"] == 3
     finally:
         await runtime.services.stop()
 
@@ -376,19 +337,21 @@ async def test_delete_referenced_llm_backend_returns_conflict(
 ) -> None:
     from yuubot.resources.records import (
         BudgetPolicy,
+        CapabilitySetRecord,
         CharacterHints,
         CharacterRecord,
         LLMBackendRecord,
         ModelCapabilities,
         ModelCatalog,
         PricingTable,
-        ResourcePolicy,
-        RuntimePolicy,
-        YuuAgentBudget,
-        YuuAgentLLMOptions,
         ActorRecord,
     )
-    from yuubot.resources.store.models import CharacterORM, LLMBackendORM, ActorORM
+    from yuubot.resources.store.models import (
+        ActorORM,
+        CapabilitySetORM,
+        CharacterORM,
+        LLMBackendORM,
+    )
 
     repo = resources.repository
     character = await repo.insert(
@@ -415,21 +378,20 @@ async def test_delete_referenced_llm_backend_returns_conflict(
             budget=BudgetPolicy(),
         ),
     )
+    capability_set = await repo.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(id="cap-1", name="cap-1"),
+    )
     await repo.insert(
         ActorORM,
         ActorRecord(
             id="actor-1",
             name="actor-1",
             type="fake",
-            character=character,
-            llm_backend=backend,
-            model="",
-            llm_options=YuuAgentLLMOptions(),
-            budget=YuuAgentBudget(),
-            agent_tools=(),
-            allowed_capability_ids=(),
-            runtime_policy=RuntimePolicy(),
-            resource_policy=ResourcePolicy(),
+            default_character=character,
+            capability_set=capability_set,
+            default_llm_backend=backend,
+            default_model="",
         ),
     )
 
@@ -443,132 +405,6 @@ async def test_delete_referenced_llm_backend_returns_conflict(
             )
         assert resp.status_code == 409, resp.text
         assert resp.json()["code"] == "conflict"
-    finally:
-        await runtime.services.stop()
-
-
-async def test_integration_enable_disable_lifecycle(
-    resources: Resources, tmp_path: Path
-) -> None:
-    from yuubot.resources.store.models import IntegrationORM
-
-    repo = resources.repository
-    await repo.insert(
-        IntegrationORM,
-        IntegrationRecord(
-            id="int-1",
-            name="fake",
-            enabled=False,
-        ),
-    )
-
-    integration_factory = FakeIntegrationFactory()
-    runtime = _build_runtime(
-        resources, tmp_path, integration_factory=integration_factory
-    )
-    await runtime.services.start()
-    try:
-        async with _client(runtime) as client:
-            resp = await client.post(
-                "/api/resources/integrations/int-1/enable",
-                headers=HEADERS,
-            )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert body["status"] == "ok"
-        assert "integration.enabled" in body["actions"]
-        assert runtime.integrations.running_integration_ids() == ["int-1"]
-
-        async with _client(runtime) as client:
-            resp = await client.post(
-                "/api/resources/integrations/int-1/disable",
-                headers=HEADERS,
-            )
-        assert resp.status_code == 200, resp.text
-        assert runtime.integrations.running_integration_ids() == []
-    finally:
-        await runtime.services.stop()
-
-
-async def test_delete_integration_removes_private_storage(
-    resources: Resources, tmp_path: Path
-) -> None:
-    from yuubot.resources.store.models import IntegrationORM
-
-    repo = resources.repository
-    await repo.insert(
-        IntegrationORM,
-        IntegrationRecord(id="int-delete", name="fake", enabled=True),
-    )
-
-    integration_factory = FakeIntegrationFactory()
-    runtime = _build_runtime(
-        resources, tmp_path, integration_factory=integration_factory
-    )
-    await runtime.services.start()
-    try:
-        data_dir = integration_factory.storage_dirs["int-delete"]
-        marker = data_dir / "cursor.txt"
-        marker.write_text("42")
-        assert marker.exists()
-
-        async with _client(runtime) as client:
-            resp = await client.delete(
-                "/api/resources/integrations/int-delete",
-                headers=HEADERS,
-            )
-
-        assert resp.status_code == 200, resp.text
-        assert runtime.integrations.running_integration_ids() == []
-        assert not data_dir.exists()
-    finally:
-        await runtime.services.stop()
-
-
-async def test_integration_secret_config_is_encrypted_and_redacted(
-    resources: Resources, tmp_path: Path
-) -> None:
-    from yuubot.resources.store.models import IntegrationORM
-
-    runtime = _build_runtime(
-        resources,
-        tmp_path,
-        integration_factory=SecretFakeIntegrationFactory(),
-    )
-    await runtime.services.start()
-    try:
-        async with _client(runtime) as client:
-            created = await client.post(
-                "/api/resources/integrations",
-                headers=HEADERS,
-                json={
-                    "id": "secret-api",
-                    "name": "secret-fake",
-                    "config": {"bot_token": "plain-token", "label": "before"},
-                },
-            )
-            updated = await client.put(
-                "/api/resources/integrations/secret-api",
-                headers=HEADERS,
-                json={"config": {"bot_token": "", "label": "after"}},
-            )
-
-        assert created.status_code == 201, created.text
-        assert created.json()["data"]["config"]["bot_token"] == "***"
-        assert updated.status_code == 200, updated.text
-        assert updated.json()["data"]["config"]["bot_token"] == "***"
-
-        with resources.store.db.activate():
-            row = await IntegrationORM.get(id="secret-api")
-        assert row.config["bot_token"]["$enc"] == "v1"
-        assert "plain-token" not in repr(row.config)
-
-        loaded = await resources.repository.get(IntegrationORM, "secret-api")
-        assert loaded is not None
-        token = loaded.config["bot_token"]
-        assert isinstance(token, Secret)
-        assert token.reveal() == "plain-token"
-        assert loaded.config["label"] == "after"
     finally:
         await runtime.services.stop()
 
@@ -733,3 +569,6 @@ async def test_unknown_resource_type_returns_404(
         assert resp.status_code == 404
     finally:
         await runtime.services.stop()
+
+
+

@@ -26,6 +26,7 @@ from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
     BudgetPolicy,
+    CapabilitySetRecord,
     CharacterHints,
     CharacterRecord,
     IntegrationRecord,
@@ -36,7 +37,6 @@ from yuubot.resources.records import (
     ResourcePolicy,
     RuntimePolicy,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
@@ -185,6 +185,7 @@ async def _provision_smoke_resources(
 ) -> tuple[IntegrationRecord, ActorRecord]:
     await _post_character(client, actor_id)
     await _post_llm_backend(client, actor_id)
+    await _post_capability_set(client, actor_id)
     integration = await _post_integration(client, source_path)
     actor = await _post_actor(client, actor_id)
     await _post_actor_ingress_rule(client, integration.id, source_path, actor.id)
@@ -199,6 +200,7 @@ async def _assert_refresh_cases(
     async with _client(daemon) as client:
         await _post_character(client, "actor-secondary")
         await _post_llm_backend(client, "actor-secondary")
+        await _post_capability_set(client, "actor-secondary")
         second_actor = await _post_actor(client, "actor-secondary")
         second_rule = await _post_actor_ingress_rule(
             client,
@@ -292,6 +294,17 @@ async def _post_llm_backend(
     return _created(response, LLMBackendRecord)
 
 
+async def _post_capability_set(
+    client: httpx.AsyncClient, actor_id: str
+) -> CapabilitySetRecord:
+    response = await client.post(
+        "/api/resources/capability-sets",
+        headers=DAEMON_HEADERS,
+        json=_record_payload(_capability_set_record(actor_id)),
+    )
+    return _created(response, CapabilitySetRecord)
+
+
 async def _post_integration(
     client: httpx.AsyncClient,
     source_path: str,
@@ -362,6 +375,17 @@ def _llm_backend_record(actor_id: str) -> LLMBackendRecord:
     )
 
 
+def _capability_set_record(actor_id: str) -> CapabilitySetRecord:
+    return CapabilitySetRecord(
+        id=f"{actor_id}-capabilities",
+        name=f"{actor_id}-capabilities",
+        integration_capability_ids=(ECHO_CAPABILITY_ID,),
+        agent_tools=(),
+        runtime_policy=RuntimePolicy(),
+        resource_policy=ResourcePolicy(workspace_access="read_write"),
+    )
+
+
 def _integration_record(source_path: str) -> IntegrationRecord:
     return IntegrationRecord(
         id="echo-main",
@@ -371,29 +395,20 @@ def _integration_record(source_path: str) -> IntegrationRecord:
 
 
 def _actor_payload(actor_id: str) -> dict[str, object]:
-    return _record_payload(_actor_record(actor_id))
+    return {
+        "id": actor_id,
+        "name": actor_id,
+        "default_character_id": f"{actor_id}-char",
+        "capability_set_id": f"{actor_id}-capabilities",
+        "default_llm_backend_id": f"{actor_id}-backend",
+        "default_model": "",
+        "default_llm_options": {},
+        "default_budget": _record_payload(YuuAgentBudget(max_steps=4)),
+    }
 
 
 def _record_payload(record: object) -> dict[str, object]:
     return msgspec.json.decode(msgspec.json.encode(record))
-
-
-def _actor_record(actor_id: str) -> ActorRecord:
-    character = _character_record(actor_id)
-    backend = _llm_backend_record(actor_id)
-    return ActorRecord(
-        id=actor_id,
-        name=actor_id,
-        character=character,
-        llm_backend=backend,
-        model="",
-        llm_options=YuuAgentLLMOptions(),
-        budget=YuuAgentBudget(max_steps=4),
-        agent_tools=(),
-        allowed_capability_ids=(ECHO_CAPABILITY_ID,),
-        runtime_policy=RuntimePolicy(),
-        resource_policy=ResourcePolicy(workspace_access="read_write"),
-    )
 
 
 def _simple_loop_turns() -> list[list[yuullm.StreamItem]]:

@@ -13,7 +13,7 @@ import yuullm
 from yuuagents import ProviderPoolSessionFactory
 
 from yuubot.core.assembly._constants import _resolve_yuuagents_provider
-from yuubot.core.bindings import ActorBinding
+from yuubot.core.bindings import AgentBinding
 from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
@@ -24,6 +24,7 @@ from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
     BudgetPolicy,
+    CapabilitySetRecord,
     CharacterHints,
     CharacterRecord,
     IntegrationRecord,
@@ -33,6 +34,7 @@ from yuubot.resources.records import (
     PricingTable,
     ResourcePolicy,
     RuntimePolicy,
+    ToolConfig,
     YuuAgentBudget,
     YuuAgentLLMOptions,
 )
@@ -40,6 +42,7 @@ from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
+    CapabilitySetORM,
     CharacterORM,
     IntegrationORM,
     LLMBackendORM,
@@ -134,7 +137,7 @@ def make_test_daemon_infrastructure() -> DaemonInfrastructure:
     )
 
 
-def test_llm_session_factory(binding: ActorBinding) -> ProviderPoolSessionFactory | None:
+def test_llm_session_factory(binding: AgentBinding) -> ProviderPoolSessionFactory | None:
     provider = _resolve_yuuagents_provider(binding.llm.backend.yuuagents_provider)
     return _TEST_LLM_FACTORIES.get(provider)
 
@@ -253,12 +256,17 @@ async def insert_echo_actor_resources(
         IntegrationORM,
         make_echo_integration_record(integration_id, source_path),
     )
+    capability_set = await repository.insert(
+        CapabilitySetORM,
+        make_capability_set_record(actor_id),
+    )
     actor = await repository.insert(
         ActorORM,
         make_actor_record(
             actor_id,
             character=character,
             llm_backend=llm_backend,
+            capability_set=capability_set,
             actor_type=actor_type,
             max_steps=max_steps,
         ),
@@ -340,27 +348,48 @@ def make_llm_backend_record(
     )
 
 
+def make_capability_set_record(
+    actor_id: str,
+    *,
+    integration_capability_ids: tuple[str, ...] = (
+        ECHO_CAPABILITY_ID,
+        ECHO_REPLY_CAPABILITY_ID,
+    ),
+    agent_tools: tuple[ToolConfig, ...] = (),
+    runtime_policy: RuntimePolicy | None = None,
+    resource_policy: ResourcePolicy | None = None,
+) -> CapabilitySetRecord:
+    return CapabilitySetRecord(
+        id=f"{actor_id}-capabilities",
+        name=f"{actor_id}-capabilities",
+        integration_capability_ids=integration_capability_ids,
+        agent_tools=agent_tools,
+        runtime_policy=runtime_policy or RuntimePolicy(),
+        resource_policy=resource_policy
+        or ResourcePolicy(workspace_access="read_write"),
+    )
+
+
 def make_actor_record(
     actor_id: str,
     *,
     character: CharacterRecord,
     llm_backend: LLMBackendRecord,
+    capability_set: CapabilitySetRecord | None = None,
     actor_type: str = "simple_loop",
     max_steps: int = 4,
 ) -> ActorRecord:
+    cap_set = capability_set or make_capability_set_record(actor_id)
     return ActorRecord(
         id=actor_id,
         name=actor_id,
         type=actor_type,
-        character=character,
-        llm_backend=llm_backend,
-        model="",
-        llm_options=YuuAgentLLMOptions(),
-        budget=YuuAgentBudget(max_steps=max_steps),
-        agent_tools=(),
-        allowed_capability_ids=(ECHO_CAPABILITY_ID, ECHO_REPLY_CAPABILITY_ID),
-        runtime_policy=RuntimePolicy(),
-        resource_policy=ResourcePolicy(workspace_access="read_write"),
+        default_character=character,
+        capability_set=cap_set,
+        default_llm_backend=llm_backend,
+        default_model="",
+        default_llm_options=YuuAgentLLMOptions(),
+        default_budget=YuuAgentBudget(max_steps=max_steps),
     )
 
 

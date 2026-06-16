@@ -13,9 +13,8 @@ import msgspec
 import pytest
 import yuullm
 import yuutrace
-from yuuagents import YuuTraceObserver
-from yuuagents.eventbus import EventBus
-from yuuagents.values import EventPayload
+from yuuagents import YuuTraceObserver, EventBus
+from yuuagents.types.values import EventPayload
 
 from helpers import (
     assert_cost_event,
@@ -144,7 +143,7 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
         await daemon.resources.repository.update(
             ActorORM,
             resources.actor.id,
-            budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
+            default_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
         )
         await daemon.resources.event_bus.drain()
 
@@ -154,7 +153,7 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
             workspace_path=tmp_path / "ws",
         )
         with pytest.raises(ConfigurationError, match="USD budget requires pricing"):
-            _check_pricing_for_budget(binding)
+            _check_pricing_for_budget(binding.default_agent_binding())
     finally:
         await daemon.stop()
 
@@ -189,7 +188,7 @@ async def test_pricing_check_raises_when_backend_budget_set_without_pricing(
             workspace_path=tmp_path / "ws",
         )
         with pytest.raises(ConfigurationError, match="USD budget requires pricing"):
-            _check_pricing_for_budget(binding)
+            _check_pricing_for_budget(binding.default_agent_binding())
     finally:
         await daemon.stop()
 
@@ -227,7 +226,7 @@ async def test_pricing_check_passes_when_pricing_entry_exists(
         await daemon.resources.repository.update(
             ActorORM,
             resources.actor.id,
-            budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
+            default_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
         )
         await daemon.resources.event_bus.drain()
 
@@ -237,7 +236,7 @@ async def test_pricing_check_passes_when_pricing_entry_exists(
             workspace_path=tmp_path / "ws",
         )
         # Should not raise — pricing entry exists for the budgeted model
-        _check_pricing_for_budget(binding)
+        _check_pricing_for_budget(binding.default_agent_binding())
     finally:
         await daemon.stop()
 

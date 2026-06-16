@@ -20,6 +20,7 @@ from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
     BudgetPolicy,
+    CapabilitySetRecord,
     CharacterHints,
     CharacterRecord,
     LLMBackendRecord,
@@ -36,6 +37,7 @@ from yuubot.resources.root import Resources
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
+    CapabilitySetORM,
     CharacterORM,
     LLMBackendORM,
 )
@@ -189,7 +191,7 @@ class TestRouteBindings:
         refreshed = await repository.get(ActorORM, actor.id)
 
         assert refreshed is not None
-        assert refreshed.llm_backend.default_model == "gpt-4.1"
+        assert refreshed.default_llm_backend.default_model == "gpt-4.1"
 
     async def test_gateway_no_mailbox_for_unknown_actor(self):
         gateway = Gateway(
@@ -301,18 +303,24 @@ async def _create_actor(
     character: CharacterRecord,
     backend: LLMBackendRecord,
 ) -> ActorRecord:
+    capability_set = await repository.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(
+            id=f"{name}-capabilities",
+            name=f"{name}-capabilities",
+            runtime_policy=RuntimePolicy(),
+            resource_policy=ResourcePolicy(),
+        ),
+    )
     record = ActorRecord(
         id=name,
         name=name,
-        character=character,
-        llm_backend=backend,
-        budget=YuuAgentBudget(),
-        llm_options=YuuAgentLLMOptions(),
-        model="",
-        agent_tools=(),
-        allowed_capability_ids=(),
-        runtime_policy=RuntimePolicy(),
-        resource_policy=ResourcePolicy(),
+        default_character=character,
+        capability_set=capability_set,
+        default_llm_backend=backend,
+        default_model="",
+        default_llm_options=YuuAgentLLMOptions(),
+        default_budget=YuuAgentBudget(),
     )
     return await repository.insert(ActorORM, record)
 

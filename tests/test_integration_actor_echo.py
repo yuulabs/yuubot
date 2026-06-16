@@ -25,6 +25,7 @@ from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
     BudgetPolicy,
+    CapabilitySetRecord,
     CharacterHints,
     CharacterRecord,
     IntegrationRecord,
@@ -32,16 +33,13 @@ from yuubot.resources.records import (
     ModelCapabilities,
     ModelCatalog,
     PricingTable,
-    ResourcePolicy,
-    RuntimePolicy,
-    YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
+    CapabilitySetORM,
     CharacterORM,
     IntegrationORM,
     LLMBackendORM,
@@ -150,21 +148,24 @@ async def _create_actor_bundle(
 ) -> ActorRecord:
     character = await _create_character(repository, f"{actor_id}-char")
     backend = await _create_llm_backend(repository, f"{actor_id}-backend")
+    capability_set = await repository.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(
+            id=f"{actor_id}-capabilities",
+            name=f"{actor_id}-capabilities",
+            integration_capability_ids=(ECHO_CAPABILITY_ID,),
+        ),
+    )
     return await repository.insert(
         ActorORM,
         ActorRecord(
             id=actor_id,
             name=actor_id,
             type=ECHO_ACTOR_TYPE,
-            character=character,
-            llm_backend=backend,
-            budget=YuuAgentBudget(),
-            llm_options=YuuAgentLLMOptions(),
-            model="",
-            agent_tools=(),
-            allowed_capability_ids=(ECHO_CAPABILITY_ID,),
-            runtime_policy=RuntimePolicy(),
-            resource_policy=ResourcePolicy(),
+            default_character=character,
+            capability_set=capability_set,
+            default_llm_backend=backend,
+            default_model="",
         ),
     )
 

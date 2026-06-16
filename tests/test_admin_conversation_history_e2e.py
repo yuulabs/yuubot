@@ -184,7 +184,8 @@ def _daemon_headers() -> dict[str, str]:
 async def _provision_actor(client: httpx.AsyncClient) -> dict[str, Any]:
     backend = await _create_llm_backend(client)
     character = await _create_character(client)
-    return await _create_actor(client, character["id"], backend["id"])
+    capability_set = await _create_capability_set(client)
+    return await _create_actor(client, character["id"], capability_set["id"], backend["id"])
 
 
 async def _create_llm_backend(client: httpx.AsyncClient) -> dict[str, Any]:
@@ -220,9 +221,22 @@ async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
     return _created(response)
 
 
+async def _create_capability_set(client: httpx.AsyncClient) -> dict[str, Any]:
+    response = await client.post(
+        "/api/resources/capability-sets",
+        json={
+            "name": "conversation-capabilities",
+            "description": "E2E conversation capability set",
+        },
+        headers=_daemon_headers(),
+    )
+    return _created(response)
+
+
 async def _create_actor(
     client: httpx.AsyncClient,
     character_id: str,
+    capability_set_id: str,
     backend_id: str,
 ) -> dict[str, Any]:
     response = await client.post(
@@ -230,11 +244,11 @@ async def _create_actor(
         json={
             "name": "conversation-actor",
             "type": "simple_loop",
-            "model": "gpt-4o",
-            "character_id": character_id,
-            "llm_backend_id": backend_id,
-            "max_steps": 4,
-            "daily_budget": 0,
+            "default_model": "gpt-4o",
+            "default_character_id": character_id,
+            "capability_set_id": capability_set_id,
+            "default_llm_backend_id": backend_id,
+            "default_budget": {"max_steps": 4},
             "enabled": True,
         },
         headers=_daemon_headers(),
