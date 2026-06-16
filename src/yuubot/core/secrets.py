@@ -68,35 +68,55 @@ class SecretCodec:
         return f"set:{len(ciphertext)}"
 
 
-def encrypt_secret_values(value: object, codec: SecretCodec) -> object:
+def secret_enc_hook(value: object, codec: SecretCodec) -> object:
+    """Single-value encryption hook for msgspec enc_hook.
+
+    Converts Secret → EncryptedSecret. msgspec handles the traversal;
+    this function only transforms individual values.
+    """
     if isinstance(value, Secret):
         return EncryptedSecret(
             enc=ENCRYPTED_SECRET_VERSION,
             ct=codec.encrypt(value.reveal()),
         )
-    if isinstance(value, dict):
-        return {key: encrypt_secret_values(item, codec) for key, item in value.items()}
-    if isinstance(value, list):
-        return [encrypt_secret_values(item, codec) for item in value]
-    if isinstance(value, tuple):
-        return [encrypt_secret_values(item, codec) for item in value]
-    return value
+    raise TypeError(f"secret_enc_hook: unsupported type {type(value).__name__}")
 
 
-def decrypt_secret_values(value: object, codec: SecretCodec) -> object:
-    if isinstance(value, EncryptedSecret):
-        return Secret(codec.decrypt(value.ct))
-    if isinstance(value, dict):
-        candidate = cast(dict[object, object], value)
-        enc_tag = candidate.get("$enc")
-        if enc_tag == ENCRYPTED_SECRET_VERSION:
-            ct_raw = candidate.get("ct")
-            if isinstance(ct_raw, str):
-                return Secret(codec.decrypt(ct_raw))
-        return {key: decrypt_secret_values(item, codec) for key, item in value.items()}
-    if isinstance(value, list):
-        return [decrypt_secret_values(item, codec) for item in value]
-    return value
+def secret_dec_hook(target_type: type, value: object, codec: SecretCodec) -> object:
+    """Single-value decryption hook for msgspec dec_hook.
+
+    Converts EncryptedSecret → Secret. msgspec handles the traversal;
+    this function only transforms individual values.
+
+    Also handles the JSON-deserialized form: a dict with ``$enc`` and ``ct``
+    keys is recognized as an encrypted secret and decrypted in place.
+
+    When ``target_type`` is ``object``, encrypted secrets are still decrypted
+    so they don't leak through as opaque structs in loosely-typed fields.
+    """
+    if target_type is Secret:
+        if isinstance(value, EncryptedSecret):
+            return Secret(codec.decrypt(value.ct))
+        if isinstance(value, dict):
+            candidate = cast(dict[object, object], value)
+            if candidate.get("$enc") == ENCRYPTED_SECRET_VERSION:
+                ct_raw = candidate.get("ct")
+                if isinstance(ct_raw, str):
+                    return Secret(codec.decrypt(ct_raw))
+        if isinstance(value, str):
+            return Secret(value)
+        raise TypeError(f"cannot convert {type(value).__name__} to Secret")
+    if target_type is object:
+        if isinstance(value, EncryptedSecret):
+            return Secret(codec.decrypt(value.ct))
+        if isinstance(value, dict):
+            candidate = cast(dict[object, object], value)
+            if candidate.get("$enc") == ENCRYPTED_SECRET_VERSION:
+                ct_raw = candidate.get("ct")
+                if isinstance(ct_raw, str):
+                    return Secret(codec.decrypt(ct_raw))
+        return value
+    raise TypeError(f"secret_dec_hook: unsupported target type {target_type!r}")
 
 
 def redact_secret_for_json(value: object) -> object:

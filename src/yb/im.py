@@ -2,38 +2,37 @@
 
 from __future__ import annotations
 
-from typing import Any
+import msgspec
 
+from yuubot.core.facade.protocol import FacadeRpcRequest, ImResponsePayload
 from yb import _client, _context
 
 
-async def respond(text: str, *, msg_id: str | None = None) -> dict[str, Any]:
+async def respond(text: str, *, msg_id: str | None = None) -> dict[str, object]:
     """Send a text response to an inbound integration message."""
-    response = await _client.request(
-        _im_request({"msg_id": msg_id or "", "text": text})
-    )
-    result = response.get("result", {})
-    return result if isinstance(result, dict) else {}
+    payload = ImResponsePayload(msg_id=msg_id or "", text=text)
+    request = _im_request(payload)
+    response = await _client.request(request)
+    return response.result
 
 
-async def react(emoji: str, *, msg_id: str | None = None) -> dict[str, Any]:
+async def react(emoji: str, *, msg_id: str | None = None) -> dict[str, object]:
     """Send a quick reaction to an inbound integration message."""
-    response = await _client.request(
-        _im_request({"msg_id": msg_id or "", "react": emoji})
-    )
-    result = response.get("result", {})
-    return result if isinstance(result, dict) else {}
+    payload = ImResponsePayload(msg_id=msg_id or "", react=emoji)
+    request = _im_request(payload)
+    response = await _client.request(request)
+    return response.result
 
 
-def _im_request(payload: dict[str, Any]) -> dict[str, Any]:
+def _im_request(payload: ImResponsePayload) -> FacadeRpcRequest:
     actor = _context.actor_context()
     bridge = _context.bridge_context()
-    return {
-        "token": bridge.token,
-        "kind": "im_response",
-        "actor_id": actor.actor_id,
-        "agent_name": actor.agent_name,
-        "session_id": actor.session_id,
-        "mailbox_id": actor.mailbox_id,
-        "payload": payload,
-    }
+    return FacadeRpcRequest(
+        token=bridge.token,
+        kind="im_response",
+        actor_id=actor.actor_id,
+        agent_name=actor.agent_name,
+        session_id=actor.session_id,
+        mailbox_id=actor.mailbox_id,
+        payload=msgspec.to_builtins(payload),
+    )

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import yuullm
 from yuuagents import ProviderPoolSessionFactory
-from yuuagents.mailbox import (
+from yuuagents.core.mailbox import (
     BackgroundCompletedMessage,
     MailMessage,
     ScheduleTriggerMessage,
@@ -20,7 +20,7 @@ from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.actors.contracts import Actor
 from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
 from yuubot.core.assembly import YuuAgentsActorRuntime, start_yuuagents_actor
-from yuubot.core.bindings import ActorBinding, load_actor_binding
+from yuubot.core.bindings import ActorBinding, AgentBinding, load_actor_binding
 from yuubot.core.facade import (
     FacadeBackgroundTaskEnded,
     FacadeBackgroundTaskStarted,
@@ -57,6 +57,7 @@ class SimpleLoopActor(Actor):
     _im_message_sources: dict[str, str] = field(default_factory=dict, init=False)
     _latest_im_message_id: str = ""
     restart_required: bool = False
+    _agent_binding: AgentBinding | None = None
 
     @property
     def actor_id(self) -> str:
@@ -67,18 +68,20 @@ class SimpleLoopActor(Actor):
         return bool(self._background_task_ids)
 
     async def start(self) -> None:
+        agent_binding = self._default_agent_binding()
+        self._agent_binding = agent_binding
         if self.trace_context is not None:
             self.trace_context.register(
-                self.binding.actor.name,
-                character_name=self.binding.character.name,
-                model=self.binding.llm.model,
+                self.binding.actor_name,
+                character_name=agent_binding.character.name,
+                model=agent_binding.llm.model,
             )
         facade = await self.python_sessions.bind_facade(
-            self.binding,
+            agent_binding,
             mailbox_id=self.mailbox.mailbox_id,
         )
         self._runtime = start_yuuagents_actor(
-            self.binding,
+            agent_binding,
             yuuagents_config=self.yuuagents_config,
             facade=facade,
             mailbox=self.mailbox,
@@ -92,14 +95,23 @@ class SimpleLoopActor(Actor):
         if self._runtime is not None:
             await self._runtime.close()
         self._runtime = None
+        self._agent_binding = None
         self.python_sessions.cleanup_actor(self.actor_id)
 
     async def handle_resource_changed(self, event: ResourceChanged) -> None:
-        if event.is_table("characters") and self.binding.character.id in event.row_ids:
+        agent_binding = self._agent_binding
+        if agent_binding is None:
+            return
+        if event.is_table("characters") and agent_binding.character.id in event.row_ids:
+            self.restart_required = True
+        elif (
+            event.is_table("capability_sets")
+            and agent_binding.capability_set.id in event.row_ids
+        ):
             self.restart_required = True
         elif (
             event.is_table("llm_backends")
-            and self.binding.llm.backend.id in event.row_ids
+            and agent_binding.llm.backend.id in event.row_ids
         ):
             self.restart_required = True
 
@@ -108,7 +120,7 @@ class SimpleLoopActor(Actor):
         runtime = self._require_runtime()
         agent = await runtime.handle_message(
             ScheduleTriggerMessage(
-                agent_name=self.binding.actor.name,
+                agent_name=self.binding.actor_name,
                 job_id=message.message_id,
                 content=render_incoming_user_message(message),
             )
@@ -134,28 +146,6 @@ class SimpleLoopActor(Actor):
             return
         runtime = self._require_runtime()
         await runtime.handle_message(message)
-
-    async def ensure_conversation_agent(
-        self,
-        conversation_id: str,
-        history: yuullm.History,
-    ):
-        return await self._require_runtime().ensure_conversation_agent(
-            conversation_id,
-            history,
-        )
-
-    async def handle_conversation_message(
-        self,
-        conversation_id: str,
-        message: yuullm.Message,
-        history: yuullm.History,
-    ):
-        return await self._require_runtime().handle_conversation_message(
-            conversation_id,
-            message,
-            history,
-        )
 
     async def run_schedule_tool(
         self,
@@ -284,20 +274,21 @@ class SimpleLoopActor(Actor):
         self.binding = await load_actor_binding(
             self.repository,
             self.actor_id,
-            workspace_path=self.binding.workspace_path,
         )
+        agent_binding = self._default_agent_binding()
+        self._agent_binding = agent_binding
         if self.trace_context is not None:
             self.trace_context.register(
-                self.binding.actor.name,
-                character_name=self.binding.character.name,
-                model=self.binding.llm.model,
+                self.binding.actor_name,
+                character_name=agent_binding.character.name,
+                model=agent_binding.llm.model,
             )
         facade = await self.python_sessions.bind_facade(
-            self.binding,
+            agent_binding,
             mailbox_id=self.mailbox.mailbox_id,
         )
         self._runtime = start_yuuagents_actor(
-            self.binding,
+            agent_binding,
             yuuagents_config=self.yuuagents_config,
             facade=facade,
             mailbox=self.mailbox,
@@ -309,6 +300,9 @@ class SimpleLoopActor(Actor):
         if self._runtime is None:
             raise RuntimeError(f"simple_loop actor {self.actor_id!r} is not started")
         return self._runtime
+
+    def _default_agent_binding(self) -> AgentBinding:
+        return self.binding.default_agent_binding()
 
 
 def _delegate_completion_text(
@@ -331,13 +325,14 @@ class SimpleLoopActorFactory:
     python_sessions: ActorPythonSessionFactory
     integrations: IntegrationCore | None = None
     llm_session_factory_factory: (
-        Callable[[ActorBinding], ProviderPoolSessionFactory | None] | None
+        Callable[[AgentBinding], ProviderPoolSessionFactory | None] | None
     ) = None
     trace_context: YuubotTraceContextProvider | None = None
     actor_type: str = "simple_loop"
     _actors: dict[str, SimpleLoopActor] = field(default_factory=dict)
 
     async def create(self, binding: ActorBinding, mailbox: Mailbox) -> Actor:
+        agent_binding = binding.default_agent_binding()
         actor = SimpleLoopActor(
             binding=binding,
             repository=self.repository,
@@ -345,7 +340,7 @@ class SimpleLoopActorFactory:
             python_sessions=self.python_sessions,
             mailbox=mailbox,
             integrations=self.integrations,
-            llm_session_factory=self._llm_session_factory(binding),
+            llm_session_factory=self._llm_session_factory(agent_binding),
             trace_context=self.trace_context,
         )
         self._actors[actor.actor_id] = actor
@@ -354,7 +349,7 @@ class SimpleLoopActorFactory:
     def actor(self, actor_id: str) -> SimpleLoopActor:
         return self._actors[actor_id]
 
-    def _llm_session_factory(self, binding: ActorBinding) -> ProviderPoolSessionFactory | None:
+    def _llm_session_factory(self, binding: AgentBinding) -> ProviderPoolSessionFactory | None:
         if self.llm_session_factory_factory is None:
             return None
         return self.llm_session_factory_factory(binding)

@@ -16,7 +16,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, Route
 
-from yuubot.bootstrap.config import BootstrapConfig, ServerConfig
+from yuubot.bootstrap.config import BootstrapConfig, ServerConfig, YuuAgentsConfig
 from yuubot.bootstrap.layout import DataLayout
 from yuubot.core.actors import (
     ActorFactoryRegistry,
@@ -26,7 +26,7 @@ from yuubot.core.actors import (
     default_actor_factories,
 )
 from yuubot.core.assembly import llm_session_factory_for_binding
-from yuubot.core.bindings import ActorBinding
+from yuubot.core.bindings import AgentBinding
 from yuubot.core.conversations import ConversationManager, ConversationStore
 from yuubot.core.events import Event
 from yuubot.core.gateway import Gateway
@@ -97,7 +97,7 @@ class DaemonInfrastructure:
         default_factory=YuubotTraceContextProvider
     )
     llm_session_factory_factory: (
-        Callable[[ActorBinding], ProviderPoolSessionFactory | None] | None
+        Callable[[AgentBinding], ProviderPoolSessionFactory | None] | None
     ) = llm_session_factory_for_binding
     asgi_server: ASGIServer = field(default_factory=UvicornServer)
 
@@ -219,6 +219,10 @@ class YuubotDaemon:
     refresh: EventDrivenRefreshDispatcher
     trace_service: TraceService
     type_registry: ResourceTypeRegistry
+    yuuagents_config: YuuAgentsConfig
+    python_sessions: ActorPythonSessionFactory
+    llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None]
+    trace_context: YuubotTraceContextProvider | None = None
 
     async def start(self) -> None:
         await self.services.start()
@@ -242,6 +246,10 @@ class YuubotDaemon:
             refresh=self.refresh,
             trace_service=self.trace_service,
             type_registry=self.type_registry,
+            yuuagents_config=self.yuuagents_config,
+            python_sessions=self.python_sessions,
+            llm_session_factory_factory=self.llm_session_factory_factory,
+            trace_context=self.trace_context,
         )
 
     async def serve(self) -> None:
@@ -301,6 +309,10 @@ def build_daemon_asgi_app(
     refresh: EventDrivenRefreshDispatcher,
     trace_service: TraceService,
     type_registry: ResourceTypeRegistry,
+    yuuagents_config: YuuAgentsConfig,
+    python_sessions: ActorPythonSessionFactory,
+    llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None],
+    trace_context: YuubotTraceContextProvider | None = None,
 ) -> Starlette:
     """Construct the daemon ASGI application.
 
@@ -317,7 +329,11 @@ def build_daemon_asgi_app(
 
     conversation_manager = ConversationManager(
         store=ConversationStore(resources.store),
-        actors=actors,
+        repository=resources.repository,
+        yuuagents_config=yuuagents_config,
+        python_sessions=python_sessions,
+        llm_session_factory_factory=llm_session_factory_factory,
+        trace_context=trace_context,
     )
 
     resource_service = ResourceService(
@@ -525,4 +541,10 @@ async def build_daemon(
         refresh=refresh,
         trace_service=trace_svc,
         type_registry=type_registry,
+        yuuagents_config=config.yuuagents,
+        python_sessions=actor_python_sessions,
+        llm_session_factory_factory=(
+            components.llm_session_factory_factory or llm_session_factory_for_binding
+        ),
+        trace_context=components.trace_context,
     )

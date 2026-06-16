@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import secrets
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -11,30 +10,21 @@ from typing import TYPE_CHECKING, cast
 
 import msgspec
 import yuullm
-from yuuagents.mailbox import BackgroundCompletedMessage, MailBox, MailMessage
+from yuuagents.core.mailbox import BackgroundCompletedMessage, MailBox, MailMessage
 
 from yuubot.core.capabilities import struct_to_dict
+from yuubot.core.facade.protocol import (
+    DelegateSubmitPayload,
+    FacadeRpcRequest,
+    FacadeRpcResponse,
+    ImResponsePayload,
+    RpcError,
+)
 from yuubot.core.integrations.context import InvocationContext
 from yuubot.core.integrations.core import IntegrationCore
 
 if TYPE_CHECKING:
     from yuubot.core.facade.workspace import FacadeEndpoint
-
-
-class FacadeRpcRequest(msgspec.Struct):
-    """Wire format for integration facade RPC requests."""
-
-    token: str
-    actor_id: str
-    capability_id: str = ""
-    kind: str = "invoke"
-    payload: dict[str, object] = msgspec.field(default_factory=dict)
-    agent_name: str = ""
-    session_id: str = ""
-    mailbox_id: str = ""
-    task_id: str = ""
-    status: str = ""
-    summary: str = ""
 
 
 class FacadeBackgroundTaskStarted(MailMessage, msgspec.Struct):
@@ -121,12 +111,12 @@ class IntegrationInvokeBridge:
             response = await self._dispatch(raw)
         except Exception as exc:
             response = _error_response(exc)
-        writer.write(json.dumps(response, ensure_ascii=True).encode() + b"\n")
+        writer.write(msgspec.json.encode(response) + b"\n")
         await writer.drain()
         writer.close()
         await writer.wait_closed()
 
-    async def _dispatch(self, raw: bytes) -> dict[str, object]:
+    async def _dispatch(self, raw: bytes) -> FacadeRpcResponse:
         try:
             request = msgspec.json.decode(raw, type=FacadeRpcRequest)
         except msgspec.ValidationError as exc:
@@ -152,12 +142,12 @@ class IntegrationInvokeBridge:
             payload=request.payload,
             context=InvocationContext(actor_id=request.actor_id),
         )
-        return {"ok": True, "result": struct_to_dict(output, omit_defaults=True)}
+        return FacadeRpcResponse(ok=True, result=struct_to_dict(output, omit_defaults=True))
 
     async def _background_started(
         self,
         request: FacadeRpcRequest,
-    ) -> dict[str, object]:
+    ) -> FacadeRpcResponse:
         mailbox = self._mailbox(request.actor_id)
         if mailbox is not None:
             await mailbox.send(
@@ -170,12 +160,12 @@ class IntegrationInvokeBridge:
                     summary=request.summary,
                 )
             )
-        return {"ok": True, "result": {}}
+        return FacadeRpcResponse(ok=True)
 
     async def _background_finished(
         self,
         request: FacadeRpcRequest,
-    ) -> dict[str, object]:
+    ) -> FacadeRpcResponse:
         mailbox = self._mailbox(request.actor_id)
         if mailbox is not None:
             await mailbox.send(
@@ -198,9 +188,10 @@ class IntegrationInvokeBridge:
                     content=yuullm.user(_background_completion_text(request)),
                 )
             )
-        return {"ok": True, "result": {}}
+        return FacadeRpcResponse(ok=True)
 
-    async def _im_response(self, request: FacadeRpcRequest) -> dict[str, object]:
+    async def _im_response(self, request: FacadeRpcRequest) -> FacadeRpcResponse:
+        payload = msgspec.convert(request.payload, type=ImResponsePayload, strict=False)
         mailbox = self._mailbox(request.actor_id)
         if mailbox is not None:
             await mailbox.send(
@@ -209,16 +200,16 @@ class IntegrationInvokeBridge:
                     agent_name=request.agent_name,
                     session_id=request.session_id,
                     mailbox_id=request.mailbox_id,
-                    target_msg_id=str(request.payload.get("msg_id") or ""),
-                    text=str(request.payload.get("text") or ""),
-                    react=str(request.payload.get("react") or ""),
+                    target_msg_id=payload.msg_id,
+                    text=payload.text,
+                    react=payload.react,
                 )
             )
-        return {"ok": True, "result": {}}
+        return FacadeRpcResponse(ok=True)
 
-    async def _delegate_submit(self, request: FacadeRpcRequest) -> dict[str, object]:
-        prompt = str(request.payload.get("prompt") or "")
-        if not prompt.strip():
+    async def _delegate_submit(self, request: FacadeRpcRequest) -> FacadeRpcResponse:
+        payload = msgspec.convert(request.payload, type=DelegateSubmitPayload, strict=False)
+        if not payload.prompt.strip():
             raise ValueError("delegate prompt is required")
         task_id = request.task_id or secrets.token_hex(8)
         mailbox = self._mailbox(request.actor_id)
@@ -230,13 +221,13 @@ class IntegrationInvokeBridge:
                     agent_name=request.agent_name,
                     session_id=request.session_id,
                     mailbox_id=request.mailbox_id,
-                    prompt=prompt,
-                    delegate_name=str(request.payload.get("delegate_name") or ""),
+                    prompt=payload.prompt,
+                    delegate_name=payload.delegate_name,
                 )
             )
-        return {"ok": True, "result": {"task_id": task_id}}
+        return FacadeRpcResponse(ok=True, result={"task_id": task_id})
 
-    async def _schedule(self, request: FacadeRpcRequest) -> dict[str, object]:
+    async def _schedule(self, request: FacadeRpcRequest) -> FacadeRpcResponse:
         if self.schedule_for_actor is None:
             raise RuntimeError("schedule capabilities are not available")
         result = await self.schedule_for_actor(
@@ -245,7 +236,7 @@ class IntegrationInvokeBridge:
             request.capability_id,
             request.payload,
         )
-        return {"ok": True, "result": {"output": result}}
+        return FacadeRpcResponse(ok=True, result={"output": result})
 
     def _mailbox(self, actor_id: str) -> MailBox | None:
         if self.mailbox_for_actor is None:
@@ -253,14 +244,11 @@ class IntegrationInvokeBridge:
         return self.mailbox_for_actor(actor_id)
 
 
-def _error_response(exc: Exception) -> dict[str, object]:
-    return {
-        "ok": False,
-        "error": {
-            "type": type(exc).__name__,
-            "message": str(exc),
-        },
-    }
+def _error_response(exc: Exception) -> FacadeRpcResponse:
+    return FacadeRpcResponse(
+        ok=False,
+        error=RpcError(type=type(exc).__name__, message=str(exc)),
+    )
 
 
 def _background_completion_text(request: FacadeRpcRequest) -> str:

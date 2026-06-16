@@ -6,13 +6,14 @@ import asyncio
 import json
 import sys
 import uuid
+from collections.abc import Coroutine
 from typing import Any
 
-
+from yuubot.core.facade.protocol import FacadeRpcRequest
 from yb import _client, _context
 
 
-def submit_bg(coro: Any, tid_suggest: str | None = None) -> str:
+def submit_bg(coro: Coroutine[Any, Any, object], tid_suggest: str | None = None) -> str:
     """Submit a long-running coroutine as an actor background task."""
     task_id = _task_id(tid_suggest)
     task = asyncio.create_task(coro)
@@ -30,7 +31,7 @@ async def _notify_background_started(task_id: str) -> None:
     )
 
 
-async def _finish_background(task_id: str, task: asyncio.Task[Any]) -> None:
+async def _finish_background(task_id: str, task: asyncio.Task[object]) -> None:
     status, summary = _summarize_task(task)
     await _client.request(
         _background_request(
@@ -48,28 +49,28 @@ def _background_request(
     *,
     status: str,
     summary: str = "",
-) -> dict[str, Any]:
+) -> FacadeRpcRequest:
     actor = _context.actor_context()
     bridge = _context.bridge_context()
-    return {
-        "token": bridge.token,
-        "kind": kind,
-        "actor_id": actor.actor_id,
-        "agent_name": actor.agent_name,
-        "session_id": actor.session_id,
-        "mailbox_id": actor.mailbox_id,
-        "task_id": task_id,
-        "status": status,
-        "summary": summary,
-    }
+    return FacadeRpcRequest(
+        token=bridge.token,
+        kind=kind,
+        actor_id=actor.actor_id,
+        agent_name=actor.agent_name,
+        session_id=actor.session_id,
+        mailbox_id=actor.mailbox_id,
+        task_id=task_id,
+        status=status,
+        summary=summary,
+    )
 
 
-def _tasks() -> dict[str, asyncio.Task[Any]]:
+def _tasks() -> dict[str, asyncio.Task[object]]:
     main = sys.modules.get("__main__")
     tasks = getattr(main, "TASKS", None)
     if isinstance(tasks, dict):
         return tasks
-    local_tasks = globals().setdefault("TASKS", {})
+    local_tasks: dict[str, asyncio.Task[object]] = globals().setdefault("TASKS", {})
     return local_tasks
 
 
@@ -84,7 +85,7 @@ def _task_id(tid_suggest: str | None) -> str:
     return task_id
 
 
-def _summarize_task(task: asyncio.Task[Any]) -> tuple[str, str]:
+def _summarize_task(task: asyncio.Task[object]) -> tuple[str, str]:
     if task.cancelled():
         return "cancelled", "cancelled"
     try:

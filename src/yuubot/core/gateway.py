@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-from yuuagents.mailbox import MailBox as Mailbox
+from yuuagents.core.mailbox import MailBox as Mailbox
 
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.core.routing import RouteBindings

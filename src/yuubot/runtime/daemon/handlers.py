@@ -41,8 +41,15 @@ logger = logging.getLogger(__name__)
 class ConversationRequest(msgspec.Struct, forbid_unknown_fields=False):
     """Typed boundary for conversation creation requests."""
 
-    actor_id: str = ""
     conversation_id: str = ""
+    actor_id: str = ""
+    character_id: str = ""
+    capability_set_id: str = ""
+    llm_backend_id: str = ""
+    model: str = ""
+    title: str = ""
+    reply_address: str = ""
+    metadata: dict[str, object] = msgspec.field(default_factory=dict)
 
 
 class ConversationMessageRequest(msgspec.Struct, forbid_unknown_fields=False):
@@ -103,7 +110,7 @@ async def _resource_changed_from_request(
 
 async def _conversation_payload_from_request(
     request: Request,
-) -> dict[str, str] | JSONResponse:
+) -> ConversationRequest | JSONResponse:
     try:
         payload = await request.json()
     except json.JSONDecodeError:
@@ -116,13 +123,16 @@ async def _conversation_payload_from_request(
     except msgspec.ValidationError, msgspec.DecodeError:
         return error_response("invalid request body", status_code=400)
 
-    if not req.actor_id.strip():
-        return error_response("actor_id must be a non-empty string", status_code=400)
-
-    return {
-        "actor_id": req.actor_id.strip(),
-        "conversation_id": req.conversation_id.strip(),
-    }
+    if not req.actor_id.strip() and not (
+        req.character_id.strip()
+        and req.capability_set_id.strip()
+        and req.llm_backend_id.strip()
+    ):
+        return error_response(
+            "actor_id or character_id/capability_set_id/llm_backend_id must be provided",
+            status_code=400,
+        )
+    return req
 
 
 def _content_items_from_request(
@@ -353,13 +363,28 @@ def make_create_conversation_handler(
         payload_or_response = await _conversation_payload_from_request(request)
         if isinstance(payload_or_response, JSONResponse):
             return payload_or_response
-        payload = payload_or_response
-        conversation_id = payload.get("conversation_id") or uuid.uuid4().hex
+        req = payload_or_response
+        conversation_id = req.conversation_id.strip() or uuid.uuid4().hex
         try:
-            conversation = await conversation_manager.create_conversation(
-                conversation_id=conversation_id,
-                actor_id=payload["actor_id"],
-            )
+            if req.actor_id.strip():
+                conversation = await conversation_manager.create_from_actor_defaults(
+                    conversation_id=conversation_id,
+                    actor_id=req.actor_id.strip(),
+                    title=req.title,
+                    reply_address=req.reply_address,
+                    metadata=req.metadata,
+                )
+            else:
+                conversation = await conversation_manager.create_from_refs(
+                    conversation_id=conversation_id,
+                    character_id=req.character_id.strip(),
+                    capability_set_id=req.capability_set_id.strip(),
+                    llm_backend_id=req.llm_backend_id.strip(),
+                    model=req.model.strip(),
+                    title=req.title,
+                    reply_address=req.reply_address,
+                    metadata=req.metadata,
+                )
         except LookupError as exc:
             return error_response(str(exc), status_code=404)
         except TypeError as exc:
@@ -372,6 +397,10 @@ def make_create_conversation_handler(
                 "data": {
                     "conversation_id": conversation.conversation_id,
                     "actor_id": conversation.actor_id,
+                    "character_id": conversation.character.id,
+                    "capability_set_id": conversation.capability_set.id,
+                    "llm_backend_id": conversation.llm_backend.id,
+                    "model": conversation.model,
                     "created_at": _iso_or_none(conversation.created_at),
                     "updated_at": _iso_or_none(conversation.updated_at),
                 },

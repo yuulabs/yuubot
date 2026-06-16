@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, cast
 
 import msgspec
-from yuuagents.mailbox import MailMessage
+from yuuagents.core.mailbox import MailMessage
 
 if TYPE_CHECKING:
     from yuullm.types import ContentItem

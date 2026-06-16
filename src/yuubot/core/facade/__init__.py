@@ -6,6 +6,7 @@ Submodules:
 - context: actor-local context module rendering
 - workspace: workspace and actor binding management
 - client: generated client template
+- protocol: shared RPC request/response Structs
 """
 
 from yuubot.core.facade.bridge import (
@@ -13,7 +14,6 @@ from yuubot.core.facade.bridge import (
     FacadeBackgroundTaskStarted as FacadeBackgroundTaskStarted,
     FacadeDelegateTask as FacadeDelegateTask,
     FacadeImResponse as FacadeImResponse,
-    FacadeRpcRequest as FacadeRpcRequest,
     IntegrationInvokeBridge as IntegrationInvokeBridge,
 )
 from yuubot.core.facade.client import (
@@ -29,6 +29,13 @@ from yuubot.core.facade.codegen import (
 from yuubot.core.facade.context import (
     FACADE_CONTEXT_MODULE as FACADE_CONTEXT_MODULE,
     render_context_module as render_context_module,
+)
+from yuubot.core.facade.protocol import (
+    DelegateSubmitPayload as DelegateSubmitPayload,
+    FacadeRpcRequest as FacadeRpcRequest,
+    FacadeRpcResponse as FacadeRpcResponse,
+    ImResponsePayload as ImResponsePayload,
+    RpcError as RpcError,
 )
 from yuubot.core.facade.workspace import (
     ActorFacadeBinding as ActorFacadeBinding,

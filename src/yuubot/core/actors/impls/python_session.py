@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -11,22 +10,11 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-import yuullm
-import msgspec
-from yuuagents import (
-    Budget,
-    EventBus,
-    MailBox,
-    PythonKernelConfig,
-    Runtime,
-    TaskCompleted,
-    TaskDetached,
-    TaskFailed,
-)
-from yuuagents.tool_backends import IpykernelToolBackend
-from yuuagents.tool_backends.ipykernel import PythonToolConfig
+from yuuagents import Budget, MailBox, PythonKernelConfig
+from yuuagents.python.runtime import PythonRuntime, ResolvedPythonRuntime
+from yuuagents.python.session import PythonSession
 
-from yuubot.core.bindings import ActorBinding
+from yuubot.core.bindings import AgentBinding
 from yuubot.core.capabilities import AnyCapabilitySpec
 from yuubot.core.facade import (
     ActorFacadeBinding,
@@ -81,27 +69,27 @@ class ActorPythonSessionFactory:
 
     async def bind_facade(
         self,
-        binding: ActorBinding,
+        binding: AgentBinding,
         *,
         mailbox_id: str,
     ) -> ActorFacadeBinding:
         if not self._started:
             await self.start()
-        actor_id = binding.actor.id
-        session_id = f"{actor_id}-{uuid4()}"
+        owner_id = binding.owner_id
+        session_id = f"{owner_id}-{uuid4()}"
         return self.workspace.bind_actor(
-            actor_id=actor_id,
-            agent_name=binding.actor.name,
+            actor_id=owner_id,
+            agent_name=binding.agent_name,
             session_id=session_id,
             mailbox_id=mailbox_id,
             capabilities=self._visible_capabilities(binding),
             endpoint=self.bridge.endpoint,
         )
 
-    async def create(self, binding: ActorBinding) -> "ExecutePythonSession":
+    async def create(self, binding: AgentBinding) -> "ExecutePythonSession":
         facade = await self.bind_facade(
             binding,
-            mailbox_id=f"python-session:{binding.actor.id}",
+            mailbox_id=f"python-session:{binding.owner_id}",
         )
         session = ExecutePythonSession(
             session_id=facade.session_id,
@@ -117,9 +105,9 @@ class ActorPythonSessionFactory:
 
     def _visible_capabilities(
         self,
-        binding: ActorBinding,
+        binding: AgentBinding,
     ) -> list[AnyCapabilitySpec]:
-        allowed = set(binding.actor.allowed_capability_ids)
+        allowed = set(binding.capability_set.integration_capability_ids)
         return [
             capability
             for capability in self.integrations.declared_capability_specs()
@@ -135,25 +123,27 @@ class ExecutePythonSession:
     cwd: Path
     submit_timeout_s: float = 15.0
     budget: Budget = field(default_factory=lambda: Budget(limits={}))
-    _runtime: Runtime = field(init=False)
+    _session: PythonSession | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
-        eventbus = EventBus()
-        self._runtime = Runtime(eventbus=eventbus)
-        backend = IpykernelToolBackend(
+        runtime = PythonRuntime(
             config=PythonKernelConfig(
                 cwd=str(self.cwd),
                 sys_path=tuple(self.facade.sys_path),
                 startup_code=self.facade.startup_code,
             ),
+            state=dict(self.facade.session_state),
         )
-        executor = backend.create_executor(
-            msgspec.to_builtins(PythonToolConfig(state=self.facade.session_state))
-        )
-        self._runtime.add_executors(
-            self.session_id,
-            {"ipykernel": executor},
-            owned=True,
+        self._session = PythonSession(
+            agent_id=self.session_id,
+            agent_name=self.facade.agent_name,
+            runtime=ResolvedPythonRuntime(
+                config=runtime.config,
+                imports=runtime.imports,
+                state=runtime.state,
+                expand_functions=runtime.expand_functions,
+            ),
+            session_id=self.session_id,
         )
 
     async def warmup(self) -> None:
@@ -169,33 +159,29 @@ class ExecutePythonSession:
         return extract_execute_python_result(await self.execute(code))
 
     async def execute(self, code: str) -> object:
-        tool_call = yuullm.ToolCall(
-            id=f"call-{uuid4()}",
-            name="execute_python",
-            arguments=json.dumps(
-                {
-                    "code": code,
-                    "capture": ["stdout", "stderr"],
-                },
-                ensure_ascii=True,
-            ),
+        if self._session is None:
+            raise RuntimeError("Python session not initialized")
+        result = await self._session.execute(
+            code,
+            timeout_s=self.submit_timeout_s,
         )
-        task = self._runtime.submit(
-            self.session_id,
-            tool_call,
-            self.budget,
-        )
-        outcome = await task.wait_foreground(self.submit_timeout_s)
-        if isinstance(outcome, TaskCompleted):
-            return outcome.result
-        if isinstance(outcome, TaskFailed):
-            raise outcome.error
-        if isinstance(outcome, TaskDetached):
-            return outcome.partial
-        raise RuntimeError(f"unexpected execute_python outcome: {outcome!r}")
+        if result.status == "ok":
+            outputs: list[dict[str, str]] = []
+            if result.stdout:
+                outputs.append({"type": "text", "text": result.stdout})
+            for item in result.items:
+                text = item.mime.data.get("text/plain")
+                if text:
+                    outputs.append({"type": "text", "text": str(text)})
+            return outputs
+        if result.status == "error":
+            detail = "\n".join(result.traceback) if result.traceback else result.stderr
+            raise RuntimeError(detail)
+        raise RuntimeError(f"Python execution {result.status}")
 
     async def close(self) -> None:
-        await self._runtime.remove_agent(self.session_id)
+        if self._session is not None:
+            await self._session.close()
 
 
 def extract_execute_python_result(output: object) -> dict[str, object]:

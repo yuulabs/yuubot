@@ -37,7 +37,7 @@ class EchoOnceActor(Actor):
 
     @property
     def actor_id(self) -> str:
-        return self.binding.actor.id
+        return self.binding.actor_id
 
     async def start(self) -> None:
         await self._start_execute_python()
@@ -70,7 +70,9 @@ class EchoOnceActor(Actor):
 
     async def _start_execute_python(self) -> None:
         try:
-            self._python = await self.python_sessions.create(self.binding)
+            self._python = await self.python_sessions.create(
+                self.binding.default_agent_binding()
+            )
         except Exception:
             await self._stop_execute_python()
             raise

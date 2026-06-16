@@ -1,6 +1,6 @@
 """Stage construction and actor startup.
 
-Assembles a yuuagents Stage from ActorBinding and creates the
+Assembles a yuuagents Stage from AgentBinding and creates the
 YuuAgentsActorRuntime that owns the actor lifecycle.
 """
 
@@ -10,14 +10,13 @@ import msgspec
 from yuuagents import (
     EventBus,
     MailBox,
+    ProviderPoolSessionFactory,
     Stage,
-    StageConfig,
     YuuTraceObserver,
 )
-from yuuagents.llm_session import ProviderPoolSessionFactory
 
 from yuubot.bootstrap.config import YuuAgentsConfig
-from yuubot.core.bindings import ActorBinding
+from yuubot.core.bindings import AgentBinding
 from yuubot.core.facade import ActorFacadeBinding
 from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.core.validation import (
@@ -27,12 +26,12 @@ from yuubot.core.validation import (
 
 from ._constants import _resolve_yuuagents_provider
 from ._definition import build_agent_definition
+from ._python_tool import ExecutePythonTool
 from ._runtime import YuuAgentsActorRuntime
-from ._tools import _stage_tool_backend_config
 
 
 def start_yuuagents_actor(
-    binding: ActorBinding,
+    binding: AgentBinding,
     *,
     yuuagents_config: YuuAgentsConfig,
     facade: ActorFacadeBinding | None = None,
@@ -44,24 +43,17 @@ def start_yuuagents_actor(
     llm_provider = _resolve_yuuagents_provider(binding.llm.backend.yuuagents_provider)
     if llm_session_factory is None:
         raise ConfigurationError(
-            f"actor {binding.actor.name!r}: no LLM session factory configured "
+            f"agent {binding.agent_name!r}: no LLM session factory configured "
             f"for provider {llm_provider!r}"
         )
     llm_session_factory = llm_session_factory.with_selector(binding.llm.model)
     stage = Stage.from_config(
-        StageConfig(
-            strict=yuuagents_config.strict,
-            tool_backends=_stage_tool_backend_config(
-                yuuagents_config,
-                binding=binding,
-                facade=facade,
-            ),
-        ),
         mailbox=mailbox,
         eventbus=eventbus,
         llm_session_factories={llm_provider: llm_session_factory},
         llm_options={llm_provider: _stage_llm_options(binding)},
     )
+    _register_execute_python_tool(stage, binding, facade)
     definition = build_agent_definition(binding, facade=facade, mode="im")
     conversation_definition = build_agent_definition(
         binding,
@@ -74,15 +66,15 @@ def start_yuuagents_actor(
         stage=stage,
         definitions={definition.name: definition},
         conversation_definition=conversation_definition,
-        rollover_enabled=binding.actor.runtime_policy.rollover_enabled,
-        idle_timeout_s=binding.actor.runtime_policy.idle_timeout_s,
-        summarize_steps_span=binding.actor.runtime_policy.summarize_steps_span,
+        rollover_enabled=binding.capability_set.runtime_policy.rollover_enabled,
+        idle_timeout_s=binding.capability_set.runtime_policy.idle_timeout_s,
+        summarize_steps_span=binding.capability_set.runtime_policy.summarize_steps_span,
         agent_pricings={definition.name: binding.llm.backend.pricing},
     )
     return runtime
 
 
-def _stage_llm_options(binding: ActorBinding) -> dict[str, object]:
+def _stage_llm_options(binding: AgentBinding) -> dict[str, object]:
     backend = binding.llm.backend
     return validate_stream_options(
         msgspec.to_builtins(backend.default_stream_options),
@@ -93,7 +85,7 @@ def _stage_llm_options(binding: ActorBinding) -> dict[str, object]:
 # ── Pricing validation ───────────────────────────────────────────
 
 
-def _check_pricing_for_budget(binding: ActorBinding) -> None:
+def _check_pricing_for_budget(binding: AgentBinding) -> None:
     if not _requires_pricing(binding):
         return
     model = binding.llm.model
@@ -101,15 +93,15 @@ def _check_pricing_for_budget(binding: ActorBinding) -> None:
         if entry.model == model:
             return
     raise ConfigurationError(
-        f"actor {binding.actor.name!r}: USD budget requires pricing for "
+        f"agent {binding.agent_name!r}: USD budget requires pricing for "
         f"model {model!r} in backend {binding.llm.backend.name!r}"
     )
 
 
-def _requires_pricing(binding: ActorBinding) -> bool:
+def _requires_pricing(binding: AgentBinding) -> bool:
     backend_budget = binding.llm.backend.budget
     return (
-        binding.actor.budget.max_usd > 0
+        binding.budget.max_usd > 0
         or _positive_budget(backend_budget.daily_usd)
         or _positive_budget(backend_budget.monthly_usd)
     )
@@ -117,3 +109,18 @@ def _requires_pricing(binding: ActorBinding) -> bool:
 
 def _positive_budget(value: float | None) -> bool:
     return value is not None and value > 0
+
+
+def _register_execute_python_tool(
+    stage: Stage,
+    binding: AgentBinding,
+    facade: ActorFacadeBinding | None,
+) -> None:
+    if facade is None:
+        return
+    tool = ExecutePythonTool(
+        stage.new_runtime,
+        facade=facade,
+        workspace_path=binding.require_workspace_path(),
+    )
+    stage.new_runtime.registry.register(tool.definition, lambda r: tool)

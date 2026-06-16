@@ -25,8 +25,10 @@ from yuubot.core.integrations.contracts import (
 )
 from yuubot.core.integrations.registry import IntegrationFactoryRegistry
 from yuubot.resources.events import ResourceChanged
+from yuubot.resources.orm import from_orm
 from yuubot.resources.repository import ResourceRepository
-from yuubot.resources.store.models import ActorORM, IntegrationORM
+from yuubot.resources.records import ConversationRecord
+from yuubot.resources.store.models import ActorORM, ConversationORM, IntegrationORM
 
 if TYPE_CHECKING:
     from yuubot.core.gateway import Gateway
@@ -52,7 +54,7 @@ class IntegrationCore:
     )
     _integration_by_capability: dict[str, str] = field(default_factory=dict, init=False)
     _enabled_capability_ids: Cached[set[str]] = field(init=False)
-    _actor_allowed: dict[str, Cached[set[str]]] = field(
+    _owner_allowed: dict[str, Cached[set[str]]] = field(
         default_factory=dict, init=False
     )
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
@@ -74,8 +76,10 @@ class IntegrationCore:
             await self.reconcile(event)
         if event.is_table("actors"):
             for actor_id in event.row_ids:
-                if actor_id in self._actor_allowed:
-                    self._actor_allowed[actor_id].invalidate()
+                if actor_id in self._owner_allowed:
+                    self._owner_allowed[actor_id].invalidate()
+        if event.is_table("conversations") or event.is_table("capability_sets"):
+            self._owner_allowed.clear()
 
     async def invoke(
         self,
@@ -86,7 +90,7 @@ class IntegrationCore:
         context: InvocationContext | None = None,
         usage: object | None = None,
     ) -> msgspec.Struct:
-        allowed = await self._get_actor_allowed(actor_id)
+        allowed = await self._get_owner_allowed(actor_id)
         if capability_id not in allowed:
             raise LookupError(
                 f"actor {actor_id} is not allowed to use {capability_id!r}"
@@ -185,7 +189,7 @@ class IntegrationCore:
             raise LookupError(f"integration {integration_id!r} is not running") from exc
 
     def remove_actor_cache(self, actor_id: str) -> None:
-        self._actor_allowed.pop(actor_id, None)
+        self._owner_allowed.pop(actor_id, None)
 
     def _find_capability(self, capability_id: str) -> AnyCapability:
         capability = self._capability_by_id.get(capability_id)
@@ -203,18 +207,29 @@ class IntegrationCore:
             )
         return integration_id
 
-    async def _get_actor_allowed(self, actor_id: str) -> set[str]:
-        cache = self._actor_allowed.get(actor_id)
+    async def _get_owner_allowed(self, owner_id: str) -> set[str]:
+        cache = self._owner_allowed.get(owner_id)
         if cache is None:
-            cache = Cached(loader=lambda aid=actor_id: self._load_actor_allowed(aid))
-            self._actor_allowed[actor_id] = cache
+            cache = Cached(loader=lambda oid=owner_id: self._load_owner_allowed(oid))
+            self._owner_allowed[owner_id] = cache
         return await cache.get()
 
-    async def _load_actor_allowed(self, actor_id: str) -> set[str]:
-        actor = await self.repository.get(ActorORM, actor_id)
-        if actor is None or not actor.enabled:
-            return set()
-        return set(actor.allowed_capability_ids)
+    async def _load_owner_allowed(self, owner_id: str) -> set[str]:
+        actor = await self.repository.get(ActorORM, owner_id)
+        if actor is not None and actor.enabled:
+            return set(actor.capability_set.integration_capability_ids)
+        with self.repository.store.db.activate():
+            row = await ConversationORM.get_or_none(
+                conversation_id=owner_id
+            ).select_related("capability_set")
+            if row is None:
+                return set()
+            conversation = await from_orm(
+                row,
+                ConversationRecord,
+                secret_codec=self.repository.secret_codec,
+            )
+        return set(conversation.capability_set.integration_capability_ids)
 
     async def _disable_removed_or_disabled_locked(
         self,

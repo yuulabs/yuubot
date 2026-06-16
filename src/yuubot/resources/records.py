@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import Literal, TypeVar
 
 import msgspec
-from yuuagents import ToolSpecConfig
 
 from yuubot.core.validation import LLMProviderOptions, StreamOptions
+
+class ToolSpecConfig(msgspec.Struct):
+    level: str = "summary"
 
 ConfigT = TypeVar("ConfigT", bound=msgspec.Struct)
 
@@ -168,19 +170,42 @@ class CharacterRecord(msgspec.Struct):
     updated_at: datetime | None = None
 
 
-class ActorRecord(msgspec.Struct):
-    """Gateway-routable agent instance, stored in yuuagents-native shape."""
+class CapabilitySetRecord(msgspec.Struct):
+    """Reusable execution and prompt-visible capability bundle."""
 
     name: str
-    character: CharacterRecord
-    llm_backend: LLMBackendRecord
-    model: str
-    llm_options: YuuAgentLLMOptions
-    budget: YuuAgentBudget
-    agent_tools: tuple[ToolConfig, ...]
-    allowed_capability_ids: tuple[str, ...]
-    runtime_policy: RuntimePolicy
-    resource_policy: ResourcePolicy
+    description: str = ""
+    integration_capability_ids: tuple[str, ...] = ()
+    workspace_path: str = ""
+    tool_ids: tuple[str, ...] = ()
+    bootstrap_path: str = ""
+    enabled_global_skill_refs: tuple[str, ...] = ()
+    workspace_skill_root: str = ".agents/skills"
+    preexpanded_skill_refs: tuple[str, ...] = ()
+    runtime_policy: RuntimePolicy = msgspec.field(default_factory=RuntimePolicy)
+    prompt_fragments: tuple[str, ...] = ()
+    permission_limits: dict[str, object] = msgspec.field(default_factory=dict)
+    integration_visible_state: dict[str, object] = msgspec.field(default_factory=dict)
+    agent_tools: tuple[ToolConfig, ...] = ()
+    resource_policy: ResourcePolicy = msgspec.field(default_factory=ResourcePolicy)
+    id: str = ""
+    version: int = 1
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ActorRecord(msgspec.Struct):
+    """Always-on service identity that routes ingress into conversations."""
+
+    name: str
+    default_character: CharacterRecord
+    capability_set: CapabilitySetRecord
+    default_llm_backend: LLMBackendRecord
+    default_model: str
+    default_llm_options: YuuAgentLLMOptions = msgspec.field(
+        default_factory=YuuAgentLLMOptions
+    )
+    default_budget: YuuAgentBudget = msgspec.field(default_factory=YuuAgentBudget)
     id: str = ""
     type: str = "simple_loop"
     config: dict[str, object] = msgspec.field(default_factory=dict)
@@ -208,7 +233,16 @@ class ActorIngressRuleRecord(msgspec.Struct):
 
 class ConversationRecord(msgspec.Struct):
     conversation_id: str
-    actor_id: str
+    character: CharacterRecord
+    capability_set: CapabilitySetRecord
+    llm_backend: LLMBackendRecord
+    model: str
+    llm_options: YuuAgentLLMOptions = msgspec.field(default_factory=YuuAgentLLMOptions)
+    budget: YuuAgentBudget = msgspec.field(default_factory=YuuAgentBudget)
+    actor_id: str = ""
+    title: str = ""
+    reply_address: str = ""
+    metadata: dict[str, object] = msgspec.field(default_factory=dict)
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

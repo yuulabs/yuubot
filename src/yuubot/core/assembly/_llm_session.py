@@ -7,14 +7,14 @@ from urllib.parse import urlparse
 import yuullm
 from yuuagents import ProviderPoolSessionFactory
 
-from yuubot.core.bindings import ActorBinding
+from yuubot.core.bindings import AgentBinding
 from yuubot.resources.records import LLMBackendRecord
 
 from ._constants import _resolve_yuuagents_provider
 
 
 def llm_session_factory_for_binding(
-    binding: ActorBinding,
+    binding: AgentBinding,
 ) -> ProviderPoolSessionFactory:
     backend = binding.llm.backend
     provider_key = provider_key_for_backend(backend)

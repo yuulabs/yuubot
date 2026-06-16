@@ -1,6 +1,4 @@
-"""Utility functions for request handling: encoding, response helpers, and
-convenience-field resolution for actor create/patch requests.
-"""
+"""Utility functions for request handling: encoding and response helpers."""
 
 from __future__ import annotations
 
@@ -12,20 +10,16 @@ from starlette.responses import JSONResponse
 from tortoise import Model
 
 from yuubot.core.secrets import redact_secret_for_json
-from yuubot.resources.records import (
-    ResourcePolicy,
-    RuntimePolicy,
-    YuuAgentBudget,
-)
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
+    CapabilitySetORM,
     CharacterORM,
     LLMBackendORM,
     PromptTemplateORM,
 )
 from yuubot.runtime.daemon.commands._schemas import (
-    ActorCreateRequest,
     ActorIngressRulePatchRequest,
+    CapabilitySetPatchRequest,
     CharacterPatchRequest,
     LLMBackendPatchRequest,
     PromptTemplatePatchRequest,
@@ -116,6 +110,7 @@ def _value_or(value: ValueT | msgspec.UnsetType, default: ValueT) -> ValueT:
 _PATCH_TYPES: dict[type[Model], type[msgspec.Struct]] = {
     LLMBackendORM: LLMBackendPatchRequest,
     CharacterORM: CharacterPatchRequest,
+    CapabilitySetORM: CapabilitySetPatchRequest,
     PromptTemplateORM: PromptTemplatePatchRequest,
     ActorIngressRuleORM: ActorIngressRulePatchRequest,
 }
@@ -123,47 +118,3 @@ _PATCH_TYPES: dict[type[Model], type[msgspec.Struct]] = {
 
 def _patch_request_type(orm_type: type[Model]) -> type[msgspec.Struct] | None:
     return _PATCH_TYPES.get(orm_type)
-
-
-# -- Actor create/patch convenience-field resolution --
-
-
-def _actor_budget(request: ActorCreateRequest) -> YuuAgentBudget:
-    if request.budget is not msgspec.UNSET:
-        return request.budget
-    if request.max_steps is not msgspec.UNSET:
-        return YuuAgentBudget(max_steps=request.max_steps)
-    return YuuAgentBudget()
-
-
-def _actor_capability_ids(request: ActorCreateRequest) -> tuple[str, ...]:
-    if request.allowed_capability_ids is not msgspec.UNSET:
-        return request.allowed_capability_ids
-    if request.capability_ids is not msgspec.UNSET:
-        return request.capability_ids
-    return ()
-
-
-def _actor_runtime_policy(request: ActorCreateRequest) -> RuntimePolicy:
-    if request.runtime_policy is not msgspec.UNSET:
-        return request.runtime_policy
-    if request.memory_enabled is not msgspec.UNSET:
-        return RuntimePolicy(memory_enabled=request.memory_enabled)
-    return RuntimePolicy()
-
-
-def _actor_resource_policy(request: ActorCreateRequest) -> ResourcePolicy:
-    if request.resource_policy is not msgspec.UNSET:
-        return request.resource_policy
-    if request.workspace_access is msgspec.UNSET and request.daily_budget is msgspec.UNSET:
-        return ResourcePolicy()
-    return ResourcePolicy(
-        workspace_access=(
-            request.workspace_access
-            if request.workspace_access is not msgspec.UNSET
-            else "none"
-        ),
-        budget_usd_daily=(
-            request.daily_budget if request.daily_budget is not msgspec.UNSET else None
-        ),
-    )

@@ -15,28 +15,30 @@ _CLIENT_SOURCE = '''\
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+
+import msgspec
 
 import {context_module} as _context
+from yuubot.core.facade.protocol import FacadeRpcRequest, FacadeRpcResponse
 from yb._client import request as _request
 
 
-async def invoke(capability_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    request = {{
-        "token": _context.TOKEN,
-        "kind": "invoke",
-        "actor_id": _context.ACTOR_ID,
-        "capability_id": capability_id,
-        "payload": payload,
-    }}
+async def invoke(capability_id: str, payload: dict[str, object]) -> dict[str, object]:
+    request = FacadeRpcRequest(
+        token=_context.TOKEN,
+        kind="invoke",
+        actor_id=_context.ACTOR_ID,
+        capability_id=capability_id,
+        payload=payload,
+    )
     response = await _request(request)
-    result = response.get("result", {{}})
+    result = response.result
     if not isinstance(result, dict):
         raise TypeError("integration facade result must be a JSON object")
     return result
 
 
-def coerce_payload(value: Any, payload: dict[str, Any]) -> dict[str, Any]:
+def coerce_payload(value: object, payload: dict[str, object]) -> dict[str, object]:
     if value is None:
         return dict(payload)
     if not payload and isinstance(value, Mapping):

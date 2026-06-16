@@ -15,8 +15,6 @@ from yuubot.core.validation import LLMProviderOptions, StreamOptions
 from yuubot.resources.records import (
     BudgetPolicy,
     CharacterHints,
-    CharacterRecord,
-    LLMBackendRecord,
     ModelCapabilities,
     ModelCatalog,
     PricingTable,
@@ -38,27 +36,17 @@ WorkspaceAccess = Literal["none", "read_only", "read_write"]
 
 class ActorCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
     name: str
-    character: CharacterRecord | msgspec.UnsetType = msgspec.UNSET
-    llm_backend: LLMBackendRecord | msgspec.UnsetType = msgspec.UNSET
+    default_character_id: str
+    capability_set_id: str
+    default_llm_backend_id: str
     id: str = ""
     type: str = "simple_loop"
-    character_id: str | msgspec.UnsetType = msgspec.UNSET
-    llm_backend_id: str | msgspec.UnsetType = msgspec.UNSET
-    model: str = ""
+    default_model: str = ""
     config: dict[str, object] = msgspec.field(default_factory=dict)
     enabled: bool = True
     version: int = 1
-    llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
-    budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
-    agent_tools: tuple[ToolConfig, ...] | msgspec.UnsetType = msgspec.UNSET
-    allowed_capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
-    runtime_policy: RuntimePolicy | msgspec.UnsetType = msgspec.UNSET
-    resource_policy: ResourcePolicy | msgspec.UnsetType = msgspec.UNSET
-    max_steps: int | msgspec.UnsetType = msgspec.UNSET
-    memory_enabled: bool | msgspec.UnsetType = msgspec.UNSET
-    workspace_access: WorkspaceAccess | msgspec.UnsetType = msgspec.UNSET
-    daily_budget: float | msgspec.UnsetType = msgspec.UNSET
-    capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    default_llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
+    default_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
     created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
     updated_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
 
@@ -67,24 +55,33 @@ class ActorPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     id: str | msgspec.UnsetType = msgspec.UNSET
     name: str | msgspec.UnsetType = msgspec.UNSET
     type: str | msgspec.UnsetType = msgspec.UNSET
-    character: CharacterRecord | msgspec.UnsetType = msgspec.UNSET
-    llm_backend: LLMBackendRecord | msgspec.UnsetType = msgspec.UNSET
-    character_id: str | msgspec.UnsetType = msgspec.UNSET
-    llm_backend_id: str | msgspec.UnsetType = msgspec.UNSET
-    model: str | msgspec.UnsetType = msgspec.UNSET
+    default_character_id: str | msgspec.UnsetType = msgspec.UNSET
+    capability_set_id: str | msgspec.UnsetType = msgspec.UNSET
+    default_llm_backend_id: str | msgspec.UnsetType = msgspec.UNSET
+    default_model: str | msgspec.UnsetType = msgspec.UNSET
     config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
     enabled: bool | msgspec.UnsetType = msgspec.UNSET
-    llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
-    budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
-    agent_tools: tuple[ToolConfig, ...] | msgspec.UnsetType = msgspec.UNSET
-    allowed_capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    default_llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
+    default_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
+
+
+class CapabilitySetPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
+    id: str | msgspec.UnsetType = msgspec.UNSET
+    name: str | msgspec.UnsetType = msgspec.UNSET
+    description: str | msgspec.UnsetType = msgspec.UNSET
+    integration_capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    workspace_path: str | msgspec.UnsetType = msgspec.UNSET
+    tool_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    bootstrap_path: str | msgspec.UnsetType = msgspec.UNSET
+    enabled_global_skill_refs: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    workspace_skill_root: str | msgspec.UnsetType = msgspec.UNSET
+    preexpanded_skill_refs: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
     runtime_policy: RuntimePolicy | msgspec.UnsetType = msgspec.UNSET
+    prompt_fragments: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    permission_limits: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
+    integration_visible_state: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
+    agent_tools: tuple[ToolConfig, ...] | msgspec.UnsetType = msgspec.UNSET
     resource_policy: ResourcePolicy | msgspec.UnsetType = msgspec.UNSET
-    max_steps: int | msgspec.UnsetType = msgspec.UNSET
-    memory_enabled: bool | msgspec.UnsetType = msgspec.UNSET
-    workspace_access: WorkspaceAccess | msgspec.UnsetType = msgspec.UNSET
-    daily_budget: float | msgspec.UnsetType = msgspec.UNSET
-    capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
 
 
 class IntegrationCreateRequest(msgspec.Struct, forbid_unknown_fields=True):

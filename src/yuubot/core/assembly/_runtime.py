@@ -9,12 +9,12 @@ the sibling modules.
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass, field
 from typing import cast as typecast
 
 import yuullm
 from yuuagents import (
+    Agent,
     AgentDefinition,
     BackgroundCompletedMessage,
     Budget,
@@ -30,10 +30,8 @@ from yuuagents import (
     emit_actor_message_unhandled,
     emit_agent_started,
     emit_budget_exceeded,
-    register_executor_tool,
 )
-from yuuagents.agent import Agent
-from yuuagents.tool_primitives import Task as YuuTask
+from yuuagents.core.task import Task as YuuTask
 
 from yuubot.core.costing import calculate_cost
 from yuubot.resources.records import PricingTable
@@ -45,6 +43,18 @@ from ._rollover import (
     _reset_token_usage,
     _summary_history,
 )
+
+
+def _schedule_db_path(
+    config: dict[str, dict[str, object]] | None,
+) -> str | None:
+    if config is None:
+        return None
+    sched = config.get("schedule")
+    if isinstance(sched, dict):
+        path = sched.get("db_path")
+        return str(path) if isinstance(path, str) else None
+    return None
 
 
 @dataclass
@@ -72,6 +82,7 @@ class YuuAgentsActorRuntime:
     _agent_last_used: dict[str, float] = field(default_factory=dict)
     _idle_expiry_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     _agent_budgets: dict[str, Budget] = field(default_factory=dict)
+    _schedule_store: dict[str, dict[str, object]] = field(default_factory=dict)
 
     # ── Public API ───────────────────────────────────────────────
 
@@ -163,19 +174,39 @@ class YuuAgentsActorRuntime:
         agent = await self._agent_by_name(agent_name or self._default_agent_name())
         if agent is None:
             raise RuntimeError("schedule tool requires a running actor agent")
-        if not self._agent_has_executor(agent, tool_name):
-            raise RuntimeError("schedule tool is not enabled for this actor")
-        budget = self._agent_budgets.get(agent.id) or Budget()
-        task = self.stage.runtime.submit(
-            agent.id,
-            yuullm.ToolCall(
-                id=f"schedule-{tool_name}",
-                name=tool_name,
-                arguments=json.dumps(payload, ensure_ascii=True),
-            ),
-            budget,
-        )
-        return await task.wait()
+        if tool_name == "create_cron":
+            return await self._schedule_create_cron(payload)
+        if tool_name == "delete_cron":
+            return await self._schedule_delete_cron(payload)
+        return await self._schedule_list_crons()
+
+    async def _schedule_create_cron(self, payload: dict[str, object]) -> str:
+        job_id = str(payload.get("job_id", ""))
+        cron = str(payload.get("cron", ""))
+        actions = payload.get("actions", ())
+        self._schedule_store[job_id] = {
+            "cron": cron,
+            "actions": list(actions) if isinstance(actions, tuple | list) else list(actions),
+            "once": bool(payload.get("once", False)),
+        }
+        return f"Created cron job {job_id}: {cron}"
+
+    async def _schedule_list_crons(self) -> str:
+        if not self._schedule_store:
+            return "No cron jobs configured."
+        lines = [f"Cron Jobs ({len(self._schedule_store)}):"]
+        for jid, entry in self._schedule_store.items():
+            cron = entry.get("cron", "")
+            actions = entry.get("actions", [])
+            lines.append(f"  - {jid}: {cron}  actions: {actions}")
+        return "\n".join(lines)
+
+    async def _schedule_delete_cron(self, payload: dict[str, object]) -> str:
+        job_id = str(payload.get("job_id", ""))
+        if job_id in self._schedule_store:
+            del self._schedule_store[job_id]
+            return f"Deleted cron job {job_id}"
+        return f"Cron job {job_id} not found"
 
     # ── Message dispatch ─────────────────────────────────────────
 
@@ -255,10 +286,7 @@ class YuuAgentsActorRuntime:
         return next(iter(self.definitions))
 
     def _agent_has_executor(self, agent: Agent, tool_name: str) -> bool:
-        return any(
-            tool_name in executor
-            for executor in self.stage.runtime.agent2executors.get(agent.id, [])
-        )
+        return tool_name in {"create_cron", "list_crons", "delete_cron"}
 
     # ── Agent turn / rollover ────────────────────────────────────
 
@@ -337,7 +365,7 @@ class YuuAgentsActorRuntime:
                         },
                     )
 
-                    # Step 4: Execute tools (try new Runtime first, fall back to old)
+                    # Step 4: Execute tools
                     tools = _extract_tool_calls(message)
                     if tools:
                         new_tasks: list[tuple[yuullm.ToolCall, YuuTask]] = []
@@ -356,11 +384,9 @@ class YuuAgentsActorRuntime:
                                 )
                                 new_tasks.append((tc, yt))
                             except KeyError:
-                                # Fall back to old Runtime for unknown tools
-                                bgt = self._agent_budgets.get(agent.id) or Budget()
-                                mt = self.stage.runtime.submit(agent.id, tc, bgt)
-                                r = await mt.wait()
-                                agent.append(yuullm.tool(tc.id, str(r)))
+                                agent.append(
+                                    yuullm.tool(tc.id, f"Tool {tc.name} is not available")
+                                )
 
                         for tc, yt in new_tasks:
                             ct = await self.stage.new_runtime.wait_task(yt.id)
@@ -414,66 +440,30 @@ class YuuAgentsActorRuntime:
         agent: Agent,
         definition: AgentDefinition,
     ) -> None:
-        """Create budget from definition, register executors, and link pricing.
-
-        Registers executors with both the old Runtime (for backward compat)
-        and the new Runtime's ToolRegistry (for the new submit_tool_call() path).
-        Also refreshes the agent's history with facade-enhanced tool specs.
-        """
+        """Create budget from definition, link pricing, build tool specs."""
         budget = definition.budget.to_budget()
         self._agent_budgets[agent.id] = budget
-        # Link pricing by definition name (set via store_pricing / agent_pricings)
         pricing = self.agent_pricings.pop(definition.name, None)
         if pricing is not None:
             self.agent_pricings[agent.id] = pricing
-        if not definition.tools:
-            return
 
-        executors_registry = self.stage.tool_backends.select_intersect(
-            definition.tools
-        ).broadcast(
-            lambda _k, v: v.create_executor(
-                definition.tools[_k].config
-            )
-        )
-
-        # Collect tool specs using executors (facade-enhanced if available)
-        from yuuagents.spec import ToolSpec
-        all_specs: list[ToolSpec] = []
-        for key, executor in executors_registry.items():
-            backend = self.stage.tool_backends[key]
-            specs = backend.create_tool_specs_for_executor(
-                definition.tools[key].spec, executor
-            ) or backend.create_tool_specs(definition.tools[key].spec)
-            all_specs.extend(specs)
-
-        # Register executors with both Runtimes
-        for key, executor in executors_registry.items():
-            self.stage.runtime.add_executors(
-                agent.id, {key: executor}, owned=True
-            )
-            register_executor_tool(
-                self.stage.new_runtime, executor, self.stage.runtime, key,
-            )
-
-        # Refresh agent history with proper tool specs
-        history: yuullm.History = []
-        if all_specs:
-            history.append(yuullm.tools([spec.to_openai() for spec in all_specs]))
-        if definition.prompt.system:
-            history.append(yuullm.system(definition.prompt.system))
-        # Merge existing messages (user messages) into the new history
-        existing_messages = [
-            m for m in agent.history
-            if isinstance(m, yuullm.Message) and m.role != "system"
-        ]
-        if existing_messages:
-            # Reconstruct from scratch using the session factory
-            agent.replace_history(history)
-            for msg in existing_messages:
-                agent.append(msg)
-        else:
-            agent.replace_history(history)
+        tool_specs = _build_tool_specs_for_agent(self.stage)
+        if tool_specs or definition.prompt.system:
+            history: yuullm.History = []
+            if tool_specs:
+                history.append(yuullm.tools(tool_specs))
+            if definition.prompt.system:
+                history.append(yuullm.system(definition.prompt.system))
+            existing = [
+                m for m in agent.history
+                if isinstance(m, yuullm.Message) and m.role != "system"
+            ]
+            if existing:
+                agent.replace_history(history)
+                for msg in existing:
+                    agent.append(msg)
+            else:
+                agent.replace_history(history)
 
     def _track_agent(self, agent: Agent) -> None:
         self.agents[agent.id] = agent
@@ -488,7 +478,7 @@ class YuuAgentsActorRuntime:
         self._agent_locks.pop(agent.id, None)
         self._agent_last_used.pop(agent.id, None)
         self._idle_expiry_tasks.pop(agent.id, None)
-        await self.stage.runtime.remove_agent(agent.id)
+        await self.stage.new_runtime.cancel_agent_tasks(agent.id)
         for name, item in list(self.agents_by_name.items()):
             if item is agent:
                 self.agents_by_name.pop(name, None)
@@ -599,3 +589,20 @@ def _render_task_result(task: YuuTask) -> str:
             msg += "\n" + "\n".join(task.error.traceback)
         return msg
     return "no result"
+
+
+def _build_tool_specs_for_agent(stage: Stage) -> list[dict[str, object]]:
+    """Build OpenAI-format tool specs from registered Runtime tools."""
+    registry = stage.new_runtime.registry
+    specs: list[dict[str, object]] = []
+    for name, definition in registry._definitions.items():
+        schema = definition.input_model.model_json_schema()
+        specs.append({
+            "type": "function",
+            "function": {
+                "name": definition.name,
+                "description": definition.description,
+                "parameters": schema,
+            },
+        })
+    return specs

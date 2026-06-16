@@ -9,8 +9,8 @@ from tortoise import Model
 
 from yuubot.core.secrets import (
     SecretCodec,
-    decrypt_secret_values,
-    encrypt_secret_values,
+    secret_dec_hook,
+    secret_enc_hook,
 )
 from yuubot.resources.store.model_factory import ReferenceSpec
 from yuubot.resources.store.protocol import (
@@ -34,7 +34,14 @@ async def from_orm(
         fields.pop(f"{name}_id", None)
         fields[name] = await _referenced_resource(row, name, reference, secret_codec)
     if secret_codec is not None:
-        fields = cast(dict[str, object], decrypt_secret_values(fields, secret_codec))
+        return msgspec.convert(
+            fields,
+            type=resource_type,
+            strict=False,
+            dec_hook=lambda target_type, value: secret_dec_hook(
+                target_type, value, secret_codec
+            ),
+        )
     return msgspec.convert(fields, type=resource_type, strict=False)
 
 
@@ -61,7 +68,7 @@ def to_orm_fields(
     else:
         values = msgspec.to_builtins(
             resource,
-            enc_hook=lambda value: encrypt_secret_values(value, secret_codec),
+            enc_hook=lambda value: secret_enc_hook(value, secret_codec),
         )
     if not isinstance(values, dict):
         raise TypeError(f"{type(resource).__name__} did not convert to a field dict")
@@ -91,8 +98,12 @@ def to_orm_update_fields(
     *,
     secret_codec: SecretCodec | None = None,
 ) -> dict[str, Any]:
-    prepared = encrypt_secret_values(fields, secret_codec) if secret_codec else fields
-    prepared = msgspec.to_builtins(prepared) if secret_codec else prepared
+    if secret_codec is not None:
+        prepared = msgspec.to_builtins(
+            fields, enc_hook=lambda value: secret_enc_hook(value, secret_codec)
+        )
+    else:
+        prepared = msgspec.to_builtins(fields)
     return _replace_references_with_ids(dict(cast(dict[str, Any], prepared)), row_type)
 
 

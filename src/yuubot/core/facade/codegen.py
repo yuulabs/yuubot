@@ -8,6 +8,7 @@ import re
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from typing import get_args, get_origin
 
 import msgspec
 
@@ -116,8 +117,6 @@ def _render_module(capabilities: list[AnyCapabilitySpec]) -> str:
 
 from __future__ import annotations
 
-from typing import Any
-
 from ._client import coerce_payload, invoke
 
 __all__ = {exports!r}
@@ -133,18 +132,18 @@ def _render_function(capability: AnyCapabilitySpec) -> str:
     fields = _struct_fields(capability.input_type)
     doc = _function_doc(capability)
     if not fields:
-        return f'''async def {function_name}(value: Any = None, **payload: Any) -> dict[str, Any]:
+        return f'''async def {function_name}(value: object = None, **payload: object) -> dict[str, object]:
     """{doc}"""
     return await invoke({capability.id!r}, coerce_payload(value, payload))
 '''
     if not _fields_have_valid_parameter_names(fields):
-        return f'''async def {function_name}(**payload: Any) -> dict[str, Any]:
+        return f'''async def {function_name}(**payload: object) -> dict[str, object]:
     """{doc}"""
     return await invoke({capability.id!r}, dict(payload))
 '''
     parameters = _render_parameters(fields)
     assignments = "\n".join(_render_payload_assignment(field) for field in fields)
-    return f'''async def {function_name}({parameters}) -> dict[str, Any]:
+    return f'''async def {function_name}({parameters}) -> dict[str, object]:
     """{doc}"""
     data = dict(payload)
 {assignments}
@@ -168,11 +167,69 @@ def _render_parameters(fields: tuple[msgspec.structs.FieldInfo, ...]) -> str:
     required: list[str] = []
     optional: list[str] = []
     for field in fields:
+        type_str = _type_annotation(field.type)
         if _field_is_required(field):
-            required.append(f"{field.name}: Any")
+            required.append(f"{field.name}: {type_str}")
         else:
-            optional.append(f"{field.name}: Any = _UNSET")
-    return "*, " + ", ".join([*required, *optional, "**payload: Any"])
+            optional.append(f"{field.name}: {type_str} = _UNSET")
+    return "*, " + ", ".join([*required, *optional, "**payload: object"])
+
+
+def _type_annotation(field_type: object) -> str:
+    """Render a Python type object as a string annotation for generated code."""
+    if field_type is str:
+        return "str"
+    if field_type is int:
+        return "int"
+    if field_type is float:
+        return "float"
+    if field_type is bool:
+        return "bool"
+    if field_type is bytes:
+        return "bytes"
+    if field_type is list:
+        return "list[object]"
+    if field_type is dict:
+        return "dict[str, object]"
+    if field_type is object:
+        return "object"
+    origin = get_origin(field_type)
+    if origin is list:
+        args = get_args(field_type)
+        if args:
+            return f"list[{_type_annotation(args[0])}]"
+        return "list[object]"
+    if origin is dict:
+        args = get_args(field_type)
+        if len(args) == 2:
+            return f"dict[{_type_annotation(args[0])}, {_type_annotation(args[1])}]"
+        return "dict[str, object]"
+    if origin is set:
+        args = get_args(field_type)
+        if args:
+            return f"set[{_type_annotation(args[0])}]"
+        return "set[object]"
+    if origin is tuple:
+        args = get_args(field_type)
+        if args:
+            items = ", ".join(_type_annotation(a) for a in args)
+            return f"tuple[{items}]"
+        return "tuple[object, ...]"
+    # For union types (X | Y), check for None
+    import types
+
+    if origin is types.UnionType:
+        args = get_args(field_type)
+        none_args = [a for a in args if a is type(None)]
+        other_args = [a for a in args if a is not type(None)]
+        if none_args and other_args:
+            inner = _type_annotation(other_args[0]) if len(other_args) == 1 else "object"
+            return f"{inner} | None"
+        return "object"
+    # Fallback for msgspec.Struct subclasses and unknown types
+    if isinstance(field_type, type) and issubclass(field_type, msgspec.Struct):
+        return field_type.__qualname__
+    return "object"
 
 
 def _render_payload_assignment(field: msgspec.structs.FieldInfo) -> str:

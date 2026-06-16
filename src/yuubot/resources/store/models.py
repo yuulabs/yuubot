@@ -5,6 +5,7 @@ from __future__ import annotations
 from yuubot.resources.records import (
     ActorRecord,
     ActorIngressRuleRecord,
+    CapabilitySetRecord,
     CharacterRecord,
     ConversationMessageRecord,
     ConversationRecord,
@@ -70,6 +71,21 @@ CharacterORM = resource_model(
     },
 )
 
+CapabilitySetORM = resource_model(
+    "CapabilitySetORM",
+    CapabilitySetRecord,
+    table="capability_sets",
+    module=__name__,
+    field_specs={
+        "id": char(primary_key=True),
+        "name": char(unique=True),
+        "description": text(),
+        "workspace_path": text(),
+        "bootstrap_path": text(),
+        "workspace_skill_root": text(),
+    },
+)
+
 ActorORM = resource_model(
     "ActorORM",
     ActorRecord,
@@ -80,10 +96,11 @@ ActorORM = resource_model(
         "name": char(unique=True),
     },
     # Tortoise adds raw FK columns with an _id suffix:
-    # character_id and llm_backend_id.
+    # default_character_id, capability_set_id, default_llm_backend_id.
     references={
-        "character": reference(CharacterORM),
-        "llm_backend": reference(LLMBackendORM),
+        "default_character": reference(CharacterORM),
+        "capability_set": reference(CapabilitySetORM),
+        "default_llm_backend": reference(LLMBackendORM),
     },
 )
 
@@ -107,8 +124,15 @@ ConversationORM = resource_model(
     field_specs={
         "conversation_id": char(max_length=255, primary_key=True),
         "actor_id": char(max_length=255),
+        "title": text(),
+        "reply_address": text(),
         "created_at": FieldSpec(kind="datetime"),
         "updated_at": FieldSpec(kind="datetime"),
+    },
+    references={
+        "character": reference(CharacterORM),
+        "capability_set": reference(CapabilitySetORM),
+        "llm_backend": reference(LLMBackendORM),
     },
 )
 

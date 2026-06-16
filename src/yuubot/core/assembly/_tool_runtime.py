@@ -11,14 +11,13 @@ from typing import cast as typecast
 
 import yuullm
 from yuuagents import (
-    Budget,
+    Agent,
     Owner,
     OwnerType,
     Stage,
     ToolContext,
 )
-from yuuagents.agent import Agent
-from yuuagents.tool_primitives import Task as YuuTask
+from yuuagents.core.task import Task as YuuTask
 
 
 def _extract_tool_calls(message: yuullm.Message) -> list[yuullm.ToolCall]:
@@ -59,14 +58,8 @@ async def _execute_tool_calls(
     agent: Agent,
     tools: list[yuullm.ToolCall],
     stage: Stage,
-    budgets: dict[str, Budget],
 ) -> None:
-    """Submit tool calls to the new Runtime, falling back to the old Runtime.
-
-    Unknown tools raise ``KeyError`` from the new Runtime; in that case the
-    legacy ``stage.runtime.submit()`` path is used. Results are appended to
-    ``agent`` as tool messages.
-    """
+    """Submit tool calls to the new Runtime and append results to agent history."""
     new_tasks: list[tuple[yuullm.ToolCall, YuuTask]] = []
 
     for tc in tools:
@@ -76,18 +69,12 @@ async def _execute_tool_calls(
             eventbus=stage.eventbus,
             entity_log=agent.log,
         )
-        try:
-            yt = await stage.new_runtime.submit_tool_call(
-                Owner(type=OwnerType.AGENT, id=agent.id),
-                tc,
-                context,
-            )
-            new_tasks.append((tc, yt))
-        except KeyError:
-            budget = budgets.get(agent.id) or Budget()
-            mt = stage.runtime.submit(agent.id, tc, budget)
-            r = await mt.wait()
-            agent.append(yuullm.tool(tc.id, str(r)))
+        yt = await stage.new_runtime.submit_tool_call(
+            Owner(type=OwnerType.AGENT, id=agent.id),
+            tc,
+            context,
+        )
+        new_tasks.append((tc, yt))
 
     for tc, yt in new_tasks:
         ct = await stage.new_runtime.wait_task(yt.id)

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
 
+from yuubot.core.facade.protocol import FacadeRpcRequest
 from yb import _client, _context
 
 
@@ -55,24 +55,24 @@ async def delete_cron(job_id: str) -> str:
     return await _schedule_tool("delete_cron", {"job_id": job_id})
 
 
-async def _schedule_tool(tool_name: str, payload: dict[str, Any]) -> str:
+async def _schedule_tool(tool_name: str, payload: dict[str, object]) -> str:
     response = await _client.request(_schedule_request(tool_name, payload))
-    result = response.get("result", {})
+    result = response.result
     if isinstance(result, dict):
         return str(result.get("output") or "")
     return ""
 
 
-def _schedule_request(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _schedule_request(tool_name: str, payload: dict[str, object]) -> FacadeRpcRequest:
     actor = _context.actor_context()
     bridge = _context.bridge_context()
-    return {
-        "token": bridge.token,
-        "kind": "schedule",
-        "actor_id": actor.actor_id,
-        "agent_name": actor.agent_name,
-        "session_id": actor.session_id,
-        "mailbox_id": actor.mailbox_id,
-        "capability_id": tool_name,
-        "payload": payload,
-    }
+    return FacadeRpcRequest(
+        token=bridge.token,
+        kind="schedule",
+        actor_id=actor.actor_id,
+        agent_name=actor.agent_name,
+        session_id=actor.session_id,
+        mailbox_id=actor.mailbox_id,
+        capability_id=tool_name,
+        payload=payload,
+    )
