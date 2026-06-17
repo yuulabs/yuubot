@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 ReactionKind = str
 """Fast acknowledgement signals for `IntegrationInstance.response`.
 
-Agents can emit platform-specific reaction strings through ``yb.im.react()``.
+Agents can emit platform-specific reaction strings through the integration SDK.
 Integrations that cannot represent a reaction should silently ignore it.
 """
 
@@ -34,12 +34,18 @@ class IntegrationKindInfo:
     The admin UI uses this to render a create/edit form for each integration
     kind (name, description, JSON Schema for the `config` field, and the list
     of capabilities the kind exposes).
+
+    ``source_path_convention`` is a human-readable description of how this
+    integration kind constructs the ``source.path`` on inbound messages.
+    Integration developers document their path naming scheme here so that
+    users can write correct ``source_path_pattern`` globs in Ingress Rules.
     """
 
     name: str
     description: str = ""
     config_schema: dict[str, object] = field(default_factory=dict)
     capabilities: tuple[AnyCapabilitySpec, ...] = ()
+    source_path_convention: str = ""
 
 
 class IntegrationFactory(Protocol):
@@ -53,6 +59,16 @@ class IntegrationFactory(Protocol):
 
     @property
     def config_schema(self) -> type[msgspec.Struct] | dict[str, object]: ...
+
+    @property
+    def source_path_convention(self) -> str:
+        """Human-readable description of how this kind constructs source.path.
+
+        Describe the path naming scheme so users can write correct glob
+        patterns in Ingress Rules.  Return ``""`` if the integration does
+        not produce inbound messages or if the path is purely external.
+        """
+        return ""
 
     def capability_specs(self) -> list[AnyCapabilitySpec]: ...
 
@@ -84,10 +100,15 @@ class IntegrationInstance(Protocol):
         self,
         target_msg_id: str,
         *,
+        path: str = "",
         msg: str = "",
         react: ReactionKind | None = None,
     ) -> None:
         """Reply or react to a previously received inbound message.
+
+        ``path`` is the target channel path (the actor passes
+        ``message.source.path`` directly so the integration knows
+        where to route the response without a message-id lookup).
 
         ``msg`` is human-visible text (typically an error message); ``react``
         is a fast acknowledgement signal (e.g. an emoji reaction). Platforms
@@ -115,6 +136,7 @@ def integration_kind_info(factory: IntegrationFactory) -> IntegrationKindInfo:
         description=factory.description,
         config_schema=schema,
         capabilities=tuple(factory.capability_specs()),
+        source_path_convention=factory.source_path_convention,
     )
 
 

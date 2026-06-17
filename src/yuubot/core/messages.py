@@ -46,7 +46,9 @@ class IncomingMessage(MailMessage, msgspec.Struct):
         ts = datetime.fromtimestamp(self.timestamp, tz=timezone.utc).strftime(
             "%H:%M:%S"
         )
-        return f"[{name} {ts}] "
+        source_id = self.source.id or ""
+        source_path = self.source.path or ""
+        return f"[source={source_id} path={source_path} {name} {ts}] "
 
     def content_items(self) -> list[ContentItem]:
         """Typed accessor for content cast to yuullm ContentItem list.

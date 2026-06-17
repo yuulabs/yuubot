@@ -414,6 +414,7 @@ class SecretIntegrationFactory:
     name = "secret-kind"
     description = "Secret config test integration."
     config_schema = SecretIntegrationConfig
+    source_path_convention = ""
 
     def capability_specs(self):
         return []

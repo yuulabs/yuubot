@@ -14,7 +14,7 @@ import msgspec
 import pytest
 import yuullm
 
-from helpers import register_test_llm_provider, make_test_daemon_infrastructure
+from tests.helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,

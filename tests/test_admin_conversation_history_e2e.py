@@ -11,7 +11,7 @@ import httpx
 import msgspec
 import yuullm
 
-from helpers import register_test_llm_provider, make_test_daemon_infrastructure
+from tests.helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 

@@ -12,7 +12,7 @@ import msgspec
 import pytest
 import yuullm
 
-from helpers import register_test_llm_provider, make_test_daemon_infrastructure
+from tests.helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.integrations import default_integration_factories
 from yuubot.runtime.admin.app import DaemonClient, build_admin_asgi_app

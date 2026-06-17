@@ -17,7 +17,7 @@ import msgspec
 import pytest
 import yuullm
 
-from helpers import (
+from tests.helpers import (
     insert_echo_actor_resources,
     register_test_llm_provider,
     make_test_daemon_infrastructure,
@@ -208,11 +208,8 @@ async def test_system_prompt_includes_character_and_runtime_guidance(
             f"System prompt should contain character instructions.\n"
             f"Expected: {SYSTEM_PROMPT!r}\nGot: {system}"
         )
-        assert "yb.im.respond" in system, (
-            "IM mode should include respond guidance in system prompt."
-        )
-        assert "yb.im.react" in system, (
-            "IM mode should include react guidance in system prompt."
+        assert "tim.Channel" in system, (
+            "IM mode should include tim.Channel guidance in system prompt."
         )
     finally:
         await daemon.stop()

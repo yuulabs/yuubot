@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from helpers import (
+from tests.helpers import (
     make_actor_record,
     make_character_record,
     make_llm_backend_record,
@@ -39,12 +39,12 @@ def test_python_tool_facade_imports_follow_visible_capabilities(tmp_path: Path) 
     }
     echo_imports = {item["module"] for item in echo_tool.config["imports"]}
     assert "yb.delegate" in no_capability_imports
-    assert "yb.im" in no_capability_imports
+    assert "tim" in no_capability_imports
     assert "yb.schedule" in no_capability_imports
     assert "yext.echo" not in no_capability_imports
     assert "yext.echo" in echo_imports
     assert "yb.delegate.*" in no_capability_tool.config["expand_functions"]
-    assert "yb.im.*" in no_capability_tool.config["expand_functions"]
+    assert "tim.*" in no_capability_tool.config["expand_functions"]
     assert "yb.schedule.*" in no_capability_tool.config["expand_functions"]
     assert "yext.echo.*" not in no_capability_tool.config["expand_functions"]
     assert "yext.echo.*" in echo_tool.config["expand_functions"]
@@ -66,7 +66,7 @@ def test_agent_prompt_guidance_is_mode_specific(tmp_path: Path) -> None:
         mode="conversation",
     ).prompt.system
 
-    assert "yb.im.respond" in im_prompt
+    assert "tim.Channel" in im_prompt
     assert conversation_prompt.endswith("Base prompt.")
 
 

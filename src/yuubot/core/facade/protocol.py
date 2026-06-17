@@ -41,12 +41,11 @@ class FacadeRpcResponse(msgspec.Struct):
     error: RpcError | None = None
 
 
-class ImResponsePayload(msgspec.Struct):
-    """Payload for the im_response kind — actor sends a text/react response."""
+class ImSendPayload(msgspec.Struct):
+    """Payload for the im_send kind — actor sends a message to a channel."""
 
-    msg_id: str = ""
+    path: str = ""
     text: str = ""
-    react: str = ""
 
 
 class DelegateSubmitPayload(msgspec.Struct):

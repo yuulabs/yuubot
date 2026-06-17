@@ -56,6 +56,7 @@ export interface IntegrationKind {
   name: string;
   description: string;
   config_schema?: Record<string, unknown>;
+  source_path_convention?: string;
   capabilities: Array<{
     id: string;
     name: string;

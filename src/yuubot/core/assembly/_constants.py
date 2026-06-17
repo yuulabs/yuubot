@@ -13,26 +13,26 @@ ROLLOVER_SUMMARY_PROMPT = (
 )
 IM_MODE_SYSTEM_GUIDANCE = (
     "Yuubot IM mode: incoming mailbox messages are inputs, not function calls. "
-    "For user-visible replies, call await yb.im.respond(\"...\"). "
-    "For quick acknowledgements, call await yb.im.react(\"working\"). "
+    "For user-visible replies, use tim.Channel(path).send(text) to send messages "
+    "directly to an integration channel. "
     "Plain assistant text is internal and is not delivered to the IM user."
 )
 FACADE_IMPORTS = (
     PythonImport(module="yb"),
     PythonImport(module="yb.actor"),
     PythonImport(module="yb.delegate"),
-    PythonImport(module="yb.im"),
     PythonImport(module="yb.schedule"),
     PythonImport(module="yb.tasks"),
+    PythonImport(module="tim"),
     PythonImport(module="yext"),
 )
 FACADE_EXPAND_FUNCTIONS = (
     "yb.*",
     "yb.actor.*",
     "yb.delegate.*",
-    "yb.im.*",
     "yb.schedule.*",
     "yb.tasks.*",
+    "tim.*",
     "yext.*",
 )
 

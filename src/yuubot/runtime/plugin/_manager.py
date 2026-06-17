@@ -253,6 +253,15 @@ class ExternalPluginFactory:
     def config_schema(self) -> dict[str, object]:
         return dict(self.manifest.config)
 
+    @property
+    def source_path_convention(self) -> str:
+        """External plugins set source.path in their inbound HTTP payloads."""
+        return (
+            "Determined by the plugin itself — path is sent in the `source_path` "
+            "field of the inbound message payload. Consult the plugin's own "
+            "documentation for the naming scheme it uses."
+        )
+
     def capability_specs(self) -> list[AnyCapabilitySpec]:
         facade = self.manifest.facade
         if facade is None:
@@ -334,6 +343,7 @@ class ExternalPluginIntegration:
         self,
         target_msg_id: str,
         *,
+        path: str = "",
         msg: str = "",
         react: ReactionKind | None = None,
     ) -> None:
@@ -345,6 +355,7 @@ class ExternalPluginIntegration:
                 token=self.process.internal_token,
                 payload={
                     "target_msg_id": target_msg_id,
+                    "path": path,
                     "msg": msg,
                     "react": react or "",
                 },

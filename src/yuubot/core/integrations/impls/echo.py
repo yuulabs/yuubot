@@ -103,6 +103,14 @@ ECHO_INTEGRATION_DESCRIPTION = (
     "back to the actor that consumed the message."
 )
 
+ECHO_SOURCE_PATH_CONVENTION = (
+    "Path is configured per integration instance via the `source_path` config "
+    "field (default: the `channel_id` value).\n\n"
+    "Typical shape: `<context>/<name>`, e.g. `channels/test`.\n\n"
+    "The path is static — all messages from this integration instance share "
+    "the same source path regardless of the specific conversation or channel."
+)
+
 
 ECHO_CAPABILITY_SPEC = CapabilitySpec[EchoPayload, EchoPayload](
     id=ECHO_CAPABILITY_ID,
@@ -130,6 +138,7 @@ class EchoIntegrationFactory:
     name: str = ECHO_INTEGRATION_NAME
     description: str = ECHO_INTEGRATION_DESCRIPTION
     config_schema: type[msgspec.Struct] = EchoIntegrationConfig
+    source_path_convention: str = ECHO_SOURCE_PATH_CONVENTION
     _instances: dict[str, EchoIntegration] = field(default_factory=dict)
 
     def capability_specs(self) -> list[AnyCapabilitySpec]:
@@ -163,6 +172,7 @@ class EchoIntegrationFactory:
 @dataclass
 class EchoResponseRecord:
     target_msg_id: str
+    path: str = ""
     msg: str = ""
     react: ReactionKind | None = None
 
@@ -293,11 +303,12 @@ class EchoIntegration:
         self,
         target_msg_id: str,
         *,
+        path: str = "",
         msg: str = "",
         react: ReactionKind | None = None,
     ) -> None:
         await self.response_calls.put(
-            EchoResponseRecord(target_msg_id=target_msg_id, msg=msg, react=react)
+            EchoResponseRecord(target_msg_id=target_msg_id, path=path, msg=msg, react=react)
         )
 
     async def next_response(self) -> EchoResponseRecord:

@@ -91,6 +91,7 @@ Python is 3.14. Type checking uses `ty`.
 
 ### Tests
 
+- `tests/__init__.py` — makes `tests` a proper Python package (required for relative imports across subdirectories).
 - `tests/test_daemon_commands.py` — resource API CRUD and validation.
 - `tests/test_daemon_refresh_api.py` — admin-triggered daemon refresh.
 - `tests/test_actor_lifecycle.py` — actor start/stop/reconcile behavior.
@@ -101,3 +102,46 @@ Python is 3.14. Type checking uses `ty`.
 - `tests/test_trace_cost_e2e.py` — trace and pricing plumbing.
 - `tests/test_external_plugin.py` — external plugin manifest and subprocess integration.
 - `tests/test_archive_export_import.py` — data archive import/export.
+
+#### LLM Prompt Visibility Tests
+
+These tests verify that the LLM sees the right information in its prompt — tool specs, system prompt content, capability imports — by running **scripted scenarios** where a fake LLM records every invocation while the test asserts on the captured content.
+
+```
+tests/llm_prompt/
+├── scenario.py             # Core types: PromptScenario, ScenarioStep, ToolCall, PromptSnapshot, assertion builders
+├── framework.py            # PromptCapture (scripted LLM provider) + ScenarioRunner
+├── scenarios/              # One file per feature being tested
+│   └── execute_python_visibility.py
+└── test_all_scenarios.py   # Parameterized entry: add new scenarios to ALL_SCENARIOS list
+```
+
+**Pattern** — Each scenario declares an **Assert → Action → Assert → …** chain:
+
+- **Assert** checks the current prompt snapshot (e.g. `AssertToolExists("execute_python")`).
+- **Action** simulates the LLM calling a tool (e.g. `ToolCall("execute_python", {"code": "..."})`). The daemon processes it, appends the result to the LLM history, and the next assert checks the new state.
+
+Format a new scenario:
+
+```python
+class MyFeatureVisibility(PromptScenario):
+    @property
+    def name(self) -> str: ...
+
+    async def setup(self, ctx: ScenarioContext) -> None:
+        # start daemon, insert resources, start actor, send trigger message
+        ctx.daemon = daemon  # runner stops it after assertions
+
+    def steps(self) -> list[ScenarioStep]:
+        return [
+            ScenarioStep(assertion=AssertToolExists("execute_python")),
+            ScenarioStep(
+                assertion=AssertHistoryContains("expected text"),
+                action=ToolCall("execute_python", {"code": "print(...)"}),
+            ),
+        ]
+```
+
+Then add `MyFeatureVisibility()` to `ALL_SCENARIOS` in `test_all_scenarios.py` — the test runner picks it up automatically.
+
+**Run**: `uv run pytest tests/llm_prompt/`

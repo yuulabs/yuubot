@@ -13,7 +13,7 @@ import msgspec
 import pytest
 import yuullm
 
-from helpers import (
+from tests.helpers import (
     insert_echo_actor_resources,
     register_test_llm_provider,
     make_test_daemon_infrastructure,

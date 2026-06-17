@@ -16,7 +16,7 @@ import yuutrace
 from yuuagents import YuuTraceObserver, EventBus
 from yuuagents.types.values import EventPayload
 
-from helpers import (
+from tests.helpers import (
     assert_cost_event,
     assert_tool_usage,
     insert_echo_actor_resources,

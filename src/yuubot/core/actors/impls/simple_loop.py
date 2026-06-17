@@ -25,7 +25,6 @@ from yuubot.core.facade import (
     FacadeBackgroundTaskEnded,
     FacadeBackgroundTaskStarted,
     FacadeDelegateTask,
-    FacadeImResponse,
 )
 from yuubot.core.gateway import Mailbox
 from yuubot.core.integrations.core import IntegrationCore
@@ -54,8 +53,6 @@ class SimpleLoopActor(Actor):
     _message_task: asyncio.Task[None] | None = None
     _delegate_tasks: set[asyncio.Task[None]] = field(default_factory=set, init=False)
     _background_task_ids: set[str] = field(default_factory=set, init=False)
-    _im_message_sources: dict[str, str] = field(default_factory=dict, init=False)
-    _latest_im_message_id: str = ""
     restart_required: bool = False
     _agent_binding: AgentBinding | None = None
 
@@ -116,7 +113,6 @@ class SimpleLoopActor(Actor):
             self.restart_required = True
 
     async def handle_message(self, message: IncomingMessage) -> None:
-        self._remember_im_message(message)
         runtime = self._require_runtime()
         agent = await runtime.handle_message(
             ScheduleTriggerMessage(
@@ -129,9 +125,6 @@ class SimpleLoopActor(Actor):
             raise RuntimeError(f"simple_loop actor {self.actor_id!r} has no main agent")
 
     async def handle_mail_message(self, message: MailMessage) -> None:
-        if isinstance(message, FacadeImResponse):
-            await self._send_im_response(message)
-            return
         if isinstance(message, FacadeBackgroundTaskStarted):
             self._background_task_ids.add(message.task_id)
             return
@@ -183,48 +176,6 @@ class SimpleLoopActor(Actor):
             if self.restart_required:
                 await self._reload()
             await self.handle_mail_message(message)
-
-    def _try_running_instance(self, integration_id: str):
-        if self.integrations is None:
-            return None
-        try:
-            return self.integrations.running_instance(integration_id)
-        except LookupError:
-            return None
-
-    def _remember_im_message(self, message: IncomingMessage) -> None:
-        if message.source.producer != "integration":
-            return
-        self._im_message_sources[message.message_id] = message.source.id
-        self._latest_im_message_id = message.message_id
-
-    async def _send_im_response(self, response: FacadeImResponse) -> None:
-        target_msg_id = response.target_msg_id or self._latest_im_message_id
-        if not target_msg_id:
-            logger.warning("actor %s has no IM message target", self.actor_id)
-            return
-        integration_id = self._im_message_sources.get(target_msg_id)
-        if not integration_id:
-            logger.warning(
-                "actor %s cannot resolve IM message %s",
-                self.actor_id,
-                target_msg_id,
-            )
-            return
-        instance = self._try_running_instance(integration_id)
-        if instance is None:
-            logger.warning(
-                "actor %s cannot respond to IM message %s; integration %s is not running",
-                self.actor_id,
-                target_msg_id,
-                integration_id,
-            )
-            return
-        await instance.response(
-            target_msg_id,
-            msg=response.text,
-            react=response.react or None,
-        )
 
     def _submit_delegate_task(self, message: FacadeDelegateTask) -> None:
         self._background_task_ids.add(message.task_id)

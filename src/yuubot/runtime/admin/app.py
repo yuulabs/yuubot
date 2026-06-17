@@ -246,6 +246,17 @@ def build_admin_asgi_app(
                 )
             )
 
+        # Serve tutorial static files from dist/tutorials/
+        tutorials_path = web_path / "tutorials"
+        if tutorials_path.is_dir():
+            routes.append(
+                Mount(
+                    "/tutorials",
+                    app=StaticFiles(directory=str(tutorials_path), html=True),
+                    name="tutorials",
+                )
+            )
+
         # Serve index.html explicitly at the root
         index_path = web_path / "index.html"
         serve_spa = make_serve_spa_handler(index_path=index_path)

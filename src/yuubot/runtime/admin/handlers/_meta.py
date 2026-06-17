@@ -55,6 +55,7 @@ def make_integration_kinds_handler(
                 "name": kind.name,
                 "description": kind.description,
                 "config_schema": kind.config_schema,
+                "source_path_convention": kind.source_path_convention,
                 "capabilities": [
                     {
                         "id": spec.id,

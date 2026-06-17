@@ -17,7 +17,7 @@ from yuubot.core.facade.protocol import (
     DelegateSubmitPayload,
     FacadeRpcRequest,
     FacadeRpcResponse,
-    ImResponsePayload,
+    ImSendPayload,
     RpcError,
 )
 from yuubot.core.integrations.context import InvocationContext
@@ -44,16 +44,6 @@ class FacadeBackgroundTaskEnded(MailMessage, msgspec.Struct):
     mailbox_id: str
     status: str
     summary: str = ""
-
-
-class FacadeImResponse(MailMessage, msgspec.Struct):
-    actor_id: str
-    agent_name: str
-    session_id: str
-    mailbox_id: str
-    target_msg_id: str = ""
-    text: str = ""
-    react: str = ""
 
 
 class FacadeDelegateTask(MailMessage, msgspec.Struct):
@@ -127,8 +117,8 @@ class IntegrationInvokeBridge:
             return await self._background_started(request)
         if request.kind == "background_finished":
             return await self._background_finished(request)
-        if request.kind == "im_response":
-            return await self._im_response(request)
+        if request.kind == "im_send":
+            return await self._im_send(request)
         if request.kind == "delegate_submit":
             return await self._delegate_submit(request)
         if request.kind == "schedule":
@@ -190,20 +180,14 @@ class IntegrationInvokeBridge:
             )
         return FacadeRpcResponse(ok=True)
 
-    async def _im_response(self, request: FacadeRpcRequest) -> FacadeRpcResponse:
-        payload = msgspec.convert(request.payload, type=ImResponsePayload, strict=False)
-        mailbox = self._mailbox(request.actor_id)
-        if mailbox is not None:
-            await mailbox.send(
-                FacadeImResponse(
-                    actor_id=request.actor_id,
-                    agent_name=request.agent_name,
-                    session_id=request.session_id,
-                    mailbox_id=request.mailbox_id,
-                    target_msg_id=payload.msg_id,
-                    text=payload.text,
-                    react=payload.react,
-                )
+    async def _im_send(self, request: FacadeRpcRequest) -> FacadeRpcResponse:
+        payload = msgspec.convert(request.payload, type=ImSendPayload, strict=False)
+        for integration_id in self.integrations.running_integration_ids():
+            instance = self.integrations.running_instance(integration_id)
+            await instance.response(
+                target_msg_id="",
+                path=payload.path,
+                msg=payload.text,
             )
         return FacadeRpcResponse(ok=True)
 

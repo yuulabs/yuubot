@@ -10,7 +10,7 @@ import pytest
 import yuullm
 from yuuagents.core.mailbox import ScheduleTriggerMessage
 
-from helpers import (
+from tests.helpers import (
     ScriptedProviderSessionFactory,
     make_actor_record,
     make_capability_set_record,

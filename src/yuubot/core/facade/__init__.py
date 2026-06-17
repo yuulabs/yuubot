@@ -13,7 +13,6 @@ from yuubot.core.facade.bridge import (
     FacadeBackgroundTaskEnded as FacadeBackgroundTaskEnded,
     FacadeBackgroundTaskStarted as FacadeBackgroundTaskStarted,
     FacadeDelegateTask as FacadeDelegateTask,
-    FacadeImResponse as FacadeImResponse,
     IntegrationInvokeBridge as IntegrationInvokeBridge,
 )
 from yuubot.core.facade.client import (
@@ -34,7 +33,7 @@ from yuubot.core.facade.protocol import (
     DelegateSubmitPayload as DelegateSubmitPayload,
     FacadeRpcRequest as FacadeRpcRequest,
     FacadeRpcResponse as FacadeRpcResponse,
-    ImResponsePayload as ImResponsePayload,
+    ImSendPayload as ImSendPayload,
     RpcError as RpcError,
 )
 from yuubot.core.facade.workspace import (
