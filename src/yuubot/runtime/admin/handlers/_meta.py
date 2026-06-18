@@ -14,6 +14,7 @@ from starlette.responses import FileResponse, JSONResponse
 from yuubot.bootstrap.config import AdminConfig
 from yuubot.core.integrations import IntegrationFactoryRegistry
 from yuubot.core.secrets import Secret, secret_field_names
+from yuubot.core.tools import ToolRegistry
 from yuubot.resources.root import Resources
 from yuubot.resources.store.models import ActorIngressRuleORM, IntegrationORM
 from yuubot.runtime.plugin_manager import ExternalPluginManager
@@ -71,6 +72,24 @@ def make_integration_kinds_handler(
         return JSONResponse({"kinds": kinds})
 
     return integration_kinds
+
+
+def make_tool_kinds_handler(
+    *,
+    tool_factories: ToolRegistry,
+):
+    async def tool_kinds(_: Request) -> JSONResponse:
+        kinds = [
+            {
+                "name": kind.name,
+                "description": kind.description,
+                "config_schema": kind.config_schema,
+            }
+            for kind in tool_factories.tool_kinds()
+        ]
+        return JSONResponse({"kinds": kinds})
+
+    return tool_kinds
 
 
 def make_reveal_integration_secret_handler(

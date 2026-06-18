@@ -14,11 +14,13 @@ from yuuagents import (
     Stage,
     YuuTraceObserver,
 )
+from yuuagents.tool.primitives import resolve_tool_type
 
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.bindings import AgentBinding
 from yuubot.core.facade import ActorFacadeBinding
 from yuubot.core.observability import YuubotTraceContextProvider
+from yuubot.core.tools import ToolRegistry
 from yuubot.core.validation import (
     ConfigurationError,
     validate_stream_options,
@@ -26,7 +28,6 @@ from yuubot.core.validation import (
 
 from ._constants import _resolve_yuuagents_provider
 from ._definition import build_agent_definition
-from ._python_tool import ExecutePythonTool
 from ._runtime import YuuAgentsActorRuntime
 
 
@@ -53,13 +54,21 @@ def start_yuuagents_actor(
         llm_session_factories={llm_provider: llm_session_factory},
         llm_options={llm_provider: _stage_llm_options(binding)},
     )
-    _register_execute_python_tool(stage, binding, facade)
-    definition = build_agent_definition(binding, facade=facade, mode="im")
+
+    workspace_path = _get_workspace_path(binding, facade)
+
+    definition = build_agent_definition(
+        binding, facade=facade, mode="im", workspace_path=workspace_path,
+    )
     conversation_definition = build_agent_definition(
         binding,
         facade=facade,
         mode="conversation",
+        workspace_path=workspace_path,
     )
+
+    _register_tools(stage, definition)
+
     if trace_context is not None:
         stage.eventbus.subscribe(YuuTraceObserver(context_provider=trace_context))
     runtime = YuuAgentsActorRuntime(
@@ -80,6 +89,29 @@ def _stage_llm_options(binding: AgentBinding) -> dict[str, object]:
         msgspec.to_builtins(backend.default_stream_options),
         context=f"llm_backend[{backend.name}].default_stream_options",
     )
+
+
+def _get_workspace_path(
+    binding: AgentBinding,
+    facade: ActorFacadeBinding | None,
+) -> str | None:
+    if facade is None:
+        return None
+    return str(binding.require_workspace_path())
+
+
+def _register_tools(stage: Stage, definition: any) -> None:
+    """Register tool instances from an agent definition into the runtime registry."""
+    from yuubot.core.assembly._tools import _tool_registry
+
+    for tool_name, raw_config in definition.tools.items():
+        if _tool_registry is not None:
+            tool_cls = _tool_registry.tool_class(tool_name)
+        else:
+            tool_cls = resolve_tool_type(tool_name)
+        typed_config = msgspec.convert(raw_config, tool_cls.config_type)
+        tool = tool_cls.from_startup(stage.runtime, typed_config)
+        stage.runtime.registry.register(tool.definition, tool)
 
 
 # ── Pricing validation ───────────────────────────────────────────
@@ -109,18 +141,3 @@ def _requires_pricing(binding: AgentBinding) -> bool:
 
 def _positive_budget(value: float | None) -> bool:
     return value is not None and value > 0
-
-
-def _register_execute_python_tool(
-    stage: Stage,
-    binding: AgentBinding,
-    facade: ActorFacadeBinding | None,
-) -> None:
-    if facade is None:
-        return
-    tool = ExecutePythonTool(
-        stage.new_runtime,
-        facade=facade,
-        workspace_path=binding.require_workspace_path(),
-    )
-    stage.new_runtime.registry.register(tool.definition, lambda r: tool)

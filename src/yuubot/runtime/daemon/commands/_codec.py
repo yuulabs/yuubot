@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse
 from tortoise import Model
 
 from yuubot.core.secrets import wrap_config_secrets
+from yuubot.core.tools import ToolRegistry
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
@@ -22,6 +23,7 @@ from yuubot.resources.records import (
     CharacterRecord,
     IntegrationRecord,
     LLMBackendRecord,
+    ToolConfig,
     YuuAgentBudget,
     YuuAgentLLMOptions,
 )
@@ -48,6 +50,7 @@ from yuubot.runtime.daemon.commands._schemas import (
     ActorCreateRequest,
     ActorIngressRuleCreateRequest,
     ActorPatchRequest,
+    CapabilitySetPatchRequest,
     IntegrationCreateRequest,
     IntegrationPatchRequest,
 )
@@ -64,9 +67,12 @@ class ResourceCodec:
         self,
         repository: ResourceRepository,
         service: ResourceService,
+        *,
+        tool_registry: ToolRegistry | None = None,
     ):
         self._repository = repository
         self._service = service
+        self._tool_registry = tool_registry
 
     # -- public decode entry points --
 
@@ -108,6 +114,10 @@ class ResourceCodec:
         if isinstance(record, JSONResponse):
             return record
         _ensure_record_id(record)
+        if isinstance(record, CapabilitySetRecord):
+            error = self._validate_agent_tools(record.agent_tools)
+            if error is not None:
+                return error
         return record
 
     async def decode_update_payload(
@@ -138,9 +148,16 @@ class ResourceCodec:
         patch = _convert_request(raw_payload, patch_type)
         if isinstance(patch, JSONResponse):
             return patch
-        return _patch_fields(patch)
+        fields = _patch_fields(patch)
+        if isinstance(patch, CapabilitySetPatchRequest):
+            tools = fields.get("agent_tools")
+            if isinstance(tools, tuple):
+                error = self._validate_agent_tools(tools)
+                if error is not None:
+                    return error
+        return fields
 
-    # -- actor helpers --
+    # -- agent tools validation --
 
     async def _actor_record_from_create(
         self,
@@ -332,3 +349,24 @@ class ResourceCodec:
         if llm_backend is None:
             return _error("validation_error", f"llm_backend '{backend_id}' not found", 400)
         return llm_backend
+
+    # -- agent tools validation --
+
+    def _validate_agent_tools(
+        self,
+        agent_tools: tuple[ToolConfig, ...],
+    ) -> JSONResponse | None:
+        """Validate that every tool_name references a registered tool type."""
+        if self._tool_registry is None:
+            return None
+        for tool in agent_tools:
+            try:
+                self._tool_registry.get(tool.tool_name)
+            except LookupError:
+                return _error(
+                    "validation_error",
+                    f"Unknown tool type {tool.tool_name!r} — "
+                    f"available: {sorted(self._tool_registry._factories)!r}",
+                    400,
+                )
+        return None

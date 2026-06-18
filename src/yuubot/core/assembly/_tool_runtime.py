@@ -69,7 +69,7 @@ async def _execute_tool_calls(
             eventbus=stage.eventbus,
             entity_log=agent.log,
         )
-        yt = await stage.new_runtime.submit_tool_call(
+        yt = await stage.runtime.submit_tool_call(
             Owner(type=OwnerType.AGENT, id=agent.id),
             tc,
             context,
@@ -77,6 +77,6 @@ async def _execute_tool_calls(
         new_tasks.append((tc, yt))
 
     for tc, yt in new_tasks:
-        ct = await stage.new_runtime.wait_task(yt.id)
+        ct = await stage.runtime.wait_task(yt.id)
         rt = _render_task_result(ct)
         agent.append(yuullm.tool(tc.id, rt))

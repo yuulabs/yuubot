@@ -19,6 +19,7 @@ from yuubot.core.integrations import (
     IntegrationFactoryRegistry,
     default_integration_factories,
 )
+from yuubot.core.tools import ToolRegistry, default_tool_factories
 from yuubot.runtime.admin.handlers import (
     DaemonClient,
     DaemonResponse,
@@ -33,6 +34,7 @@ from yuubot.runtime.admin.handlers import (
     make_proxy_daemon_resource_handler,
     make_reveal_integration_secret_handler,
     make_serve_spa_handler,
+    make_tool_kinds_handler,
     make_uninstall_plugin_handler,
     make_validate_provider_handler,
 )
@@ -60,6 +62,9 @@ class AdminInfrastructure:
     integration_factories: IntegrationFactoryRegistry = field(
         default_factory=default_integration_factories
     )
+    tool_factories: ToolRegistry = field(
+        default_factory=default_tool_factories
+    )
 
 
 @dataclass
@@ -73,6 +78,7 @@ class YuubotAdmin:
     integration_factories: IntegrationFactoryRegistry
     plugin_manager: ExternalPluginManager
     trace_db_path: str = ""
+    tool_factories: ToolRegistry = field(default_factory=default_tool_factories)
 
     async def close(self) -> None:
         await self.resources.close()
@@ -83,6 +89,7 @@ class YuubotAdmin:
             resources=self.resources,
             daemon=self.daemon,
             integration_factories=self.integration_factories,
+            tool_factories=self.tool_factories,
             plugin_manager=self.plugin_manager,
             trace_db_path=self.trace_db_path,
         )
@@ -104,9 +111,12 @@ def build_admin_asgi_app(
     resources: Resources,
     daemon: DaemonClient,
     integration_factories: IntegrationFactoryRegistry,
+    tool_factories: ToolRegistry | None = None,
     plugin_manager: ExternalPluginManager | None = None,
     trace_db_path: str = "",
 ) -> Starlette:
+    if tool_factories is None:
+        tool_factories = default_tool_factories()
     if plugin_manager is None:
         layout = DataLayout.from_path("~/.yuubot")
         plugin_manager = ExternalPluginManager(
@@ -170,6 +180,13 @@ def build_admin_asgi_app(
             "/api/integration-kinds",
             make_integration_kinds_handler(
                 integration_factories=integration_factories,
+            ),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/tool-kinds",
+            make_tool_kinds_handler(
+                tool_factories=tool_factories,
             ),
             methods=("GET",),
         ),
@@ -298,6 +315,7 @@ async def build_admin(
         ),
         asgi_server=components.asgi_server,
         integration_factories=components.integration_factories,
+        tool_factories=components.tool_factories,
         plugin_manager=plugin_manager,
         trace_db_path=trace_db_path,
     )

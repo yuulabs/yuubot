@@ -13,6 +13,7 @@ import logging
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from yuubot.core.tools import ToolRegistry
 from yuubot.resources.errors import StorageError
 from yuubot.resources.registry import ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
@@ -45,11 +46,15 @@ class ResourceCommandHandlers:
         service: ResourceService,
         type_registry: ResourceTypeRegistry,
         repository: ResourceRepository,
+        *,
+        tool_registry: ToolRegistry | None = None,
     ):
         self.service = service
         self.type_registry = type_registry
         self.repository = repository
-        self._codec = ResourceCodec(repository, service)
+        self._codec = ResourceCodec(
+            repository, service, tool_registry=tool_registry,
+        )
 
     # -- CRUD --
 

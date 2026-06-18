@@ -115,7 +115,7 @@ class YuuAgentLLMOptions(msgspec.Struct):
 class ToolConfig(msgspec.Struct):
     """One yuuagents AgentDefinition.tools entry."""
 
-    provider_key: str
+    tool_name: str
     config: dict[str, object] = msgspec.field(default_factory=dict)
     spec: ToolSpecConfig = msgspec.field(default_factory=ToolSpecConfig)
 

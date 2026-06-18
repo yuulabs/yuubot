@@ -36,6 +36,7 @@ from yuubot.core.integrations import (
     default_integration_factories,
 )
 from yuubot.core.observability import YuubotTraceContextProvider
+from yuubot.core.tools import ToolRegistry, default_tool_factories
 from yuubot.core.routing import RouteBindings, load_route_bindings
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.registry import (
@@ -91,6 +92,9 @@ _error_response = error_response
 class DaemonInfrastructure:
     integration_factories: IntegrationFactoryRegistry = field(
         default_factory=default_integration_factories
+    )
+    tool_factories: ToolRegistry = field(
+        default_factory=default_tool_factories
     )
     actor_factories: ActorFactoryRegistry | None = None
     trace_context: YuubotTraceContextProvider = field(
@@ -223,6 +227,7 @@ class YuubotDaemon:
     python_sessions: ActorPythonSessionFactory
     llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None]
     trace_context: YuubotTraceContextProvider | None = None
+    tool_factories: ToolRegistry = field(default_factory=default_tool_factories)
 
     async def start(self) -> None:
         await self.services.start()
@@ -241,6 +246,7 @@ class YuubotDaemon:
             services=self.services,
             actors=self.actors,
             integrations=self.integrations,
+            tool_factories=self.tool_factories,
             plugin_manager=self.plugin_manager,
             gateway=self.gateway,
             refresh=self.refresh,
@@ -304,6 +310,7 @@ def build_daemon_asgi_app(
     services: ServiceHost,
     actors: ActorManager,
     integrations: IntegrationCore,
+    tool_factories: ToolRegistry | None = None,
     plugin_manager: ExternalPluginManager | None = None,
     gateway: Gateway,
     refresh: EventDrivenRefreshDispatcher,
@@ -424,6 +431,7 @@ def build_daemon_asgi_app(
                 type_registry,
                 resources.repository,
                 config,
+                tool_registry=tool_factories,
             ),
         ),
     ]
@@ -463,6 +471,9 @@ async def build_daemon(
         gateway=gateway,
         integrations_root=layout.integrations_root,
     )
+
+    from yuubot.core.assembly._tools import set_assembly_tool_registry
+    set_assembly_tool_registry(components.tool_factories)
     actor_python_sessions = ActorPythonSessionFactory.in_directory(
         integrations=integrations,
         root=layout.runtime_facades_dir,
@@ -547,4 +558,5 @@ async def build_daemon(
             components.llm_session_factory_factory or llm_session_factory_for_binding
         ),
         trace_context=components.trace_context,
+        tool_factories=components.tool_factories,
     )

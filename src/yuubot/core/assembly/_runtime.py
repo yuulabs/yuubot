@@ -377,7 +377,7 @@ class YuuAgentsActorRuntime:
                                 entity_log=agent.log,
                             )
                             try:
-                                yt = await self.stage.new_runtime.submit_tool_call(
+                                yt = await self.stage.runtime.submit_tool_call(
                                     Owner(type=OwnerType.AGENT, id=agent.id),
                                     tc,
                                     context,
@@ -389,7 +389,7 @@ class YuuAgentsActorRuntime:
                                 )
 
                         for tc, yt in new_tasks:
-                            ct = await self.stage.new_runtime.wait_task(yt.id)
+                            ct = await self.stage.runtime.wait_task(yt.id)
                             rt = _render_task_result(ct)
                             agent.append(yuullm.tool(tc.id, rt))
 
@@ -478,7 +478,7 @@ class YuuAgentsActorRuntime:
         self._agent_locks.pop(agent.id, None)
         self._agent_last_used.pop(agent.id, None)
         self._idle_expiry_tasks.pop(agent.id, None)
-        await self.stage.new_runtime.cancel_agent_tasks(agent.id)
+        await self.stage.runtime.cancel_agent_tasks(agent.id)
         for name, item in list(self.agents_by_name.items()):
             if item is agent:
                 self.agents_by_name.pop(name, None)
@@ -593,7 +593,7 @@ def _render_task_result(task: YuuTask) -> str:
 
 def _build_tool_specs_for_agent(stage: Stage) -> list[dict[str, object]]:
     """Build OpenAI-format tool specs from registered Runtime tools."""
-    registry = stage.new_runtime.registry
+    registry = stage.runtime.registry
     specs: list[dict[str, object]] = []
     for name, definition in registry._definitions.items():
         schema = definition.input_model.model_json_schema()

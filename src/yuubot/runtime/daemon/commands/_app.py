@@ -7,6 +7,7 @@ from starlette.middleware import Middleware
 from starlette.routing import Route
 
 from yuubot.bootstrap.config import ServerConfig
+from yuubot.core.tools import ToolRegistry
 from yuubot.resources.registry import LifecycleHandler, ResourceTypeRegistry
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.service import ResourceService
@@ -57,9 +58,11 @@ def build_commands_app(
     type_registry: ResourceTypeRegistry,
     repository: ResourceRepository,
     config: ServerConfig,
+    *,
+    tool_registry: ToolRegistry | None = None,
 ) -> Starlette:
     handlers = ResourceCommandHandlers(
-        service, type_registry, repository,
+        service, type_registry, repository, tool_registry=tool_registry,
     )
 
     routes = [

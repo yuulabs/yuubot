@@ -20,7 +20,7 @@ from tests.helpers import (
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.assembly import start_yuuagents_actor
 from yuubot.core.bindings import ActorBinding, AgentBinding
-from yuubot.resources.records import ActorRecord, RuntimePolicy, ToolConfig, YuuAgentBudget
+from yuubot.resources.records import ActorRecord, RuntimePolicy, YuuAgentBudget
 
 
 @pytest.mark.asyncio
@@ -177,7 +177,6 @@ async def test_runtime_schedule_tool_uses_actor_schedule_executor(
         llm_backend=backend,
         capability_set=make_capability_set_record(
             "actor-1",
-            agent_tools=(ToolConfig(provider_key="schedule"),),
         ),
         max_steps=10,
     )

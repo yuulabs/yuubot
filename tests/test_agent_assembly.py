@@ -28,26 +28,26 @@ def test_python_tool_facade_imports_follow_visible_capabilities(tmp_path: Path) 
     no_capability_tool = build_agent_definition(
         binding,
         facade=_facade(tmp_path, capabilities=()),
-    ).tools["ipykernel"]
+    ).tools["execute_python"]
     echo_tool = build_agent_definition(
         binding,
         facade=_facade(tmp_path, capabilities=(ECHO_CAPABILITY_SPEC,)),
-    ).tools["ipykernel"]
+    ).tools["execute_python"]
 
     no_capability_imports = {
-        item["module"] for item in no_capability_tool.config["imports"]
+        item["module"] for item in no_capability_tool["imports"]
     }
-    echo_imports = {item["module"] for item in echo_tool.config["imports"]}
+    echo_imports = {item["module"] for item in echo_tool["imports"]}
     assert "yb.delegate" in no_capability_imports
     assert "tim" in no_capability_imports
     assert "yb.schedule" in no_capability_imports
     assert "yext.echo" not in no_capability_imports
     assert "yext.echo" in echo_imports
-    assert "yb.delegate.*" in no_capability_tool.config["expand_functions"]
-    assert "tim.*" in no_capability_tool.config["expand_functions"]
-    assert "yb.schedule.*" in no_capability_tool.config["expand_functions"]
-    assert "yext.echo.*" not in no_capability_tool.config["expand_functions"]
-    assert "yext.echo.*" in echo_tool.config["expand_functions"]
+    assert "yb.delegate.*" in no_capability_tool["expand_functions"]
+    assert "tim.*" in no_capability_tool["expand_functions"]
+    assert "yb.schedule.*" in no_capability_tool["expand_functions"]
+    assert "yext.echo.*" not in no_capability_tool["expand_functions"]
+    assert "yext.echo.*" in echo_tool["expand_functions"]
 
 
 def test_agent_prompt_guidance_is_mode_specific(tmp_path: Path) -> None:

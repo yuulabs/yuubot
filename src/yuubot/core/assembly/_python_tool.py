@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pydantic
-from yuuagents import PythonKernelConfig, PythonImport
-from yuuagents.python.runtime import (
-    PythonRuntime,
-    ResolvedPythonRuntime,
-    _resolve_python,
-)
+from yuuagents import PythonRuntime, ResolvedPythonRuntime
+from yuuagents.python.runtime import _resolve_python
 from yuuagents.python.session import PythonExecResult, PythonSession
 from yuuagents.tool.primitives import (
     Tool,
@@ -19,9 +14,6 @@ from yuuagents.tool.primitives import (
     ToolContext,
     ToolDefinition,
 )
-
-from yuubot.core.assembly._constants import FACADE_EXPAND_FUNCTIONS, FACADE_IMPORTS
-from yuubot.core.facade import ActorFacadeBinding
 
 
 class ExecutePythonParams(pydantic.BaseModel):
@@ -34,18 +26,21 @@ class ExecutePythonResult(pydantic.BaseModel):
 
 
 class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
-    def __init__(
-        self,
-        runtime: Any,
-        *,
-        facade: ActorFacadeBinding,
-        workspace_path: Path,
-    ) -> None:
-        super().__init__(runtime)
-        self.facade = facade
-        self.workspace_path = workspace_path
+    config_type = PythonRuntime
+
+    def __init__(self, runtime: Any, *, config: PythonRuntime) -> None:
+        self.runtime = runtime
+        self.config = config
         self._session: PythonSession | None = None
-        self._description = self._build_description(facade)
+        self._description = self._build_description(config)
+
+    @classmethod
+    def from_startup(
+        cls,
+        runtime: Any,
+        config: PythonRuntime,
+    ) -> ExecutePythonTool:
+        return cls(runtime, config=config)
 
     @property
     def definition(self) -> ToolDefinition[ExecutePythonParams, ExecutePythonResult]:
@@ -56,16 +51,9 @@ class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
             output_model=ExecutePythonResult,
         )
 
-    def _build_description(self, facade: ActorFacadeBinding) -> str:
-        imports = _facade_imports(facade)
-        runtime = PythonRuntime(
-            config=PythonKernelConfig(
-                sys_path=tuple(facade.sys_path),
-            ),
-            imports=imports,
-            expand_functions=_facade_expand_functions(facade),
-        )
-        resolved = _resolve_python(runtime, default_doc_mode="full")
+    @staticmethod
+    def _build_description(config: PythonRuntime) -> str:
+        resolved = _resolve_python(config, default_doc_mode="full")
         return "Execute Python code in an ipykernel session.\n\n" + resolved.tool_description_suffix()
 
     async def create_coro(
@@ -89,25 +77,20 @@ class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
     async def _get_session(self, agent_id: str) -> PythonSession:
         if self._session is not None:
             return self._session
-        python_runtime = PythonRuntime(
-            config=PythonKernelConfig(
-                cwd=str(self.workspace_path),
-                sys_path=tuple(self.facade.sys_path),
-                startup_code=self.facade.startup_code,
-            ),
-            state=dict(self.facade.session_state),
-        )
         self._session = PythonSession(
             agent_id=agent_id,
-            agent_name=self.facade.agent_name,
+            agent_name=self._agent_name(),
             runtime=ResolvedPythonRuntime(
-                config=python_runtime.config,
-                imports=python_runtime.imports,
-                state=python_runtime.state,
-                expand_functions=python_runtime.expand_functions,
+                config=self.config.config,
+                imports=self.config.imports,
+                state=self.config.state,
+                expand_functions=self.config.expand_functions,
             ),
         )
         return self._session
+
+    def _agent_name(self) -> str:
+        return str(self.config.state.get("agent_name", ""))
 
     def _render_result(self, result: PythonExecResult) -> str:
         if result.status == "ok":
@@ -125,25 +108,3 @@ class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
             tb = "\n".join(result.traceback) if result.traceback else result.stderr
             return f"Python execution error:\n{tb}"
         return f"Python execution {result.status}"
-
-
-def _facade_imports(facade: ActorFacadeBinding) -> tuple[PythonImport, ...]:
-    from yuubot.core.facade import facade_module_name
-
-    modules = {facade_module_name(cap) for cap in facade.capabilities}
-    return (
-        *FACADE_IMPORTS,
-        *(PythonImport(module=m) for m in sorted(modules) if m != "yext"),
-    )
-
-
-def _facade_expand_functions(
-    facade: ActorFacadeBinding,
-) -> tuple[str, ...]:
-    from yuubot.core.facade import facade_module_name
-
-    modules = {facade_module_name(cap) for cap in facade.capabilities}
-    return (
-        *FACADE_EXPAND_FUNCTIONS,
-        *(f"{m}.*" for m in sorted(modules) if m != "yext"),
-    )

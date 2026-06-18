@@ -20,6 +20,7 @@ def build_agent_definition(
     *,
     facade: ActorFacadeBinding | None = None,
     mode: Literal["im", "conversation"] = "im",
+    workspace_path: str | None = None,
 ) -> AgentDefinition:
     return AgentDefinition(
         name=binding.agent_name,
@@ -30,7 +31,11 @@ def build_agent_definition(
             stream_options=msgspec.to_builtins(binding.llm_options.stream_options),
         ),
         budget=binding.budget.to_budget_config(),
-        tools=_agent_tool_configs(binding.capability_set.agent_tools, facade),
+        tools=_agent_tool_configs(
+            binding.capability_set.agent_tools,
+            facade,
+            workspace_path=workspace_path,
+        ),
         prompt=PromptDefinition(
             system=_system_prompt(binding, mode),
         ),

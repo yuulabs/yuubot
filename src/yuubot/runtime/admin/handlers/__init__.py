@@ -14,6 +14,7 @@ from yuubot.runtime.admin.handlers._meta import (
     make_integration_kinds_handler,
     make_reveal_integration_secret_handler,
     make_serve_spa_handler,
+    make_tool_kinds_handler,
 )
 from yuubot.runtime.admin.handlers._plugin_admin import (
     make_install_plugin_handler,
@@ -46,6 +47,7 @@ __all__ = [
     "make_proxy_daemon_resource_handler",
     "make_reveal_integration_secret_handler",
     "make_serve_spa_handler",
+    "make_tool_kinds_handler",
     "make_uninstall_plugin_handler",
     "make_validate_provider_handler",
 ]

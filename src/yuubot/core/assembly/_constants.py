@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from yuuagents import PythonImport
 
-PYTHON_PROVIDER_KEY = "ipykernel"
+PYTHON_PROVIDER_KEY = "execute_python"
 ROLLOVER_THRESHOLD = 0.85
 ROLLOVER_SUMMARY_PROMPT = (
     "Summarize the prior conversation context for continuing the same task. "

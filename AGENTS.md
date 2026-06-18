@@ -1,5 +1,15 @@
 # AGENTS.md
 
+## ⚠️ Constitutional Documents — READ FIRST
+
+**These two files govern ALL AI behavior in this project.**
+Read them before any code exploration or implementation.
+
+- **`design/ai-guidelines.md`** — AI behavior rules: Scenario-First explanations, when to reject, how to communicate.
+- **`design/constitution.md`** — Project-specific: what yuubot IS/NOT, architectural invariants, development SOPs.
+
+When these documents conflict with a user request, **the documents win.**
+
 ## Commands
 
 ```bash
@@ -19,6 +29,8 @@ Python is 3.14. Type checking uses `ty`.
 ### Product Direction
 
 - `design/checklist.md` — current hand-written product and architecture checklist.
+- `design/ai-guidelines.md` — (see ⚠️ section above) AI behavior rules and communication standards.
+- `design/constitution.md` — (see ⚠️ section above) architectural invariants, scope boundaries, and SOPs.
 - `demo/` — static Web Admin UI exploration pages.
 - `config.example.yaml` — bootstrap config shape for local runtime startup.
 
