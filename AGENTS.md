@@ -91,6 +91,8 @@ docker compose -f yuubot-v2/docker-compose.yml down
 | Bug fix / Refactor | ❌ | pytest 回归测试足够。不应破坏已有路径 |
 | 日常 commit | ❌ | 烧钱且没必要 |
 
+**Golden Test 定义**：由**人类通过 Admin UI** 手动走通 `LLM API key → Character → Actor → Conversation → Agent 回复` 完整链路。API 脚本不能替代 — 脚本会绕过前端表单校验，已有案例：Docker PR 的 API E2E 通过但 Admin UI 炸在 Actor 表单字段名不匹配。Golden Test 跑通后在 PR 文档中记录。
+
 **Push Back 规则**（AI 做 review 时必须执行）：
 
 > 当 review 一个 Feature PR，且 PR 文档（`prs/*.md`）的 Verification 节中**没有真实 API E2E 记录**时，reviewer **必须 Push Back**：
