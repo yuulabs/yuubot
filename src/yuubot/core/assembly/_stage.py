@@ -85,10 +85,14 @@ def start_yuuagents_actor(
 
 def _stage_llm_options(binding: AgentBinding) -> dict[str, object]:
     backend = binding.llm.backend
-    return validate_stream_options(
+    opts = validate_stream_options(
         msgspec.to_builtins(backend.default_stream_options),
         context=f"llm_backend[{backend.name}].default_stream_options",
     )
+    # The model is NOT a stream option — it is the session selector.
+    # Passing it as a stream kwarg causes YuuSession to reject it.
+    opts.pop("model", None)
+    return opts
 
 
 def _get_workspace_path(

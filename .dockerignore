@@ -1,0 +1,75 @@
+# .dockerignore for yuubot-v2 Docker build.
+#
+# IMPORTANT: This file must be placed at the monorepo root (parent of yuubot-v2/)
+# for Docker to find it, because the build context is the monorepo root.
+# Copy this file to the monorepo root before running `docker compose build`:
+#   cp yuubot-v2/.dockerignore .dockerignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# UV cache
+.ruff_cache/
+.mypy_cache/
+
+# Test / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Node (yuutrace UI, yuubot admin UI)
+node_modules/
+
+# Docker
+.tmp/
+
+# Project-specific: exclude v1 yuubot (we use yuubot-v2)
+yuubot/
+
+# Sensitive / local config files
+yuubot-v2/.env
+yuubot-v2/config.yaml
+yuubot-v2/llm.yaml
+yuubot-v2/warroom/
+yuubot-v2/imgs/
+yuubot-v2/.agents/
+yuubot-v2/.claude/
+yuubot-v2/.codex/
+yuubot-v2/.opencode/
+
+# Other workspace packages' dev artifacts
+yuuagents/.venv/
+yuuagents/.pytest_cache/
+yuuagents/.ruff_cache/
+yuuagents/.mypy_cache/
+yuullm/.venv/
+yuullm/.pytest_cache/
+yuullm/.ruff_cache/
+yuullm/.mypy_cache/
+yuutools/.venv/
+yuutools/.pytest_cache/
+yuutools/.ruff_cache/
+yuutools/.mypy_cache/
+yuutrace/.venv/
+yuutrace/.pytest_cache/
+yuutrace/.ruff_cache/
+yuutrace/.mypy_cache/
+yuutrace/ui/node_modules/
