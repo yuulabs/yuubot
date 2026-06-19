@@ -378,6 +378,7 @@ _EVENT_DISPATCH: Mapping[str, str] = {
     "llm.finished": "_handle_llm_finished",
     "agent.turn.error": "_handle_error",
     "budget.exceeded": "_handle_error",
+    "tool.result_appended": "_handle_tool_result",
 }
 
 
@@ -714,4 +715,44 @@ class ConversationManager:
             event,
             "error",
             _json_safe_dict(event.data),
+        )
+
+    async def _handle_tool_result(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> AgentEvent | None:
+        data = event.data
+        tool_call_id = str(data.get("tool_call_id") or "")
+        result = str(data.get("result") or "")
+        tool_name = str(data.get("tool_name") or "")
+        status = str(data.get("status") or "completed")
+
+        # Persist as role="tool" message
+        await self.store.append_message(
+            conversation_id=conversation_id,
+            message_id=uuid.uuid4().hex,
+            role="tool",
+            content=[{
+                "type": "tool_result",
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "content": result,
+                "status": status,
+            }],
+            metadata=_event_metadata(event),
+            timestamp=int(event.timestamp),
+        )
+
+        # SSE forward to frontend
+        return _agent_event(
+            conversation_id,
+            event,
+            "tool_result",
+            {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "result": result,
+                "status": status,
+            },
         )

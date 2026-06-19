@@ -384,14 +384,37 @@ class YuuAgentsActorRuntime:
                                 )
                                 new_tasks.append((tc, yt))
                             except KeyError:
-                                agent.append(
-                                    yuullm.tool(tc.id, f"Tool {tc.name} is not available")
+                                error_msg = f"Tool {tc.name} is not available"
+                                agent.append(yuullm.tool(tc.id, error_msg))
+                                await self.stage.eventbus.emit(
+                                    "tool.result_appended",
+                                    {
+                                        "agent_id": agent.id,
+                                        "agent_name": agent.name,
+                                        "tool_call_id": tc.id,
+                                        "tool_name": tc.name,
+                                        "result": error_msg,
+                                        "task_id": "",
+                                        "status": "failed",
+                                    },
                                 )
 
                         for tc, yt in new_tasks:
                             ct = await self.stage.runtime.wait_task(yt.id)
                             rt = _render_task_result(ct)
                             agent.append(yuullm.tool(tc.id, rt))
+                            await self.stage.eventbus.emit(
+                                "tool.result_appended",
+                                {
+                                    "agent_id": agent.id,
+                                    "agent_name": agent.name,
+                                    "tool_call_id": tc.id,
+                                    "tool_name": tc.name,
+                                    "result": rt,
+                                    "task_id": yt.id,
+                                    "status": str(ct.status),
+                                },
+                            )
 
                     # Step 6: Charge step
                     if budget is not None:
