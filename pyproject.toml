@@ -1,67 +1,30 @@
 [project]
-name = "yuubot"
+name = "yuubot-monorepo"
 version = "0.1.0"
-description = "yuubot architecture-v2 core skeleton"
-readme = "README.md"
+description = "Development workspace for yuubot and YuuLabs agent packages"
 requires-python = ">=3.14"
 dependencies = [
-    "click",
-    "msgspec",
-    "python-dotenv",
-    "starlette",
-    "tortoise-orm",
-    "pyyaml",
-    "uvicorn",
-    "yuuagents",
-    "yuutrace",
-    "cryptography>=48.0.0",
-    "httpx>=0.28.1",
+    "yuubot",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-asyncio",
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "apps/yuubot",
+    "packages/yuullm",
+    "packages/yuutools",
+    "packages/yuutrace",
+    "packages/yuuagents",
 ]
-
-[project.scripts]
-ybot = "yuubot.cli:cli"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.uv.sources]
-yuuagents = { path = "../yuuagents", editable = true }
-yuutrace = { path = "../yuutrace", editable = true }
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/yuubot", "src/yb"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-markers = [
-    "live: tests that require real external services/credentials",
-]
-
-[tool.ty.environment]
-python = "../.venv"
-extra-paths = []
-
-[tool.ty.src]
-include = ["src"]
-
-[tool.ty.rules]
-unresolved-attribute = "warn"
-invalid-argument-type = "warn"
-invalid-assignment = "warn"
-call-non-callable = "warn"
-no-matching-overload = "warn"
-call-top-callable = "warn"
+yuubot = { workspace = true }
+yuullm = { workspace = true }
+yuutools = { workspace = true }
+yuutrace = { workspace = true }
+yuuagents = { workspace = true }
 
 [dependency-groups]
 dev = [

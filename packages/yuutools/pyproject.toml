@@ -1,0 +1,25 @@
+[project]
+name = "yuutools"
+version = "0.3.0"
+description = "Explicit, async-first tool framework for LLM agents"
+readme = "README.md"
+authors = [
+    { name = "Tomorrowdawn", email = "tomorrowdawn@mail.ustc.edu.cn" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "attrs>=24.2.0",
+    "msgspec>=0.19.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.13,<0.10.0"]
+build-backend = "uv_build"
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pyyaml>=6.0",
+]

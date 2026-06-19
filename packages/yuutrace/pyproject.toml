@@ -1,0 +1,29 @@
+[project]
+name = "yuutrace"
+version = "0.3.0"
+description = "LLM-oriented observability SDK built on OpenTelemetry with cost/usage tracking"
+readme = "README.md"
+authors = [
+    { name = "Tomorrowdawn", email = "tomorrowdawn@mail.ustc.edu.cn" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "msgspec>=0.19.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "starlette>=0.40.0",
+    "uvicorn>=0.30.0",
+    "yuullm>=1.0.0",
+]
+
+[project.scripts]
+ytrace = "yuutrace.cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.9.13,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv_build]
+# Include pre-built static assets in the wheel
+data-includes = ["src/yuutrace/cli/_static"]
