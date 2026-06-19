@@ -22,6 +22,7 @@ from yuubot.bootstrap.layout import DataLayout
 from yuubot.runtime.admin import build_admin
 from yuubot.runtime.archive import ArchiveError, export_data, import_data
 from yuubot.runtime.daemon import build_daemon
+from yuubot.runtime.process import configure_file_logging
 
 
 class DevProcess(Protocol):
@@ -60,9 +61,12 @@ def check(ctx: click.Context) -> None:
 @click.pass_context
 def daemon(ctx: click.Context) -> None:
     """Start the Yuubot daemon process."""
+    config = load_bootstrap_config(ctx.obj["config_path"])
+    layout = DataLayout.from_path(config.paths.data_dir)
+    configure_file_logging(logs_dir=layout.logs_dir, process_name="daemon")
 
     async def run() -> None:
-        app = await build_daemon(load_bootstrap_config(ctx.obj["config_path"]))
+        app = await build_daemon(config)
         await app.serve()
 
     asyncio.run(run())
@@ -72,9 +76,12 @@ def daemon(ctx: click.Context) -> None:
 @click.pass_context
 def admin(ctx: click.Context) -> None:
     """Start the Admin process."""
+    config = load_bootstrap_config(ctx.obj["config_path"])
+    layout = DataLayout.from_path(config.paths.data_dir)
+    configure_file_logging(logs_dir=layout.logs_dir, process_name="admin")
 
     async def run() -> None:
-        app = await build_admin(load_bootstrap_config(ctx.obj["config_path"]))
+        app = await build_admin(config)
         await app.serve()
 
     asyncio.run(run())

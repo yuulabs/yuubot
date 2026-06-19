@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from fcntl import LOCK_EX, LOCK_UN, flock
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Iterator, Protocol
 
@@ -18,6 +20,48 @@ from yuubot.bootstrap.layout import DataLayout
 from yuubot.resources.root import Resources
 from yuubot.resources.secrets import SecretCodec
 from yuubot.resources.store.resource import Store
+
+
+def configure_file_logging(
+    *,
+    logs_dir: Path,
+    process_name: str,
+    level: int = logging.INFO,
+) -> None:
+    """Configure RotatingFileHandler + StreamHandler for a daemon/admin process.
+
+    Writes to ``{logs_dir}/{process_name}.log`` with rotation (10 MB, 5 backups).
+    Also keeps a StreamHandler for terminal visibility in dev mode.
+
+    Idempotent: calling twice does not duplicate handlers.
+    """
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = logs_dir / f"{process_name}.log"
+
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Remove existing handlers to avoid duplication on re-config
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+
+    formatter = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+    root.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root.addHandler(stream_handler)
 
 
 class ASGIServer(Protocol):
