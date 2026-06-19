@@ -544,6 +544,8 @@ def make_conversation_events_handler(
                     if await request.is_disconnected():
                         break
                     yield _sse_event(event.event_type, event.as_dict())
+                    if event.event_type in ("message", "error"):
+                        break
             except LookupError:
                 logger.exception(
                     "conversation SSE stream failed for %r", conversation_id

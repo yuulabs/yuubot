@@ -54,8 +54,8 @@ async def _stream_daemon_sse(daemon: DaemonClient, path: str) -> StreamingRespon
                     async for chunk in response.aiter_bytes():
                         if chunk:
                             yield chunk.decode(errors="replace")
-            except httpx.RemoteProtocolError:
-                # daemon closed the connection — stream ended, not an error
+            except httpx.RequestError:
+                # daemon connection ended or went idle — stream ended, not an error
                 return
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
