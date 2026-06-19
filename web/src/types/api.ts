@@ -289,6 +289,30 @@ export interface ResourceChangedEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Live capabilities (reflects actual integration instances, not factory kinds)
+// ---------------------------------------------------------------------------
+
+/** A capability from an existing integration record (enabled or disabled).
+ *
+ * Returned by GET /api/live-capabilities.
+ * Unlike IntegrationKind.capabilities (static factory declarations),
+ * these reflect actual integration instances in the database.
+ */
+export interface LiveCapability {
+  capability_id: string;
+  capability_name: string;
+  description: string;
+  namespace: string;
+  integration_id: string;
+  integration_name: string;
+  enabled: boolean;
+}
+
+export interface LiveCapabilitiesResponse {
+  capabilities: LiveCapability[];
+}
+
+// ---------------------------------------------------------------------------
 // Admin Conversation types
 // ---------------------------------------------------------------------------
 

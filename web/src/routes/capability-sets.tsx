@@ -5,12 +5,9 @@ import {
   useResourceList,
   useCreateResource,
   useDeleteResource,
-  useIntegrationKinds,
+  useLiveCapabilities,
 } from "@/hooks/use-resources";
-import type {
-  CapabilitySetResource,
-  IntegrationKind,
-} from "@/types/api";
+import type { CapabilitySetResource } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -42,12 +39,21 @@ const defaultForm: CapabilitySetFormData = {
 function CapabilitySetsPage() {
   const { data: capabilitySets = [], isLoading, error } =
     useResourceList<CapabilitySetResource>("capability-sets");
-  const { data: integrationKinds = [] } = useIntegrationKinds();
+  const { data: liveCapabilities = [] } = useLiveCapabilities();
   const createMutation = useCreateResource<CapabilitySetResource>("capability-sets");
   const deleteMutation = useDeleteResource("capability-sets");
 
   const [form, setForm] = useState<CapabilitySetFormData>(defaultForm);
-  const capabilityOptions = capabilityOptionsFromKinds(integrationKinds);
+
+  const capabilityOptions = liveCapabilities
+    .map((cap) => ({
+      id: cap.capability_id,
+      name: cap.capability_name || cap.capability_id,
+      description: cap.description,
+      integrationName: cap.integration_name,
+      enabled: cap.enabled,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -176,8 +182,8 @@ function CapabilitySetsPage() {
                 />
                 Memory enabled
               </label>
-              {capabilityOptions.length > 0 && (
-                <FormField label="Capabilities">
+              <FormField label="Capabilities">
+                {capabilityOptions.length > 0 ? (
                   <div className="max-h-36 space-y-2 overflow-auto rounded-md border p-2">
                     {capabilityOptions.map((capability) => (
                       <label
@@ -200,16 +206,30 @@ function CapabilitySetsPage() {
                           className="mt-0.5 size-4 rounded border-input"
                         />
                         <span className="min-w-0">
-                          <span className="block font-medium">{capability.name}</span>
+                          <span className="block font-medium">
+                            {capability.name}
+                            {!capability.enabled && (
+                              <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+                                disabled
+                              </span>
+                            )}
+                          </span>
                           <span className="block break-all text-xs text-muted-foreground">
                             {capability.id}
+                          </span>
+                          <span className="block text-xs text-muted-foreground">
+                            via {capability.integrationName}
                           </span>
                         </span>
                       </label>
                     ))}
                   </div>
-                </FormField>
-              )}
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No capabilities available. Create an integration first to enable capability selection.
+                  </p>
+                )}
+              </FormField>
               {createMutation.error && (
                 <p className="text-xs text-destructive">
                   {createMutation.error.message}
@@ -264,25 +284,6 @@ function Empty({ text }: { text: string }) {
       <p className="text-sm">{text}</p>
     </div>
   );
-}
-
-function capabilityOptionsFromKinds(kinds: IntegrationKind[]) {
-  const seen = new Set<string>();
-  return kinds
-    .flatMap((kind) =>
-      kind.capabilities.map((capability) => ({
-        ...capability,
-        name: capability.name || capability.id,
-      })),
-    )
-    .filter((capability) => {
-      if (seen.has(capability.id)) {
-        return false;
-      }
-      seen.add(capability.id);
-      return true;
-    })
-    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 function toggleCapabilityId(

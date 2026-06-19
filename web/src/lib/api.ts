@@ -12,6 +12,8 @@ import type {
   HealthResponse,
   IntegrationKind,
   ListResponse,
+  LiveCapability,
+  LiveCapabilitiesResponse,
   ResourceType,
   SingleResponse,
   ErrorResponse,
@@ -121,6 +123,13 @@ export async function getIntegrationKinds(): Promise<IntegrationKind[]> {
     `${BASE}/integration-kinds`,
   );
   return res.kinds;
+}
+
+export async function getLiveCapabilities(): Promise<LiveCapability[]> {
+  const res = await request<LiveCapabilitiesResponse>(
+    `${BASE}/live-capabilities`,
+  );
+  return res.capabilities;
 }
 
 // ---------------------------------------------------------------------------

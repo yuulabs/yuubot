@@ -11,6 +11,7 @@ import {
   deleteResource,
   getHealth,
   getIntegrationKinds,
+  getLiveCapabilities,
   listResources,
   setResourceEnabled,
   updateResource,
@@ -25,6 +26,7 @@ export const resourceKeys = {
   list: (type: ResourceType) => ["resources", "list", type] as const,
   health: () => ["health"] as const,
   integrationKinds: () => ["integration-kinds"] as const,
+  liveCapabilities: () => ["live-capabilities"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,15 @@ export function useIntegrationKinds() {
     queryKey: resourceKeys.integrationKinds(),
     queryFn: getIntegrationKinds,
     staleTime: 60_000,
+  });
+}
+
+/** Capabilities from existing integration instances (enabled + disabled). */
+export function useLiveCapabilities() {
+  return useQuery({
+    queryKey: resourceKeys.liveCapabilities(),
+    queryFn: getLiveCapabilities,
+    staleTime: 30_000, // 30s — reflects integration create/disable/enable
   });
 }
 
