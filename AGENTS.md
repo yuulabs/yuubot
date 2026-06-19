@@ -9,7 +9,7 @@ workspace root, CI root, and YuuCoder worktree root are the same directory.
 Developer clones github.com/yuulabs/yuubot
   → enters the repository root
     → uv sync resolves apps/yuubot plus packages/* through workspace sources
-      → uv run ybot dev starts the yuubot app from apps/yuubot
+      → uv run ybot --config config.yaml dev starts the yuubot app from apps/yuubot
 ```
 
 ## Layout
@@ -43,7 +43,7 @@ Run workspace-level commands from the repository root:
 uv sync
 uv run ruff check
 uv run ty check
-uv run ybot dev
+uv run ybot --config config.yaml dev
 ```
 
 Run package-local tests from the package directory when validating one member:

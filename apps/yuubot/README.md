@@ -6,7 +6,7 @@ From the repository root:
 
 ```bash
 uv sync
-uv run ybot dev
+uv run ybot --config config.yaml dev
 ```
 
 From this package directory, run app-local checks such as:

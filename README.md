@@ -9,7 +9,7 @@ integration capability system.
 git clone git@github.com:yuulabs/yuubot.git
 cd yuubot
 uv sync
-uv run ybot dev
+uv run ybot --config config.yaml dev
 ```
 
 The development server uses the monorepo workspace so the yuubot app and local
@@ -21,7 +21,7 @@ YuuLabs packages resolve together without `../` path dependencies.
 You clone github.com/yuulabs/yuubot
   → uv sync creates one workspace environment at the repo root
     → internal packages resolve from packages/* through workspace=true
-      → uv run ybot dev launches apps/yuubot's CLI entry point
+      → uv run ybot --config config.yaml dev launches apps/yuubot's CLI entry point
         → daemon and Admin UI start with the local application code
 ```
 
