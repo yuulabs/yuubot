@@ -576,7 +576,7 @@ class ConversationManager:
         workspace_path = self._resolve_workspace_path(conversation.capability_set.workspace_path)
         binding = conversation_agent_binding(conversation, workspace_path=workspace_path)
         facade = None
-        if binding.capability_set.agent_tools or binding.capability_set.integration_capability_ids:
+        if binding.workspace_path is not None:
             facade = await self.python_sessions.bind_facade(
                 binding,
                 mailbox_id=f"conversation:{conversation.conversation_id}",
