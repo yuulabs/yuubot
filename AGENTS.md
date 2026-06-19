@@ -56,6 +56,51 @@ cd packages/yuutrace && uv run pytest
 cd packages/yuuagents && uv run pytest
 ```
 
+## Frontend Worktree Cache Rule
+
+YuuCoder worktrees may share frontend dependency caches, but must not share
+frontend build outputs. Each worktree owns its own `dist/` directory because
+`dist/` reflects that worktree's current source snapshot.
+
+### Scenario: Cached Admin UI Build
+
+```text
+YuuCoder creates .tmp/<task>/<slug>/worktrees/<branch-name>/
+  → enters apps/yuubot/web inside that worktree
+    → installs dependencies using .tmp/cache/pnpm-store from the monorepo root
+      → pnpm reuses cached packages instead of downloading from scratch
+        → pnpm run build generates this worktree's own apps/yuubot/web/dist/
+```
+
+Use shared cache directories under the monorepo root:
+
+- `.tmp/cache/pnpm-store/` — pnpm package store for `apps/yuubot/web`.
+- `.tmp/cache/npm/` — npm cache for `packages/yuutrace/ui`.
+
+Do not copy or symlink `node_modules/` between worktrees. Use the package
+manager cache instead. Do not copy or reuse `dist/` between worktrees.
+
+For the yuubot Admin UI:
+
+```bash
+YUUBOT_ROOT=$(git rev-parse --show-toplevel)
+cd apps/yuubot/web
+pnpm install --store-dir "$YUUBOT_ROOT/.tmp/cache/pnpm-store"
+pnpm run build
+```
+
+For the yuutrace UI:
+
+```bash
+YUUBOT_ROOT=$(git rev-parse --show-toplevel)
+cd packages/yuutrace/ui
+npm ci --cache "$YUUBOT_ROOT/.tmp/cache/npm"
+npm run build
+```
+
+Cache directories under `.tmp/cache/` are local developer artifacts. Do not
+commit them, force-add them, or treat them as release inputs.
+
 ## Developer WIP Material
 
 `warroom/` and `apps/yuubot/warroom/` are intentionally ignored local developer
