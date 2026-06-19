@@ -133,6 +133,34 @@ def make_reveal_integration_secret_handler(
     return reveal_integration_secret
 
 
+def make_live_capabilities_handler(
+    *,
+    resources: Resources,
+    integration_factories: IntegrationFactoryRegistry,
+):
+    async def live_capabilities(_: Request) -> JSONResponse:
+        records = await resources.repository.list(IntegrationORM)
+        capabilities = []
+        for record in records:
+            try:
+                factory = integration_factories.get(record.name)
+            except LookupError:
+                continue
+            for spec in factory.capability_specs():
+                capabilities.append({
+                    "capability_id": spec.id,
+                    "capability_name": spec.name,
+                    "description": spec.description,
+                    "namespace": spec.namespace,
+                    "integration_id": record.id,
+                    "integration_name": record.name,
+                    "enabled": record.enabled,
+                })
+        return JSONResponse({"capabilities": capabilities})
+
+    return live_capabilities
+
+
 def make_serve_spa_handler(
     *,
     index_path: Path,

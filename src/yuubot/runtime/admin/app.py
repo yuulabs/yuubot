@@ -29,6 +29,7 @@ from yuubot.runtime.admin.handlers import (
     make_install_plugin_handler,
     make_integration_kinds_handler,
     make_list_plugins_handler,
+    make_live_capabilities_handler,
     make_provider_models_handler,
     make_proxy_daemon_conversations_handler,
     make_proxy_daemon_resource_handler,
@@ -213,6 +214,14 @@ def build_admin_asgi_app(
                 _create_provider_model_client_fn=_create_provider_model_client,
             ),
             methods=("POST",),
+        ),
+        Route(
+            "/api/live-capabilities",
+            make_live_capabilities_handler(
+                resources=resources,
+                integration_factories=integration_factories,
+            ),
+            methods=["GET"],
         ),
         Route(
             "/api/plugins",

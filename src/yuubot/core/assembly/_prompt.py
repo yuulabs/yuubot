@@ -57,6 +57,12 @@ def _capability_prompt(binding: AgentBinding) -> str:
     if cap.integration_capability_ids:
         lines.extend(("", "Integration capabilities:"))
         lines.extend(f"- {capability_id}" for capability_id in cap.integration_capability_ids)
+        lines.extend((
+            "",
+            "Note: Some tools may fail at runtime if the corresponding integration",
+            "is disabled or malfunctioning. If a tool call fails, tell the user",
+            "honestly what went wrong. Do not fabricate results.",
+        ))
     if cap.tool_ids:
         lines.extend(("", "Tools:"))
         lines.extend(f"- {tool_id}" for tool_id in cap.tool_ids)

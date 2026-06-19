@@ -8,13 +8,14 @@ from yuubot.core.integrations.contracts import (
     IntegrationStorage,
     LocalIntegrationStorage,
 )
-from yuubot.core.integrations.core import IntegrationCore
+from yuubot.core.integrations.core import CapabilityInstanceInfo, IntegrationCore
 from yuubot.core.integrations.registry import (
     IntegrationFactoryRegistry,
     default_integration_factories,
 )
 
 __all__ = [
+    "CapabilityInstanceInfo",
     "IntegrationCore",
     "IntegrationFactory",
     "IntegrationFactoryRegistry",
