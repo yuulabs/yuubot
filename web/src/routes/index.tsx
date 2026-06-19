@@ -153,7 +153,7 @@ function ActorStatusRow({ actor }: { actor: ActorResource }) {
     <div className="flex items-center justify-between rounded-md border px-3 py-2">
       <div className="flex items-center gap-3">
         <span className="text-sm font-medium">{actor.name}</span>
-        <code className="text-xs text-muted-foreground">{actor.model}</code>
+        <code className="text-xs text-muted-foreground">{actor.default_model}</code>
       </div>
       <Badge variant={actor.enabled ? "default" : "secondary"}>
         {actor.enabled ? "running" : "stopped"}

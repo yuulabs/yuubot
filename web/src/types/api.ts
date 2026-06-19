@@ -72,6 +72,7 @@ export interface IntegrationKind {
 export type ResourceType =
   | "llm-backends"
   | "characters"
+  | "capability-sets"
   | "actors"
   | "ingress-rules"
   | "integrations"
@@ -173,38 +174,59 @@ export interface LLMBackendResource extends Resource {
   default_stream_options?: StreamOptions;
 }
 
+/** Mirrors backend `CapabilitySetRecord` — reusable execution + prompt bundle.
+ *
+ * The backend splits Actor into Actor + CapabilitySet so that the same
+ * capability/workspace/policy bundle can be shared across actors with
+ * different characters. Only MVP fields are typed here; advanced fields
+ * (agent_tools, tool_ids, skills, prompt_fragments, permission_limits,
+ * bootstrap_path) use backend defaults and are omitted from the UI.
+ */
+export interface CapabilitySetResource extends Resource {
+  name: string;
+  description: string;
+  integration_capability_ids: string[];
+  workspace_path: string;
+  runtime_policy: {
+    memory_enabled: boolean;
+  };
+  resource_policy: {
+    budget_usd_daily?: number | null;
+    concurrency_limit?: number;
+  };
+}
+
 export interface ActorResource extends Resource {
   name: string;
   type: string;
-  /** The model name to use (e.g. "gpt-4o"). */
-  model: string;
+  /** Default model name (e.g. "gpt-4o"). Renamed from `model`. */
+  default_model: string;
   /** Resolved character reference (eagerly loaded by the daemon). */
-  character?: {
+  default_character?: {
     id: string;
     name: string;
     description: string;
   };
+  /** Resolved capability set reference (eagerly loaded by the daemon). */
+  capability_set?: CapabilitySetResource;
   /** Resolved LLM backend reference. */
-  llm_backend?: {
+  default_llm_backend?: {
     id: string;
     name: string;
-    provider: string;
+    yuuagents_provider: string;
   };
-  /** Raw FK columns (present when references aren't resolved). */
-  character_id?: string;
-  llm_backend_id?: string;
-  /** Budget / guardrails. */
-  max_steps?: number;
-  daily_budget?: number;
-  /** Workspace filesystem access. */
-  workspace_access?: "none" | "read_only" | "read_write";
-  /** Runtime policy flags. */
-  memory_enabled?: boolean;
-  /** Allowed capability IDs. */
-  capability_ids?: string[];
-  allowed_capability_ids?: string[];
-  agent_tools?: unknown[];
-  prompt_template_id?: string;
+  /** Agent budget guardrails (nested; was flat `max_steps` / `daily_budget`). */
+  default_budget?: {
+    max_steps: number;
+    max_tokens: number;
+    max_usd: number;
+  };
+  /** Actor-level LLM overrides. */
+  default_llm_options?: {
+    max_tokens: number | null;
+    stream_options: StreamOptions;
+  };
+  config?: Record<string, unknown>;
 }
 
 export interface ActorIngressRuleResource extends Resource {

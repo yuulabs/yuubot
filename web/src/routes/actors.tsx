@@ -5,12 +5,11 @@ import {
   useResourceList,
   useCreateResource,
   useDeleteResource,
-  useIntegrationKinds,
 } from "@/hooks/use-resources";
 import type {
   ActorResource,
+  CapabilitySetResource,
   CharacterResource,
-  IntegrationKind,
   LLMBackendResource,
 } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
@@ -35,31 +34,26 @@ interface ActorFormData {
   name: string;
   characterId: string;
   backendId: string;
+  capabilitySetId: string;
   model: string;
   maxSteps: string;
-  dailyBudget: string;
-  workspaceAccess: string;
-  memoryEnabled: boolean;
-  capabilityIds: string[];
 }
 
 const defaultForm: ActorFormData = {
   name: "",
   characterId: "",
   backendId: "",
+  capabilitySetId: "",
   model: "",
   maxSteps: "20",
-  dailyBudget: "10",
-  workspaceAccess: "none",
-  memoryEnabled: false,
-  capabilityIds: [],
 };
 
 function ActorsPage() {
   const { data: actors = [], isLoading, error } = useResourceList<ActorResource>("actors");
   const { data: characters = [] } = useResourceList<CharacterResource>("characters");
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
-  const { data: integrationKinds = [] } = useIntegrationKinds();
+  const { data: capabilitySets = [] } =
+    useResourceList<CapabilitySetResource>("capability-sets");
   const createMutation = useCreateResource<ActorResource>("actors");
   const deleteMutation = useDeleteResource("actors");
 
@@ -70,7 +64,6 @@ function ActorsPage() {
     selectedBackend?.default_model,
     ...(selectedBackend?.models?.names ?? []),
   ]);
-  const capabilityOptions = capabilityOptionsFromKinds(integrationKinds);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,13 +71,12 @@ function ActorsPage() {
     const backend = backends.find((b) => b.id === form.backendId);
     if (!character || !backend) return;
     const model = form.model.trim();
-    const dailyBudget = Number(form.dailyBudget) || 0;
     if (!model) {
       setFormError("Select a model.");
       return;
     }
-    if (dailyBudget > 0 && !hasPricingForModel(backend, model)) {
-      setFormError("The selected model needs backend pricing before using a USD budget.");
+    if (!form.capabilitySetId) {
+      setFormError("Select a capability set.");
       return;
     }
     setFormError("");
@@ -93,16 +85,11 @@ function ActorsPage() {
       name: form.name,
       type: "simple_loop",
       enabled: true,
-      model,
-      character,
-      llm_backend: backend,
-      character_id: character.id,
-      llm_backend_id: backend.id,
-      max_steps: Number(form.maxSteps) || 20,
-      daily_budget: dailyBudget,
-      workspace_access: form.workspaceAccess as "none" | "read_only" | "read_write",
-      memory_enabled: form.memoryEnabled,
-      allowed_capability_ids: form.capabilityIds,
+      default_model: model,
+      default_character_id: character.id,
+      default_llm_backend_id: backend.id,
+      capability_set_id: form.capabilitySetId,
+      default_budget: { max_steps: Number(form.maxSteps) || 20 },
     });
     setForm(defaultForm);
   };
@@ -134,6 +121,7 @@ function ActorsPage() {
                     <TableHead>Character</TableHead>
                     <TableHead>Backend</TableHead>
                     <TableHead>Model</TableHead>
+                    <TableHead>Capability Set</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Actions</TableHead>
                   </TableRow>
@@ -150,11 +138,12 @@ function ActorsPage() {
                           {actor.name}
                         </Link>
                       </TableCell>
-                      <TableCell className="text-sm">{actor.character?.name ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{actor.llm_backend?.name ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{actor.default_character?.name ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{actor.default_llm_backend?.name ?? "—"}</TableCell>
                       <TableCell>
-                        <code className="text-xs">{actor.model}</code>
+                        <code className="text-xs">{actor.default_model}</code>
                       </TableCell>
+                      <TableCell className="text-sm">{actor.capability_set?.name ?? "—"}</TableCell>
                       <TableCell>
                         <Badge variant={actor.enabled ? "default" : "secondary"}>
                           {actor.enabled ? "running" : "stopped"}
@@ -242,85 +231,39 @@ function ActorsPage() {
                   onValueChange={(model) => setForm({ ...form, model })}
                 />
               </FormField>
-              <div className="grid grid-cols-2 gap-2">
-                <FormField label="Max Steps">
-                  <Input
-                    type="number"
-                    min="1"
-                    value={form.maxSteps}
-                    onChange={(e) => setForm({ ...form, maxSteps: e.target.value })}
-                  />
-                </FormField>
-                <FormField label="Daily Budget">
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.dailyBudget}
-                    onChange={(e) => setForm({ ...form, dailyBudget: e.target.value })}
-                  />
-                </FormField>
-              </div>
-              <FormField label="Workspace">
-                <Select
-                  value={form.workspaceAccess}
-                  onValueChange={(v) => setForm({ ...form, workspaceAccess: v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">none</SelectItem>
-                    <SelectItem value="read_only">read only</SelectItem>
-                    <SelectItem value="read_write">read write</SelectItem>
-                  </SelectContent>
-                </Select>
-              </FormField>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.memoryEnabled}
-                  onChange={(e) =>
-                    setForm({ ...form, memoryEnabled: e.target.checked })
-                  }
-                  className="size-4 rounded border-input"
+              <FormField label="Max Steps">
+                <Input
+                  type="number"
+                  min="1"
+                  value={form.maxSteps}
+                  onChange={(e) => setForm({ ...form, maxSteps: e.target.value })}
                 />
-                Memory enabled
-              </label>
-              {capabilityOptions.length > 0 && (
-                <FormField label="Capabilities">
-                  <div className="max-h-36 space-y-2 overflow-auto rounded-md border p-2">
-                    {capabilityOptions.map((capability) => (
-                      <label
-                        key={capability.id}
-                        className="flex items-start gap-2 text-sm"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={form.capabilityIds.includes(capability.id)}
-                          onChange={(e) =>
-                            setForm({
-                              ...form,
-                              capabilityIds: toggleCapabilityId(
-                                form.capabilityIds,
-                                capability.id,
-                                e.target.checked,
-                              ),
-                            })
-                          }
-                          className="mt-0.5 size-4 rounded border-input"
-                        />
-                        <span className="min-w-0">
-                          <span className="block font-medium">{capability.name}</span>
-                          <span className="block break-all text-xs text-muted-foreground">
-                            {capability.id}
-                          </span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </FormField>
-              )}
+              </FormField>
+              <FormField label="Capability Set" required>
+                {capabilitySets.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No capability sets yet.{" "}
+                    <Link to="/capability-sets" className="underline">
+                      Create one first
+                    </Link>
+                    .
+                  </p>
+                ) : (
+                  <Select
+                    value={form.capabilitySetId}
+                    onValueChange={(v) => setForm({ ...form, capabilitySetId: v })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select capability set" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {capabilitySets.map((cs) => (
+                        <SelectItem key={cs.id} value={cs.id}>{cs.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </FormField>
               {(formError || createMutation.error) && (
                 <p className="text-xs text-destructive">
                   {formError || createMutation.error?.message}
@@ -406,42 +349,8 @@ function ModelSelect({
   );
 }
 
-function hasPricingForModel(backend: LLMBackendResource, model: string): boolean {
-  return backend.pricing.entries.some((entry) => entry.model === model);
-}
-
 function uniqueModelNames(models: Array<string | undefined>): string[] {
   return Array.from(
     new Set(models.map((model) => model?.trim()).filter(Boolean) as string[]),
   ).sort();
-}
-
-function capabilityOptionsFromKinds(kinds: IntegrationKind[]) {
-  const seen = new Set<string>();
-  return kinds
-    .flatMap((kind) =>
-      kind.capabilities.map((capability) => ({
-        ...capability,
-        name: capability.name || capability.id,
-      })),
-    )
-    .filter((capability) => {
-      if (seen.has(capability.id)) {
-        return false;
-      }
-      seen.add(capability.id);
-      return true;
-    })
-    .sort((a, b) => a.id.localeCompare(b.id));
-}
-
-function toggleCapabilityId(
-  ids: string[],
-  id: string,
-  checked: boolean,
-): string[] {
-  if (checked) {
-    return Array.from(new Set([...ids, id])).sort();
-  }
-  return ids.filter((value) => value !== id);
 }

@@ -35,25 +35,23 @@ function ActorDetailPage() {
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
 
   const actor = actors.find((a) => a.id === id);
-  const backend = backends.find((item) => item.id === actor?.llm_backend?.id);
+  const backend = backends.find((item) => item.id === actor?.default_llm_backend?.id);
   const modelOptions = uniqueModelNames([
     backend?.default_model,
     ...(backend?.models?.names ?? []),
-    actor?.model,
+    actor?.default_model,
   ]);
 
   const [editName, setEditName] = useState(actor?.name ?? "");
-  const [editModel, setEditModel] = useState(actor?.model ?? "");
+  const [editModel, setEditModel] = useState(actor?.default_model ?? "");
   const [saveError, setSaveError] = useState("");
-  const allowedCapabilityIds =
-    actor?.allowed_capability_ids ?? actor?.capability_ids ?? [];
 
   useEffect(() => {
     if (!actor) {
       return;
     }
     setEditName(actor.name);
-    setEditModel(actor.model);
+    setEditModel(actor.default_model);
     setSaveError("");
   }, [actor]);
 
@@ -85,14 +83,10 @@ function ActorDetailPage() {
       setSaveError("Select a model.");
       return;
     }
-    if ((actor.daily_budget ?? 0) > 0 && backend && !hasPricingForModel(backend, editModel)) {
-      setSaveError("The selected model needs backend pricing before using a USD budget.");
-      return;
-    }
     setSaveError("");
     await updateMutation.mutateAsync({
       id: actor.id,
-      data: { name: editName, model: editModel },
+      data: { name: editName, default_model: editModel },
     });
   };
 
@@ -134,65 +128,80 @@ function ActorDetailPage() {
                 </TableRow>
                 <TableRow>
                   <TableCell className="font-medium">Model</TableCell>
-                  <TableCell><code>{actor.model}</code></TableCell>
+                  <TableCell><code>{actor.default_model}</code></TableCell>
                 </TableRow>
-                {actor.character && (
+                {actor.default_character && (
                   <TableRow>
                     <TableCell className="font-medium">Character</TableCell>
                     <TableCell>
                       <Link
                         to="/characters/$id"
-                        params={{ id: actor.character.id }}
+                        params={{ id: actor.default_character.id }}
                         className="hover:underline"
                       >
-                        {actor.character.name}
+                        {actor.default_character.name}
                       </Link>
                     </TableCell>
                   </TableRow>
                 )}
-                {actor.llm_backend && (
+                {actor.capability_set && (
+                  <TableRow>
+                    <TableCell className="font-medium">Capability Set</TableCell>
+                    <TableCell>
+                      <Link
+                        to="/capability-sets"
+                        className="hover:underline"
+                      >
+                        {actor.capability_set.name}
+                      </Link>
+                    </TableCell>
+                  </TableRow>
+                )}
+                {actor.default_llm_backend && (
                   <TableRow>
                     <TableCell className="font-medium">LLM Backend</TableCell>
                     <TableCell>
                       <Link
                         to="/providers/$id"
-                        params={{ id: actor.llm_backend.id }}
+                        params={{ id: actor.default_llm_backend.id }}
                         className="hover:underline"
                       >
-                        {actor.llm_backend.name}
+                        {actor.default_llm_backend.name}
                       </Link>
                       <span className="ml-2 text-xs text-muted-foreground">
-                        ({actor.llm_backend.provider})
+                        ({actor.default_llm_backend.yuuagents_provider})
                       </span>
                     </TableCell>
                   </TableRow>
                 )}
                 <TableRow>
                   <TableCell className="font-medium">Max Steps</TableCell>
-                  <TableCell>{actor.max_steps ?? "unlimited"}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Daily Budget</TableCell>
-                  <TableCell>${actor.daily_budget ?? "unlimited"}</TableCell>
+                  <TableCell>{actor.default_budget?.max_steps ?? "unlimited"}</TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell className="font-medium">Workspace</TableCell>
-                  <TableCell>{actor.workspace_access ?? "none"}</TableCell>
+                  <TableCell>{actor.capability_set?.workspace_path || "none"}</TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell className="font-medium">Memory</TableCell>
-                  <TableCell>{actor.memory_enabled ? "enabled" : "disabled"}</TableCell>
+                  <TableCell>
+                    {actor.capability_set?.runtime_policy?.memory_enabled
+                      ? "enabled"
+                      : "disabled"}
+                  </TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell className="font-medium">Capabilities</TableCell>
                   <TableCell>
-                    {allowedCapabilityIds.length > 0 ? (
+                    {(actor.capability_set?.integration_capability_ids ?? []).length > 0 ? (
                       <div className="flex flex-wrap gap-1">
-                        {allowedCapabilityIds.map((capabilityId) => (
-                          <Badge key={capabilityId} variant="secondary">
-                            {capabilityId}
-                          </Badge>
-                        ))}
+                        {(actor.capability_set?.integration_capability_ids ?? []).map(
+                          (capabilityId) => (
+                            <Badge key={capabilityId} variant="secondary">
+                              {capabilityId}
+                            </Badge>
+                          ),
+                        )}
                       </div>
                     ) : (
                       "none"
@@ -289,10 +298,6 @@ function ModelSelect({
       </SelectContent>
     </Select>
   );
-}
-
-function hasPricingForModel(backend: LLMBackendResource, model: string): boolean {
-  return backend.pricing.entries.some((entry) => entry.model === model.trim());
 }
 
 function uniqueModelNames(models: Array<string | undefined>): string[] {

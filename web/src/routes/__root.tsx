@@ -2,6 +2,7 @@ import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import {
   Bot,
   CircleDot,
+  Layers,
   LayoutDashboard,
   MessageSquare,
   Plug,
@@ -25,6 +26,7 @@ const navGroups = [
     label: "Resources",
     items: [
       { to: "/actors", icon: Bot, label: "Actors" },
+      { to: "/capability-sets", icon: Layers, label: "Capability Sets" },
       { to: "/characters", icon: Wand2, label: "Characters" },
       { to: "/routes", icon: RouteIcon, label: "Ingress Rules" },
     ],
