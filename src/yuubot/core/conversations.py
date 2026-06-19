@@ -568,6 +568,18 @@ class ConversationManager:
         )
         self._runtimes[conversation.conversation_id] = runtime
         self._observe_runtime(conversation.conversation_id, runtime)
+
+        # Inject real conversation_id into trace context so spans link
+        # to yuubot conversation records (not synthetic uuid5).
+        if self.trace_context is not None:
+            definition_name = runtime.conversation_definition.name
+            self.trace_context.register(
+                f"{definition_name}:conversation:{conversation.conversation_id}",
+                character_name=conversation.character.name,
+                model=binding.llm.model,
+                conversation_id=conversation.conversation_id,
+            )
+
         return runtime
 
     def _observe_runtime(

@@ -13,7 +13,7 @@ from yuuagents import RuntimeEvent
 
 @dataclass
 class YuubotTraceContext:
-    conversation_id: UUID | None = None
+    conversation_id: UUID | str | None = None
     character_name: str = ""
     model: str = ""
 
@@ -34,12 +34,15 @@ class YuubotTraceContextProvider:
         *,
         character_name: str = "",
         model: str = "",
+        conversation_id: str | UUID | None = None,
     ) -> None:
         ctx = self._contexts.setdefault(agent_name, YuubotTraceContext())
         if character_name:
             ctx.character_name = character_name
         if model:
             ctx.model = model
+        if conversation_id is not None:
+            ctx.conversation_id = conversation_id
         for agent_id, mapped_name in self._agent_names.items():
             if mapped_name != agent_name:
                 continue
@@ -53,10 +56,11 @@ class YuubotTraceContextProvider:
 
     def conversation_id(self, event: RuntimeEvent) -> UUID | str | None:
         ctx = self._context_for(event)
-        if ctx.conversation_id is None:
-            if not event.agent_id:
-                return None
-            ctx.conversation_id = uuid5(NAMESPACE_DNS, event.agent_id)
+        if ctx.conversation_id is not None:
+            return ctx.conversation_id
+        if not event.agent_id:
+            return None
+        ctx.conversation_id = uuid5(NAMESPACE_DNS, event.agent_id)
         return ctx.conversation_id
 
     def agent_name(self, event: RuntimeEvent) -> str:
@@ -96,6 +100,7 @@ class YuubotTraceContextProvider:
                 self._agent_names[event.agent_id] = event.agent_name
                 base = self._contexts.setdefault(event.agent_name, YuubotTraceContext())
                 ctx = YuubotTraceContext(
+                    conversation_id=base.conversation_id,
                     character_name=base.character_name,
                     model=base.model,
                 )
