@@ -162,23 +162,35 @@ curl -s -X POST http://127.0.0.1:8781/api/resources/characters \
   }' | python3 -m json.tool
 ```
 
-### 创建 Actor（需要先有 Character + LLM Backend）
+### 创建 Capability Set
 
 ```bash
-# 获取 character_id 和 backend_id
+curl -s -X POST http://127.0.0.1:8781/api/resources/capability-sets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "default",
+    "description": "Default capability set"
+  }' | python3 -m json.tool
+```
+
+### 创建 Actor（需要先有 Character + LLM Backend + Capability Set）
+
+```bash
+# 获取各资源 id
 CHAR_ID=$(curl -s http://127.0.0.1:8781/api/resources/characters | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
 BK_ID=$(curl -s http://127.0.0.1:8781/api/resources/llm-backends | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
+CAP_ID=$(curl -s http://127.0.0.1:8781/api/resources/capability-sets | python3 -c "import sys,json; print(json.load(sys.stdin)['data'][0]['id'])")
 
 curl -s -X POST http://127.0.0.1:8781/api/resources/actors \
   -H "Content-Type: application/json" \
   -d "{
     \"name\": \"test-actor\",
     \"type\": \"simple_loop\",
-    \"model\": \"gpt-4o\",
-    \"character_id\": \"$CHAR_ID\",
-    \"llm_backend_id\": \"$BK_ID\",
-    \"max_steps\": 20,
-    \"daily_budget\": 10,
+    \"default_model\": \"gpt-4o\",
+    \"default_character_id\": \"$CHAR_ID\",
+    \"capability_set_id\": \"$CAP_ID\",
+    \"default_llm_backend_id\": \"$BK_ID\",
+    \"default_budget\": {\"max_steps\": 20},
     \"enabled\": true
   }" | python3 -m json.tool
 ```
