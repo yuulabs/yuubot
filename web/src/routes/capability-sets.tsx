@@ -152,7 +152,7 @@ function CapabilitySetsPage() {
                 <Input
                   value={form.workspacePath}
                   onChange={(e) => setForm({ ...form, workspacePath: e.target.value })}
-                  placeholder="/workspace/projects"
+                  placeholder="test/"
                 />
               </FormField>
               <FormField label="Daily Budget (USD)">

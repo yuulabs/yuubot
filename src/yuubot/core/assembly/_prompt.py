@@ -42,8 +42,10 @@ def _capability_prompt(binding: AgentBinding) -> str:
     lines = [f"Capability Set: {cap.name}"]
     if cap.description:
         lines.append(cap.description)
-    if cap.workspace_path:
-        lines.extend(("", "Workspace:", f"- Local path: {cap.workspace_path}"))
+    if binding.workspace_path:
+        lines.extend(("", "Workspace:", f"- Local path: {binding.workspace_path}"))
+    elif cap.workspace_path:
+        lines.extend(("", "Workspace:", f"- Name: {cap.workspace_path}"))
     if cap.bootstrap_path:
         lines.extend(
             (
