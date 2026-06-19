@@ -35,6 +35,19 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class CapabilityInstanceInfo:
+    """A capability from an existing integration record (enabled or disabled)."""
+
+    capability_id: str
+    capability_name: str
+    description: str
+    namespace: str
+    integration_id: str
+    integration_name: str
+    enabled: bool
+
+
+@dataclass
 class IntegrationCore:
     """Resolves capabilities, invokes integrations, and manages lifecycle."""
 
@@ -69,6 +82,34 @@ class IntegrationCore:
 
     def declared_capability_specs(self) -> list[AnyCapabilitySpec]:
         return self.factories.capability_specs()
+
+    async def existing_instance_capabilities(self) -> list[CapabilityInstanceInfo]:
+        """Return capabilities from ALL integration records (enabled + disabled).
+
+        Unlike _resolve_enabled_capability_ids() which only returns enabled,
+        this includes disabled instances so the admin form can show them
+        with a disabled badge.
+        """
+        records = await self.repository.list(IntegrationORM)
+        result: list[CapabilityInstanceInfo] = []
+        for record in records:
+            try:
+                factory = self.factories.get(record.name)
+            except LookupError:
+                continue  # factory not registered (e.g., plugin removed)
+            for spec in factory.capability_specs():
+                result.append(
+                    CapabilityInstanceInfo(
+                        capability_id=spec.id,
+                        capability_name=spec.name,
+                        description=spec.description,
+                        namespace=spec.namespace,
+                        integration_id=record.id,
+                        integration_name=record.name,
+                        enabled=record.enabled,
+                    )
+                )
+        return result
 
     async def handle_resource_changed(self, event: ResourceChanged) -> None:
         if event.is_table("integrations"):

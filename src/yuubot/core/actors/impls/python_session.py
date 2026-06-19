@@ -82,7 +82,7 @@ class ActorPythonSessionFactory:
             agent_name=binding.agent_name,
             session_id=session_id,
             mailbox_id=mailbox_id,
-            capabilities=self._visible_capabilities(binding),
+            capabilities=await self._visible_capabilities(binding),
             endpoint=self.bridge.endpoint,
         )
 
@@ -103,15 +103,18 @@ class ActorPythonSessionFactory:
     def cleanup_actor(self, actor_id: str) -> None:
         self.workspace.cleanup_actor(actor_id)
 
-    def _visible_capabilities(
+    async def _visible_capabilities(
         self,
         binding: AgentBinding,
     ) -> list[AnyCapabilitySpec]:
         allowed = set(binding.capability_set.integration_capability_ids)
+        existing = await self.integrations.existing_instance_capabilities()
+        existing_ids = {info.capability_id for info in existing}
+        visible_ids = allowed & existing_ids
         return [
             capability
             for capability in self.integrations.declared_capability_specs()
-            if capability.id in allowed
+            if capability.id in visible_ids
         ]
 
 

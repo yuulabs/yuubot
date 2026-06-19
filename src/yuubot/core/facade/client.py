@@ -32,6 +32,10 @@ async def invoke(capability_id: str, payload: dict[str, object]) -> dict[str, ob
         payload=payload,
     )
     response = await _request(request)
+    if not response.ok:
+        error = response.error
+        msg = error.message if error else "unknown facade error"
+        raise RuntimeError(f"capability {{capability_id!r}} failed: {{msg}}")
     result = response.result
     if not isinstance(result, dict):
         raise TypeError("integration facade result must be a JSON object")
