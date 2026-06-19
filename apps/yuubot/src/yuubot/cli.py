@@ -157,6 +157,14 @@ def _run_dev(
             health_url=f"http://{config.admin.host}:{config.admin.port}/healthz",
         ),
     )
+
+    # Translate SIGTERM into KeyboardInterrupt so the finally block runs
+    # and _shutdown_dev_children can clean up child processes.
+    def _sigterm_to_keyboard_interrupt(signum: int, frame: object) -> None:
+        raise KeyboardInterrupt
+
+    previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+
     try:
         healthy = set[str]()
         deadline = time.monotonic() + startup_timeout_s
@@ -189,6 +197,7 @@ def _run_dev(
         return 130
     finally:
         _shutdown_dev_children(children, timeout_s=shutdown_timeout_s)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def _popen_dev_child(argv: list[str]) -> subprocess.Popen[bytes]:
