@@ -72,12 +72,9 @@ class AgentBinding(msgspec.Struct):
     workspace_path: Path | None = None
 
     def require_workspace_path(self) -> Path:
-        path = self.workspace_path
-        if path is None and self.capability_set.workspace_path:
-            path = Path(self.capability_set.workspace_path).expanduser()
-        if path is None:
+        if self.workspace_path is None:
             raise RuntimeError(f"agent {self.agent_name!r} has no workspace path")
-        return path
+        return self.workspace_path
 
 
 async def load_actor_binding(
@@ -103,7 +100,11 @@ async def load_conversation_agent_binding(
     return conversation_agent_binding(conversation)
 
 
-def conversation_agent_binding(conversation: ConversationRecord) -> AgentBinding:
+def conversation_agent_binding(
+    conversation: ConversationRecord,
+    *,
+    workspace_path: Path | None = None,
+) -> AgentBinding:
     return AgentBinding(
         owner_id=conversation.conversation_id,
         agent_name=f"conversation:{conversation.conversation_id}",
@@ -117,6 +118,7 @@ def conversation_agent_binding(conversation: ConversationRecord) -> AgentBinding
         ),
         llm_options=conversation.llm_options,
         budget=conversation.budget,
+        workspace_path=workspace_path,
     )
 
 

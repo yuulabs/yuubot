@@ -8,6 +8,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 
 import msgspec
@@ -388,6 +389,9 @@ class ConversationManager:
     python_sessions: ActorPythonSessionFactory
     llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None]
     trace_context: YuubotTraceContextProvider | None = None
+    workspace_root: Path = field(
+        default_factory=lambda: Path("~/.yuubot/workspace").expanduser()
+    )
     _runtimes: dict[str, YuuAgentsActorRuntime] = field(default_factory=dict, init=False)
     _agent_to_conversation: dict[str, str] = field(default_factory=dict, init=False)
     _observed_runtimes: dict[str, int] = field(default_factory=dict, init=False)
@@ -547,11 +551,29 @@ class ConversationManager:
             raise LookupError(f"llm backend {llm_backend_id!r} does not exist")
         return llm_backend
 
+    def _resolve_workspace_path(self, relative_name: str | None) -> Path | None:
+        """Resolve a CapabilitySet's workspace_path (relative name) under workspace_root.
+
+        Returns None if relative_name is empty — caller handles None by not
+        setting workspace_path on the binding (facade will be None, no workspace needed).
+        """
+        if not relative_name or not relative_name.strip():
+            return None
+        root = self.workspace_root.expanduser().resolve()
+        path = (root / relative_name).resolve()
+        if not path.is_relative_to(root):
+            raise ValueError(
+                f"workspace_path {relative_name!r} escapes workspace root {root}"
+            )
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     async def _runtime_for(self, conversation: ConversationRecord) -> YuuAgentsActorRuntime:
         runtime = self._runtimes.get(conversation.conversation_id)
         if runtime is not None:
             return runtime
-        binding = conversation_agent_binding(conversation)
+        workspace_path = self._resolve_workspace_path(conversation.capability_set.workspace_path)
+        binding = conversation_agent_binding(conversation, workspace_path=workspace_path)
         facade = None
         if binding.capability_set.agent_tools or binding.capability_set.integration_capability_ids:
             facade = await self.python_sessions.bind_facade(

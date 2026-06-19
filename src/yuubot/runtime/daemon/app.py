@@ -10,6 +10,7 @@ import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from yuuagents import ProviderPoolSessionFactory
 from starlette.applications import Starlette
@@ -228,6 +229,9 @@ class YuubotDaemon:
     llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None]
     trace_context: YuubotTraceContextProvider | None = None
     tool_factories: ToolRegistry = field(default_factory=default_tool_factories)
+    workspace_root: Path = field(
+        default_factory=lambda: Path("~/.yuubot/workspace").expanduser()
+    )
 
     async def start(self) -> None:
         await self.services.start()
@@ -256,6 +260,7 @@ class YuubotDaemon:
             python_sessions=self.python_sessions,
             llm_session_factory_factory=self.llm_session_factory_factory,
             trace_context=self.trace_context,
+            workspace_root=self.workspace_root,
         )
 
     async def serve(self) -> None:
@@ -320,6 +325,7 @@ def build_daemon_asgi_app(
     python_sessions: ActorPythonSessionFactory,
     llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None],
     trace_context: YuubotTraceContextProvider | None = None,
+    workspace_root: Path | None = None,
 ) -> Starlette:
     """Construct the daemon ASGI application.
 
@@ -341,6 +347,7 @@ def build_daemon_asgi_app(
         python_sessions=python_sessions,
         llm_session_factory_factory=llm_session_factory_factory,
         trace_context=trace_context,
+        workspace_root=workspace_root or Path("~/.yuubot/workspace").expanduser(),
     )
 
     resource_service = ResourceService(
@@ -559,4 +566,5 @@ async def build_daemon(
         ),
         trace_context=components.trace_context,
         tool_factories=components.tool_factories,
+        workspace_root=layout.workspace_root,
     )
