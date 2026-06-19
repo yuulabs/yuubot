@@ -78,6 +78,7 @@ class UvicornServer:
 
     name: str = "uvicorn"
     log_level: str = "info"
+    graceful_shutdown_timeout: int = 3
 
     async def serve(self, app: ASGIApp, *, host: str, port: int) -> None:
         import uvicorn
@@ -88,6 +89,7 @@ class UvicornServer:
             port=port,
             lifespan="on",
             log_level=self.log_level,
+            timeout_graceful_shutdown=self.graceful_shutdown_timeout,
         )
         await uvicorn.Server(server_config).serve()
 
