@@ -263,16 +263,37 @@ def _health_probe(url: str) -> bool:
 
 def _build_web(config: BootstrapConfig) -> None:
     """Build the admin frontend if the web project is present."""
-    web_dist = Path(config.admin.web_dist_dir).resolve()
+    from yuubot.bootstrap.config import resolve_web_dist_dir
+
+    web_dist = resolve_web_dist_dir(config.admin.web_dist_dir)
     web_root = web_dist.parent
     if not (web_root / "package.json").exists():
-        return
+        raise click.ClickException(
+            f"frontend project not found at {web_root} "
+            f"(web_dist_dir={config.admin.web_dist_dir or '(auto)'})"
+        )
     if _web_build_is_fresh(web_root, web_dist):
         click.echo(f"frontend build cache hit in {web_root}")
         return
+
+    pm = _detect_package_manager(web_root)
+
+    # Install dependencies if node_modules is missing
+    if not (web_root / "node_modules").is_dir():
+        click.echo(f"installing frontend dependencies with {pm} ...")
+        result = subprocess.run(
+            [pm, "install"],
+            cwd=str(web_root),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            click.echo(result.stderr.strip(), err=True)
+            raise click.ClickException("frontend dependency install failed")
+
     click.echo(f"building frontend in {web_root} ...")
     result = subprocess.run(
-        ["npm", "run", "build"],
+        [pm, "run", "build"],
         cwd=str(web_root),
         capture_output=True,
         text=True,
@@ -280,6 +301,13 @@ def _build_web(config: BootstrapConfig) -> None:
     if result.returncode != 0:
         click.echo(result.stderr.strip(), err=True)
         raise click.ClickException("frontend build failed")
+
+
+def _detect_package_manager(web_root: Path) -> str:
+    """Detect pnpm vs npm based on lock file presence."""
+    if (web_root / "pnpm-lock.yaml").exists():
+        return "pnpm"
+    return "npm"
 
 
 def _web_build_is_fresh(web_root: Path, web_dist: Path) -> bool:

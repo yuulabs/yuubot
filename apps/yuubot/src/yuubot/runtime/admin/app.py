@@ -7,7 +7,6 @@ and manages the ``YuubotAdmin`` lifecycle.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
@@ -259,35 +258,38 @@ def build_admin_asgi_app(
         )
 
     # Serve frontend static assets from /assets/
-    web_dist = config.web_dist_dir or "web/dist"
-    web_path = Path(web_dist).resolve()
-    if web_path.is_dir():
-        assets_path = web_path / "assets"
-        if assets_path.is_dir():
-            routes.append(
-                Mount(
-                    "/assets",
-                    app=StaticFiles(directory=str(assets_path)),
-                    name="assets",
-                )
-            )
+    from yuubot.bootstrap.config import resolve_web_dist_dir
 
-        # Serve tutorial static files from dist/tutorials/
-        tutorials_path = web_path / "tutorials"
-        if tutorials_path.is_dir():
-            routes.append(
-                Mount(
-                    "/tutorials",
-                    app=StaticFiles(directory=str(tutorials_path), html=True),
-                    name="tutorials",
-                )
-            )
+    web_path = resolve_web_dist_dir(config.web_dist_dir)
+    if not web_path.is_dir():
+        raise FileNotFoundError(f"frontend dist not found: {web_path}")
 
-        # Serve index.html explicitly at the root
-        index_path = web_path / "index.html"
-        serve_spa = make_serve_spa_handler(index_path=index_path)
-        routes.append(Route("/{path:path}", serve_spa, methods=("GET",)))
-        routes.append(Route("/", serve_spa, methods=("GET",)))
+    assets_path = web_path / "assets"
+    if assets_path.is_dir():
+        routes.append(
+            Mount(
+                "/assets",
+                app=StaticFiles(directory=str(assets_path)),
+                name="assets",
+            )
+        )
+
+    # Serve tutorial static files from dist/tutorials/
+    tutorials_path = web_path / "tutorials"
+    if tutorials_path.is_dir():
+        routes.append(
+            Mount(
+                "/tutorials",
+                app=StaticFiles(directory=str(tutorials_path), html=True),
+                name="tutorials",
+            )
+        )
+
+    # Serve index.html explicitly at the root
+    index_path = web_path / "index.html"
+    serve_spa = make_serve_spa_handler(index_path=index_path)
+    routes.append(Route("/{path:path}", serve_spa, methods=("GET",)))
+    routes.append(Route("/", serve_spa, methods=("GET",)))
 
     return Starlette(routes=tuple(routes))
 

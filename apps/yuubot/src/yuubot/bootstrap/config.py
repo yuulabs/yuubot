@@ -34,7 +34,7 @@ class AdminConfig(msgspec.Struct, frozen=True):
     host: str = "127.0.0.1"
     port: int = 8781
     secret: str = ""
-    web_dist_dir: str = "web/dist"
+    web_dist_dir: str = ""  # empty = auto-detect from package root
 
 
 class ServerConfig(msgspec.Struct, frozen=True):
@@ -120,12 +120,28 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
         data_dir: str = "~/.yuubot-test",
     ) -> Self:
         return cls(
+            admin=AdminConfig(web_dist_dir="."),
             server=ServerConfig(daemon_secret=daemon_secret),
             database=DatabaseConfig(path=database_path),
             secrets=SecretConfig(master_key=master_key),
             trace=TraceConfig(enabled=False),
             paths=PathsConfig(data_dir=data_dir),
         )
+
+
+def resolve_web_dist_dir(web_dist_dir: str) -> Path:
+    """Resolve the web dist directory.
+
+    When web_dist_dir is empty (default), resolves relative to the
+    yuubot package root (apps/yuubot/web/dist). Otherwise resolves
+    the explicit path relative to CWD.
+    """
+    if web_dist_dir:
+        return Path(web_dist_dir).expanduser().resolve()
+    # config.py lives at apps/yuubot/src/yuubot/bootstrap/config.py
+    # package root (apps/yuubot/) is 4 parents up
+    pkg_root = Path(__file__).parent.parent.parent.parent
+    return (pkg_root / "web" / "dist").resolve()
 
 
 def load_bootstrap_config(config_path: str | Path | None = None) -> BootstrapConfig:
