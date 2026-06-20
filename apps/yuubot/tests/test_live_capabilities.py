@@ -15,6 +15,14 @@ from yuubot.core.integrations import (
     IntegrationCore,
     default_integration_factories,
 )
+from yuubot.core.integrations.impls.github import (
+    GITHUB_FILE_READ_CAPABILITY_ID,
+    GITHUB_ISSUE_COMMENT_CAPABILITY_ID,
+    GITHUB_ISSUE_CREATE_CAPABILITY_ID,
+    GITHUB_ISSUE_LIST_CAPABILITY_ID,
+    GITHUB_ISSUE_READ_CAPABILITY_ID,
+)
+from yuubot.core.secrets import Secret
 from yuubot.resources.records import (
     CapabilitySetRecord,
     IntegrationRecord,
@@ -65,6 +73,64 @@ async def test_existing_instance_capabilities_includes_enabled_status(
     assert echo_cap.description == "Returns the payload unchanged."
     assert echo_cap.namespace == "echo"
     assert echo_cap.integration_name == "echo"
+
+
+async def test_existing_instance_capabilities_includes_github(
+    resources: Resources,
+):
+    integrations = IntegrationCore(
+        repository=resources.repository,
+        factories=default_integration_factories(),
+    )
+    await resources.repository.insert(
+        IntegrationORM,
+        IntegrationRecord(
+            id="github-main",
+            name="github",
+            config={
+                "token": Secret("test-token"),
+                "default_owner": "yuulabs",
+                "default_repo": "yuubot",
+            },
+            enabled=True,
+        ),
+    )
+
+    caps = await integrations.existing_instance_capabilities()
+
+    cap_ids = {(c.capability_id, c.enabled, c.integration_id) for c in caps}
+    assert (
+        GITHUB_ISSUE_LIST_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_ISSUE_READ_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_ISSUE_CREATE_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_ISSUE_COMMENT_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_FILE_READ_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+
+    github_cap = next(
+        c for c in caps if c.capability_id == GITHUB_ISSUE_LIST_CAPABILITY_ID
+    )
+    assert github_cap.capability_name == "List GitHub issues"
+    assert github_cap.namespace == "github"
+    assert github_cap.integration_name == "github"
 
 
 async def test_existing_instance_capabilities_shows_disabled_status(
@@ -275,6 +341,64 @@ async def test_live_capabilities_endpoint_returns_existing_instances(
     assert echo_cap["description"] == "Returns the payload unchanged."
     assert echo_cap["namespace"] == "echo"
     assert echo_cap["integration_name"] == "echo"
+
+
+async def test_live_capabilities_endpoint_returns_github_capabilities(
+    resources: Resources,
+    admin_app,
+):
+    await resources.repository.insert(
+        IntegrationORM,
+        IntegrationRecord(
+            id="github-main",
+            name="github",
+            config={
+                "token": Secret("test-token"),
+                "default_owner": "yuulabs",
+                "default_repo": "yuubot",
+            },
+            enabled=True,
+        ),
+    )
+
+    async with _client(admin_app) as client:
+        response = await client.get("/api/live-capabilities")
+
+    assert response.status_code == 200
+    caps = response.json()["capabilities"]
+    cap_ids = {(c["capability_id"], c["enabled"], c["integration_id"]) for c in caps}
+    assert (
+        GITHUB_ISSUE_LIST_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_ISSUE_READ_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_ISSUE_CREATE_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_ISSUE_COMMENT_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+    assert (
+        GITHUB_FILE_READ_CAPABILITY_ID,
+        True,
+        "github-main",
+    ) in cap_ids
+
+    github_cap = next(
+        c for c in caps if c["capability_id"] == GITHUB_ISSUE_LIST_CAPABILITY_ID
+    )
+    assert github_cap["capability_name"] == "List GitHub issues"
+    assert github_cap["namespace"] == "github"
+    assert github_cap["integration_name"] == "github"
 
 
 async def test_live_capabilities_endpoint_shows_disabled(

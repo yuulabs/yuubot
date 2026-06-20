@@ -116,11 +116,13 @@ def _unique_capabilities(
 def default_integration_factories() -> IntegrationFactoryRegistry:
     """Factories available to a normal daemon process."""
     from yuubot.core.integrations.impls.echo import EchoIntegrationFactory
+    from yuubot.core.integrations.impls.github import GitHubIntegrationFactory
     from yuubot.core.integrations.impls.test_im.integration import (
         TestImIntegrationFactory,
     )
 
     registry = IntegrationFactoryRegistry()
     registry.register(EchoIntegrationFactory())
+    registry.register(GitHubIntegrationFactory())
     registry.register(TestImIntegrationFactory())
     return registry

@@ -17,6 +17,13 @@ from yuubot.core.integrations import (
 )
 from yuubot.core.integrations.contracts import IntegrationInstance, IntegrationStorage
 from yuubot.core.integrations.impls.echo import ECHO_CAPABILITY_ID
+from yuubot.core.integrations.impls.github import (
+    GITHUB_FILE_READ_CAPABILITY_ID,
+    GITHUB_ISSUE_COMMENT_CAPABILITY_ID,
+    GITHUB_ISSUE_CREATE_CAPABILITY_ID,
+    GITHUB_ISSUE_LIST_CAPABILITY_ID,
+    GITHUB_ISSUE_READ_CAPABILITY_ID,
+)
 from yuubot.core.secrets import Secret
 from yuubot.core.validation import LLMProviderOptions
 from yuubot.resources.records import (
@@ -72,6 +79,31 @@ async def test_integration_kinds_endpoint_exposes_echo(admin_app) -> None:
 
     capability_ids = [cap["id"] for cap in echo["capabilities"]]
     assert ECHO_CAPABILITY_ID in capability_ids
+
+
+async def test_integration_kinds_endpoint_exposes_github_schema(admin_app) -> None:
+    async with _client(admin_app) as client:
+        response = await client.get("/api/integration-kinds")
+
+    assert response.status_code == 200
+    by_name = {kind["name"]: kind for kind in response.json()["kinds"]}
+    assert "github" in by_name
+
+    github = by_name["github"]
+    schema = github["config_schema"]
+    assert schema["type"] == "object"
+    assert schema["properties"]["token"]["format"] == "secret"
+    assert "default_owner" in schema["properties"]
+    assert "default_repo" in schema["properties"]
+
+    capability_ids = {cap["id"] for cap in github["capabilities"]}
+    assert capability_ids == {
+        GITHUB_ISSUE_LIST_CAPABILITY_ID,
+        GITHUB_ISSUE_READ_CAPABILITY_ID,
+        GITHUB_ISSUE_CREATE_CAPABILITY_ID,
+        GITHUB_ISSUE_COMMENT_CAPABILITY_ID,
+        GITHUB_FILE_READ_CAPABILITY_ID,
+    }
 
 
 async def test_secret_config_schema_and_reveal_endpoint(
