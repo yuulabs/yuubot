@@ -194,15 +194,11 @@ function IntegrationCard({
             </Badge>
           ) : null}
         </div>
-        <Link
-          to="/integrations/$id"
-          params={{ id: integration.id }}
-          className="mt-auto block"
-        >
-          <Button variant="outline" size="sm" className="w-full">
+        <Button variant="outline" size="sm" className="mt-auto w-full" asChild>
+          <Link to="/integrations/$id" params={{ id: integration.id }}>
             Configure
-          </Button>
-        </Link>
+          </Link>
+        </Button>
       </CardContent>
     </Card>
   );
