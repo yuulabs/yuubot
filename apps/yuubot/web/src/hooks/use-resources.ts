@@ -81,6 +81,9 @@ export function useCreateResource<T>(resourceType: ResourceType) {
     mutationFn: (data: unknown) => createResource<T>(resourceType, data),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: resourceKeys.list(resourceType) });
+      if (resourceType === "integrations") {
+        queryClient.invalidateQueries({ queryKey: resourceKeys.liveCapabilities() });
+      }
     },
   });
 }
@@ -93,6 +96,9 @@ export function useUpdateResource<T>(resourceType: ResourceType) {
       updateResource<T>(resourceType, id, data),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: resourceKeys.list(resourceType) });
+      if (resourceType === "integrations") {
+        queryClient.invalidateQueries({ queryKey: resourceKeys.liveCapabilities() });
+      }
     },
   });
 }
@@ -104,6 +110,9 @@ export function useDeleteResource(resourceType: ResourceType) {
     mutationFn: (id: string) => deleteResource(resourceType, id),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: resourceKeys.list(resourceType) });
+      if (resourceType === "integrations") {
+        queryClient.invalidateQueries({ queryKey: resourceKeys.liveCapabilities() });
+      }
     },
   });
 }
@@ -116,6 +125,9 @@ export function useSetResourceEnabled(resourceType: ResourceType) {
       setResourceEnabled(resourceType, id, enabled),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: resourceKeys.list(resourceType) });
+      if (resourceType === "integrations") {
+        queryClient.invalidateQueries({ queryKey: resourceKeys.liveCapabilities() });
+      }
     },
   });
 }

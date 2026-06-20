@@ -19,6 +19,7 @@ from yuubot.core.capabilities import AnyCapability, AnyCapabilitySpec
 from yuubot.core.facade import FacadeWorkspace, IntegrationInvokeBridge
 from yuubot.core.gateway import Gateway, Mailbox
 from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
+from yuubot.core.integrations import default_integration_factories
 from yuubot.core.integrations.contracts import IntegrationInstance, IntegrationStorage
 from yuubot.core.routing import RouteBindings
 from yuubot.process import ServiceHost, TraceService
@@ -144,6 +145,7 @@ def _build_runtime(
     workspace_root: Path,
     *,
     integration_factory: FakeIntegrationFactory | None = None,
+    integration_factories: IntegrationFactoryRegistry | None = None,
 ) -> RuntimeHarness:
     gateway = Gateway(routes=RouteBindings(rules=()))
     actor_factories = ActorFactoryRegistry()
@@ -154,7 +156,7 @@ def _build_runtime(
         gateway=gateway,
         workspace_resolver=ActorWorkspaceResolver(workspace_root / "workspaces"),
     )
-    integration_factories = IntegrationFactoryRegistry()
+    integration_factories = integration_factories or IntegrationFactoryRegistry()
     if integration_factory is not None:
         integration_factories.register(integration_factory)
     integrations = IntegrationCore(
@@ -209,9 +211,16 @@ def _build_runtime(
     )
 
 
-def _client(runtime: RuntimeHarness) -> httpx.AsyncClient:
+def _client(
+    runtime: RuntimeHarness,
+    *,
+    raise_app_exceptions: bool = True,
+) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=runtime.app),
+        transport=httpx.ASGITransport(
+            app=runtime.app,
+            raise_app_exceptions=raise_app_exceptions,
+        ),
         base_url="http://testserver",
     )
 
@@ -341,5 +350,100 @@ async def test_integration_secret_config_is_encrypted_and_redacted(
         assert isinstance(token, Secret)
         assert token.reveal() == "plain-token"
         assert loaded.config["label"] == "after"
+    finally:
+        await runtime.services.stop()
+
+
+async def test_create_integration_defaults_to_disabled(
+    resources: Resources, tmp_path: Path
+) -> None:
+    integration_factory = FakeIntegrationFactory()
+    runtime = _build_runtime(
+        resources, tmp_path, integration_factory=integration_factory
+    )
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.post(
+                "/api/resources/integrations",
+                headers=HEADERS,
+                json={
+                    "id": "api-disabled",
+                    "name": "fake",
+                    "config": {},
+                },
+            )
+
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["data"]["enabled"] is False
+        assert runtime.integrations.running_integration_ids() == []
+    finally:
+        await runtime.services.stop()
+
+
+async def test_create_integration_with_enabled_true_starts_runtime(
+    resources: Resources, tmp_path: Path
+) -> None:
+    integration_factory = FakeIntegrationFactory()
+    runtime = _build_runtime(
+        resources, tmp_path, integration_factory=integration_factory
+    )
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.post(
+                "/api/resources/integrations",
+                headers=HEADERS,
+                json={
+                    "id": "api-enabled",
+                    "name": "fake",
+                    "config": {},
+                    "enabled": True,
+                },
+            )
+
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["data"]["enabled"] is True
+        assert runtime.integrations.running_integration_ids() == ["api-enabled"]
+    finally:
+        await runtime.services.stop()
+
+
+async def test_enabling_github_without_pat_returns_validation_error(
+    resources: Resources, tmp_path: Path
+) -> None:
+    from yuubot.resources.store.models import IntegrationORM
+
+    repo = resources.repository
+    await repo.insert(
+        IntegrationORM,
+        IntegrationRecord(
+            id="github-empty",
+            name="github",
+            config={},
+            enabled=False,
+        ),
+    )
+
+    runtime = _build_runtime(
+        resources,
+        tmp_path,
+        integration_factories=default_integration_factories(),
+    )
+
+    await runtime.services.start()
+    try:
+        async with _client(runtime, raise_app_exceptions=False) as client:
+            resp = await client.post(
+                "/api/resources/integrations/github-empty/enable",
+                headers=HEADERS,
+            )
+
+        assert resp.status_code >= 400, resp.text
+        assert runtime.integrations.running_integration_ids() == []
     finally:
         await runtime.services.stop()

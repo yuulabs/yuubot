@@ -27,6 +27,7 @@ function IntegrationDetailPage() {
   const [defaultOwner, setDefaultOwner] = useState("");
   const [defaultRepo, setDefaultRepo] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [runtimeError, setRuntimeError] = useState("");
 
   const integration = integrations.find((i) => i.id === id);
   const isGitHub = integration?.name === "github";
@@ -53,10 +54,24 @@ function IntegrationDetailPage() {
   }
 
   const handleToggle = () => {
-    toggleMutation.mutate({
-      id: integration.id,
-      enabled: !integration.enabled,
-    });
+    setRuntimeError("");
+    toggleMutation.mutate(
+      {
+        id: integration.id,
+        enabled: !integration.enabled,
+      },
+      {
+        onError: (error) => {
+          const message =
+            error instanceof Error ? error.message : "Runtime update failed";
+          setRuntimeError(
+            isGitHub && !isGitHubConnected
+              ? `Enable failed. Save a GitHub personal access token before enabling. ${message}`
+              : message,
+          );
+        },
+      },
+    );
   };
   const handleGitHubSave = () => {
     const config = {
@@ -109,36 +124,6 @@ function IntegrationDetailPage() {
           <CardHeader>
             <CardTitle>Configuration</CardTitle>
             <CardDescription>Runtime settings for this integration</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {integration.config && Object.keys(integration.config).length > 0 ? (
-              <Table>
-                <TableBody>
-                  {Object.entries(integration.config).map(([key, value]) => (
-                    <TableRow key={key}>
-                      <TableCell className="font-medium">{key}</TableCell>
-                      <TableCell>
-                        <code className="text-xs">
-                          {typeof value === "object"
-                            ? JSON.stringify(value)
-                            : String(value)}
-                        </code>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                No configuration values set. This integration uses defaults.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Actions</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             {isGitHub ? (
@@ -215,10 +200,46 @@ function IntegrationDetailPage() {
                 </div>
               </div>
             ) : null}
+
+            {integration.config && Object.keys(integration.config).length > 0 ? (
+              <Table>
+                <TableBody>
+                  {Object.entries(integration.config).map(([key, value]) => (
+                    <TableRow key={key}>
+                      <TableCell className="font-medium">{key}</TableCell>
+                      <TableCell>
+                        <code className="text-xs">
+                          {typeof value === "object"
+                            ? JSON.stringify(value)
+                            : String(value)}
+                        </code>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                No configuration values set. This integration uses defaults.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Runtime</CardTitle>
+            <CardDescription>Controls whether the daemon runs this record</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
             <Table>
               <TableBody>
                 <TableRow>
-                  <TableCell className="font-medium">Name</TableCell>
+                  <TableCell className="font-medium">ID</TableCell>
+                  <TableCell>{integration.id}</TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell className="font-medium">Kind</TableCell>
                   <TableCell>{integration.name}</TableCell>
                 </TableRow>
                 <TableRow>
@@ -231,13 +252,18 @@ function IntegrationDetailPage() {
                 </TableRow>
               </TableBody>
             </Table>
+            {runtimeError ? (
+              <p className="text-xs text-destructive">{runtimeError}</p>
+            ) : null}
             <Button
-              variant="outline"
+              variant={integration.enabled ? "outline" : "default"}
               className="w-full"
               onClick={handleToggle}
               disabled={toggleMutation.isPending}
             >
-              {integration.enabled ? "Disable" : "Enable"} Integration
+              {toggleMutation.isPending
+                ? "Updating..."
+                : `${integration.enabled ? "Disable" : "Enable"} Integration`}
             </Button>
           </CardContent>
         </Card>

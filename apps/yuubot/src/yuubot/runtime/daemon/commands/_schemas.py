@@ -88,7 +88,7 @@ class IntegrationCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
     name: str
     id: str = ""
     config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
-    enabled: bool = True
+    enabled: bool = False
     version: int = 1
     created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
     updated_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
