@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import msgspec
 import yuullm
+from tortoise import Model
 from yuuagents import Agent, ProviderPoolSessionFactory
 from yuuagents.core.eventbus import RuntimeEvent
 
@@ -76,6 +77,23 @@ class ConversationCreate:
     title: str = ""
     reply_address: str = ""
     metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ConversationCreateResult:
+    conversation: ConversationRecord
+    created: bool
+
+
+@dataclass
+class ConversationBindingConflict(Exception):
+    conversation: ConversationRecord
+
+    def __str__(self) -> str:
+        return (
+            f"conversation {self.conversation.conversation_id!r} already has "
+            "messages and is bound to different actor defaults"
+        )
 
 
 @dataclass(frozen=True)
@@ -243,33 +261,99 @@ class ConversationStore:
         self,
         *,
         request: ConversationCreate,
-    ) -> ConversationRecord:
+    ) -> ConversationCreateResult:
         with self.store.db.activate():
-            row, _created = await ConversationORM.get_or_create(
-                conversation_id=request.conversation_id,
-                defaults={
-                    "character_id": request.character.id,
-                    "capability_set_id": request.capability_set.id,
-                    "llm_backend_id": request.llm_backend.id,
-                    "model": request.model,
-                    "llm_options": msgspec.to_builtins(request.llm_options),
-                    "budget": msgspec.to_builtins(request.budget),
-                    "actor_id": request.actor_id,
-                    "title": request.title,
-                    "reply_address": request.reply_address,
-                    "metadata": request.metadata,
-                },
-            )
-            if row is None:
-                raise RuntimeError(
-                    f"conversation {request.conversation_id!r} was not created"
-                )
-            row = await ConversationORM.get(conversation_id=request.conversation_id).select_related(
+            existing = await ConversationORM.get_or_none(
+                conversation_id=request.conversation_id
+            ).select_related(
                 "character",
                 "capability_set",
                 "llm_backend",
             )
-            return await from_orm(row, ConversationRecord)
+            if existing is not None:
+                return await self._handle_existing_conversation(
+                    row=existing,
+                    request=request,
+                )
+
+            row = await ConversationORM.create(
+                conversation_id=request.conversation_id,
+                character_id=request.character.id,
+                capability_set_id=request.capability_set.id,
+                llm_backend_id=request.llm_backend.id,
+                model=request.model,
+                llm_options=msgspec.to_builtins(request.llm_options),
+                budget=msgspec.to_builtins(request.budget),
+                actor_id=request.actor_id,
+                title=request.title,
+                reply_address=request.reply_address,
+                metadata=request.metadata,
+            )
+            row = await ConversationORM.get(
+                conversation_id=request.conversation_id
+            ).select_related(
+                "character",
+                "capability_set",
+                "llm_backend",
+            )
+            return ConversationCreateResult(
+                conversation=await from_orm(row, ConversationRecord),
+                created=True,
+            )
+
+    async def _handle_existing_conversation(
+        self,
+        *,
+        row: Model,
+        request: ConversationCreate,
+    ) -> ConversationCreateResult:
+        current = await from_orm(row, ConversationRecord)
+        if self._binding_matches(current, request):
+            return ConversationCreateResult(conversation=current, created=False)
+
+        has_messages = await ConversationMessageORM.filter(
+            conversation_id=request.conversation_id
+        ).exists()
+        if has_messages:
+            raise ConversationBindingConflict(conversation=current)
+
+        await ConversationORM.filter(conversation_id=request.conversation_id).update(
+            character_id=request.character.id,
+            capability_set_id=request.capability_set.id,
+            llm_backend_id=request.llm_backend.id,
+            model=request.model,
+            llm_options=msgspec.to_builtins(request.llm_options),
+            budget=msgspec.to_builtins(request.budget),
+            actor_id=request.actor_id,
+            title=request.title,
+            reply_address=request.reply_address,
+            metadata=request.metadata,
+            updated_at=datetime.now(),
+        )
+        updated = await ConversationORM.get(
+            conversation_id=request.conversation_id
+        ).select_related(
+            "character",
+            "capability_set",
+            "llm_backend",
+        )
+        return ConversationCreateResult(
+            conversation=await from_orm(updated, ConversationRecord),
+            created=False,
+        )
+
+    def _binding_matches(
+        self,
+        conversation: ConversationRecord,
+        request: ConversationCreate,
+    ) -> bool:
+        return (
+            conversation.actor_id == request.actor_id
+            and conversation.character.id == request.character.id
+            and conversation.capability_set.id == request.capability_set.id
+            and conversation.llm_backend.id == request.llm_backend.id
+            and conversation.model == request.model
+        )
 
     async def get_conversation(
         self,
@@ -407,7 +491,7 @@ class ConversationManager:
         self,
         *,
         request: ConversationCreate,
-    ) -> ConversationRecord:
+    ) -> ConversationCreateResult:
         return await self.store.create_conversation(request=request)
 
     async def create_from_actor_defaults(
@@ -418,7 +502,7 @@ class ConversationManager:
         title: str = "",
         reply_address: str = "",
         metadata: dict[str, object] | None = None,
-    ) -> ConversationRecord:
+    ) -> ConversationCreateResult:
         actor = await self._active_actor(actor_id)
         return await self.create_conversation(
             request=ConversationCreate(
@@ -447,7 +531,7 @@ class ConversationManager:
         title: str = "",
         reply_address: str = "",
         metadata: dict[str, object] | None = None,
-    ) -> ConversationRecord:
+    ) -> ConversationCreateResult:
         character = await self._require_character(character_id)
         capability_set = await self._require_capability_set(capability_set_id)
         llm_backend = await self._require_llm_backend(llm_backend_id)

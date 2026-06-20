@@ -319,8 +319,10 @@ export interface LiveCapabilitiesResponse {
 export interface ConversationData {
   conversation_id: string;
   actor_id: string;
-  agent_id: string;
-  agent_name: string;
+  character_id: string;
+  capability_set_id: string;
+  llm_backend_id: string;
+  model: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -328,6 +330,18 @@ export interface ConversationData {
 export interface ConversationCreateResponse {
   status: string;
   data: ConversationData;
+}
+
+export interface ConversationAgentData {
+  conversation_id: string;
+  actor_id: string;
+  agent_id: string;
+  agent_name: string;
+}
+
+export interface ConversationAgentResponse {
+  status: string;
+  data: ConversationAgentData;
 }
 
 export interface SendMessageResponse {

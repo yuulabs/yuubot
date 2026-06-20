@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { ArrowLeft, Send, Loader2, Brain, Hammer, SquareTerminal } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
-import { sendConversationMessage, createConversation, ensureConversationAgent, getConversationMessages } from "@/lib/api";
-import type { ActorResource, ConversationMessage, ConversationSSEEvent } from "@/types/api";
+import { sendConversationMessage, createConversation, ensureConversationAgent, getConversation, getConversationMessages } from "@/lib/api";
+import type { ActorResource, ConversationData, ConversationMessage, ConversationSSEEvent } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,25 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-const ensuredConversations = new Map<string, Promise<unknown>>();
-
-function ensureConversationOnce(actorId: string, conversationId: string): Promise<unknown> {
-  const key = `${actorId}:${conversationId}`;
-  const existing = ensuredConversations.get(key);
-  if (existing) {
-    return existing;
-  }
-
-  const pending = createConversation({ actorId, conversationId })
-    .then(() => ensureConversationAgent({ conversationId }))
-    .catch((error) => {
-      ensuredConversations.delete(key);
-      throw error;
-    });
-  ensuredConversations.set(key, pending);
-  return pending;
-}
 
 // ---------------------------------------------------------------------------
 // Block text extraction
@@ -755,12 +736,16 @@ function AdminConversationPage() {
   const [error, setError] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [streamReady, setStreamReady] = useState(false);
+  const [conversationMetadata, setConversationMetadata] = useState<ConversationData | null>(null);
+  const [actorLocked, setActorLocked] = useState(false);
   const [liveItems, setLiveItems] = useState<LiveItem[]>([]);
   const liveItemsRef = useRef<LiveItem[]>([]);
   const [streamStatus, setStreamStatus] = useState<"connected" | "disconnected">("connected");
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
+  const connectingSseRef = useRef(false);
+  const connectingSsePromiseRef = useRef<Promise<void> | null>(null);
   const activeTurnKeyRef = useRef("");
   const currentAssistantItemKeyRef = useRef("");
   const liveItemIndexRef = useRef(0);
@@ -769,169 +754,179 @@ function AdminConversationPage() {
 
   const actor = actors.find((a) => a.id === actorId);
 
-  // Load history on mount
+  const connectSse = (): Promise<void> => {
+    if (sseRef.current && streamReady) {
+      return Promise.resolve();
+    }
+    if (connectingSsePromiseRef.current) {
+      return connectingSsePromiseRef.current;
+    }
+    connectingSseRef.current = true;
+    setStreamReady(false);
+
+    const pending = new Promise<void>((resolve, reject) => {
+      const appendAssistantEvent = (data: ConversationSSEEvent) => {
+        const turnKey = activeTurnKeyRef.current || `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`;
+        const itemKey = currentAssistantItemKeyRef.current || liveItemKey(
+          turnKey,
+          "assistant",
+          liveItemIndexRef.current++,
+        );
+        currentAssistantItemKeyRef.current = itemKey;
+        const blocks = renderBlocksFromEvent(
+          data,
+          itemKey,
+          () => liveBlockIndexRef.current++,
+        );
+        if (blocks.length === 0) {
+          return;
+        }
+        setLiveItems(syncLiveItemsRef(
+          liveItemsRef,
+          (prev) => appendLiveItemBlocks(
+            prev,
+            itemKey,
+            "actor",
+            turnKey,
+            data.timestamp,
+            blocks,
+          ),
+        ));
+      };
+
+      const handleAssistantStreamEvent = (e: MessageEvent) => {
+        const data = JSON.parse(e.data) as ConversationSSEEvent;
+        appendAssistantEvent(data);
+      };
+
+      const handleFinalEvent = (e: MessageEvent) => {
+        const data = JSON.parse(e.data) as ConversationSSEEvent;
+        if (data.content.role === "assistant" && !eventHasToolCall(data)) {
+          currentAssistantItemKeyRef.current = "";
+        }
+      };
+
+      const handleTurnCompleted = (_e: MessageEvent) => {
+        intentionalCloseRef.current = true;
+        activeTurnKeyRef.current = "";
+        currentAssistantItemKeyRef.current = "";
+        sendingRef.current = false;
+        setIsSending(false);
+      };
+
+      const handleErrorEvent = (e: MessageEvent) => {
+        setStreamReady(false);
+        try {
+          const raw = JSON.parse(e.data);
+          if (raw && typeof raw === "object" && "error" in raw) {
+            setError(String(raw.error));
+          }
+        } catch { /* connection error, auto-reconnect */ }
+      };
+
+      const es = new EventSource(`/api/admin/conversations/${conversationId}/events`);
+      sseRef.current = es;
+      es.onopen = () => {
+        connectingSseRef.current = false;
+        connectingSsePromiseRef.current = null;
+        setStreamReady(true);
+        setStreamStatus("connected");
+        intentionalCloseRef.current = false;
+        resolve();
+      };
+      es.onerror = () => {
+        connectingSseRef.current = false;
+        connectingSsePromiseRef.current = null;
+        if (!intentionalCloseRef.current) {
+          setStreamStatus("disconnected");
+          reject(new Error("Conversation stream setup failed"));
+        }
+      };
+
+      es.addEventListener("thinking", handleAssistantStreamEvent);
+      es.addEventListener("text", handleAssistantStreamEvent);
+      es.addEventListener("output", handleAssistantStreamEvent);
+      es.addEventListener("tool_call", handleAssistantStreamEvent);
+      es.addEventListener("tool_result", handleAssistantStreamEvent);
+      es.addEventListener("message", handleFinalEvent);
+      es.addEventListener("turn_completed", handleTurnCompleted);
+      es.addEventListener("error", handleErrorEvent);
+    });
+    connectingSsePromiseRef.current = pending;
+    return pending;
+  };
+
+  const closeSse = (): void => {
+    setStreamReady(false);
+    setStreamStatus("disconnected");
+    connectingSseRef.current = false;
+    connectingSsePromiseRef.current = null;
+    if (sseRef.current) {
+      sseRef.current.close();
+      sseRef.current = null;
+    }
+  };
+
+  // Load persisted metadata and history. A 404 metadata response is a draft route.
   useEffect(() => {
+    let cancelled = false;
     activeTurnKeyRef.current = "";
     currentAssistantItemKeyRef.current = "";
     liveItemIndexRef.current = 0;
     liveBlockIndexRef.current = 0;
     liveItemsRef.current = [];
+    sendingRef.current = false;
+    intentionalCloseRef.current = false;
+    closeSse();
     setLiveItems([]);
+    setMessages([]);
+    setConversationMetadata(null);
+    setActorLocked(false);
     setLoadingHistory(true);
-    getConversationMessages(conversationId)
-      .then(setMessages)
-      .catch(() => {})
-      .finally(() => setLoadingHistory(false));
-  }, [conversationId]);
 
-  // Connect SSE stream
-  useEffect(() => {
-    if (!actorId) return;
-
-    let cancelled = false;
-    setStreamReady(false);
-
-    if (sseRef.current) sseRef.current.close();
-
-    const appendAssistantEvent = (data: ConversationSSEEvent) => {
-      const turnKey = activeTurnKeyRef.current || `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`;
-      const itemKey = currentAssistantItemKeyRef.current || liveItemKey(
-        turnKey,
-        "assistant",
-        liveItemIndexRef.current++,
-      );
-      currentAssistantItemKeyRef.current = itemKey;
-      const blocks = renderBlocksFromEvent(
-        data,
-        itemKey,
-        () => liveBlockIndexRef.current++,
-      );
-      if (blocks.length === 0) {
-        return;
-      }
-      setLiveItems(syncLiveItemsRef(
-        liveItemsRef,
-        (prev) => appendLiveItemBlocks(
-          prev,
-          itemKey,
-          "actor",
-          turnKey,
-          data.timestamp,
-          blocks,
-        ),
-      ));
-    };
-
-    const appendToolResultEvent = (data: ConversationSSEEvent) => {
-      const turnKey = activeTurnKeyRef.current || `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`;
-      const itemKey = currentAssistantItemKeyRef.current || liveItemKey(
-        turnKey,
-        "assistant",
-        liveItemIndexRef.current++,
-      );
-      currentAssistantItemKeyRef.current = itemKey;
-      const blocks = renderBlocksFromEvent(
-        data,
-        itemKey,
-        () => liveBlockIndexRef.current++,
-      );
-      if (blocks.length === 0) {
-        return;
-      }
-      setLiveItems(syncLiveItemsRef(
-        liveItemsRef,
-        (prev) => appendLiveItemBlocks(
-          prev,
-          itemKey,
-          "actor",
-          turnKey,
-          data.timestamp,
-          blocks,
-        ),
-      ));
-    };
-
-    const handleAssistantStreamEvent = (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as ConversationSSEEvent;
-      appendAssistantEvent(data);
-    };
-
-    const handleToolResultEvent = (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as ConversationSSEEvent;
-      appendToolResultEvent(data);
-    };
-
-    const handleFinalEvent = (e: MessageEvent) => {
-      const data = JSON.parse(e.data) as ConversationSSEEvent;
-      if (data.content.role === "assistant" && !eventHasToolCall(data)) {
-        currentAssistantItemKeyRef.current = "";
-      }
-    };
-
-    const handleTurnCompleted = (_e: MessageEvent) => {
-      intentionalCloseRef.current = true;
-      activeTurnKeyRef.current = "";
-      currentAssistantItemKeyRef.current = "";
-      sendingRef.current = false;
-      setIsSending(false);
-    };
-
-    const handleErrorEvent = (e: MessageEvent) => {
-      setStreamReady(false);
+    void (async () => {
       try {
-        const raw = JSON.parse(e.data);
-        if (raw && typeof raw === "object" && "error" in raw) {
-          setError(String(raw.error));
-        }
-      } catch { /* connection error, auto-reconnect */ }
-    };
-
-    void ensureConversationOnce(actorId, conversationId)
-      .then(() => {
+        const metadata = await getConversation(conversationId);
         if (cancelled) {
           return;
         }
-
-        const es = new EventSource(`/api/admin/conversations/${conversationId}/events`);
-        sseRef.current = es;
-        es.onopen = () => {
-          if (!cancelled) {
-            setStreamReady(true);
-            setStreamStatus("connected");
-            intentionalCloseRef.current = false;
-          }
-        };
-        es.onerror = () => {
-          if (!cancelled && !intentionalCloseRef.current) {
-            setStreamStatus("disconnected");
-          }
-        };
-
-        es.addEventListener("thinking", handleAssistantStreamEvent);
-        es.addEventListener("text", handleAssistantStreamEvent);
-        es.addEventListener("output", handleAssistantStreamEvent);
-        es.addEventListener("tool_call", handleAssistantStreamEvent);
-        es.addEventListener("tool_result", handleToolResultEvent);
-        es.addEventListener("message", handleFinalEvent);
-        es.addEventListener("turn_completed", handleTurnCompleted);
-        es.addEventListener("error", handleErrorEvent);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Conversation stream setup failed");
+        if (metadata === null) {
+          setLoadingHistory(false);
+          return;
         }
-      });
+
+        setConversationMetadata(metadata);
+        setActorId(metadata.actor_id);
+        const persistedMessages = await getConversationMessages(conversationId);
+        if (cancelled) {
+          return;
+        }
+        setMessages(persistedMessages);
+        setActorLocked(persistedMessages.length > 0);
+        setLoadingHistory(false);
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to load conversation");
+          setLoadingHistory(false);
+        }
+      }
+    })();
 
     return () => {
       cancelled = true;
-      setStreamReady(false);
-      setStreamStatus("disconnected");
-      if (sseRef.current) {
-        sseRef.current.close();
-        sseRef.current = null;
-      }
+      closeSse();
     };
-  }, [actorId, conversationId]);
+  }, [conversationId]);
+
+  // Existing persisted conversations may listen for runtime events, but opening
+  // a draft route must not create the backend row or agent.
+  useEffect(() => {
+    if (conversationMetadata !== null) {
+      void connectSse().catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Conversation stream setup failed");
+      });
+    }
+  }, [conversationMetadata]);
 
   useEffect(() => {
     if (!actorId && runningActors[0]) setActorId(runningActors[0].id);
@@ -943,7 +938,8 @@ function AdminConversationPage() {
 
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || !actorId || !streamReady || sendingRef.current) return;
+    if (!text || !actorId || sendingRef.current) return;
+    if (conversationMetadata !== null && !streamReady) return;
 
     const userMsgId = `user-${crypto.randomUUID()}`;
     const turnKey = `turn-${userMsgId}`;
@@ -963,17 +959,39 @@ function AdminConversationPage() {
     sendingRef.current = true;
     activeTurnKeyRef.current = turnKey;
     currentAssistantItemKeyRef.current = "";
-    void ensureConversationOnce(actorId, conversationId)
-      .then(() => sendConversationMessage({ conversationId, text, messageId: userMsgId }))
-      .catch((err: unknown) => {
+    void (async () => {
+      try {
+        let metadata = conversationMetadata;
+        if (metadata === null || messages.length === 0) {
+          metadata = await createConversation({ actorId, conversationId });
+          setConversationMetadata(metadata);
+          setActorId(metadata.actor_id);
+        }
+        await ensureConversationAgent({ conversationId });
+        await connectSse();
+        await sendConversationMessage({ conversationId, text, messageId: userMsgId });
+        setActorLocked(true);
+      } catch (err: unknown) {
         if (activeTurnKeyRef.current === turnKey) {
           activeTurnKeyRef.current = "";
           currentAssistantItemKeyRef.current = "";
           sendingRef.current = false;
           setIsSending(false);
         }
+        setMessages((prev) => prev.filter((message) => message.message_id !== userMsgId));
         setError(err instanceof Error ? err.message : "Send failed");
-      });
+        try {
+          const metadata = await getConversation(conversationId);
+          if (metadata !== null) {
+            setConversationMetadata(metadata);
+            setActorId(metadata.actor_id);
+            const persistedMessages = await getConversationMessages(conversationId);
+            setMessages(persistedMessages);
+            setActorLocked(persistedMessages.length > 0);
+          }
+        } catch { /* keep the original send error visible */ }
+      }
+    })();
   };
 
   const historyItems = historyItemsFromMessages(messages);
@@ -1014,7 +1032,7 @@ function AdminConversationPage() {
         </a>
         <div className="flex-1"><h2 className="text-sm font-semibold">{conversationId}</h2></div>
         <div className="flex items-center gap-2">
-          <Select value={actorId} onValueChange={setActorId}>
+          <Select value={actorId} onValueChange={setActorId} disabled={actorLocked || isSending}>
             <SelectTrigger className="h-8 w-44 text-xs"><SelectValue placeholder="Select actor" /></SelectTrigger>
             <SelectContent>
               {runningActors.map((a) => (
@@ -1055,7 +1073,7 @@ function AdminConversationPage() {
         <div ref={bottomRef} />
       </div>
 
-      {(streamStatus === "disconnected" || conversationInProgress) && !loadingHistory && (
+      {((conversationMetadata !== null && streamStatus === "disconnected") || conversationInProgress) && !loadingHistory && (
         <div className="mx-4 mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/30">
           后台运行中，结果可能不同步，若需查看更新请刷新~
         </div>
@@ -1069,7 +1087,11 @@ function AdminConversationPage() {
         <Input value={input} onChange={(e) => setInput(e.target.value)}
           placeholder={actor ? `Message ${actor.name}...` : "Select an actor..."}
           className="flex-1" />
-        <Button type="submit" size="icon" disabled={!input.trim() || !actorId || !streamReady || isSending}>
+        <Button
+          type="submit"
+          size="icon"
+          disabled={!input.trim() || !actorId || (conversationMetadata !== null && !streamReady) || isSending}
+        >
           {isSending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
         </Button>
       </form>

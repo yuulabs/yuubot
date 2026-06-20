@@ -7,6 +7,8 @@
 import type {
   ConversationListItem,
   ConversationListResponse,
+  ConversationCreateResponse,
+  ConversationData,
   ConversationMessagesResponse,
   ConversationMessage,
   HealthResponse,
@@ -139,8 +141,8 @@ export async function getLiveCapabilities(): Promise<LiveCapability[]> {
 export async function createConversation(args: {
   actorId: string;
   conversationId: string;
-}): Promise<import("@/types/api").ConversationData> {
-  const res = await request<import("@/types/api").ConversationCreateResponse>(
+}): Promise<ConversationData> {
+  const res = await request<ConversationCreateResponse>(
     `${BASE}/admin/conversations`,
     {
       method: "POST",
@@ -155,12 +157,28 @@ export async function createConversation(args: {
 
 export async function ensureConversationAgent(args: {
   conversationId: string;
-}): Promise<import("@/types/api").ConversationData> {
-  const res = await request<import("@/types/api").ConversationCreateResponse>(
+}): Promise<import("@/types/api").ConversationAgentData> {
+  const res = await request<import("@/types/api").ConversationAgentResponse>(
     `${BASE}/admin/conversations/${args.conversationId}/agents`,
     { method: "POST" },
   );
   return res.data;
+}
+
+export async function getConversation(
+  conversationId: string,
+): Promise<ConversationData | null> {
+  try {
+    const res = await request<ConversationCreateResponse>(
+      `${BASE}/admin/conversations/${conversationId}`,
+    );
+    return res.data;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("does not exist")) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export async function sendConversationMessage(args: {

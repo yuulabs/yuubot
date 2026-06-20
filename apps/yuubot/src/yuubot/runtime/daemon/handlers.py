@@ -18,7 +18,11 @@ from starlette.responses import JSONResponse, StreamingResponse
 
 from yuubot.bootstrap.config import ServerConfig
 from yuubot.core.actors import ActorManager
-from yuubot.core.conversations import ConversationManager
+from yuubot.core.conversations import (
+    ConversationBindingConflict,
+    ConversationManager,
+)
+from yuubot.resources.records import ConversationRecord
 from yuubot.core.integrations import IntegrationCore
 from yuubot.core.validation import ConfigurationError
 from yuubot.resources.events import ResourceChanged
@@ -87,6 +91,33 @@ def _configuration_error_response(exc: ConfigurationError) -> JSONResponse:
             "Configure pricing.entries for the selected LLM backend model "
             "or disable the USD budget before chatting."
         ),
+    )
+
+
+def _conversation_metadata(conversation: ConversationRecord) -> dict[str, object]:
+    return {
+        "conversation_id": conversation.conversation_id,
+        "actor_id": conversation.actor_id,
+        "character_id": conversation.character.id,
+        "capability_set_id": conversation.capability_set.id,
+        "llm_backend_id": conversation.llm_backend.id,
+        "model": conversation.model,
+        "created_at": _iso_or_none(conversation.created_at),
+        "updated_at": _iso_or_none(conversation.updated_at),
+    }
+
+
+def _conversation_conflict_response(
+    exc: ConversationBindingConflict,
+) -> JSONResponse:
+    return JSONResponse(
+        {
+            "status": "error",
+            "code": "conversation_binding_conflict",
+            "detail": str(exc),
+            "data": _conversation_metadata(exc.conversation),
+        },
+        status_code=409,
     )
 
 
@@ -385,6 +416,8 @@ def make_create_conversation_handler(
                     reply_address=req.reply_address,
                     metadata=req.metadata,
                 )
+        except ConversationBindingConflict as exc:
+            return _conversation_conflict_response(exc)
         except LookupError as exc:
             return error_response(str(exc), status_code=404)
         except TypeError as exc:
@@ -394,21 +427,40 @@ def make_create_conversation_handler(
         return JSONResponse(
             {
                 "status": "ok",
-                "data": {
-                    "conversation_id": conversation.conversation_id,
-                    "actor_id": conversation.actor_id,
-                    "character_id": conversation.character.id,
-                    "capability_set_id": conversation.capability_set.id,
-                    "llm_backend_id": conversation.llm_backend.id,
-                    "model": conversation.model,
-                    "created_at": _iso_or_none(conversation.created_at),
-                    "updated_at": _iso_or_none(conversation.updated_at),
-                },
+                "data": _conversation_metadata(conversation.conversation),
             },
-            status_code=201,
+            status_code=201 if conversation.created else 200,
         )
 
     return create_conversation
+
+
+def make_get_conversation_handler(
+    conversation_manager: ConversationManager,
+):
+    async def get_conversation(request: Request) -> JSONResponse:
+        conversation_id = request.path_params["conversation_id"]
+        try:
+            conversation = await conversation_manager.store.get_conversation(
+                conversation_id
+            )
+        except LookupError as exc:
+            return error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        if conversation is None:
+            return error_response(
+                f"conversation {conversation_id!r} does not exist",
+                status_code=404,
+            )
+        return JSONResponse(
+            {
+                "status": "ok",
+                "data": _conversation_metadata(conversation),
+            }
+        )
+
+    return get_conversation
 
 
 def make_list_conversations_handler(

@@ -156,6 +156,118 @@ async def test_conversation_agent_reuses_persisted_history(
         await daemon.stop()
 
 
+async def test_empty_conversation_rebinds_to_first_send_actor(
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+) -> None:
+    """Actor chosen before the first message must become the persisted binding."""
+    daemon = await _build_daemon(yuubot_config, tmp_path)
+    await daemon.start()
+    try:
+        async with _client(daemon) as client:
+            first_actor = await _provision_actor(client, suffix="first")
+            second_actor = await _provision_actor(client, suffix="second")
+
+            created = await _create_conversation(
+                client,
+                first_actor["id"],
+                "history-rebind-empty",
+            )
+            assert created["actor_id"] == first_actor["id"]
+
+            rebound = await _create_conversation(
+                client,
+                second_actor["id"],
+                "history-rebind-empty",
+                expected_status=200,
+            )
+            assert rebound["actor_id"] == second_actor["id"]
+            assert rebound["character_id"] == second_actor["default_character"]["id"]
+            assert rebound["capability_set_id"] == second_actor["capability_set"]["id"]
+            assert rebound["llm_backend_id"] == second_actor["default_llm_backend"]["id"]
+
+            fetched = await _get_conversation(client, "history-rebind-empty")
+
+        assert fetched["actor_id"] == second_actor["id"]
+        assert fetched["capability_set_id"] == second_actor["capability_set"]["id"]
+    finally:
+        await daemon.stop()
+
+
+async def test_conversation_actor_mismatch_after_messages_returns_conflict(
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+) -> None:
+    """Existing message history locks the actor/capability binding."""
+    llm = ConversationProvider()
+    register_test_llm_provider("openai", llm)
+
+    daemon = await _build_daemon(yuubot_config, tmp_path)
+    await daemon.start()
+    try:
+        async with _client(daemon) as client:
+            first_actor = await _provision_actor(client, suffix="locked-first")
+            second_actor = await _provision_actor(client, suffix="locked-second")
+            await _create_conversation(
+                client,
+                first_actor["id"],
+                "history-locked-binding",
+            )
+            response = await _post_conversation_message(
+                client,
+                "history-locked-binding",
+                CONVERSATION_TEXT_1,
+            )
+            assert response.status_code == 202, response.text
+            await _wait_for_messages(client, "history-locked-binding", count=2)
+
+            conflict = await client.post(
+                "/api/admin/conversations",
+                json={
+                    "conversation_id": "history-locked-binding",
+                    "actor_id": second_actor["id"],
+                },
+                headers=_daemon_headers(),
+            )
+
+        body = conflict.json()
+        assert conflict.status_code == 409, body
+        assert body["code"] == "conversation_binding_conflict"
+        assert body["data"]["actor_id"] == first_actor["id"]
+        assert body["data"]["capability_set_id"] == first_actor["capability_set"]["id"]
+    finally:
+        await daemon.stop()
+
+
+async def test_get_conversation_returns_persisted_actor_metadata(
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+) -> None:
+    """Metadata route exposes the same persisted binding used by messages."""
+    daemon = await _build_daemon(yuubot_config, tmp_path)
+    await daemon.start()
+    try:
+        async with _client(daemon) as client:
+            actor = await _provision_actor(client, suffix="metadata")
+            await _create_conversation(client, actor["id"], "history-metadata")
+
+            missing = await client.get(
+                "/api/admin/conversations/missing-history-metadata",
+                headers=_daemon_headers(),
+            )
+            fetched = await _get_conversation(client, "history-metadata")
+
+        assert missing.status_code == 404, missing.text
+        assert fetched["conversation_id"] == "history-metadata"
+        assert fetched["actor_id"] == actor["id"]
+        assert fetched["character_id"] == actor["default_character"]["id"]
+        assert fetched["capability_set_id"] == actor["capability_set"]["id"]
+        assert fetched["llm_backend_id"] == actor["default_llm_backend"]["id"]
+        assert fetched["model"] == "gpt-4o"
+    finally:
+        await daemon.stop()
+
+
 async def _build_daemon(
     base_config: BootstrapConfig,
     tmp_path: Path,
@@ -181,18 +293,37 @@ def _daemon_headers() -> dict[str, str]:
     return {"X-Daemon-Secret": DAEMON_SECRET}
 
 
-async def _provision_actor(client: httpx.AsyncClient) -> dict[str, Any]:
-    backend = await _create_llm_backend(client)
-    character = await _create_character(client)
-    capability_set = await _create_capability_set(client)
-    return await _create_actor(client, character["id"], capability_set["id"], backend["id"])
+async def _provision_actor(
+    client: httpx.AsyncClient,
+    *,
+    suffix: str = "default",
+    integration_capability_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    backend = await _create_llm_backend(client, suffix=suffix)
+    character = await _create_character(client, suffix=suffix)
+    capability_set = await _create_capability_set(
+        client,
+        suffix=suffix,
+        integration_capability_ids=integration_capability_ids,
+    )
+    return await _create_actor(
+        client,
+        character["id"],
+        capability_set["id"],
+        backend["id"],
+        suffix=suffix,
+    )
 
 
-async def _create_llm_backend(client: httpx.AsyncClient) -> dict[str, Any]:
+async def _create_llm_backend(
+    client: httpx.AsyncClient,
+    *,
+    suffix: str,
+) -> dict[str, Any]:
     response = await client.post(
         "/api/resources/llm-backends",
         json={
-            "name": "conversation-openai",
+            "name": f"conversation-openai-{suffix}",
             "yuuagents_provider": "openai",
             "model_capabilities": {"chat": True, "tool_calling": False},
             "models": {"names": ["gpt-4o"]},
@@ -206,11 +337,15 @@ async def _create_llm_backend(client: httpx.AsyncClient) -> dict[str, Any]:
     return _created(response)
 
 
-async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
+async def _create_character(
+    client: httpx.AsyncClient,
+    *,
+    suffix: str,
+) -> dict[str, Any]:
     response = await client.post(
         "/api/resources/characters",
         json={
-            "name": "conversation-helper",
+            "name": f"conversation-helper-{suffix}",
             "description": "E2E conversation helper",
             "system_prompt": "You are an E2E admin conversation agent.",
             "facade_module": "yb",
@@ -221,12 +356,18 @@ async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
     return _created(response)
 
 
-async def _create_capability_set(client: httpx.AsyncClient) -> dict[str, Any]:
+async def _create_capability_set(
+    client: httpx.AsyncClient,
+    *,
+    suffix: str,
+    integration_capability_ids: list[str] | None,
+) -> dict[str, Any]:
     response = await client.post(
         "/api/resources/capability-sets",
         json={
-            "name": "conversation-capabilities",
+            "name": f"conversation-capabilities-{suffix}",
             "description": "E2E conversation capability set",
+            "integration_capability_ids": integration_capability_ids or [],
         },
         headers=_daemon_headers(),
     )
@@ -238,11 +379,13 @@ async def _create_actor(
     character_id: str,
     capability_set_id: str,
     backend_id: str,
+    *,
+    suffix: str = "default",
 ) -> dict[str, Any]:
     response = await client.post(
         "/api/resources/actors",
         json={
-            "name": "conversation-actor",
+            "name": f"conversation-actor-{suffix}",
             "type": "simple_loop",
             "default_model": "gpt-4o",
             "default_character_id": character_id,
@@ -260,6 +403,8 @@ async def _create_conversation(
     client: httpx.AsyncClient,
     actor_id: str,
     conversation_id: str,
+    *,
+    expected_status: int = 201,
 ) -> dict[str, Any]:
     response = await client.post(
         "/api/admin/conversations",
@@ -270,7 +415,21 @@ async def _create_conversation(
         headers=_daemon_headers(),
     )
     body = response.json()
-    assert response.status_code == 201, body
+    assert response.status_code == expected_status, body
+    assert body["status"] == "ok", body
+    return body["data"]
+
+
+async def _get_conversation(
+    client: httpx.AsyncClient,
+    conversation_id: str,
+) -> dict[str, Any]:
+    response = await client.get(
+        f"/api/admin/conversations/{conversation_id}",
+        headers=_daemon_headers(),
+    )
+    body = response.json()
+    assert response.status_code == 200, body
     assert body["status"] == "ok", body
     return body["data"]
 
