@@ -35,6 +35,7 @@ def build_agent_definition(
             binding.capability_set.agent_tools,
             facade,
             workspace_path=workspace_path,
+            integration_capability_ids=binding.capability_set.integration_capability_ids,
         ),
         prompt=PromptDefinition(
             system=_system_prompt(binding, mode),

@@ -69,8 +69,16 @@ class ToolRegistry:
 
 def default_tool_factories() -> ToolRegistry:
     """Create a ToolRegistry pre-populated with built-in tool types."""
+    from yuubot.core.tools.impls.file_tools import (
+        EditToolFactory,
+        ReadToolFactory,
+        WriteToolFactory,
+    )
     from yuubot.core.tools.impls.execute_python import ExecutePythonToolFactory
 
     registry = ToolRegistry()
     registry.register(ExecutePythonToolFactory())
+    registry.register(ReadToolFactory())
+    registry.register(EditToolFactory())
+    registry.register(WriteToolFactory())
     return registry

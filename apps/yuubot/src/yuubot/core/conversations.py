@@ -379,6 +379,7 @@ _EVENT_DISPATCH: Mapping[str, str] = {
     "agent.turn.error": "_handle_error",
     "budget.exceeded": "_handle_error",
     "tool.result_appended": "_handle_tool_result",
+    "agent.turn_completed": "_handle_turn_completed",
 }
 
 
@@ -400,6 +401,7 @@ class ConversationManager:
         default_factory=dict,
         init=False,
     )
+    _turn_tasks: set[asyncio.Task[None]] = field(default_factory=set, init=False)
 
     async def create_conversation(
         self,
@@ -500,12 +502,58 @@ class ConversationManager:
             content=content,
             metadata={},
         )
-        await runtime.handle_conversation_message(
-            conversation_id,
-            yuullm.Message("user", cast(Any, content)),
-            history,
+        self._start_turn_task(
+            conversation_id=conversation_id,
+            runtime=runtime,
+            message=yuullm.Message("user", cast(Any, content)),
+            history=history,
         )
         return record
+
+    def _start_turn_task(
+        self,
+        *,
+        conversation_id: str,
+        runtime: YuuAgentsActorRuntime,
+        message: yuullm.Message,
+        history: yuullm.History,
+    ) -> None:
+        task = asyncio.create_task(
+            self._run_turn_task(
+                conversation_id=conversation_id,
+                runtime=runtime,
+                message=message,
+                history=history,
+            )
+        )
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+
+    async def _run_turn_task(
+        self,
+        *,
+        conversation_id: str,
+        runtime: YuuAgentsActorRuntime,
+        message: yuullm.Message,
+        history: yuullm.History,
+    ) -> None:
+        try:
+            await runtime.handle_conversation_message(
+                conversation_id,
+                message,
+                history,
+            )
+        except Exception as exc:
+            event = AgentEvent(
+                conversation_id=conversation_id,
+                agent_id="",
+                agent_name="",
+                event_type="error",
+                content={"error": str(exc)},
+                timestamp=time.time(),
+            )
+            for queue in tuple(self._subscribers.get(conversation_id, ())):
+                await queue.put(event)
 
     async def subscribe_events(
         self,
@@ -717,6 +765,21 @@ class ConversationManager:
             _json_safe_dict(event.data),
         )
 
+    async def _handle_turn_completed(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> AgentEvent:
+        return _agent_event(
+            conversation_id,
+            event,
+            "turn_completed",
+            {
+                "agent_id": event.agent_id or "",
+                "agent_name": event.agent_name or "",
+            },
+        )
+
     async def _handle_tool_result(
         self,
         conversation_id: str,
@@ -744,7 +807,8 @@ class ConversationManager:
             timestamp=int(event.timestamp),
         )
 
-        # SSE forward to frontend
+        # SSE forward to frontend — wrap result in standard block shape
+        # so the frontend's liveBlocksFromEvent can process it uniformly
         return _agent_event(
             conversation_id,
             event,
@@ -754,5 +818,12 @@ class ConversationManager:
                 "tool_name": tool_name,
                 "result": result,
                 "status": status,
+                "blocks": [{
+                    "type": "tool_result",
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "content": result,
+                    "status": status,
+                }],
             },
         )

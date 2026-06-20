@@ -18,7 +18,7 @@ from yuuagents.core.mailbox import (
 )
 from yuuagents.core.stage import Stage
 from yuuagents.core.task import Owner, OwnerType, Task
-from yuuagents.tool.primitives import ToolCallTask, ToolContext
+from yuuagents.tool.primitives import ToolCallTask, ToolContext, ToolResult
 from yuuagents.types.values import EventPayload, LlmOptions
 
 __all__ = [
@@ -97,12 +97,16 @@ async def emit_budget_exceeded(eventbus: EventBus, agent: Agent) -> None:
     )
 
 
-def _render_task_result(task: Task) -> str:
-    """Render a completed Task's result back to the agent as text."""
+def _render_task_result(task: Task) -> ToolResult:
+    """Render a completed Task's result back to the agent."""
     if task.error:
         return f"Error: {task.error.message}"
     if task.result is None:
         return "(no result)"
+    if isinstance(task.result, str):
+        return task.result
+    if isinstance(task.result, list):
+        return task.result
     return str(task.result)
 
 

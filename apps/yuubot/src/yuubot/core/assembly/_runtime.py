@@ -32,6 +32,7 @@ from yuuagents import (
     emit_budget_exceeded,
 )
 from yuuagents.core.task import Task as YuuTask
+from yuuagents.tool.primitives import ToolResult
 
 from yuubot.core.costing import calculate_cost
 from yuubot.resources.records import PricingTable
@@ -423,6 +424,14 @@ class YuuAgentsActorRuntime:
                 await self._rollover_if_needed(agent, budget)
                 self._touch_agent(agent)
 
+                await self.stage.eventbus.emit(
+                    "agent.turn_completed",
+                    {
+                        "agent_id": agent.id,
+                        "agent_name": agent.name,
+                    },
+                )
+
     async def _rollover_if_needed(self, agent: Agent, budget: Budget | None) -> None:
         if not self.rollover_enabled or not _agent_needs_rollover(agent, budget):
             return
@@ -602,9 +611,13 @@ def _extract_tool_calls(message: yuullm.Message) -> list[yuullm.ToolCall]:
     return result
 
 
-def _render_task_result(task: YuuTask) -> str:
-    """Render a completed tool Task's result as a text string."""
+def _render_task_result(task: YuuTask) -> ToolResult:
+    """Render a completed tool Task's result."""
     if task.result is not None:
+        if isinstance(task.result, str):
+            return task.result
+        if isinstance(task.result, list):
+            return task.result
         return str(task.result)
     if task.error is not None:
         msg = f"[{task.error.type}] {task.error.message}"

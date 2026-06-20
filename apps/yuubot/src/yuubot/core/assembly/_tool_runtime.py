@@ -18,6 +18,7 @@ from yuuagents import (
     ToolContext,
 )
 from yuuagents.core.task import Task as YuuTask
+from yuuagents.tool.primitives import ToolResult
 
 
 def _extract_tool_calls(message: yuullm.Message) -> list[yuullm.ToolCall]:
@@ -42,9 +43,13 @@ def _extract_tool_calls(message: yuullm.Message) -> list[yuullm.ToolCall]:
     return result
 
 
-def _render_task_result(task: YuuTask) -> str:
-    """Render a completed tool Task's result as a text string."""
+def _render_task_result(task: YuuTask) -> ToolResult:
+    """Render a completed tool Task's result."""
     if task.result is not None:
+        if isinstance(task.result, str):
+            return task.result
+        if isinstance(task.result, list):
+            return task.result
         return str(task.result)
     if task.error is not None:
         msg = f"[{task.error.type}] {task.error.message}"

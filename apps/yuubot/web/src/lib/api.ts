@@ -166,12 +166,13 @@ export async function ensureConversationAgent(args: {
 export async function sendConversationMessage(args: {
   conversationId: string;
   text: string;
+  messageId?: string;
 }): Promise<import("@/types/api").SendMessageResponse["data"]> {
   const res = await request<import("@/types/api").SendMessageResponse>(
     `${BASE}/admin/conversations/${args.conversationId}/messages`,
     {
       method: "POST",
-      body: JSON.stringify({ text: args.text }),
+      body: JSON.stringify({ text: args.text, message_id: args.messageId }),
     },
   );
   return res.data;

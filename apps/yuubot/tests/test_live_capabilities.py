@@ -263,6 +263,8 @@ async def test_live_capabilities_endpoint_returns_existing_instances(
     assert "capabilities" in payload
 
     caps = payload["capabilities"]
+    builtin_ids = {c["capability_id"] for c in caps if c["integration_id"] == "builtin"}
+    assert {"builtin.read", "builtin.edit", "builtin.write"} <= builtin_ids
     cap_ids = {(c["capability_id"], c["enabled"], c["integration_id"]) for c in caps}
     assert ("echo.echo", True, "echo-main") in cap_ids
     assert ("echo.reply", True, "echo-main") in cap_ids
@@ -303,9 +305,10 @@ async def test_live_capabilities_endpoint_shows_disabled(
 async def test_live_capabilities_endpoint_empty_when_no_instances(
     admin_app,
 ):
-    """Returns empty capabilities list when no integration records exist."""
+    """Returns built-in capabilities when no integration records exist."""
     async with _client(admin_app) as client:
         response = await client.get("/api/live-capabilities")
 
     assert response.status_code == 200
-    assert response.json()["capabilities"] == []
+    cap_ids = {cap["capability_id"] for cap in response.json()["capabilities"]}
+    assert cap_ids == {"builtin.read", "builtin.edit", "builtin.write"}

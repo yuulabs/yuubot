@@ -21,11 +21,7 @@ class ExecutePythonParams(pydantic.BaseModel):
     capture: list[str] = ["stdout", "stderr"]
 
 
-class ExecutePythonResult(pydantic.BaseModel):
-    output: str = ""
-
-
-class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
+class ExecutePythonTool(Tool[ExecutePythonParams, str]):
     config_type = PythonRuntime
 
     def __init__(self, runtime: Any, *, config: PythonRuntime) -> None:
@@ -43,12 +39,11 @@ class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
         return cls(runtime, config=config)
 
     @property
-    def definition(self) -> ToolDefinition[ExecutePythonParams, ExecutePythonResult]:
+    def definition(self) -> ToolDefinition[ExecutePythonParams, str]:
         return ToolDefinition(
             name="execute_python",
             description=self._description,
             input_model=ExecutePythonParams,
-            output_model=ExecutePythonResult,
         )
 
     @staticmethod
@@ -58,16 +53,16 @@ class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
 
     async def create_coro(
         self, task: ToolCallTask, context: ToolContext
-    ) -> ExecutePythonResult:
+    ) -> str:
         session = await self._get_session(context.agent_id)
+        params = ExecutePythonParams.model_validate(task.tool_call_params.params)
         result = await session.execute(
-            task.tool_call_params.params.code,
+            params.code,
             timeout_s=15.0,
             call_id=task.tool_call_params.tool_call_id,
             entitylog=context.entity_log,
         )
-        outputs = self._render_result(result)
-        return ExecutePythonResult(output=outputs)
+        return self._render_result(result)
 
     async def cancel(self, task: ToolCallTask, reason: str) -> None:
         if self._session is not None:
@@ -92,7 +87,8 @@ class ExecutePythonTool(Tool[ExecutePythonParams, ExecutePythonResult]):
     def _agent_name(self) -> str:
         return str(self.config.state.get("agent_name", ""))
 
-    def _render_result(self, result: PythonExecResult) -> str:
+    @staticmethod
+    def _render_result(result: PythonExecResult) -> str:
         if result.status == "ok":
             parts: list[str] = []
             if result.stdout:

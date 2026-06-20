@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Coroutine
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeAlias, TypeVar
 
 import pydantic
+import yuullm
 from attrs import define, field
 
 from yuuagents.core.task import Task
@@ -17,8 +18,10 @@ from yuuagents.obs.entitylog import EntityLog
 
 # ── ToolDefinition ───────────────────────────────────────────────
 
+ToolResult: TypeAlias = yuullm.ToolOutput
+
 P = TypeVar("P", bound=pydantic.BaseModel)
-R = TypeVar("R", bound=pydantic.BaseModel)
+R = TypeVar("R", bound=ToolResult)
 
 
 @define(frozen=True)
@@ -28,7 +31,7 @@ class ToolDefinition(Generic[P, R]):
     name: str
     description: str
     input_model: type[P]
-    output_model: type[R]
+    output_model: type[pydantic.BaseModel] | None = None
     tags: set[str] = field(factory=set)
     dangerous: bool = False
 
@@ -58,7 +61,7 @@ class Tool(ABC, Generic[P, R]):
     @abstractmethod
     def create_coro(
         self, task: ToolCallTask, context: ToolContext
-    ) -> Coroutine[Any, Any, Any]: ...
+    ) -> Coroutine[Any, Any, R]: ...
 
     @abstractmethod
     async def cancel(self, task: ToolCallTask, reason: str) -> None: ...
@@ -131,7 +134,7 @@ class ToolCallTask(Task[Any]):
 
     @property
     def info(self) -> dict[str, Any]:
-        d = super().info()
+        d = super().info
         d["tool_name"] = self.tool_call_params.tool_name
         d["tool_call_id"] = self.tool_call_params.tool_call_id
         return d

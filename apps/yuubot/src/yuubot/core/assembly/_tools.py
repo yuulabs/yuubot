@@ -13,6 +13,7 @@ from yuuagents import PythonImport, PythonKernelConfig
 from yuuagents.python.runtime import PythonRuntime
 
 from yuubot.core.facade import ActorFacadeBinding, facade_module_name
+from yuubot.core.builtin_tools import BUILTIN_CAPABILITY_BY_ID
 from yuubot.core.tools import ToolRegistry
 from yuubot.core.validation import ConfigurationError
 from yuubot.resources.records import ToolConfig
@@ -62,14 +63,33 @@ def _agent_tool_configs(
     facade: ActorFacadeBinding | None,
     *,
     workspace_path: str | None = None,
+    integration_capability_ids: Iterable[str] = (),
 ) -> dict[str, dict[str, object]]:
     result = _tool_definition_configs(configs)
+    result.update(_builtin_tool_configs(integration_capability_ids, workspace_path))
     if facade is not None:
         result[PYTHON_PROVIDER_KEY] = _python_agent_tool_config(
             result.get(PYTHON_PROVIDER_KEY),
             facade,
             workspace_path=workspace_path,
         )
+    return result
+
+
+def _builtin_tool_configs(
+    capability_ids: Iterable[str],
+    workspace_path: str | None,
+) -> dict[str, dict[str, object]]:
+    result: dict[str, dict[str, object]] = {}
+    for capability_id in capability_ids:
+        capability = BUILTIN_CAPABILITY_BY_ID.get(capability_id)
+        if capability is None:
+            continue
+        if not workspace_path:
+            raise ConfigurationError(
+                f"{capability_id!r} requires capability_set.workspace_path"
+            )
+        result[capability.tool_name] = {"workspace_root": workspace_path}
     return result
 
 
@@ -136,4 +156,3 @@ def _python_session_state(
         "session_id": facade.session_id,
         "mailbox_id": facade.mailbox_id,
     }
-

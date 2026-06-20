@@ -13,6 +13,7 @@ from starlette.responses import FileResponse, JSONResponse
 
 from yuubot.bootstrap.config import AdminConfig
 from yuubot.core.integrations import IntegrationFactoryRegistry
+from yuubot.core.builtin_tools import BUILTIN_CAPABILITIES
 from yuubot.core.secrets import Secret, secret_field_names
 from yuubot.core.tools import ToolRegistry
 from yuubot.resources.root import Resources
@@ -140,7 +141,18 @@ def make_live_capabilities_handler(
 ):
     async def live_capabilities(_: Request) -> JSONResponse:
         records = await resources.repository.list(IntegrationORM)
-        capabilities = []
+        capabilities = [
+            {
+                "capability_id": capability.capability_id,
+                "capability_name": capability.capability_name,
+                "description": capability.description,
+                "namespace": capability.namespace,
+                "integration_id": "builtin",
+                "integration_name": "Built-in",
+                "enabled": True,
+            }
+            for capability in BUILTIN_CAPABILITIES
+        ]
         for record in records:
             try:
                 factory = integration_factories.get(record.name)

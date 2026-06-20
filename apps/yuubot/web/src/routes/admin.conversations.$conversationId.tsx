@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { ArrowLeft, Send, Loader2 } from "lucide-react";
+import { ArrowLeft, Send, Loader2, Brain, Hammer, SquareTerminal } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
 import { sendConversationMessage, createConversation, ensureConversationAgent, getConversationMessages } from "@/lib/api";
 import type { ActorResource, ConversationMessage, ConversationSSEEvent } from "@/types/api";
@@ -49,13 +49,23 @@ function ensureConversationOnce(actorId: string, conversationId: string): Promis
 //   { type: "thinking", thinking: "..." }
 //   ...
 
-type ConversationBlockType = "thinking" | "text" | "tool_call" | "tool_result" | "error" | "raw";
+type ConversationBlockType = "thinking" | "text" | "tool_call" | "tool_result" | "tool_group" | "error" | "raw";
 
 interface RenderBlock {
   key: string;
   type: ConversationBlockType;
   content: string;
   toolArgs?: string;
+  toolCallId?: string;
+  toolName?: string;
+  toolResult?: string;
+  toolStatus?: string;
+}
+
+interface ToolDisplay {
+  name: string;
+  argsText: string;
+  code?: string;
 }
 
 interface DisplayItem {
@@ -88,13 +98,16 @@ function extractBlockText(block: unknown): string {
   // Flat block format (history raw_content)
   if (b.type === "text" && typeof b.text === "string") return b.text;
   if (b.type === "thinking" && typeof b.thinking === "string") return b.thinking;
+  if (b.type === "tool_call") {
+    const name = typeof b.name === "string" ? b.name : "tool";
+    return `Tool: ${name}`;
+  }
+  if (b.type === "tool_result") {
+    if (typeof b.content === "string") return b.content;
+    return JSON.stringify(b);
+  }
 
   return JSON.stringify(b);
-}
-
-/** Stream-safe extraction: map blocks to strings and join. */
-function blocksToText(blocks: Array<unknown> | undefined): string {
-  return (blocks ?? []).map(extractBlockText).join("");
 }
 
 function renderBlockFromRaw(
@@ -110,6 +123,9 @@ function renderBlockFromRaw(
     type,
     content: extractBlockText(source),
     toolArgs: type === "tool_call" ? JSON.stringify(source, null, 2) : undefined,
+    toolCallId: toolCallId(source, type),
+    toolName: toolName(source),
+    toolStatus: toolStatus(source),
   };
 }
 
@@ -118,11 +134,19 @@ function rawBlockSource(block: unknown): Record<string, unknown> {
     return { type: "text", text: typeof block === "string" ? block : String(block) };
   }
   const raw = block as Record<string, unknown>;
+  // EntityLog wraps LLM items as {type: "content", content: {...}}.
+  // The inner content item is the semantic block the transcript should render.
+  if ((raw.type === "content" || typeof raw.type !== "string") && raw.content && typeof raw.content === "object") {
+    return raw.content as Record<string, unknown>;
+  }
+  // Flat format: block already has a recognized type — return as-is
+  // (history raw_content items, plus the new blocks emitted by Change 1)
+  if (typeof raw.type === "string") {
+    return raw;
+  }
+  // Simple wrapped: {content: "plain text"}
   if (typeof raw.content === "string") {
     return { type: "text", text: raw.content };
-  }
-  if (raw.content && typeof raw.content === "object") {
-    return raw.content as Record<string, unknown>;
   }
   return raw;
 }
@@ -139,50 +163,169 @@ function blockType(
   return fallbackType;
 }
 
+function toolCallId(source: Record<string, unknown>, type: ConversationBlockType): string | undefined {
+  if (type === "tool_call" && typeof source.id === "string") {
+    return source.id;
+  }
+  if (typeof source.tool_call_id === "string") {
+    return source.tool_call_id;
+  }
+  return undefined;
+}
+
+function toolName(source: Record<string, unknown>): string | undefined {
+  if (typeof source.name === "string") {
+    return source.name;
+  }
+  if (typeof source.tool_name === "string") {
+    return source.tool_name;
+  }
+  return undefined;
+}
+
+function toolStatus(source: Record<string, unknown>): string | undefined {
+  return typeof source.status === "string" ? source.status : undefined;
+}
+
+function parseJsonMaybe(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function toolDisplay(block: RenderBlock): ToolDisplay {
+  const name = block.toolName ?? (block.content.replace(/^Tool:\s*/, "") || "tool");
+  const raw = block.toolArgs ? parseJsonMaybe(block.toolArgs) : undefined;
+  const source = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const rawArgs = source.arguments ?? source.args ?? source.input;
+  const args = typeof rawArgs === "string" ? parseJsonMaybe(rawArgs) : rawArgs;
+  const argsText = args === undefined
+    ? "{}"
+    : typeof args === "string"
+      ? args
+      : JSON.stringify(args, null, 2);
+  const code = args && typeof args === "object" && typeof (args as Record<string, unknown>).code === "string"
+    ? String((args as Record<string, unknown>).code)
+    : undefined;
+  return { name, argsText, code };
+}
+
+function pythonHighlightedSegments(line: string): Array<{ text: string; kind: "plain" | "keyword" | "string" | "comment" | "number" }> {
+  const commentIndex = line.indexOf("#");
+  const code = commentIndex >= 0 ? line.slice(0, commentIndex) : line;
+  const comment = commentIndex >= 0 ? line.slice(commentIndex) : "";
+  const pattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:False|None|True|and|as|assert|async|await|break|class|continue|def|del|elif|else|except|finally|for|from|global|if|import|in|is|lambda|nonlocal|not|or|pass|raise|return|try|while|with|yield)\b|\b\d+(?:\.\d+)?\b)/g;
+  const segments: Array<{ text: string; kind: "plain" | "keyword" | "string" | "comment" | "number" }> = [];
+  let cursor = 0;
+  for (const match of code.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      segments.push({ text: code.slice(cursor, index), kind: "plain" });
+    }
+    const text = match[0];
+    const kind = text.startsWith("\"") || text.startsWith("'")
+      ? "string"
+      : /^\d/.test(text)
+        ? "number"
+        : "keyword";
+    segments.push({ text, kind });
+    cursor = index + text.length;
+  }
+  if (cursor < code.length) {
+    segments.push({ text: code.slice(cursor), kind: "plain" });
+  }
+  if (comment) {
+    segments.push({ text: comment, kind: "comment" });
+  }
+  return segments;
+}
+
+function PythonCodeBlock({ code }: { code: string }) {
+  const classForKind = {
+    plain: "",
+    keyword: "text-violet-400",
+    string: "text-emerald-300",
+    comment: "text-slate-500",
+    number: "text-amber-300",
+  };
+  return (
+    <pre className="max-h-96 overflow-auto rounded-md border border-slate-700 bg-slate-950 p-3 font-mono text-[12px] leading-5 text-slate-100 shadow-inner">
+      <code>
+        {code.split("\n").map((line, index) => (
+          <span key={index} className="block min-h-5">
+            {pythonHighlightedSegments(line).map((segment, segmentIndex) => (
+              <span key={segmentIndex} className={classForKind[segment.kind]}>
+                {segment.text}
+              </span>
+            ))}
+          </span>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
 
 export const Route = createFileRoute("/admin/conversations/$conversationId")({
   component: AdminConversationPage,
 });
 
-/** Streaming message block rendered from SSE events. */
-interface LiveBlock extends RenderBlock {
-  key: string;
-  type: Exclude<ConversationBlockType, "raw">;
+/** Streaming transcript item rendered from SSE events. */
+interface LiveItem extends DisplayItem {
   turnKey: string;
-  agentId: string;
-  sequence: number;
-  timestamp: number;
-  toolArgs?: string;
 }
 
-function liveBlockKey(
-  data: ConversationSSEEvent,
-  type: LiveBlock["type"],
-  turnKey: string,
-): string {
-  const entityId = data.content.entity_id;
-  const toolCallId = data.content.tool_call_id;
-  return [
-    turnKey || `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`,
-    type,
-    typeof toolCallId === "string" ? toolCallId : "",
-    typeof entityId === "string" ? entityId : data.agent_id,
-  ].join(":");
+function syncLiveItemsRef(
+  ref: MutableRefObject<LiveItem[]>,
+  update: (prev: LiveItem[]) => LiveItem[],
+): (prev: LiveItem[]) => LiveItem[] {
+  return (prev) => {
+    const next = update(prev);
+    ref.current = next;
+    return next;
+  };
 }
 
-function liveBlockSequence(
+function renderBlocksFromEvent(
   data: ConversationSSEEvent,
-  block: unknown,
-  index: number,
-): number {
-  const raw = block && typeof block === "object"
-    ? block as Record<string, unknown>
-    : {};
-  const chunkIndex = typeof data.content.chunk_index === "number"
-    ? data.content.chunk_index
-    : 0;
-  const blockId = typeof raw.block_id === "number" ? raw.block_id : index;
-  return chunkIndex * 100_000 + blockId;
+  keyPrefix: string,
+  nextBlockIndex: () => number,
+): RenderBlock[] {
+  const fallbackType = eventFallbackType(data);
+  const blocks = data.content.blocks as Array<unknown> | undefined;
+  return (blocks ?? []).flatMap<RenderBlock>((block) => {
+    const source = rawBlockSource(block);
+    const rawType = typeof source.type === "string" ? source.type : fallbackType;
+    const type = blockType(rawType, fallbackType);
+    const key = `${keyPrefix}:block:${nextBlockIndex()}`;
+    if (type === "tool_call") {
+      const callId = toolCallId(source, type);
+      const name = toolName(source) ?? "tool";
+      return [{
+        key,
+        type,
+        content: `Tool: ${name}`,
+        toolArgs: JSON.stringify(source, null, 2),
+        toolCallId: callId,
+        toolName: name,
+        toolStatus: toolStatus(source),
+      }];
+    }
+    const content = extractBlockText(source);
+    if (!content) {
+      return [];
+    }
+    return [{
+      key,
+      type,
+      content,
+      toolCallId: toolCallId(source, type),
+      toolName: toolName(source),
+      toolStatus: toolStatus(source),
+    }];
+  });
 }
 
 function eventFallbackType(data: ConversationSSEEvent): Exclude<ConversationBlockType, "raw"> {
@@ -193,147 +336,373 @@ function eventFallbackType(data: ConversationSSEEvent): Exclude<ConversationBloc
   return "text";
 }
 
-function liveBlocksFromEvent(
-  data: ConversationSSEEvent,
-  turnKey: string,
-): LiveBlock[] {
-  const fallbackType = eventFallbackType(data);
-  const blocks = data.content.blocks as Array<unknown> | undefined;
-  return (blocks ?? []).flatMap<LiveBlock>((block, index) => {
-    const source = rawBlockSource(block);
-    const rawType = typeof source.type === "string" ? source.type : fallbackType;
-    const type = blockType(rawType, fallbackType);
-    if (type === "raw") {
-      return [];
-    }
-    if (type === "tool_call") {
-      return [{
-        key: liveBlockKey(data, type, turnKey),
-        type,
-        turnKey,
-        agentId: data.agent_id,
-        sequence: liveBlockSequence(data, block, index),
-        content: `Tool: ${source.name ?? "tool"}`,
-        timestamp: data.timestamp,
-        toolArgs: JSON.stringify(source, null, 2),
-      }];
-    }
-    const content = extractBlockText(source);
-    if (!content) {
-      return [];
-    }
-    return [{
-      key: liveBlockKey(data, type, turnKey),
-      type,
-      turnKey,
-      agentId: data.agent_id,
-      sequence: liveBlockSequence(data, block, index),
-      content,
-      timestamp: data.timestamp,
-    }];
+function liveItemKey(turnKey: string, kind: string, index: number): string {
+  return `live:${turnKey}:${kind}:${index}`;
+}
+
+function eventHasToolCall(data: ConversationSSEEvent): boolean {
+  const content = data.content.content;
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.some((item) => {
+    const source = rawBlockSource(item);
+    return blockType(typeof source.type === "string" ? source.type : "", "raw") === "tool_call";
   });
 }
 
-function mergeLiveBlock(block: LiveBlock) {
-  return (prev: LiveBlock[]): LiveBlock[] => {
-    const index = prev.findIndex((item) => item.key === block.key);
-    if (index === -1) {
-      return [...prev, block];
-    }
-
-    const next = [...prev];
-    next[index] = {
-      ...next[index],
-      ...block,
-      sequence: Math.min(next[index].sequence, block.sequence),
-      timestamp: Math.min(next[index].timestamp, block.timestamp),
-      content: `${next[index].content}${block.content}`,
-    };
-    return next;
-  };
+function shouldMergeAdjacentBlocks(left: RenderBlock, right: RenderBlock): boolean {
+  return (
+    left.type === right.type &&
+    left.type !== "tool_call" &&
+    left.type !== "tool_result" &&
+    left.type !== "tool_group" &&
+    left.type !== "raw" &&
+    !left.toolArgs &&
+    !right.toolArgs
+  );
 }
 
-function liveBlocksForDisplay(blocks: LiveBlock[]): DisplayItem[] {
-  const groups = new Map<string, LiveBlock[]>();
-  for (const block of blocks) {
-    groups.set(block.turnKey, [...(groups.get(block.turnKey) ?? []), block]);
-  }
-  return Array.from(groups.entries()).map(([turnKey, group]) => {
-    const sorted = [...group].sort((left, right) => left.sequence - right.sequence);
-    return {
-      key: `live:${turnKey}`,
-      role: "actor",
-      blocks: sorted,
-      timestamp: Math.min(...sorted.map((block) => block.timestamp)),
-    };
-  });
-}
-
-function finalEventText(data: ConversationSSEEvent): string | null {
-  const role = data.content.role;
-  const content = data.content.content;
-  if (
-    role !== "assistant" &&
-    role !== "system" &&
-    role !== "tool" &&
-    role !== "user"
-  ) {
-    return null;
-  }
-  if (!Array.isArray(content)) {
-    return null;
-  }
-  return blocksToText(content);
-}
-
-function finalMessageFromEvent(data: ConversationSSEEvent): ConversationMessage | null {
-  const role = data.content.role;
-  const content = data.content.content;
-  if (
-    role !== "assistant" &&
-    role !== "system" &&
-    role !== "tool" &&
-    role !== "user"
-  ) {
-    return null;
-  }
-  if (!Array.isArray(content)) {
-    return null;
-  }
+function makeToolGroup(call: RenderBlock, result?: RenderBlock): RenderBlock {
+  const name = call.toolName ?? (call.content.replace(/^Tool:\s*/, "") || "tool");
   return {
-    id: 0,
-    conversation_id: data.conversation_id,
-    message_id: `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`,
-    role,
-    raw_content: JSON.stringify(content),
-    metadata: {},
-    timestamp: Math.floor(data.timestamp),
+    key: `${call.key}:group`,
+    type: "tool_group",
+    content: name,
+    toolArgs: call.toolArgs ?? call.content,
+    toolCallId: call.toolCallId,
+    toolName: name,
+    toolResult: result?.content,
+    toolStatus: result?.toolStatus,
   };
 }
 
-function liveTurnText(blocks: LiveBlock[], turnKey: string): string {
-  return blocks
-    .filter((block) => block.turnKey === turnKey)
-    .sort((left, right) => left.sequence - right.sequence)
-    .map((block) => block.content)
-    .join("");
+function appendToolResultToGroup(group: RenderBlock, result: RenderBlock): RenderBlock {
+  return {
+    ...group,
+    toolResult: group.toolResult ? `${group.toolResult}${result.content}` : result.content,
+    toolStatus: result.toolStatus ?? group.toolStatus,
+  };
 }
 
-function finalEventMatchesLiveText(finalText: string, liveText: string): boolean {
-  const expected = finalText.trim();
-  const actual = liveText.trim();
-  if (!expected || !actual) {
-    return true;
+function mergeToolArgs(existing?: string, incoming?: string): string | undefined {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+
+  const left = parseJsonMaybe(existing);
+  const right = parseJsonMaybe(incoming);
+  if (
+    left &&
+    right &&
+    typeof left === "object" &&
+    typeof right === "object" &&
+    !Array.isArray(left) &&
+    !Array.isArray(right)
+  ) {
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    const merged: Record<string, unknown> = { ...leftRecord, ...rightRecord };
+    for (const key of ["arguments", "args", "input"]) {
+      const leftValue = leftRecord[key];
+      const rightValue = rightRecord[key];
+      if (typeof leftValue === "string" && typeof rightValue === "string") {
+        merged[key] = rightValue.startsWith(leftValue) ? rightValue : `${leftValue}${rightValue}`;
+      } else if (rightValue === undefined && leftValue !== undefined) {
+        merged[key] = leftValue;
+      }
+    }
+    return JSON.stringify(merged, null, 2);
   }
-  return expected.includes(actual) || actual.includes(expected);
+
+  return incoming.startsWith(existing) ? incoming : `${existing}${incoming}`;
+}
+
+function samePendingToolCall(left: RenderBlock, right: RenderBlock): boolean {
+  if (left.type === "tool_group" && left.toolResult) {
+    return false;
+  }
+  if (left.toolCallId && right.toolCallId) {
+    return left.toolCallId === right.toolCallId;
+  }
+  return Boolean(left.toolName && right.toolName && left.toolName === right.toolName);
+}
+
+function mergeToolCallBlocks(left: RenderBlock, right: RenderBlock): RenderBlock {
+  const name = right.toolName ?? left.toolName ?? right.content.replace(/^Tool:\s*/, "") ?? left.content.replace(/^Tool:\s*/, "") ?? "tool";
+  return {
+    ...left,
+    content: left.type === "tool_group" ? name : `Tool: ${name}`,
+    toolArgs: mergeToolArgs(left.toolArgs, right.toolArgs),
+    toolCallId: left.toolCallId ?? right.toolCallId,
+    toolName: name,
+    toolStatus: right.toolStatus ?? left.toolStatus,
+  };
+}
+
+function appendToolCallToGroup(group: RenderBlock, call: RenderBlock): RenderBlock {
+  const merged = mergeToolCallBlocks(group, call);
+  return {
+    ...merged,
+    type: "tool_group",
+    content: merged.toolName ?? group.content,
+    toolResult: group.toolResult,
+  };
+}
+
+function findMatchingToolCallChunkIndex(blocks: RenderBlock[], call: RenderBlock): number {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block.type !== "tool_call" && block.type !== "tool_group") {
+      continue;
+    }
+    if (samePendingToolCall(block, call)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function findMatchingToolCallIndex(blocks: RenderBlock[], result: RenderBlock): number {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block.type !== "tool_call" && block.type !== "tool_group") {
+      continue;
+    }
+    if (result.toolCallId && block.toolCallId && result.toolCallId !== block.toolCallId) {
+      continue;
+    }
+    if (block.type === "tool_group" && block.toolResult) {
+      continue;
+    }
+    return index;
+  }
+  return -1;
+}
+
+function groupToolBlocks(blocks: RenderBlock[]): RenderBlock[] {
+  const next: RenderBlock[] = [];
+  for (const block of blocks) {
+    if (block.type === "tool_call") {
+      const matchIndex = findMatchingToolCallChunkIndex(next, block);
+      if (matchIndex >= 0) {
+        const match = next[matchIndex];
+        next[matchIndex] = match.type === "tool_group"
+          ? appendToolCallToGroup(match, block)
+          : mergeToolCallBlocks(match, block);
+        continue;
+      }
+      next.push(block);
+      continue;
+    }
+    if (block.type === "tool_result") {
+      const matchIndex = findMatchingToolCallIndex(next, block);
+      if (matchIndex >= 0) {
+        const match = next[matchIndex];
+        next[matchIndex] = match.type === "tool_group"
+          ? appendToolResultToGroup(match, block)
+          : makeToolGroup(match, block);
+      } else {
+        continue;
+      }
+      continue;
+    }
+    next.push(block);
+  }
+  return next.map((block) => block.type === "tool_call" ? makeToolGroup(block) : block);
+}
+
+function appendRenderBlocks(
+  existing: RenderBlock[],
+  incoming: RenderBlock[],
+): RenderBlock[] {
+  const next = [...existing];
+  for (const block of incoming) {
+    const previous = next.length > 0 ? next[next.length - 1] : undefined;
+    if (previous && shouldMergeAdjacentBlocks(previous, block)) {
+      next[next.length - 1] = {
+        ...previous,
+        content: `${previous.content}${block.content}`,
+      };
+    } else {
+      next.push(block);
+    }
+  }
+  return groupToolBlocks(next);
+}
+
+function appendLiveItemBlocks(
+  items: LiveItem[],
+  itemKey: string,
+  role: DisplayItem["role"],
+  turnKey: string,
+  timestamp: number,
+  blocks: RenderBlock[],
+): LiveItem[] {
+  const index = items.findIndex((item) => item.key === itemKey);
+  if (index === -1) {
+    return [
+      ...items,
+      {
+        key: itemKey,
+        role,
+        blocks: appendRenderBlocks([], blocks),
+        timestamp,
+        turnKey,
+      },
+    ];
+  }
+
+  return items.map((item, itemIndex) => (
+    itemIndex === index
+      ? { ...item, blocks: appendRenderBlocks(item.blocks, blocks) }
+      : item
+  ));
+}
+
+function hasLiveBlocksForTurn(items: LiveItem[], turnKey: string): boolean {
+  return items.some((item) => item.turnKey === turnKey && item.blocks.length > 0);
+}
+
+function liveItemsHaveToolResult(items: LiveItem[]): boolean {
+  return items.some((item) =>
+    item.blocks.some((block) =>
+      block.type === "tool_result" ||
+      (block.type === "tool_group" && Boolean(block.toolResult))
+    )
+  );
+}
+
+function messageBlocks(message: ConversationMessage): RenderBlock[] {
+  try {
+    const parsed = JSON.parse(message.raw_content) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.map((item, index) =>
+        renderBlockFromRaw(item, `${message.message_id}:${index}`, "text")
+      );
+    }
+    return [
+      renderBlockFromRaw(
+        parsed,
+        `${message.message_id}:raw`,
+        "raw",
+      ),
+    ];
+  } catch {
+    return [
+      {
+        key: `${message.message_id}:raw-content`,
+        type: "raw",
+        content: message.raw_content,
+      },
+    ];
+  }
+}
+
+function displayRoleForMessage(message: ConversationMessage): DisplayItem["role"] {
+  return message.role === "user" ? "user" : "actor";
+}
+
+function historyItemsFromMessages(messages: ConversationMessage[]): DisplayItem[] {
+  const items: DisplayItem[] = [];
+  for (const message of messages) {
+    const role = displayRoleForMessage(message);
+    const blocks = messageBlocks(message);
+    const previous = items.length > 0 ? items[items.length - 1] : undefined;
+    const shouldAppendToPreviousActorMessage = (
+      role === "actor" &&
+      previous?.role === "actor"
+    );
+
+    if (shouldAppendToPreviousActorMessage) {
+      items[items.length - 1] = {
+        ...previous,
+        blocks: appendRenderBlocks(previous.blocks, blocks),
+        timestamp: Math.min(previous.timestamp, message.timestamp),
+      };
+      continue;
+    }
+
+    items.push({
+      key: `message:${message.message_id}`,
+      role,
+      blocks: appendRenderBlocks([], blocks),
+      timestamp: message.timestamp,
+    });
+  }
+  return items;
 }
 
 function MessageBlockView({ block }: { block: RenderBlock }) {
   if (block.type === "thinking") {
     return (
-      <div className="rounded-md border border-border/60 bg-background/50 px-3 py-2 text-xs italic text-muted-foreground">
-        <div className="mb-1 text-[11px] font-semibold not-italic">thinking</div>
-        <div className="whitespace-pre-wrap break-words">{block.content}</div>
+      <details className="group rounded-md border border-border/60 bg-background/60 text-xs text-muted-foreground">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 font-medium text-muted-foreground [&::-webkit-details-marker]:hidden">
+          <Brain className="size-3.5" />
+          <span>thinking</span>
+          <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:hidden">expand</span>
+          <span className="ml-auto hidden text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:inline">collapse</span>
+        </summary>
+        <div className="border-t border-border/50 px-3 py-2 whitespace-pre-wrap break-words">
+          {block.content}
+        </div>
+      </details>
+    );
+  }
+  if (block.type === "tool_group") {
+    const display = toolDisplay(block);
+    const isExecutePython = display.name === "execute_python" || display.name.endsWith(".execute_python");
+    const isRunning = !block.toolResult;
+    if (isExecutePython) {
+      return (
+        <div className="rounded-md border border-border/70 bg-background/70 p-3 text-xs shadow-sm">
+          <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
+            <Hammer className="size-3.5" />
+            <span>execute_python</span>
+            {isRunning && <Loader2 className="ml-auto size-3.5 animate-spin" />}
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="min-w-0">
+              <PythonCodeBlock code={display.code ?? display.argsText} />
+            </div>
+            <pre className="max-h-96 min-h-24 overflow-auto whitespace-pre-wrap break-words rounded-md border border-emerald-900/50 bg-zinc-950 p-3 font-mono text-[12px] leading-5 text-emerald-200 shadow-inner">
+              {block.toolResult ?? "running"}
+            </pre>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="rounded-md border border-border/70 bg-background/70 p-2 text-xs shadow-sm">
+        <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
+          <Hammer className="size-3.5" />
+          <span>{display.name}</span>
+          {isRunning && <Loader2 className="ml-auto size-3.5 animate-spin" />}
+          {block.toolStatus && (
+            <Badge variant="secondary" className={isRunning ? "h-5 px-1.5 text-[10px]" : "ml-auto h-5 px-1.5 text-[10px]"}>
+              {block.toolStatus}
+            </Badge>
+          )}
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <div className="min-w-0 rounded-md border border-blue-200 bg-blue-50/80 p-2 dark:border-blue-900/70 dark:bg-blue-950/30">
+            <div className="mb-1 flex items-center gap-1.5 font-semibold text-blue-700 dark:text-blue-300">
+              <SquareTerminal className="size-3.5" />
+              <span>tool call</span>
+            </div>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+              {display.argsText}
+            </pre>
+          </div>
+          <div className="min-w-0 rounded-md border border-emerald-200 bg-emerald-50/80 p-2 dark:border-emerald-900/70 dark:bg-emerald-950/30">
+            <div className="mb-1 flex items-center gap-1.5 font-semibold text-emerald-700 dark:text-emerald-300">
+              <SquareTerminal className="size-3.5" />
+              <span>tool result</span>
+            </div>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+              {block.toolResult ?? "pending"}
+            </pre>
+          </div>
+        </div>
       </div>
     );
   }
@@ -386,20 +755,28 @@ function AdminConversationPage() {
   const [error, setError] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [streamReady, setStreamReady] = useState(false);
-  const [sseBlocks, setSseBlocks] = useState<LiveBlock[]>([]);
-  const sseBlocksRef = useRef<LiveBlock[]>([]);
+  const [liveItems, setLiveItems] = useState<LiveItem[]>([]);
+  const liveItemsRef = useRef<LiveItem[]>([]);
+  const [streamStatus, setStreamStatus] = useState<"connected" | "disconnected">("connected");
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
   const activeTurnKeyRef = useRef("");
+  const currentAssistantItemKeyRef = useRef("");
+  const liveItemIndexRef = useRef(0);
+  const liveBlockIndexRef = useRef(0);
+  const intentionalCloseRef = useRef(false);
 
   const actor = actors.find((a) => a.id === actorId);
 
   // Load history on mount
   useEffect(() => {
     activeTurnKeyRef.current = "";
-    sseBlocksRef.current = [];
-    setSseBlocks([]);
+    currentAssistantItemKeyRef.current = "";
+    liveItemIndexRef.current = 0;
+    liveBlockIndexRef.current = 0;
+    liveItemsRef.current = [];
+    setLiveItems([]);
     setLoadingHistory(true);
     getConversationMessages(conversationId)
       .then(setMessages)
@@ -416,63 +793,87 @@ function AdminConversationPage() {
 
     if (sseRef.current) sseRef.current.close();
 
-    const mergeStreamEvent = (data: ConversationSSEEvent) => {
+    const appendAssistantEvent = (data: ConversationSSEEvent) => {
       const turnKey = activeTurnKeyRef.current || `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`;
-      const liveBlocks = liveBlocksFromEvent(data, turnKey);
-      if (liveBlocks.length === 0) {
+      const itemKey = currentAssistantItemKeyRef.current || liveItemKey(
+        turnKey,
+        "assistant",
+        liveItemIndexRef.current++,
+      );
+      currentAssistantItemKeyRef.current = itemKey;
+      const blocks = renderBlocksFromEvent(
+        data,
+        itemKey,
+        () => liveBlockIndexRef.current++,
+      );
+      if (blocks.length === 0) {
         return;
       }
-      if (activeTurnKeyRef.current === turnKey) {
-        setIsSending(false);
-      }
-      setSseBlocks((prev) => {
-        const next = liveBlocks.reduce(
-          (current, block) => mergeLiveBlock(block)(current),
+      setLiveItems(syncLiveItemsRef(
+        liveItemsRef,
+        (prev) => appendLiveItemBlocks(
           prev,
-        );
-        sseBlocksRef.current = next;
-        return next;
-      });
+          itemKey,
+          "actor",
+          turnKey,
+          data.timestamp,
+          blocks,
+        ),
+      ));
     };
 
-    const handleStreamEvent = (e: MessageEvent) => {
+    const appendToolResultEvent = (data: ConversationSSEEvent) => {
+      const turnKey = activeTurnKeyRef.current || `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`;
+      const itemKey = currentAssistantItemKeyRef.current || liveItemKey(
+        turnKey,
+        "assistant",
+        liveItemIndexRef.current++,
+      );
+      currentAssistantItemKeyRef.current = itemKey;
+      const blocks = renderBlocksFromEvent(
+        data,
+        itemKey,
+        () => liveBlockIndexRef.current++,
+      );
+      if (blocks.length === 0) {
+        return;
+      }
+      setLiveItems(syncLiveItemsRef(
+        liveItemsRef,
+        (prev) => appendLiveItemBlocks(
+          prev,
+          itemKey,
+          "actor",
+          turnKey,
+          data.timestamp,
+          blocks,
+        ),
+      ));
+    };
+
+    const handleAssistantStreamEvent = (e: MessageEvent) => {
       const data = JSON.parse(e.data) as ConversationSSEEvent;
-      mergeStreamEvent(data);
+      appendAssistantEvent(data);
+    };
+
+    const handleToolResultEvent = (e: MessageEvent) => {
+      const data = JSON.parse(e.data) as ConversationSSEEvent;
+      appendToolResultEvent(data);
     };
 
     const handleFinalEvent = (e: MessageEvent) => {
       const data = JSON.parse(e.data) as ConversationSSEEvent;
-      const turnKey = activeTurnKeyRef.current;
-      const finalText = finalEventText(data);
-      if (turnKey && finalText !== null) {
-        const liveText = liveTurnText(sseBlocksRef.current, turnKey);
-        if (!finalEventMatchesLiveText(finalText, liveText)) {
-          console.warn("conversation final message did not match streamed chunks", {
-            conversationId,
-            agentId: data.agent_id,
-            liveText,
-            finalText,
-          });
-        }
+      if (data.content.role === "assistant" && !eventHasToolCall(data)) {
+        currentAssistantItemKeyRef.current = "";
       }
-      if (turnKey) {
-        setSseBlocks((prev) => {
-          const next = prev.filter((block) => block.turnKey !== turnKey);
-          sseBlocksRef.current = next;
-          return next;
-        });
-      }
+    };
+
+    const handleTurnCompleted = (_e: MessageEvent) => {
+      intentionalCloseRef.current = true;
       activeTurnKeyRef.current = "";
+      currentAssistantItemKeyRef.current = "";
       sendingRef.current = false;
       setIsSending(false);
-      const finalMessage = finalMessageFromEvent(data);
-      if (finalMessage) {
-        setMessages((prev) => (
-          prev.some((message) => message.message_id === finalMessage.message_id)
-            ? prev
-            : [...prev, finalMessage]
-        ));
-      }
     };
 
     const handleErrorEvent = (e: MessageEvent) => {
@@ -496,15 +897,23 @@ function AdminConversationPage() {
         es.onopen = () => {
           if (!cancelled) {
             setStreamReady(true);
+            setStreamStatus("connected");
+            intentionalCloseRef.current = false;
+          }
+        };
+        es.onerror = () => {
+          if (!cancelled && !intentionalCloseRef.current) {
+            setStreamStatus("disconnected");
           }
         };
 
-        es.addEventListener("thinking", handleStreamEvent);
-        es.addEventListener("text", handleStreamEvent);
-        es.addEventListener("output", handleStreamEvent);
-        es.addEventListener("tool_call", handleStreamEvent);
-        es.addEventListener("tool_result", handleStreamEvent);
+        es.addEventListener("thinking", handleAssistantStreamEvent);
+        es.addEventListener("text", handleAssistantStreamEvent);
+        es.addEventListener("output", handleAssistantStreamEvent);
+        es.addEventListener("tool_call", handleAssistantStreamEvent);
+        es.addEventListener("tool_result", handleToolResultEvent);
         es.addEventListener("message", handleFinalEvent);
+        es.addEventListener("turn_completed", handleTurnCompleted);
         es.addEventListener("error", handleErrorEvent);
       })
       .catch((err: unknown) => {
@@ -516,6 +925,7 @@ function AdminConversationPage() {
     return () => {
       cancelled = true;
       setStreamReady(false);
+      setStreamStatus("disconnected");
       if (sseRef.current) {
         sseRef.current.close();
         sseRef.current = null;
@@ -529,7 +939,7 @@ function AdminConversationPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, sseBlocks]);
+  }, [messages, liveItems]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -552,18 +962,13 @@ function AdminConversationPage() {
     setIsSending(true);
     sendingRef.current = true;
     activeTurnKeyRef.current = turnKey;
+    currentAssistantItemKeyRef.current = "";
     void ensureConversationOnce(actorId, conversationId)
-      .then(() => sendConversationMessage({ conversationId, text }))
-      .then(() => {
-        if (activeTurnKeyRef.current === turnKey) {
-          activeTurnKeyRef.current = "";
-          sendingRef.current = false;
-          setIsSending(false);
-        }
-      })
+      .then(() => sendConversationMessage({ conversationId, text, messageId: userMsgId }))
       .catch((err: unknown) => {
         if (activeTurnKeyRef.current === turnKey) {
           activeTurnKeyRef.current = "";
+          currentAssistantItemKeyRef.current = "";
           sendingRef.current = false;
           setIsSending(false);
         }
@@ -571,45 +976,35 @@ function AdminConversationPage() {
       });
   };
 
-  const messageBlocks = (message: ConversationMessage): RenderBlock[] => {
-    try {
-      const parsed = JSON.parse(message.raw_content) as unknown;
-      if (Array.isArray(parsed)) {
-        return parsed.map((item, index) =>
-          renderBlockFromRaw(item, `${message.message_id}:${index}`, "text")
-        );
-      }
-      return [
-        renderBlockFromRaw(
-          parsed,
-          `${message.message_id}:raw`,
-          "raw",
-        ),
-      ];
-    } catch {
-      return [
-        {
-          key: `${message.message_id}:raw-content`,
-          type: "raw",
-          content: message.raw_content,
-        },
-      ];
-    }
-  };
-
-  const historyItems: DisplayItem[] = messages.map((message) => ({
-    key: `message:${message.message_id}`,
-    role: message.role === "user" ? "user" : "actor",
-    blocks: messageBlocks(message),
-    timestamp: message.timestamp,
-  }));
-  const liveItems = liveBlocksForDisplay(sseBlocks);
-  const displayItems = [...historyItems, ...liveItems].sort(
-    (left, right) => left.timestamp - right.timestamp,
-  );
+  const historyItems = historyItemsFromMessages(messages);
+  const displayItems = [...historyItems, ...liveItems];
   const currentTurnHasLiveBlocks = activeTurnKeyRef.current
-    ? sseBlocks.some((block) => block.key.startsWith(`${activeTurnKeyRef.current}:`))
+    ? hasLiveBlocksForTurn(liveItems, activeTurnKeyRef.current)
     : false;
+
+  const conversationInProgress = (() => {
+    if (messages.length === 0) return false;
+    const lastMsg = messages[messages.length - 1];
+    // If last message is a tool result, check if there's a follow-up assistant message
+    if (lastMsg.role === "tool") return false;
+    // If last message is assistant with tool_call, turn is in progress
+    try {
+      const parsed = JSON.parse(lastMsg.raw_content);
+      if (Array.isArray(parsed) && parsed.some((b: Record<string,unknown>) => b.type === "tool_call")) {
+        // Check if there's a subsequent tool result
+        const hasToolResult = messages.some((m) => {
+          if (m.role !== "tool") return false;
+          try {
+            const content = JSON.parse(m.raw_content);
+            return Array.isArray(content) && content.some((b: Record<string,unknown>) => b.type === "tool_result");
+          } catch { return false; }
+        });
+        const hasLiveToolResult = liveItemsHaveToolResult(liveItems);
+        return !(hasToolResult || hasLiveToolResult);
+      }
+    } catch { /* ignore */ }
+    return false;
+  })();
 
   return (
     <div className="flex h-full flex-col">
@@ -659,6 +1054,12 @@ function AdminConversationPage() {
         )}
         <div ref={bottomRef} />
       </div>
+
+      {(streamStatus === "disconnected" || conversationInProgress) && !loadingHistory && (
+        <div className="mx-4 mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/30">
+          后台运行中，结果可能不同步，若需查看更新请刷新~
+        </div>
+      )}
 
       {error && (
         <div className="mx-4 mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>

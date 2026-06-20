@@ -45,12 +45,20 @@ from yuuagents.core.task import Owner, OwnerType, Task, TaskStatus
 from yuuagents.tool.primitives import (
     Tool,
     ToolDefinition,
+    ToolResult,
     ToolRegistry,
     ToolCallParams,
     ToolCallTask,
     ToolContext,
     register_tool_type,
     resolve_tool_type,
+)
+from yuuagents.tool.files import (
+    EditTool,
+    FileToolConfig,
+    ReadTool,
+    WorkspaceFiles,
+    WriteTool,
 )
 from yuuagents.core.runtime import Runtime
 from yuuagents.python.runtime import (
@@ -113,14 +121,20 @@ __all__ = [
     "PythonSessionLike",
     "Owner",
     "OwnerType",
+    "EditTool",
+    "FileToolConfig",
+    "ReadTool",
     "Tool",
     "ToolDefinition",
+    "ToolResult",
     "ToolRegistry",
     "ToolCallParams",
     "ToolCallTask",
     "TaskStatus",
     "Task",
     "ToolContext",
+    "WorkspaceFiles",
+    "WriteTool",
     "register_tool_type",
     "resolve_tool_type",
 ]

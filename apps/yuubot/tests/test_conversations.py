@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import yuullm
 from yuuagents.core.eventbus import RuntimeEvent
 
 from yuubot.core.conversations import ConversationManager
@@ -96,3 +98,50 @@ async def test_handle_tool_result_failed_status() -> None:
     assert result is not None
     assert result.event_type == "tool_result"
     assert result.content["status"] == "failed"
+
+
+async def test_send_message_returns_before_turn_completes() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    record = MagicMock()
+    record.message_id = "message-1"
+
+    mock_store = MagicMock()
+    mock_store.history = AsyncMock(return_value=[])
+    mock_store.append_message = AsyncMock(return_value=record)
+
+    manager = ConversationManager(
+        store=mock_store,
+        repository=MagicMock(),
+        yuuagents_config=MagicMock(),
+        python_sessions=MagicMock(),
+        llm_session_factory_factory=MagicMock(),
+    )
+    manager._require_conversation = AsyncMock(return_value=MagicMock())
+    runtime = MagicMock()
+    runtime.ensure_conversation_agent = AsyncMock(return_value=MagicMock(id="agent-1"))
+
+    async def handle_conversation_message(
+        conversation_id: str,
+        message: yuullm.Message,
+        history: yuullm.History,
+    ) -> None:
+        _ = conversation_id, message, history
+        started.set()
+        await release.wait()
+
+    runtime.handle_conversation_message = handle_conversation_message
+    manager._runtime_for = AsyncMock(return_value=runtime)
+
+    result = await manager.send_message(
+        conversation_id="conversation-1",
+        content=[{"type": "text", "text": "hello"}],
+        message_id="message-1",
+    )
+
+    assert result is record
+    assert len(manager._turn_tasks) == 1
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    release.set()
+    await asyncio.wait_for(asyncio.gather(*manager._turn_tasks), timeout=1)
