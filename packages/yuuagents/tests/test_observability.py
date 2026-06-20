@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 import pytest
@@ -7,7 +8,7 @@ import yuutrace
 from opentelemetry.util.types import AttributeValue
 
 from yuuagents.obs.entitylog import ProcessBlock
-from yuuagents.core.eventbus import EventBus
+from yuuagents.core.eventbus import EventBus, RuntimeEvent
 from yuuagents.obs.observability import (
     ATTR_ENTITY_BLOCKS,
     ATTR_ENTITY_CHUNK_INDEX,
@@ -46,6 +47,65 @@ class FakeTracer:
         span = FakeSpan(name)
         self.spans.append(span)
         return span
+
+
+class StringConversationProvider:
+    def conversation_id(self, event: RuntimeEvent) -> str | None:
+        return "conversation-a9cbb6b0-df40-4ca1-91a9-fbbcc5cd262e"
+
+    def agent_name(self, event: RuntimeEvent) -> str:
+        return event.agent_name
+
+    def model(self, event: RuntimeEvent) -> str:
+        return "test-model"
+
+    def tags(self, event: RuntimeEvent) -> list[str] | None:
+        return ["test"]
+
+    def event_attributes(self, event: RuntimeEvent) -> Mapping[str, AttributeValue]:
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_observer_preserves_host_string_conversation_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yuuagents.obs import observability
+
+    calls: list[dict[str, object]] = []
+    conversation = FakeConversation()
+
+    def start_conversation(
+        *,
+        id: str,
+        agent: str,
+        model: str,
+        tags: list[str] | None = None,
+    ) -> yuutrace.ConversationContext:
+        calls.append({"id": id, "agent": agent, "model": model, "tags": tags})
+        return cast(yuutrace.ConversationContext, conversation)
+
+    monkeypatch.setattr(observability.yuutrace, "start_conversation", start_conversation)
+
+    observer = YuuTraceObserver(context_provider=StringConversationProvider())
+    await observer.on_event(
+        RuntimeEvent(
+            name="agent.started",
+            agent_id="agent-1",
+            agent_name="agent:conversation:conversation-a9cbb6b0-df40-4ca1-91a9-fbbcc5cd262e",
+            data={},
+            timestamp=0.0,
+        )
+    )
+
+    assert calls == [
+        {
+            "id": "conversation-a9cbb6b0-df40-4ca1-91a9-fbbcc5cd262e",
+            "agent": "agent:conversation:conversation-a9cbb6b0-df40-4ca1-91a9-fbbcc5cd262e",
+            "model": "test-model",
+            "tags": ["test"],
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -286,13 +346,12 @@ async def test_on_llm_finished_adds_message_content_to_turn() -> None:
     # Should contain the thinking block and the text item
     assert any(
         getattr(item, "type", None) == "thinking"
-        or (isinstance(item, dict) and item.get("type") == "thinking")
+        or _dict_item_has(item, "type", "thinking")
         for item in turn.items
     )
     assert any(
-        isinstance(item, dict)
-        and item.get("type") == "text"
-        and item.get("text") == "Hello!"
+        _dict_item_has(item, "type", "text")
+        and _dict_item_has(item, "text", "Hello!")
         for item in turn.items
     )
 
@@ -342,3 +401,10 @@ async def test_on_llm_finished_without_message_does_not_crash() -> None:
     assert len(turn.items) == 0
     # But usage should still be recorded
     assert len(turn._usage_calls) == 1
+
+
+def _dict_item_has(item: object, key: str, value: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    mapping = cast("Mapping[str, object]", item)
+    return mapping.get(key) == value

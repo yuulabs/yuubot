@@ -11,6 +11,8 @@ import httpx
 import msgspec
 import pytest
 import yuullm
+import yuutrace
+from yuutrace import MemoryTraceStore
 
 from tests.helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
@@ -35,6 +37,7 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
 
     daemon = await _build_daemon(yuubot_config, tmp_path)
     await daemon.start()
+    store = yuutrace.init_memory()
     try:
         await _connect_admin_proxy_to_daemon(monkeypatch, daemon)
         admin_app = _build_admin_app(daemon, yuubot_config, tmp_path)
@@ -71,6 +74,10 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
             )
             messages = await _conversation_messages(client, "admin-conversation-e2e")
 
+        trace_conversation = await _trace_conversation(
+            store,
+            "admin-conversation-e2e",
+        )
         assert conversation.status_code == 202, conversation.text
         body = conversation.json()
         assert body["status"] == "accepted"
@@ -85,6 +92,11 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
         assert [m["role"] for m in messages] == ["user", "assistant"]
         assert CONVERSATION_TEXT in messages[0]["raw_content"]
         assert AGENT_REPLY in messages[1]["raw_content"]
+        assert trace_conversation["id"] == "admin-conversation-e2e"
+        assert any(
+            span["conversation_id"] == "admin-conversation-e2e"
+            for span in trace_conversation["spans"]
+        )
     finally:
         await daemon.stop()
 
@@ -217,6 +229,25 @@ async def _conversation_messages(
             return messages
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError(f"expected conversation {conversation_id} messages")
+        await asyncio.sleep(0.01)
+
+
+async def _trace_conversation(
+    store: MemoryTraceStore,
+    conversation_id: str,
+    *,
+    timeout_s: float = 5.0,
+):
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while True:
+        conversation = store.get_conversation(conversation_id)
+        if conversation is not None:
+            return conversation
+        if asyncio.get_running_loop().time() >= deadline:
+            spans = store.get_all_spans()
+            raise AssertionError(
+                f"expected trace conversation {conversation_id}, got {spans}"
+            )
         await asyncio.sleep(0.01)
 
 

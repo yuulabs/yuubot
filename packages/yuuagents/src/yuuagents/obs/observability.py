@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Protocol, cast
 from uuid import NAMESPACE_DNS, UUID, uuid5
@@ -45,6 +45,20 @@ TOOL_COST_UNITS = {"usd", "USD"}
 class TraceContextProvider(Protocol):
     """Host-provided trace identity and attributes for yuuagents events."""
 
+    def conversation_id(self, event: RuntimeEvent) -> str | None: ...
+
+    def agent_name(self, event: RuntimeEvent) -> str: ...
+
+    def model(self, event: RuntimeEvent) -> str: ...
+
+    def tags(self, event: RuntimeEvent) -> list[str] | None: ...
+
+    def event_attributes(self, event: RuntimeEvent) -> Mapping[str, AttributeValue]: ...
+
+
+class _LegacyTraceContextProvider(Protocol):
+    """Backward-compatible host provider shape accepted at the observer boundary."""
+
     def conversation_id(self, event: RuntimeEvent) -> UUID | str | None: ...
 
     def agent_name(self, event: RuntimeEvent) -> str: ...
@@ -60,10 +74,10 @@ class TraceContextProvider(Protocol):
 class DefaultTraceContextProvider:
     """Default yuuagents-only trace context."""
 
-    def conversation_id(self, event: RuntimeEvent) -> UUID | str | None:
+    def conversation_id(self, event: RuntimeEvent) -> str | None:
         if not event.agent_id:
             return None
-        return uuid5(NAMESPACE_DNS, event.agent_id)
+        return str(uuid5(NAMESPACE_DNS, event.agent_id))
 
     def agent_name(self, event: RuntimeEvent) -> str:
         return event.agent_name
@@ -81,7 +95,7 @@ class DefaultTraceContextProvider:
 
 @define
 class AgentTraceContext:
-    conversation_id: UUID
+    conversation_id: str
     agent_name: str
     model: str
     tags: list[str] | None = None
@@ -91,7 +105,9 @@ class AgentTraceContext:
 class YuuTraceObserver:
     """Bridge yuuagents runtime events into yuutrace spans and events."""
 
-    context_provider: TraceContextProvider = field(factory=DefaultTraceContextProvider)
+    context_provider: TraceContextProvider | _LegacyTraceContextProvider = field(
+        factory=DefaultTraceContextProvider
+    )
     _contexts: dict[str, AgentTraceContext] = field(
         factory=dict, init=False, repr=False
     )
@@ -159,7 +175,7 @@ class YuuTraceObserver:
         )
         self._contexts[event.agent_id] = ctx
         self._conversations[event.agent_id] = yuutrace.start_conversation(
-            id=ctx.conversation_id,
+            id=cast(UUID, ctx.conversation_id),
             agent=ctx.agent_name,
             model=ctx.model,
             tags=ctx.tags,
@@ -308,8 +324,9 @@ class YuuTraceObserver:
                 role = item.role
                 content = item.content
             elif isinstance(item, Mapping):
-                role = item.get("role")
-                content = item.get("content")
+                mapping = cast("Mapping[str, object]", item)
+                role = mapping.get("role")
+                content = mapping.get("content")
             else:
                 continue
             if role != "system":
@@ -320,12 +337,12 @@ class YuuTraceObserver:
                 turn.end()
             return
 
-    def _conversation_id(self, event: RuntimeEvent) -> UUID | None:
+    def _conversation_id(self, event: RuntimeEvent) -> str | None:
         value = self.context_provider.conversation_id(event)
         if isinstance(value, UUID):
-            return value
+            return str(value)
         if isinstance(value, str) and value:
-            return UUID(value)
+            return value
         return None
 
     def _event_attributes(self, event: RuntimeEvent) -> OtelAttributes:
@@ -373,7 +390,7 @@ def _attribute_value(value: EventValue) -> AttributeValue | None:
     return None
 
 
-def _entity_blocks(blocks: list[object]) -> list[EntityLogBlock]:
+def _entity_blocks(blocks: Sequence[object]) -> list[EntityLogBlock]:
     return [
         block
         for block in blocks
