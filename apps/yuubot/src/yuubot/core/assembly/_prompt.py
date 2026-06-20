@@ -61,6 +61,13 @@ def _capability_prompt(binding: AgentBinding) -> str:
         lines.extend(f"- {capability_id}" for capability_id in cap.integration_capability_ids)
         lines.extend((
             "",
+            "How to use integration capabilities:",
+            "- builtin.* capabilities are available as direct file tools when configured.",
+            "- Non-builtin capabilities are async Python facade functions exposed through execute_python.",
+            "- Map a capability id to yext by keeping the prefix as modules and using the final segment as the function name.",
+            "- Example: github.issue.list -> await yext.github.issue.list(owner='OWNER', repo='REPO', per_page=5).",
+            "- Do not call github.* capability ids as top-level tools unless they also appear under Tools.",
+            "",
             "Note: Some tools may fail at runtime if the corresponding integration",
             "is disabled or malfunctioning. If a tool call fails, tell the user",
             "honestly what went wrong. Do not fabricate results.",

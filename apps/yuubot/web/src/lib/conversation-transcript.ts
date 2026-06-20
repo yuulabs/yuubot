@@ -413,7 +413,9 @@ function findMatchingToolCallIndex(blocks: RenderBlock[], result: RenderBlock): 
       continue;
     }
     if (block.type === "tool_group" && block.toolResult) {
-      continue;
+      if (!result.toolCallId || block.toolCallId !== result.toolCallId) {
+        continue;
+      }
     }
     return index;
   }

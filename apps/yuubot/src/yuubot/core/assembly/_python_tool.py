@@ -62,7 +62,20 @@ class ExecutePythonTool(Tool[ExecutePythonParams, str]):
             call_id=task.tool_call_params.tool_call_id,
             entitylog=context.entity_log,
         )
-        return self._render_result(result)
+        rendered = self._render_result(result)
+        if result.status == "crashed":
+            reset_note = "The Python session was reset; retry after fixing the code or environment."
+            try:
+                await session.close()
+            except Exception as exc:
+                reset_note = (
+                    "The Python session reset failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            finally:
+                self._session = None
+            return f"{rendered}\n{reset_note}"
+        return rendered
 
     async def cancel(self, task: ToolCallTask, reason: str) -> None:
         if self._session is not None:
@@ -103,4 +116,9 @@ class ExecutePythonTool(Tool[ExecutePythonParams, str]):
         if result.status == "error":
             tb = "\n".join(result.traceback) if result.traceback else result.stderr
             return f"Python execution error:\n{tb}"
+        if result.status == "crashed":
+            tb = "\n".join(result.traceback) if result.traceback else result.stderr
+            if tb:
+                return f"Python execution crashed:\n{tb}"
+            return "Python execution crashed"
         return f"Python execution {result.status}"

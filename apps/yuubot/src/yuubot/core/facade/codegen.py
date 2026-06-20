@@ -63,7 +63,7 @@ def write_facade_package(
                 init_path.write_text("", encoding="utf-8")
         module_path = module_dir / f"{parts[-1]}.py"
         module_path.write_text(
-            _render_module(module_capabilities),
+            _render_module(module_capabilities, package_name=package_name),
             encoding="utf-8",
         )
 
@@ -110,14 +110,18 @@ def _render_package_init(root_exports: list[str], module_exports: list[str]) -> 
     return "\n".join(lines)
 
 
-def _render_module(capabilities: list[AnyCapabilitySpec]) -> str:
+def _render_module(
+    capabilities: list[AnyCapabilitySpec],
+    *,
+    package_name: str,
+) -> str:
     functions = "\n\n".join(_render_function(capability) for capability in capabilities)
     exports = [_function_name(capability) for capability in capabilities]
     return f'''"""Generated integration capability facade."""
 
 from __future__ import annotations
 
-from ._client import coerce_payload, invoke
+from {package_name}._client import coerce_payload, invoke
 
 __all__ = {exports!r}
 
