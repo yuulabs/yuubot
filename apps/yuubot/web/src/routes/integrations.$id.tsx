@@ -1,11 +1,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft, Github } from "lucide-react";
-import { useResourceList, useSetResourceEnabled } from "@/hooks/use-resources";
-import { githubOAuthStartUrl } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { ArrowLeft, ExternalLink, Github } from "lucide-react";
+import {
+  useResourceList,
+  useSetResourceEnabled,
+  useUpdateResource,
+} from "@/hooks/use-resources";
 import type { IntegrationResource } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 
 export const Route = createFileRoute("/integrations/$id")({
@@ -17,8 +22,24 @@ function IntegrationDetailPage() {
   const { data: integrations = [] } =
     useResourceList<IntegrationResource>("integrations");
   const toggleMutation = useSetResourceEnabled("integrations");
+  const updateMutation = useUpdateResource<IntegrationResource>("integrations");
+  const [pat, setPat] = useState("");
+  const [defaultOwner, setDefaultOwner] = useState("");
+  const [defaultRepo, setDefaultRepo] = useState("");
+  const [saveError, setSaveError] = useState("");
 
   const integration = integrations.find((i) => i.id === id);
+  const isGitHub = integration?.name === "github";
+
+  useEffect(() => {
+    if (!isGitHub) return;
+    setDefaultOwner(stringConfigValue(integration?.config?.default_owner));
+    setDefaultRepo(stringConfigValue(integration?.config?.default_repo));
+  }, [
+    integration?.config?.default_owner,
+    integration?.config?.default_repo,
+    isGitHub,
+  ]);
 
   if (!integration) {
     return (
@@ -37,7 +58,31 @@ function IntegrationDetailPage() {
       enabled: !integration.enabled,
     });
   };
-  const isGitHub = integration.name === "github";
+  const handleGitHubSave = () => {
+    const config = {
+      ...configWithoutAccessToken(integration.config),
+      default_owner: defaultOwner.trim(),
+      default_repo: defaultRepo.trim(),
+      ...(pat.trim() ? { access_token: pat.trim() } : {}),
+    };
+    setSaveError("");
+    updateMutation.mutate(
+      {
+        id: integration.id,
+        data: { ...integration, config },
+      },
+      {
+        onSuccess: (updated) => {
+          setPat("");
+          setDefaultOwner(stringConfigValue(updated.config?.default_owner));
+          setDefaultRepo(stringConfigValue(updated.config?.default_repo));
+        },
+        onError: (error) => {
+          setSaveError(error instanceof Error ? error.message : "Save failed");
+        },
+      },
+    );
+  };
   const isGitHubConnected = isGitHub && hasSecretValue(integration.config?.access_token);
 
   return (
@@ -97,22 +142,77 @@ function IntegrationDetailPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {isGitHub ? (
-              <div className="space-y-2">
+              <div className="space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span className="text-muted-foreground">GitHub authorization</span>
                   <Badge variant={isGitHubConnected ? "default" : "secondary"}>
                     {isGitHubConnected ? "connected" : "not connected"}
                   </Badge>
                 </div>
-                <Button
-                  className="w-full"
-                  onClick={() => {
-                    window.location.assign(githubOAuthStartUrl(integration.id));
-                  }}
-                >
-                  <Github className="mr-2 size-4" />
-                  Connect GitHub
-                </Button>
+                <div className="space-y-3 rounded-md border p-3 text-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium">Personal access token</p>
+                      <p className="mt-1 text-muted-foreground">
+                        Create a fine-grained token for the repositories yuubot
+                        should access. Grant repository Issues read/write and
+                        Contents read permissions.
+                      </p>
+                    </div>
+                    <Button variant="ghost" size="icon-sm" asChild>
+                      <a
+                        href="https://github.com/settings/personal-access-tokens/new"
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="Create GitHub personal access token"
+                      >
+                        <ExternalLink className="size-4" />
+                      </a>
+                    </Button>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium">Token</label>
+                    <Input
+                      type="password"
+                      value={pat}
+                      onChange={(event) => setPat(event.target.value)}
+                      placeholder={
+                        isGitHubConnected
+                          ? "Leave blank to keep the current token"
+                          : "Paste GitHub fine-grained PAT"
+                      }
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium">Default owner</label>
+                      <Input
+                        value={defaultOwner}
+                        onChange={(event) => setDefaultOwner(event.target.value)}
+                        placeholder="Tomorrowdawn"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium">Default repo</label>
+                      <Input
+                        value={defaultRepo}
+                        onChange={(event) => setDefaultRepo(event.target.value)}
+                        placeholder="opendawn"
+                      />
+                    </div>
+                  </div>
+                  {saveError ? (
+                    <p className="text-xs text-destructive">{saveError}</p>
+                  ) : null}
+                  <Button
+                    className="w-full"
+                    onClick={handleGitHubSave}
+                    disabled={updateMutation.isPending}
+                  >
+                    <Github className="mr-2 size-4" />
+                    {updateMutation.isPending ? "Saving..." : "Save GitHub token"}
+                  </Button>
+                </div>
               </div>
             ) : null}
             <Table>
@@ -150,4 +250,15 @@ function hasSecretValue(value: unknown): boolean {
   if (value === "***") return true;
   if (value && typeof value === "object") return true;
   return typeof value === "string" && value.length > 0;
+}
+
+function stringConfigValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function configWithoutAccessToken(
+  config: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const { access_token: _accessToken, ...rest } = config ?? {};
+  return rest;
 }

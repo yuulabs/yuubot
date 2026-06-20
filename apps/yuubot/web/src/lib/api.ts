@@ -132,10 +132,6 @@ export async function getLiveCapabilities(): Promise<LiveCapability[]> {
   return res.capabilities;
 }
 
-export function githubOAuthStartUrl(integrationId: string): string {
-  return `${BASE}/integrations/${encodeURIComponent(integrationId)}/github/oauth/start`;
-}
-
 // ---------------------------------------------------------------------------
 // Admin Conversation API
 // ---------------------------------------------------------------------------

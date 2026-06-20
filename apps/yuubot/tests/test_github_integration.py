@@ -76,8 +76,6 @@ async def test_factory_creates_client_with_revealed_secret(
         id="github-main",
         name="github",
         config={
-            "client_id": "client-id",
-            "client_secret": Secret("client-secret"),
             "access_token": Secret("test-token"),
             "default_owner": "yuulabs",
             "default_repo": "yuubot",
@@ -107,7 +105,7 @@ async def test_factory_rejects_unconnected_integration(tmp_path: Path) -> None:
     record = IntegrationRecord(
         id="github-main",
         name="github",
-        config={"client_id": "client-id", "client_secret": Secret("client-secret")},
+        config={},
     )
 
     with pytest.raises(ValueError, match="not connected"):

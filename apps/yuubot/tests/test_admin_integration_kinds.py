@@ -38,7 +38,6 @@ from yuubot.resources.root import Resources
 from yuubot.resources.store.models import IntegrationORM, LLMBackendORM
 import yuubot.runtime.admin.app as admin_module
 from yuubot.runtime.admin import DaemonClient, build_admin_asgi_app
-from yuubot.core.integrations.impls.github.models import GitHubOAuthTokenResponse
 
 
 @pytest.fixture
@@ -93,11 +92,11 @@ async def test_integration_kinds_endpoint_exposes_github_schema(admin_app) -> No
     github = by_name["github"]
     schema = github["config_schema"]
     assert schema["type"] == "object"
-    assert "client_id" in schema["properties"]
-    assert schema["properties"]["client_secret"]["format"] == "secret"
     assert schema["properties"]["access_token"]["format"] == "secret"
-    assert schema["properties"]["oauth_state"]["format"] == "secret"
-    assert "oauth_scope" in schema["properties"]
+    assert "client_id" not in schema["properties"]
+    assert "client_secret" not in schema["properties"]
+    assert "oauth_state" not in schema["properties"]
+    assert "oauth_scope" not in schema["properties"]
     assert "default_owner" in schema["properties"]
     assert "default_repo" in schema["properties"]
 
@@ -153,166 +152,6 @@ async def test_secret_config_schema_and_reveal_endpoint(
     assert schema["properties"]["bot_token"]["format"] == "secret"
     assert revealed.status_code == 200
     assert revealed.json()["data"]["value"] == "plain-token"
-
-
-async def test_github_oauth_start_redirects_and_stores_state(
-    resources: Resources,
-    yuubot_config: BootstrapConfig,
-) -> None:
-    app = build_admin_asgi_app(
-        config=yuubot_config.admin,
-        resources=resources,
-        daemon=DaemonClient(base_url="http://daemon"),
-        integration_factories=default_integration_factories(),
-    )
-    await resources.repository.insert(
-        IntegrationORM,
-        IntegrationRecord(
-            id="github-main",
-            name="github",
-            config={
-                "client_id": "client-id",
-                "client_secret": Secret("client-secret"),
-                "oauth_authorize_url": "https://github.test/login/oauth/authorize",
-            },
-        ),
-    )
-
-    async with _client(app) as client:
-        response = await client.get(
-            "/api/integrations/github-main/github/oauth/start",
-            follow_redirects=False,
-        )
-
-    assert response.status_code == 302
-    location = response.headers["location"]
-    assert location.startswith("https://github.test/login/oauth/authorize?")
-    assert "client_id=client-id" in location
-    assert "scope=repo" in location
-    loaded = await resources.repository.get(IntegrationORM, "github-main")
-    assert loaded is not None
-    state = loaded.config["oauth_state"]
-    assert isinstance(state, Secret)
-    assert state.reveal()
-    assert f"state={state.reveal()}" in location
-
-
-async def test_github_oauth_callback_exchanges_code_and_stores_access_token(
-    resources: Resources,
-    yuubot_config: BootstrapConfig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeOAuthClient:
-        async def exchange_code(
-            self,
-            *,
-            client_id: str,
-            client_secret: str,
-            code: str,
-            redirect_uri: str,
-        ) -> GitHubOAuthTokenResponse:
-            captured.update(
-                {
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "code": code,
-                    "redirect_uri": redirect_uri,
-                }
-            )
-            return GitHubOAuthTokenResponse(access_token="oauth-token")
-
-        async def close(self) -> None:
-            captured["closed"] = True
-
-    captured: dict[str, object] = {}
-
-    def fake_oauth_client(token_url: str) -> FakeOAuthClient:
-        captured["token_url"] = token_url
-        return FakeOAuthClient()
-
-    monkeypatch.setattr(
-        admin_module,
-        "_create_github_oauth_client",
-        fake_oauth_client,
-    )
-    app = build_admin_asgi_app(
-        config=yuubot_config.admin,
-        resources=resources,
-        daemon=DaemonClient(base_url="http://daemon"),
-        integration_factories=default_integration_factories(),
-    )
-    await resources.repository.insert(
-        IntegrationORM,
-        IntegrationRecord(
-            id="github-main",
-            name="github",
-            config={
-                "client_id": "client-id",
-                "client_secret": Secret("client-secret"),
-                "oauth_state": Secret("state-123"),
-                "oauth_access_token_url": "https://github.test/login/oauth/access_token",
-            },
-        ),
-    )
-
-    async with _client(app) as client:
-        response = await client.get(
-            "/api/integrations/github-main/github/oauth/callback"
-            "?code=code-123&state=state-123",
-            follow_redirects=False,
-        )
-
-    assert response.status_code == 302
-    assert response.headers["location"] == "/integrations/github-main?github=connected"
-    assert captured["token_url"] == "https://github.test/login/oauth/access_token"
-    assert captured["client_id"] == "client-id"
-    assert captured["client_secret"] == "client-secret"
-    assert captured["code"] == "code-123"
-    assert captured["redirect_uri"] == (
-        "http://testserver/api/integrations/github-main/github/oauth/callback"
-    )
-    assert captured["closed"] is True
-    loaded = await resources.repository.get(IntegrationORM, "github-main")
-    assert loaded is not None
-    access_token = loaded.config["access_token"]
-    oauth_state = loaded.config["oauth_state"]
-    assert isinstance(access_token, Secret)
-    assert access_token.reveal() == "oauth-token"
-    assert isinstance(oauth_state, Secret)
-    assert oauth_state.reveal() == ""
-
-
-async def test_github_oauth_callback_rejects_state_mismatch(
-    resources: Resources,
-    yuubot_config: BootstrapConfig,
-) -> None:
-    app = build_admin_asgi_app(
-        config=yuubot_config.admin,
-        resources=resources,
-        daemon=DaemonClient(base_url="http://daemon"),
-        integration_factories=default_integration_factories(),
-    )
-    await resources.repository.insert(
-        IntegrationORM,
-        IntegrationRecord(
-            id="github-main",
-            name="github",
-            config={
-                "client_id": "client-id",
-                "client_secret": Secret("client-secret"),
-                "oauth_state": Secret("expected"),
-            },
-        ),
-    )
-
-    async with _client(app) as client:
-        response = await client.get(
-            "/api/integrations/github-main/github/oauth/callback"
-            "?code=code-123&state=wrong",
-        )
-
-    assert response.status_code == 400
-    assert response.json()["code"] == "validation_error"
 
 
 async def test_admin_resource_proxy_injects_daemon_secret(
