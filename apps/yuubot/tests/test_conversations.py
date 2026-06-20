@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import yuullm
 from yuuagents.core.eventbus import RuntimeEvent
@@ -51,14 +51,17 @@ async def test_handle_tool_result_persists_message() -> None:
     assert call_kwargs["content"][0]["content"] == "echoed: hello"
     assert call_kwargs["content"][0]["status"] == "completed"
 
-    # Verify SSE event
     assert result is not None
-    assert result.event_type == "tool_result"
-    assert result.content["tool_call_id"] == "call_abc"
-    assert result.content["tool_name"] == "echo.echo"
-    assert result.content["result"] == "echoed: hello"
-    assert result.content["status"] == "completed"
-    assert result.conversation_id == "conv-1"
+    assert [event.event_type for event in result] == [
+        "tool_result_committed",
+        "message_committed",
+    ]
+    payload = result[0].as_dict()
+    assert payload["tool_call_id"] == "call_abc"
+    assert payload["tool_name"] == "echo.echo"
+    assert payload["content"] == "echoed: hello"
+    assert payload["status"] == "completed"
+    assert payload["conversation_id"] == "conv-1"
 
 
 async def test_handle_tool_result_failed_status() -> None:
@@ -96,8 +99,8 @@ async def test_handle_tool_result_failed_status() -> None:
     assert call_kwargs["content"][0]["status"] == "failed"
 
     assert result is not None
-    assert result.event_type == "tool_result"
-    assert result.content["status"] == "failed"
+    assert result[0].event_type == "tool_result_committed"
+    assert result[0].as_dict()["status"] == "failed"
 
 
 async def test_send_message_returns_before_turn_completes() -> None:
@@ -117,7 +120,6 @@ async def test_send_message_returns_before_turn_completes() -> None:
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
-    manager._require_conversation = AsyncMock(return_value=MagicMock())
     runtime = MagicMock()
     runtime.ensure_conversation_agent = AsyncMock(return_value=MagicMock(id="agent-1"))
 
@@ -131,13 +133,20 @@ async def test_send_message_returns_before_turn_completes() -> None:
         await release.wait()
 
     runtime.handle_conversation_message = handle_conversation_message
-    manager._runtime_for = AsyncMock(return_value=runtime)
 
-    result = await manager.send_message(
-        conversation_id="conversation-1",
-        content=[{"type": "text", "text": "hello"}],
-        message_id="message-1",
-    )
+    with (
+        patch.object(
+            manager,
+            "_require_conversation",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch.object(manager, "_runtime_for", new=AsyncMock(return_value=runtime)),
+    ):
+        result = await manager.send_message(
+            conversation_id="conversation-1",
+            content=[{"type": "text", "text": "hello"}],
+            message_id="message-1",
+        )
 
     assert result is record
     assert len(manager._turn_tasks) == 1

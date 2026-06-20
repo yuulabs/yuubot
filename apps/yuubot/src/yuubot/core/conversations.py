@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -21,16 +21,15 @@ from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
 from yuubot.core.assembly import YuuAgentsActorRuntime, start_yuuagents_actor
 from yuubot.core.bindings import AgentBinding, conversation_agent_binding
+from yuubot.core.conversation_events import (
+    ConversationFrontendEvent,
+    ConversationSSEProjector,
+    render_tool_output_final_text,
+)
 from yuubot.core.conversation_utils import (
-    _agent_event,
-    _chunk_content,
-    _chunk_event_type,
     _content_to_builtins,
     _decode_content,
-    _entity_content,
-    _entity_end_event_type,
     _event_metadata,
-    _json_safe_dict,
 )
 from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.resources.records import (
@@ -94,26 +93,6 @@ class ConversationBindingConflict(Exception):
             f"conversation {self.conversation.conversation_id!r} already has "
             "messages and is bound to different actor defaults"
         )
-
-
-@dataclass(frozen=True)
-class AgentEvent:
-    conversation_id: str
-    agent_id: str
-    agent_name: str
-    event_type: str
-    content: dict[str, object]
-    timestamp: float
-
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "conversation_id": self.conversation_id,
-            "agent_id": self.agent_id,
-            "agent_name": self.agent_name,
-            "event_type": self.event_type,
-            "content": self.content,
-            "timestamp": self.timestamp,
-        }
 
 
 @dataclass(frozen=True)
@@ -446,24 +425,12 @@ class ConversationStore:
         ]
 
 
-# ---------------------------------------------------------------------------
-# Event dispatch table for _record_event
-# ---------------------------------------------------------------------------
-
-_EventRecordHandler = Callable[
-    ["ConversationManager", str, RuntimeEvent],
-    "asyncio.Future[AgentEvent | None]",
-]
-
-_EVENT_DISPATCH: Mapping[str, str] = {
-    "output.entity": "_handle_output_entity",
-    "output.chunk": "_handle_output_chunk",
-    "output.entity_end": "_handle_output_entity_end",
-    "llm.finished": "_handle_llm_finished",
-    "agent.turn.error": "_handle_error",
-    "budget.exceeded": "_handle_error",
-    "tool.result_appended": "_handle_tool_result",
-    "agent.turn_completed": "_handle_turn_completed",
+_PROJECTED_RUNTIME_EVENTS = {
+    "output.chunk",
+    "agent.turn.error",
+    "agent.turn_started",
+    "budget.exceeded",
+    "agent.turn_completed",
 }
 
 
@@ -481,11 +448,15 @@ class ConversationManager:
     _runtimes: dict[str, YuuAgentsActorRuntime] = field(default_factory=dict, init=False)
     _agent_to_conversation: dict[str, str] = field(default_factory=dict, init=False)
     _observed_runtimes: dict[str, int] = field(default_factory=dict, init=False)
-    _subscribers: dict[str, set[asyncio.Queue[AgentEvent]]] = field(
+    _subscribers: dict[str, set[asyncio.Queue[ConversationFrontendEvent]]] = field(
         default_factory=dict,
         init=False,
     )
     _turn_tasks: set[asyncio.Task[None]] = field(default_factory=set, init=False)
+    _sse_projector: ConversationSSEProjector = field(
+        default_factory=ConversationSSEProjector,
+        init=False,
+    )
 
     async def create_conversation(
         self,
@@ -628,22 +599,26 @@ class ConversationManager:
                 history,
             )
         except Exception as exc:
-            event = AgentEvent(
-                conversation_id=conversation_id,
+            event = RuntimeEvent(
+                name="agent.turn.error",
                 agent_id="",
                 agent_name="",
-                event_type="error",
-                content={"error": str(exc)},
                 timestamp=time.time(),
+                data={"error": str(exc)},
+            )
+            frontend_event = self._sse_projector.error(
+                conversation_id,
+                event,
+                str(exc),
             )
             for queue in tuple(self._subscribers.get(conversation_id, ())):
-                await queue.put(event)
+                await queue.put(frontend_event)
 
     async def subscribe_events(
         self,
         conversation_id: str,
-    ) -> AsyncIterator[AgentEvent]:
-        queue: asyncio.Queue[AgentEvent] = asyncio.Queue()
+    ) -> AsyncIterator[ConversationFrontendEvent]:
+        queue: asyncio.Queue[ConversationFrontendEvent] = asyncio.Queue()
         subscribers = self._subscribers.setdefault(conversation_id, set())
         subscribers.add(queue)
         try:
@@ -752,11 +727,12 @@ class ConversationManager:
         conversation_id = self._conversation_id_for_event(event)
         if conversation_id is None:
             return
-        agent_event = await self._record_event(conversation_id, event)
-        if agent_event is None:
+        frontend_events = await self._record_event(conversation_id, event)
+        if not frontend_events:
             return
         for queue in tuple(self._subscribers.get(conversation_id, ())):
-            await queue.put(agent_event)
+            for frontend_event in frontend_events:
+                await queue.put(frontend_event)
 
     def _conversation_id_for_event(self, event: RuntimeEvent) -> str | None:
         if event.agent_id in self._agent_to_conversation:
@@ -772,113 +748,59 @@ class ConversationManager:
         self,
         conversation_id: str,
         event: RuntimeEvent,
-    ) -> AgentEvent | None:
-        method_name = _EVENT_DISPATCH.get(event.name)
-        if method_name is None:
-            return None
-        handler = getattr(self, method_name)
-        return await handler(conversation_id, event)
-
-    # -- Event handler methods (called via dispatch table) --
-
-    async def _handle_output_entity(
-        self,
-        conversation_id: str,
-        event: RuntimeEvent,
-    ) -> AgentEvent:
-        return _agent_event(conversation_id, event, "entity", _entity_content(event))
-
-    async def _handle_output_chunk(
-        self,
-        conversation_id: str,
-        event: RuntimeEvent,
-    ) -> AgentEvent:
-        return _agent_event(
-            conversation_id,
-            event,
-            _chunk_event_type(event),
-            _chunk_content(event),
-        )
-
-    async def _handle_output_entity_end(
-        self,
-        conversation_id: str,
-        event: RuntimeEvent,
-    ) -> AgentEvent:
-        return _agent_event(
-            conversation_id,
-            event,
-            _entity_end_event_type(event),
-            _entity_content(event),
-        )
+    ) -> list[ConversationFrontendEvent]:
+        if event.name in _PROJECTED_RUNTIME_EVENTS:
+            return self._sse_projector.project_runtime_event(conversation_id, event)
+        if event.name == "llm.finished":
+            result = await self._handle_llm_finished(conversation_id, event)
+            return [] if result is None else [result]
+        if event.name == "tool.result_appended":
+            return await self._handle_tool_result(conversation_id, event)
+        return []
 
     async def _handle_llm_finished(
         self,
         conversation_id: str,
         event: RuntimeEvent,
-    ) -> AgentEvent | None:
+    ) -> ConversationFrontendEvent | None:
         finished = LLMFinishedData.from_event(event)
         message = finished.message
         if isinstance(message, yuullm.Message):
             content = _content_to_builtins(message.content)
+            message_id = uuid.uuid4().hex
             await self.store.append_message(
                 conversation_id=conversation_id,
-                message_id=uuid.uuid4().hex,
+                message_id=message_id,
                 role=message.role,
                 content=content,
                 metadata=_event_metadata(event),
                 timestamp=int(event.timestamp),
             )
-            return _agent_event(
+            return self._sse_projector.message_committed(
                 conversation_id,
                 event,
-                "message",
-                {"role": message.role, "content": content},
+                turn_id=_turn_id(event),
+                message_id=message_id,
+                role=message.role,
+                content=content,
             )
         return None
-
-    async def _handle_error(
-        self,
-        conversation_id: str,
-        event: RuntimeEvent,
-    ) -> AgentEvent:
-        return _agent_event(
-            conversation_id,
-            event,
-            "error",
-            _json_safe_dict(event.data),
-        )
-
-    async def _handle_turn_completed(
-        self,
-        conversation_id: str,
-        event: RuntimeEvent,
-    ) -> AgentEvent:
-        return _agent_event(
-            conversation_id,
-            event,
-            "turn_completed",
-            {
-                "agent_id": event.agent_id or "",
-                "agent_name": event.agent_name or "",
-            },
-        )
 
     async def _handle_tool_result(
         self,
         conversation_id: str,
         event: RuntimeEvent,
-    ) -> AgentEvent | None:
+    ) -> list[ConversationFrontendEvent]:
         data = event.data
         tool_call_id = str(data.get("tool_call_id") or "")
-        result = str(data.get("result") or "")
+        result = render_tool_output_final_text(str(data.get("result") or ""))
         tool_name = str(data.get("tool_name") or "")
         status = str(data.get("status") or "completed")
+        message_id = uuid.uuid4().hex
 
-        # Persist as role="tool" message
         await self.store.append_message(
             conversation_id=conversation_id,
-            message_id=uuid.uuid4().hex,
+            message_id=message_id,
             role="tool",
             content=[{
                 "type": "tool_result",
@@ -891,23 +813,34 @@ class ConversationManager:
             timestamp=int(event.timestamp),
         )
 
-        # SSE forward to frontend — wrap result in standard block shape
-        # so the frontend's liveBlocksFromEvent can process it uniformly
-        return _agent_event(
-            conversation_id,
-            event,
-            "tool_result",
-            {
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "result": result,
-                "status": status,
-                "blocks": [{
+        return [
+            self._sse_projector.tool_result_committed(
+                conversation_id,
+                event,
+                turn_id=_turn_id(event),
+                message_id=message_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                status=status,
+                content=result,
+            ),
+            self._sse_projector.message_committed(
+                conversation_id,
+                event,
+                turn_id=_turn_id(event),
+                message_id=message_id,
+                role="tool",
+                content=[{
                     "type": "tool_result",
                     "tool_call_id": tool_call_id,
                     "tool_name": tool_name,
                     "content": result,
                     "status": status,
                 }],
-            },
-        )
+            ),
+        ]
+
+
+def _turn_id(event: RuntimeEvent) -> str:
+    data = event.data
+    return str(data.get("turn_id") or data.get("task_id") or event.agent_id or "")

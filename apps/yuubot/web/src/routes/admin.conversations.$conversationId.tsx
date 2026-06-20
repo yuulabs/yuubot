@@ -319,7 +319,9 @@ function AdminConversationPage() {
 
     const pending = new Promise<void>((resolve, reject) => {
       const appendAssistantEvent = (data: ConversationSSEEvent) => {
-        const turnKey = activeTurnKeyRef.current || `event-${data.agent_id}-${Math.floor(data.timestamp * 1000)}`;
+        const turnId = "turn_id" in data ? data.turn_id : "";
+        const turnKey = activeTurnKeyRef.current || `event-${turnId || data.sequence}`;
+        activeTurnKeyRef.current = turnKey;
         const itemKey = currentAssistantItemKeyRef.current || liveItemKey(
           turnKey,
           "assistant",
@@ -354,7 +356,7 @@ function AdminConversationPage() {
 
       const handleFinalEvent = (e: MessageEvent) => {
         const data = JSON.parse(e.data) as ConversationSSEEvent;
-        if (data.content.role === "assistant" && !eventHasToolCall(data)) {
+        if (data.event_type === "message_committed" && data.role === "assistant" && !eventHasToolCall(data)) {
           currentAssistantItemKeyRef.current = "";
         }
       };
@@ -396,12 +398,11 @@ function AdminConversationPage() {
         }
       };
 
-      es.addEventListener("thinking", handleAssistantStreamEvent);
-      es.addEventListener("text", handleAssistantStreamEvent);
-      es.addEventListener("output", handleAssistantStreamEvent);
-      es.addEventListener("tool_call", handleAssistantStreamEvent);
-      es.addEventListener("tool_result", handleAssistantStreamEvent);
-      es.addEventListener("message", handleFinalEvent);
+      es.addEventListener("assistant_delta", handleAssistantStreamEvent);
+      es.addEventListener("tool_call_started", handleAssistantStreamEvent);
+      es.addEventListener("tool_output_snapshot", handleAssistantStreamEvent);
+      es.addEventListener("tool_result_committed", handleAssistantStreamEvent);
+      es.addEventListener("message_committed", handleFinalEvent);
       es.addEventListener("turn_completed", handleTurnCompleted);
       es.addEventListener("error", handleErrorEvent);
     });

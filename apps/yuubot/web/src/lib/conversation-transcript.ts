@@ -146,7 +146,7 @@ export function renderBlocksFromEvent(
   nextBlockIndex: () => number,
 ): RenderBlock[] {
   const fallbackType = eventFallbackType(data);
-  const blocks = data.content.blocks as Array<unknown> | undefined;
+  const blocks = eventBlocks(data);
   return (blocks ?? []).flatMap<RenderBlock>((block) => {
     const source = rawBlockSource(block);
     const rawType = typeof source.type === "string" ? source.type : fallbackType;
@@ -191,23 +191,77 @@ function eventBlockType(
 }
 
 function eventToolCallId(data: ConversationSSEEvent): string | undefined {
-  return typeof data.content.tool_call_id === "string" ? data.content.tool_call_id : undefined;
+  switch (data.event_type) {
+    case "tool_call_started":
+    case "tool_output_snapshot":
+    case "tool_result_committed":
+      return data.tool_call_id;
+    default:
+      return undefined;
+  }
 }
 
 function eventToolName(data: ConversationSSEEvent): string | undefined {
-  return typeof data.content.tool_name === "string" ? data.content.tool_name : undefined;
+  switch (data.event_type) {
+    case "tool_call_started":
+    case "tool_output_snapshot":
+    case "tool_result_committed":
+      return data.tool_name;
+    default:
+      return undefined;
+  }
 }
 
 function eventToolStatus(data: ConversationSSEEvent): string | undefined {
-  return typeof data.content.status === "string" ? data.content.status : undefined;
+  if (data.event_type === "tool_result_committed") {
+    return data.status;
+  }
+  if (data.event_type === "tool_output_snapshot") {
+    return data.complete ? "completed" : "running";
+  }
+  return undefined;
 }
 
 export function eventFallbackType(data: ConversationSSEEvent): Exclude<ConversationBlockType, "raw"> {
-  if (data.event_type === "thinking") return "thinking";
-  if (data.event_type === "tool_call") return "tool_call";
-  if (data.event_type === "tool_result") return "tool_result";
+  if (data.event_type === "tool_call_started") return "tool_call";
+  if (data.event_type === "tool_output_snapshot") return "tool_result";
+  if (data.event_type === "tool_result_committed") return "tool_result";
   if (data.event_type === "error") return "error";
   return "text";
+}
+
+function eventBlocks(data: ConversationSSEEvent): unknown[] {
+  switch (data.event_type) {
+    case "assistant_delta":
+      return data.blocks;
+    case "tool_call_started":
+      return [{
+        type: "tool_call",
+        id: data.tool_call_id,
+        name: data.tool_name,
+        arguments: data.arguments,
+      }];
+    case "tool_output_snapshot":
+      return [{
+        type: "tool_result",
+        tool_call_id: data.tool_call_id,
+        tool_name: data.tool_name,
+        content: data.content,
+        status: data.complete ? "completed" : "running",
+      }];
+    case "tool_result_committed":
+      return [{
+        type: "tool_result",
+        tool_call_id: data.tool_call_id,
+        tool_name: data.tool_name,
+        content: data.content,
+        status: data.status,
+      }];
+    case "error":
+      return [{ type: "error", text: data.error }];
+    default:
+      return [];
+  }
 }
 
 export function liveItemKey(turnKey: string, kind: string, index: number): string {
@@ -215,7 +269,13 @@ export function liveItemKey(turnKey: string, kind: string, index: number): strin
 }
 
 export function eventHasToolCall(data: ConversationSSEEvent): boolean {
-  const content = data.content.content;
+  if (data.event_type === "tool_call_started") {
+    return true;
+  }
+  if (data.event_type !== "message_committed") {
+    return false;
+  }
+  const content = data.content;
   if (!Array.isArray(content)) {
     return false;
   }
