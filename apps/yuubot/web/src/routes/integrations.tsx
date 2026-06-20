@@ -1,4 +1,10 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Link,
+  Outlet,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import {
   useCreateResource,
@@ -16,6 +22,9 @@ export const Route = createFileRoute("/integrations")({
 
 function IntegrationsPage() {
   const navigate = useNavigate();
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  });
   const { data: kinds = [], isLoading: kindsLoading } = useIntegrationKinds();
   const { data: integrations = [], isLoading: intLoading } =
     useResourceList<IntegrationResource>("integrations");
@@ -23,6 +32,10 @@ function IntegrationsPage() {
 
   const isLoading = kindsLoading || intLoading;
   const createError = createMutation.error;
+
+  if (pathname !== "/integrations") {
+    return <Outlet />;
+  }
 
   if (isLoading) return <PageShell>Loading integrations...</PageShell>;
 
