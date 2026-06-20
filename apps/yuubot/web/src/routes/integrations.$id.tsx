@@ -81,10 +81,11 @@ function IntegrationDetailPage() {
       ...(pat.trim() ? { access_token: pat.trim() } : {}),
     };
     setSaveError("");
+    const patch: Pick<IntegrationResource, "config"> = { config };
     updateMutation.mutate(
       {
         id: integration.id,
-        data: { ...integration, config },
+        data: patch,
       },
       {
         onSuccess: (updated) => {
