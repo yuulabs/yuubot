@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from yuubot.bootstrap.config import AdminConfig
 from yuubot.runtime.admin.handlers._daemon import _request_daemon
+from yuubot.runtime.admin.handlers._github_oauth import (
+    _create_github_oauth_client,
+    make_github_oauth_callback_handler,
+    make_github_oauth_start_handler,
+)
 from yuubot.runtime.admin.handlers._meta import (
     make_admin_health_handler,
     make_integration_kinds_handler,
@@ -38,8 +43,11 @@ __all__ = [
     "DaemonClient",
     "DaemonResponse",
     "_create_provider_model_client",
+    "_create_github_oauth_client",
     "_request_daemon",
     "make_admin_health_handler",
+    "make_github_oauth_callback_handler",
+    "make_github_oauth_start_handler",
     "make_install_plugin_handler",
     "make_integration_kinds_handler",
     "make_list_plugins_handler",

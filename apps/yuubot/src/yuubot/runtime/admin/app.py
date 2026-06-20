@@ -22,11 +22,14 @@ from yuubot.core.tools import ToolRegistry, default_tool_factories
 from yuubot.runtime.admin.handlers import (
     DaemonClient,
     DaemonResponse,
+    _create_github_oauth_client,
     _create_provider_model_client,
     _request_daemon,
     make_admin_health_handler,
     make_install_plugin_handler,
     make_integration_kinds_handler,
+    make_github_oauth_callback_handler,
+    make_github_oauth_start_handler,
     make_list_plugins_handler,
     make_live_capabilities_handler,
     make_provider_models_handler,
@@ -197,6 +200,20 @@ def build_admin_asgi_app(
                 integration_factories=integration_factories,
             ),
             methods=("GET",),
+        ),
+        Route(
+            "/api/integrations/{id}/github/oauth/start",
+            make_github_oauth_start_handler(resources=resources),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/integrations/{id}/github/oauth/callback",
+            make_github_oauth_callback_handler(
+                resources=resources,
+                _create_oauth_client_fn=_create_github_oauth_client,
+            ),
+            methods=("GET",),
+            name="github_oauth_callback",
         ),
         Route(
             "/api/providers/{id}/models",

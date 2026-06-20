@@ -76,7 +76,9 @@ async def test_factory_creates_client_with_revealed_secret(
         id="github-main",
         name="github",
         config={
-            "token": Secret("test-token"),
+            "client_id": "client-id",
+            "client_secret": Secret("client-secret"),
+            "access_token": Secret("test-token"),
             "default_owner": "yuulabs",
             "default_repo": "yuubot",
             "base_url": "https://api.github.test/",
@@ -98,6 +100,22 @@ async def test_factory_creates_client_with_revealed_secret(
         instance.client.http.headers["X-GitHub-Api-Version"]
         == "2022-11-28"
     )
+
+
+async def test_factory_rejects_unconnected_integration(tmp_path: Path) -> None:
+    factory = GitHubIntegrationFactory()
+    record = IntegrationRecord(
+        id="github-main",
+        name="github",
+        config={"client_id": "client-id", "client_secret": Secret("client-secret")},
+    )
+
+    with pytest.raises(ValueError, match="not connected"):
+        await factory.create(
+            record,
+            gateway=Gateway(RouteBindings(rules=[])),
+            storage=LocalIntegrationStorage(data_dir=tmp_path),
+        )
 
 
 async def test_integration_invokes_issue_paths_with_defaults() -> None:

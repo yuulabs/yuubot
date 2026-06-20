@@ -88,7 +88,7 @@ async def test_existing_instance_capabilities_includes_github(
             id="github-main",
             name="github",
             config={
-                "token": Secret("test-token"),
+                "access_token": Secret("test-token"),
                 "default_owner": "yuulabs",
                 "default_repo": "yuubot",
             },
@@ -353,7 +353,7 @@ async def test_live_capabilities_endpoint_returns_github_capabilities(
             id="github-main",
             name="github",
             config={
-                "token": Secret("test-token"),
+                "access_token": Secret("test-token"),
                 "default_owner": "yuulabs",
                 "default_repo": "yuubot",
             },

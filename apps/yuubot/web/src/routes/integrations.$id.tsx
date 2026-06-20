@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Github } from "lucide-react";
 import { useResourceList, useSetResourceEnabled } from "@/hooks/use-resources";
+import { githubOAuthStartUrl } from "@/lib/api";
 import type { IntegrationResource } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,8 @@ function IntegrationDetailPage() {
       enabled: !integration.enabled,
     });
   };
+  const isGitHub = integration.name === "github";
+  const isGitHubConnected = isGitHub && hasSecretValue(integration.config?.access_token);
 
   return (
     <div className="space-y-6 p-6">
@@ -93,6 +96,25 @@ function IntegrationDetailPage() {
             <CardTitle>Actions</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {isGitHub ? (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="text-muted-foreground">GitHub authorization</span>
+                  <Badge variant={isGitHubConnected ? "default" : "secondary"}>
+                    {isGitHubConnected ? "connected" : "not connected"}
+                  </Badge>
+                </div>
+                <Button
+                  className="w-full"
+                  onClick={() => {
+                    window.location.assign(githubOAuthStartUrl(integration.id));
+                  }}
+                >
+                  <Github className="mr-2 size-4" />
+                  Connect GitHub
+                </Button>
+              </div>
+            ) : null}
             <Table>
               <TableBody>
                 <TableRow>
@@ -122,4 +144,10 @@ function IntegrationDetailPage() {
       </div>
     </div>
   );
+}
+
+function hasSecretValue(value: unknown): boolean {
+  if (value === "***") return true;
+  if (value && typeof value === "object") return true;
+  return typeof value === "string" && value.length > 0;
 }

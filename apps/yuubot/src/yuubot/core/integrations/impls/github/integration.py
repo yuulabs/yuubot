@@ -141,9 +141,12 @@ class GitHubIntegrationFactory:
         _ = gateway
         _ = storage
         config = record.typed_config(GitHubConfig)
+        access_token = config.access_token.reveal()
+        if not access_token:
+            raise ValueError("GitHub integration is not connected")
         return GitHubIntegration(
             client=GitHubClient.from_config(
-                token=config.token.reveal(),
+                token=access_token,
                 base_url=config.base_url,
             ),
             default_owner=config.default_owner,
