@@ -138,7 +138,12 @@ def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
     llm_backend = make_llm_backend_record("llm-1")
     capability_set = make_capability_set_record(
         "actor-1",
-        integration_capability_ids=("builtin.read", "builtin.edit", "builtin.write"),
+        integration_capability_ids=(
+            "builtin.read",
+            "builtin.edit",
+            "builtin.write",
+            "builtin.bash",
+        ),
     )
     actor = make_actor_record(
         "actor-1",
@@ -159,6 +164,7 @@ def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
     assert definition.tools["read"]["workspace_root"] == str(tmp_path / "workspace")
     assert definition.tools["edit"]["workspace_root"] == str(tmp_path / "workspace")
     assert definition.tools["write"]["workspace_root"] == str(tmp_path / "workspace")
+    assert definition.tools["bash"]["workspace_root"] == str(tmp_path / "workspace")
 
 
 def test_execute_python_description_can_import_github_facade(tmp_path: Path) -> None:

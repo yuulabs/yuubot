@@ -42,6 +42,13 @@ BUILTIN_CAPABILITIES: tuple[BuiltinCapability, ...] = (
         namespace="builtin",
         tool_name="write",
     ),
+    BuiltinCapability(
+        capability_id="builtin.bash",
+        capability_name="Run Bash Command",
+        description="Run one initialized bash command under the actor workspace.",
+        namespace="builtin",
+        tool_name="bash",
+    ),
 )
 
 BUILTIN_CAPABILITY_BY_ID = {

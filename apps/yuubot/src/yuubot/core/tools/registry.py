@@ -32,9 +32,7 @@ class ToolRegistry:
         Duplicate registration is a hard error — tool names must be unique.
         """
         if factory.name in self._factories:
-            raise ValueError(
-                f"Tool factory {factory.name!r} is already registered"
-            )
+            raise ValueError(f"Tool factory {factory.name!r} is already registered")
         self._factories[factory.name] = factory
 
     def get(self, name: str) -> ToolFactory:
@@ -74,10 +72,12 @@ def default_tool_factories() -> ToolRegistry:
         ReadToolFactory,
         WriteToolFactory,
     )
+    from yuubot.core.tools.impls.bash import BashToolFactory
     from yuubot.core.tools.impls.execute_python import ExecutePythonToolFactory
 
     registry = ToolRegistry()
     registry.register(ExecutePythonToolFactory())
+    registry.register(BashToolFactory())
     registry.register(ReadToolFactory())
     registry.register(EditToolFactory())
     registry.register(WriteToolFactory())

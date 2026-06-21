@@ -60,6 +60,12 @@ from yuuagents.tool.files import (
     WorkspaceFiles,
     WriteTool,
 )
+from yuuagents.tool.bash import (
+    BashParams,
+    BashRunner,
+    BashTool,
+    BashToolConfig,
+)
 from yuuagents.core.runtime import Runtime
 from yuuagents.python.runtime import (
     PythonImport,
@@ -135,6 +141,10 @@ __all__ = [
     "ToolContext",
     "WorkspaceFiles",
     "WriteTool",
+    "BashParams",
+    "BashRunner",
+    "BashTool",
+    "BashToolConfig",
     "register_tool_type",
     "resolve_tool_type",
 ]
