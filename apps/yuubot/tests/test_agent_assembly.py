@@ -67,14 +67,23 @@ def test_python_tool_facade_imports_include_supported_surfaces(tmp_path: Path) -
 
 
 def test_agent_prompt_guidance_is_mode_specific(tmp_path: Path) -> None:
+    """IM-mode user-visibility guidance is rendered inside Section 2.
+
+    Replaces the legacy ``endswith("Base prompt.")`` assertion. Under the
+    five-section contract, ``tim.Channel`` is system-level IM-mode semantics
+    that lives in the body of ``# System Instructions`` (only when
+    ``mode == "im"``), not a separate extension section and not inside the
+    integration capability section.
+    """
     character = make_character_record("actor-1", system_prompt="Base prompt.")
-    backend = make_llm_backend_record("actor-1")
+    llm_backend = make_llm_backend_record("actor-1")
     actor = make_actor_record(
         "actor-1",
         character=character,
-        llm_backend=backend,
+        llm_backend=llm_backend,
     )
     binding = ActorBinding(actor=actor, workspace_path=tmp_path).default_agent_binding()
+    _write_agents_md(tmp_path, "__MARKER_AGENTS_V1__")
 
     im_prompt = build_agent_definition(binding, mode="im").prompt.system
     conversation_prompt = build_agent_definition(
@@ -82,8 +91,25 @@ def test_agent_prompt_guidance_is_mode_specific(tmp_path: Path) -> None:
         mode="conversation",
     ).prompt.system
 
+    _assert_section_order(im_prompt)
+
+    # IM guidance lives inside Section 2 (between the System Instructions
+    # header and the Integration Prompt Sections header).
+    sys_inst_pos = im_prompt.find("# System Instructions")
+    integ_pos = im_prompt.find("# Integration Prompt Sections")
+    tim_channel_pos = im_prompt.find("tim.Channel")
+
     assert "tim.Channel" in im_prompt
-    assert conversation_prompt.endswith("Base prompt.")
+    assert sys_inst_pos != -1, "missing # System Instructions header"
+    assert integ_pos != -1, "missing # Integration Prompt Sections header"
+    assert tim_channel_pos != -1, "missing tim.Channel substring"
+    assert sys_inst_pos < tim_channel_pos < integ_pos, (
+        "tim.Channel guidance must appear inside Section 2 (System Instructions), "
+        "not as a standalone section and not inside Section 3."
+    )
+
+    # Conversation mode MUST NOT carry IM-mode user-visibility semantics.
+    assert "tim.Channel" not in conversation_prompt
 
 
 def test_execute_python_tool_renders_plain_text_result() -> None:
@@ -199,7 +225,29 @@ def test_execute_python_description_can_import_github_facade(tmp_path: Path) -> 
 
 
 def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> None:
-    character = make_character_record("char-1")
+    """Five-section system prompt contract: section order and content.
+
+    Replaces the legacy flat-contract assertions (``Capability Set:`` line,
+    mechanical ``yext.github.issue.list`` mapping example). Under the new
+    contract:
+
+    - Character leads the prompt; ``# Character\nBase prompt.`` is the prefix.
+    - The five visible section headers appear in the canonical order.
+    - No ``# Extension Section`` header is rendered (extension zone is
+      code-only).
+    - Section 2 documents the hand-written tool surface (bash / read / edit /
+      write / execute_python) and workspace conventions; it MUST NOT
+      duplicate the ``execute_python`` tool-spec description (ipykernel cell
+      semantics, crash/reset strategy, session rules) which is owned by
+      ``_python_tool.py``.
+    - Section 3 documents the hand-written GitHub facade (``yext.github``)
+      with read/write effect labels and failure guidance, and MUST NOT
+      carry the legacy mechanical id-to-module mapping text.
+    - Section 4 includes the full AGENTS.md text and the freeze note.
+    - Section 5 carries platform / datetime / timezone tokens.
+    - No sentinel/default object representations leak into the prompt.
+    """
+    character = make_character_record("char-1", system_prompt="Base prompt.")
     llm_backend = make_llm_backend_record("llm-1")
     capability_set = make_capability_set_record(
         "actor-1",
@@ -211,15 +259,127 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
         llm_backend=llm_backend,
         capability_set=capability_set,
     )
-    binding = ActorBinding(actor=actor).default_agent_binding(
-        workspace_path=tmp_path / "workspace",
-    )
+    binding = ActorBinding(actor=actor, workspace_path=tmp_path).default_agent_binding()
+    _write_agents_md(tmp_path, "__MARKER_AGENTS_V1__")
 
     system = build_agent_definition(binding, mode="conversation").prompt.system
 
-    assert "github.issue.list" in system
-    assert "Non-builtin capabilities are async Python facade functions" in system
-    assert "Do not call github.* capability ids as top-level tools" in system
+    _assert_section_order(system)
+
+    # Section 1 (Character) leads the prompt.
+    assert system.startswith("# Character\nBase prompt.")
+
+    # The extension zone is code-only; never a visible header.
+    assert "# Extension Section" not in system
+
+    section2 = _section_body(system, "# System Instructions", "# Integration Prompt Sections")
+    section3 = _section_body(
+        system,
+        "# Integration Prompt Sections",
+        "# AGENTS.md Context",
+    )
+    section4 = _section_body(
+        system,
+        "# AGENTS.md Context",
+        "# Real-Time Data",
+    )
+    section5 = system.split("# Real-Time Data\n", 1)[1] if "# Real-Time Data\n" in system else ""
+
+    # Section 2 — hand-written tool-surface prose + workspace conventions.
+    assert str(tmp_path.resolve()) in section2, "workspace absolute path missing from Section 2"
+    assert "do not bypass" in section2, "'do not bypass' prose missing from Section 2"
+    # Section 2 must NOT duplicate the execute_python tool-spec description.
+    tool_spec_phrases = (
+        "jupyter cell",
+        "ipykernel",
+        "Python session rules",
+        "SESSION_STATE",
+        "crashed",
+        "crash and resets",
+    )
+    leaked = [phrase for phrase in tool_spec_phrases if phrase in section2]
+    assert not leaked, (
+        f"Section 2 duplicates execute_python tool-spec phrases: {leaked}"
+    )
+
+    # Section 3 — hand-written GitHub facade.
+    assert "yext.github" in section3, "yext.github facade missing from Section 3"
+    assert "await " in section3, "no await example in Section 3"
+    assert "github.issue.list" in section3
+    assert "— read." in section3, "no read effect label in Section 3"
+    assert "— write." in section3, "no write effect label in Section 3"
+    assert "Failure guidance" in section3, "failure guidance missing from Section 3"
+    # Legacy mechanical id-to-module mapping text MUST NOT appear.
+    assert "Map a capability id to yext by keeping the prefix" not in section3
+    assert "Non-builtin capabilities are async Python facade functions" not in section3
+    assert "Example: github.issue.list -> await yext.github.issue.list(" not in section3
+
+    # Section 4 — AGENTS.md context + freeze note.
+    assert "__MARKER_AGENTS_V1__" in section4, "AGENTS.md marker missing from Section 4"
+    assert "only affects future agent instantiations" in section4, (
+        "freeze note missing from Section 4"
+    )
+
+    # Section 5 — real-time data.
+    assert "Platform:" in section5, "platform token missing from Section 5"
+    assert "Datetime:" in section5, "datetime token missing from Section 5"
+    assert "Timezone:" in section5, "timezone token missing from Section 5"
+    # Some ISO-style date substring must be present without asserting on now().
+    import re
+
+    assert re.search(r"\d{4}-\d{2}-\d{2}", section5), (
+        "no ISO date substring in Section 5"
+    )
+
+    # Legacy mechanical mapping and flat guidance substrings never leak.
+    assert "Map a capability id to yext by keeping the prefix" not in system
+    assert "Non-builtin capabilities are async Python facade functions" not in system
+    # Sentinel / default object repr guards.
+    assert "representation at 0x" not in system
+    assert "<object" not in system
+
+
+def _write_agents_md(workspace: Path, text: str) -> None:
+    """Write the marker AGENTS.md at the workspace root (used by Red tests)."""
+    (workspace / "AGENTS.md").write_text(text, encoding="utf-8")
+
+
+def _section_body(system: str, start_header: str, next_header: str) -> str:
+    """Return the body of a single section between two header markers.
+
+    The body excludes the leading header line (``# Header``) and ends just
+    before ``next_header``. Both headers must be present.
+    """
+    assert start_header in system, f"missing header {start_header!r}"
+    assert next_header in system, f"missing header {next_header!r}"
+    start = system.find(start_header)
+    next_pos = system.find(next_header, start + len(start_header))
+    assert next_pos != -1, f"{next_header!r} does not follow {start_header!r}"
+    # Skip the header line itself.
+    body_start = start + len(start_header)
+    # Skip the separating newline(s).
+    return system[body_start:next_pos].strip()
+
+
+def _assert_section_order(system: str) -> None:
+    expected = (
+        "# Character",
+        "# System Instructions",
+        "# Integration Prompt Sections",
+        "# AGENTS.md Context",
+        "# Real-Time Data",
+    )
+    positions: list[int] = []
+    last = -1
+    for header in expected:
+        pos = system.find(header)
+        assert pos != -1, f"header {header!r} not present in system prompt"
+        assert pos > last, (
+            f"header {header!r} at {pos} violates expected order "
+            f"(previous at {last})"
+        )
+        positions.append(pos)
+        last = pos
 
 
 class _CrashingPythonSession:
