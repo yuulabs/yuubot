@@ -41,6 +41,9 @@ class EchoOnceActor(Actor):
 
     async def start(self) -> None:
         await self._start_execute_python()
+        if self._python is None:
+            raise RuntimeError("echo actor execute_python harness is not started")
+        await self._python.execute("import yext.echo")
         self._message_task = asyncio.create_task(self._consume_messages())
 
     async def stop(self) -> None:

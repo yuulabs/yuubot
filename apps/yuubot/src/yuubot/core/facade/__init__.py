@@ -37,4 +37,6 @@ def facade_call_path(capability: object) -> str:
     capability_id = str(getattr(capability, "id", ""))
     if capability_id == "github.issue.list":
         return "yext.github.repo().issues.list_recent"
+    if capability_id == "echo.echo":
+        return "yext.echo.echo"
     raise LookupError(f"no hand-written facade call path for {capability_id!r}")

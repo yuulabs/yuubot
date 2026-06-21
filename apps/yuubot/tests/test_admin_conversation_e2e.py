@@ -87,7 +87,7 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
         rendered_user_message = yuullm.render_message_text(llm.calls[0][-1])
         assert rendered_user_message == CONVERSATION_TEXT
         system_prompt = yuullm.render_message_text(llm.calls[0][0])
-        assert "Capability Set: admin-conversation-capabilities" in system_prompt
+        assert "No integration capabilities configured." in system_prompt
         assert "You are an E2E admin conversation agent." in system_prompt
         assert [m["role"] for m in messages] == ["user", "assistant"]
         assert CONVERSATION_TEXT in messages[0]["raw_content"]
