@@ -30,6 +30,12 @@ export interface DisplayItem {
   role: "user" | "actor";
   blocks: RenderBlock[];
   timestamp: number;
+  /**
+   * Set on the in-flight assistant item produced by SSE streaming. Lets the
+   * render layer find the active item within the single display list and is
+   * left undefined on persisted history items.
+   */
+  turnKey?: string;
 }
 
 export interface ToolDisplay {

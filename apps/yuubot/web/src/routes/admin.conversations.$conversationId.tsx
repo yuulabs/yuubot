@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { ArrowLeft, Send, Loader2, Brain, Hammer, SquareTerminal } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
@@ -6,7 +6,6 @@ import { sendConversationMessage, createConversation, ensureConversationAgent, g
 import {
   appendRenderBlocks,
   historyItemsFromMessages,
-  liveItemKey,
   markToolBlocksCompleted,
   rememberConversationSseEvent,
   renderBlocksFromEvent,
@@ -86,44 +85,32 @@ export const Route = createFileRoute("/admin/conversations/$conversationId")({
   component: AdminConversationPage,
 });
 
-/** Streaming transcript item rendered from SSE events. */
-interface LiveItem extends DisplayItem {
-  turnKey: string;
-}
-
-function syncLiveItemsRef(
-  ref: MutableRefObject<LiveItem[]>,
-  update: (prev: LiveItem[]) => LiveItem[],
-): (prev: LiveItem[]) => LiveItem[] {
-  return (prev) => {
-    const next = update(prev);
-    ref.current = next;
-    return next;
-  };
-}
-
-function appendLiveItemBlocks(
-  items: LiveItem[],
+/**
+ * Append blocks to the active in-flight assistant item in a single display list.
+ * The active item is the last item whose `turnKey` matches; if none exists yet,
+ * a new actor item is appended. Items are never reordered, so the natural append
+ * order is the render order: user1, agent1, user2, agent2, ...
+ */
+function appendLiveBlocks(
+  items: DisplayItem[],
   itemKey: string,
-  role: DisplayItem["role"],
   turnKey: string,
   timestamp: number,
   blocks: RenderBlock[],
-): LiveItem[] {
+): DisplayItem[] {
   const index = items.findIndex((item) => item.key === itemKey);
   if (index === -1) {
     return [
       ...items,
       {
         key: itemKey,
-        role,
+        role: "actor",
         blocks: appendRenderBlocks([], blocks),
         timestamp,
         turnKey,
       },
     ];
   }
-
   return items.map((item, itemIndex) => (
     itemIndex === index
       ? { ...item, blocks: appendRenderBlocks(item.blocks, blocks) }
@@ -131,11 +118,11 @@ function appendLiveItemBlocks(
   ));
 }
 
-function hasLiveBlocksForTurn(items: LiveItem[], turnKey: string): boolean {
+function hasLiveBlocksForTurn(items: DisplayItem[], turnKey: string): boolean {
   return items.some((item) => item.turnKey === turnKey && item.blocks.length > 0);
 }
 
-function markLiveTurnCompleted(items: LiveItem[], turnKey: string): LiveItem[] {
+function markLiveTurnCompleted(items: DisplayItem[], turnKey: string): DisplayItem[] {
   return items.map((item) => (
     item.turnKey === turnKey
       ? { ...item, blocks: markToolBlocksCompleted(item.blocks) }
@@ -260,15 +247,13 @@ function AdminConversationPage() {
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
   const runningActors = actors.filter((a) => a.enabled);
   const [actorId, setActorId] = useState<string>(runningActors[0]?.id ?? "");
-  const [messages, setMessages] = useState<ConversationMessage[]>([]);
+  const [displayItems, setDisplayItems] = useState<DisplayItem[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [conversationMetadata, setConversationMetadata] = useState<ConversationData | null>(null);
   const [actorLocked, setActorLocked] = useState(false);
-  const [liveItems, setLiveItems] = useState<LiveItem[]>([]);
-  const liveItemsRef = useRef<LiveItem[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
@@ -297,11 +282,7 @@ function AdminConversationPage() {
         const turnId = "turn_id" in data ? data.turn_id : "";
         const turnKey = activeTurnKeyRef.current || `event-${turnId || data.sequence}`;
         activeTurnKeyRef.current = turnKey;
-        const itemKey = currentAssistantItemKeyRef.current || liveItemKey(
-          turnKey,
-          "assistant",
-          liveItemIndexRef.current++,
-        );
+        const itemKey = currentAssistantItemKeyRef.current || `live:${turnKey}:assistant:${liveItemIndexRef.current++}`;
         currentAssistantItemKeyRef.current = itemKey;
         const blocks = renderBlocksFromEvent(
           data,
@@ -311,16 +292,12 @@ function AdminConversationPage() {
         if (blocks.length === 0) {
           return;
         }
-        setLiveItems(syncLiveItemsRef(
-          liveItemsRef,
-          (prev) => appendLiveItemBlocks(
-            prev,
-            itemKey,
-            "actor",
-            turnKey,
-            data.timestamp,
-            blocks,
-          ),
+        setDisplayItems((prev) => appendLiveBlocks(
+          prev,
+          itemKey,
+          turnKey,
+          data.timestamp,
+          blocks,
         ));
       };
 
@@ -332,10 +309,7 @@ function AdminConversationPage() {
       const markGenerationComplete = () => {
         const completedTurnKey = activeTurnKeyRef.current;
         if (completedTurnKey) {
-          setLiveItems(syncLiveItemsRef(
-            liveItemsRef,
-            (prev) => markLiveTurnCompleted(prev, completedTurnKey),
-          ));
+          setDisplayItems((prev) => markLiveTurnCompleted(prev, completedTurnKey));
         }
         intentionalCloseRef.current = true;
         activeTurnKeyRef.current = "";
@@ -404,12 +378,10 @@ function AdminConversationPage() {
     liveItemIndexRef.current = 0;
     liveBlockIndexRef.current = 0;
     seenSseEventKeysRef.current = new Set();
-    liveItemsRef.current = [];
     sendingRef.current = false;
     intentionalCloseRef.current = false;
     closeSse();
-    setLiveItems([]);
-    setMessages([]);
+    setDisplayItems([]);
     setConversationMetadata(null);
     setActorLocked(false);
     setLoadingHistory(true);
@@ -431,7 +403,7 @@ function AdminConversationPage() {
         if (cancelled) {
           return;
         }
-        setMessages(persistedMessages);
+        setDisplayItems(historyItemsFromMessages(persistedMessages));
         setActorLocked(persistedMessages.length > 0);
         setLoadingHistory(false);
       } catch (err: unknown) {
@@ -464,7 +436,7 @@ function AdminConversationPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, liveItems]);
+  }, [displayItems]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -481,17 +453,22 @@ function AdminConversationPage() {
       metadata: {},
       timestamp: Math.floor(Date.now() / 1000),
     };
-    setMessages((prev) => [...prev, userMsg]);
+    const userItemKey = `message:${userMsgId}`;
+    setDisplayItems((prev) => [
+      ...prev,
+      ...historyItemsFromMessages([userMsg]),
+    ]);
     setInput("");
     setError("");
     setIsSending(true);
     sendingRef.current = true;
     activeTurnKeyRef.current = turnKey;
     currentAssistantItemKeyRef.current = "";
+    const hadMetadata = conversationMetadata !== null;
     void (async () => {
       try {
         let metadata = conversationMetadata;
-        if (metadata === null || messages.length === 0) {
+        if (metadata === null) {
           metadata = await createConversation({ actorId, conversationId });
           setConversationMetadata(metadata);
           setActorId(metadata.actor_id);
@@ -507,26 +484,26 @@ function AdminConversationPage() {
           sendingRef.current = false;
           setIsSending(false);
         }
-        setMessages((prev) => prev.filter((message) => message.message_id !== userMsgId));
+        setDisplayItems((prev) => prev.filter((item) => item.key !== userItemKey));
         setError(err instanceof Error ? err.message : "Send failed");
-        try {
-          const metadata = await getConversation(conversationId);
-          if (metadata !== null) {
-            setConversationMetadata(metadata);
-            setActorId(metadata.actor_id);
-            const persistedMessages = await getConversationMessages(conversationId);
-            setMessages(persistedMessages);
-            setActorLocked(persistedMessages.length > 0);
-          }
-        } catch { /* keep the original send error visible */ }
+        if (!hadMetadata) {
+          try {
+            const metadata = await getConversation(conversationId);
+            if (metadata !== null) {
+              setConversationMetadata(metadata);
+              setActorId(metadata.actor_id);
+              const persistedMessages = await getConversationMessages(conversationId);
+              setDisplayItems(historyItemsFromMessages(persistedMessages));
+              setActorLocked(persistedMessages.length > 0);
+            }
+          } catch { /* keep the original send error visible */ }
+        }
       }
     })();
   };
 
-  const historyItems = historyItemsFromMessages(messages);
-  const displayItems = [...historyItems, ...liveItems];
   const currentTurnHasLiveBlocks = activeTurnKeyRef.current
-    ? hasLiveBlocksForTurn(liveItems, activeTurnKeyRef.current)
+    ? hasLiveBlocksForTurn(displayItems, activeTurnKeyRef.current)
     : false;
 
   return (
