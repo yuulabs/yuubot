@@ -394,58 +394,38 @@ export interface TurnStartedEvent extends ConversationSSEBaseEvent {
   agent_name: string;
 }
 
-export interface AssistantDeltaEvent extends ConversationSSEBaseEvent {
-  event_type: "assistant_delta";
-  turn_id: string;
-  blocks: Array<
-    | { type: "text"; text: string }
-    | { type: "thinking"; thinking: string }
-  >;
-}
+export type TranscriptDelta =
+  | {
+      type: "thinking";
+      text_delta: string;
+    }
+  | {
+      type: "text";
+      text_delta: string;
+    }
+  | {
+      type: "tool_call";
+      tool_call_id: string;
+      tool_name?: string;
+      arguments_delta?: unknown;
+      arguments_text_delta?: string;
+    }
+  | {
+      type: "tool_result";
+      tool_call_id: string;
+      tool_name?: string;
+      stream?: "stdout" | "stderr" | "combined";
+      text_delta: string;
+    }
+  | {
+      type: "error";
+      text_delta: string;
+    };
 
-export interface ToolCallStartedEvent extends ConversationSSEBaseEvent {
-  event_type: "tool_call_started";
+export interface TranscriptDeltaEvent extends ConversationSSEBaseEvent {
+  event_type: "transcript_delta";
   turn_id: string;
-  tool_call_id: string;
-  tool_name: string;
-  arguments: unknown;
-}
-
-export interface ToolOutputSnapshotEvent extends ConversationSSEBaseEvent {
-  event_type: "tool_output_snapshot";
-  turn_id: string;
-  tool_call_id: string;
-  tool_name: string;
-  stream: "stdout" | "stderr" | "combined";
-  format: "text" | "terminal";
-  revision: number;
-  content: string;
-  complete: boolean;
-}
-
-export interface ToolResultCommittedEvent extends ConversationSSEBaseEvent {
-  event_type: "tool_result_committed";
-  turn_id: string;
-  message_id: string;
-  tool_call_id: string;
-  tool_name: string;
-  status: string;
-  content: string;
-}
-
-export interface MessageCommittedEvent extends ConversationSSEBaseEvent {
-  event_type: "message_committed";
-  turn_id: string;
-  message_id: string;
-  role: "assistant" | "tool" | "system";
-  content: unknown[];
-}
-
-export interface TurnCompletedEvent extends ConversationSSEBaseEvent {
-  event_type: "turn_completed";
-  turn_id: string;
-  agent_id: string;
-  agent_name: string;
+  deltas: TranscriptDelta[];
 }
 
 export interface ConversationErrorEvent extends ConversationSSEBaseEvent {
@@ -457,10 +437,5 @@ export interface ConversationErrorEvent extends ConversationSSEBaseEvent {
 /** SSE event from /api/admin/conversations/{id}/events */
 export type ConversationSSEEvent =
   | TurnStartedEvent
-  | AssistantDeltaEvent
-  | ToolCallStartedEvent
-  | ToolOutputSnapshotEvent
-  | ToolResultCommittedEvent
-  | MessageCommittedEvent
-  | TurnCompletedEvent
+  | TranscriptDeltaEvent
   | ConversationErrorEvent;

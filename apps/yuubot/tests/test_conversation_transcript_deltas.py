@@ -1,4 +1,4 @@
-"""Conversation frontend SSE protocol projection tests."""
+"""Transcript-delta hotfix regression tests."""
 
 from __future__ import annotations
 
@@ -7,10 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 from yuuagents.core.eventbus import RuntimeEvent
 from yuuagents.types.values import EventData
 
-from yuubot.core.conversation_events import (
-    ConversationSSEProjector,
-    render_tool_output_final_text,
-)
+from yuubot.core.conversation_events import ConversationSSEProjector
 from yuubot.core.conversations import ConversationManager
 
 
@@ -24,7 +21,7 @@ def event(name: str, data: EventData, timestamp: float = 1.0) -> RuntimeEvent:
     )
 
 
-def test_assistant_text_output_projects_transcript_delta() -> None:
+def test_assistant_chunks_project_ordered_transcript_deltas() -> None:
     projector = ConversationSSEProjector()
 
     events = projector.project_runtime_event(
@@ -32,7 +29,11 @@ def test_assistant_text_output_projects_transcript_delta() -> None:
         event(
             "output.chunk",
             {
-                "blocks": [{"type": "text", "text": "hello"}],
+                "blocks": [
+                    {"type": "thinking", "thinking": "t1"},
+                    {"type": "thinking", "thinking": "t2"},
+                    {"type": "text", "text": "t3"},
+                ],
                 "chunk_index": 1,
             },
         ),
@@ -40,11 +41,15 @@ def test_assistant_text_output_projects_transcript_delta() -> None:
 
     assert [item.event_type for item in events] == ["transcript_delta"]
     assert events[0].as_dict()["deltas"] == [
-        {"type": "text", "text_delta": "hello"}
+        {"type": "thinking", "text_delta": "t1"},
+        {"type": "thinking", "text_delta": "t2"},
+        {"type": "text", "text_delta": "t3"},
     ]
+    assert "blocks" not in events[0].as_dict()
+    assert {item.event_type for item in events}.isdisjoint({"thinking", "text"})
 
 
-def test_assistant_tool_call_projects_transcript_delta() -> None:
+def test_tool_call_block_projects_transcript_delta() -> None:
     projector = ConversationSSEProjector()
 
     events = projector.project_runtime_event(
@@ -72,35 +77,72 @@ def test_assistant_tool_call_projects_transcript_delta() -> None:
     }]
 
 
-def test_tool_output_chunk_projects_transcript_delta() -> None:
+def test_tool_output_chunks_project_appendable_transcript_deltas() -> None:
     projector = ConversationSSEProjector()
 
-    events = projector.project_runtime_event(
+    first = projector.project_runtime_event(
         "conversation-1",
         event(
             "output.chunk",
             {
                 "parent_id": "call-1",
                 "tool_name": "execute_python",
-                "chunk_index": 2,
-                "blocks": [{"type": "text", "text": "10%\r"}],
+                "stream": "stdout",
+                "chunk_index": 1,
+                "blocks": [{"type": "text", "text": "t5"}],
             },
         ),
     )
+    second = projector.project_runtime_event(
+        "conversation-1",
+        event(
+            "output.chunk",
+            {
+                "parent_id": "call-1",
+                "tool_name": "execute_python",
+                "stream": "stdout",
+                "chunk_index": 2,
+                "blocks": [{"type": "text", "text": "t6"}],
+            },
+            timestamp=2.0,
+        ),
+    )
 
-    assert [item.event_type for item in events] == ["transcript_delta"]
-    assert events[0].as_dict()["deltas"] == [{
+    assert [item.event_type for item in [*first, *second]] == [
+        "transcript_delta",
+        "transcript_delta",
+    ]
+    assert first[0].as_dict()["deltas"] == [{
         "type": "tool_result",
         "tool_call_id": "call-1",
         "tool_name": "execute_python",
-        "stream": "combined",
-        "text_delta": "10%",
+        "stream": "stdout",
+        "text_delta": "t5",
+    }]
+    assert second[0].as_dict()["deltas"] == [{
+        "type": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_name": "execute_python",
+        "stream": "stdout",
+        "text_delta": "t6",
     }]
 
 
-async def test_final_tool_result_persists_and_emits_visible_delta() -> None:
-    manager, store = manager_with_store()
-    progress = "10%|#         | 1/10\r20%|##        | 2/10\rdone\n"
+async def test_final_tool_result_emits_only_missing_visible_delta() -> None:
+    manager = manager_with_store()
+    _ = manager._sse_projector.project_runtime_event(
+        "conversation-1",
+        event(
+            "output.chunk",
+            {
+                "parent_id": "call-1",
+                "tool_name": "execute_python",
+                "stream": "stdout",
+                "chunk_index": 1,
+                "blocks": [{"type": "text", "text": "t5"}],
+            },
+        ),
+    )
 
     events = await manager._handle_tool_result(
         "conversation-1",
@@ -109,9 +151,10 @@ async def test_final_tool_result_persists_and_emits_visible_delta() -> None:
             {
                 "tool_call_id": "call-1",
                 "tool_name": "execute_python",
-                "result": progress,
+                "result": "t5t6",
                 "status": "completed",
             },
+            timestamp=2.0,
         ),
     )
 
@@ -120,66 +163,17 @@ async def test_final_tool_result_persists_and_emits_visible_delta() -> None:
         "type": "tool_result",
         "tool_call_id": "call-1",
         "tool_name": "execute_python",
-        "text_delta": "20%|##        | 2/10done\n",
+        "text_delta": "t6",
     }]
 
-    call_kwargs = store.append_message.call_args.kwargs
-    assert call_kwargs["role"] == "tool"
-    assert call_kwargs["content"][0]["content"] == "20%|##        | 2/10done\n"
-    assert "10%|#         | 1/10" not in call_kwargs["content"][0]["content"]
 
-
-def test_terminal_final_text_handles_backspace_and_strips_ansi() -> None:
-    rendered = render_tool_output_final_text(
-        "\x1b[32mhelxo\b\blo\x1b[0m\n10%\r20%\r"
-    )
-
-    assert rendered == "hello\n20%"
-
-
-async def test_record_event_sequences_are_monotonic() -> None:
-    manager, _store = manager_with_store()
-
-    first = await manager._record_event(
-        "conversation-1",
-        event("output.chunk", {"blocks": [{"type": "text", "text": "hello"}]}),
-    )
-    second = await manager._record_event(
-        "conversation-1",
-        event("agent.turn_completed", {}, timestamp=2.0),
-    )
-
-    all_events = first + second
-    assert [item.as_dict()["sequence"] for item in all_events] == [1]
-
-
-def test_projector_does_not_emit_raw_runtime_event_names() -> None:
-    projector = ConversationSSEProjector()
-
-    events = projector.project_runtime_event(
-        "conversation-1",
-        event(
-            "output.chunk",
-            {
-                "parent_id": "call-1",
-                "blocks": [{"type": "text", "text": "stdout"}],
-            },
-        ),
-    )
-
-    raw_names = {"output.chunk", "output.entity", "output.entity_end", "tool.result_appended"}
-    assert events
-    assert {item.event_type for item in events}.isdisjoint(raw_names)
-
-
-def manager_with_store() -> tuple[ConversationManager, MagicMock]:
+def manager_with_store() -> ConversationManager:
     store = MagicMock()
     store.append_message = AsyncMock()
-    manager = ConversationManager(
+    return ConversationManager(
         store=store,
         repository=MagicMock(),
         yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
-    return manager, store

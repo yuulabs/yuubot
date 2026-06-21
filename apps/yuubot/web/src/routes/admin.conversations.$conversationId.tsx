@@ -5,7 +5,6 @@ import { useResourceList } from "@/hooks/use-resources";
 import { sendConversationMessage, createConversation, ensureConversationAgent, getConversation, getConversationMessages } from "@/lib/api";
 import {
   appendRenderBlocks,
-  eventHasToolCall,
   historyItemsFromMessages,
   liveItemKey,
   parseJsonMaybe,
@@ -354,14 +353,7 @@ function AdminConversationPage() {
         appendAssistantEvent(data);
       };
 
-      const handleFinalEvent = (e: MessageEvent) => {
-        const data = JSON.parse(e.data) as ConversationSSEEvent;
-        if (data.event_type === "message_committed" && data.role === "assistant" && !eventHasToolCall(data)) {
-          currentAssistantItemKeyRef.current = "";
-        }
-      };
-
-      const handleTurnCompleted = (_e: MessageEvent) => {
+      const markGenerationComplete = () => {
         intentionalCloseRef.current = true;
         activeTurnKeyRef.current = "";
         currentAssistantItemKeyRef.current = "";
@@ -370,6 +362,7 @@ function AdminConversationPage() {
       };
 
       const handleErrorEvent = (e: MessageEvent) => {
+        markGenerationComplete();
         setStreamReady(false);
         try {
           const raw = JSON.parse(e.data);
@@ -392,18 +385,24 @@ function AdminConversationPage() {
       es.onerror = () => {
         connectingSseRef.current = false;
         connectingSsePromiseRef.current = null;
+        if (sendingRef.current) {
+          markGenerationComplete();
+          setStreamStatus("disconnected");
+          setStreamReady(false);
+          es.close();
+          if (sseRef.current === es) {
+            sseRef.current = null;
+          }
+          resolve();
+          return;
+        }
         if (!intentionalCloseRef.current) {
           setStreamStatus("disconnected");
           reject(new Error("Conversation stream setup failed"));
         }
       };
 
-      es.addEventListener("assistant_delta", handleAssistantStreamEvent);
-      es.addEventListener("tool_call_started", handleAssistantStreamEvent);
-      es.addEventListener("tool_output_snapshot", handleAssistantStreamEvent);
-      es.addEventListener("tool_result_committed", handleAssistantStreamEvent);
-      es.addEventListener("message_committed", handleFinalEvent);
-      es.addEventListener("turn_completed", handleTurnCompleted);
+      es.addEventListener("transcript_delta", handleAssistantStreamEvent);
       es.addEventListener("error", handleErrorEvent);
     });
     connectingSsePromiseRef.current = pending;
@@ -493,7 +492,6 @@ function AdminConversationPage() {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || !actorId || sendingRef.current) return;
-    if (conversationMetadata !== null && !streamReady) return;
 
     const userMsgId = `user-${crypto.randomUUID()}`;
     const turnKey = `turn-${userMsgId}`;
@@ -644,7 +642,7 @@ function AdminConversationPage() {
         <Button
           type="submit"
           size="icon"
-          disabled={!input.trim() || !actorId || (conversationMetadata !== null && !streamReady) || isSending}
+          disabled={!input.trim() || !actorId || isSending}
         >
           {isSending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
         </Button>

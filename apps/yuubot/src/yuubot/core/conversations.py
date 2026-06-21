@@ -430,8 +430,12 @@ _PROJECTED_RUNTIME_EVENTS = {
     "agent.turn.error",
     "agent.turn_started",
     "budget.exceeded",
-    "agent.turn_completed",
 }
+
+
+@dataclass(frozen=True)
+class _ConversationStreamClose:
+    conversation_id: str
 
 
 @dataclass
@@ -448,7 +452,10 @@ class ConversationManager:
     _runtimes: dict[str, YuuAgentsActorRuntime] = field(default_factory=dict, init=False)
     _agent_to_conversation: dict[str, str] = field(default_factory=dict, init=False)
     _observed_runtimes: dict[str, int] = field(default_factory=dict, init=False)
-    _subscribers: dict[str, set[asyncio.Queue[ConversationFrontendEvent]]] = field(
+    _subscribers: dict[
+        str,
+        set[asyncio.Queue[ConversationFrontendEvent | _ConversationStreamClose]],
+    ] = field(
         default_factory=dict,
         init=False,
     )
@@ -618,12 +625,15 @@ class ConversationManager:
         self,
         conversation_id: str,
     ) -> AsyncIterator[ConversationFrontendEvent]:
-        queue: asyncio.Queue[ConversationFrontendEvent] = asyncio.Queue()
+        queue: asyncio.Queue[ConversationFrontendEvent | _ConversationStreamClose] = asyncio.Queue()
         subscribers = self._subscribers.setdefault(conversation_id, set())
         subscribers.add(queue)
         try:
             while True:
-                yield await queue.get()
+                event = await queue.get()
+                if isinstance(event, _ConversationStreamClose):
+                    break
+                yield event
         finally:
             subscribers.discard(queue)
             if not subscribers:
@@ -752,17 +762,20 @@ class ConversationManager:
         if event.name in _PROJECTED_RUNTIME_EVENTS:
             return self._sse_projector.project_runtime_event(conversation_id, event)
         if event.name == "llm.finished":
-            result = await self._handle_llm_finished(conversation_id, event)
-            return [] if result is None else [result]
+            await self._handle_llm_finished(conversation_id, event)
+            return []
         if event.name == "tool.result_appended":
             return await self._handle_tool_result(conversation_id, event)
+        if event.name == "agent.turn_completed":
+            await self._close_conversation_stream(conversation_id)
+            return []
         return []
 
     async def _handle_llm_finished(
         self,
         conversation_id: str,
         event: RuntimeEvent,
-    ) -> ConversationFrontendEvent | None:
+    ) -> None:
         finished = LLMFinishedData.from_event(event)
         message = finished.message
         if isinstance(message, yuullm.Message):
@@ -776,15 +789,6 @@ class ConversationManager:
                 metadata=_event_metadata(event),
                 timestamp=int(event.timestamp),
             )
-            return self._sse_projector.message_committed(
-                conversation_id,
-                event,
-                turn_id=_turn_id(event),
-                message_id=message_id,
-                role=message.role,
-                content=content,
-            )
-        return None
 
     async def _handle_tool_result(
         self,
@@ -813,32 +817,18 @@ class ConversationManager:
             timestamp=int(event.timestamp),
         )
 
-        return [
-            self._sse_projector.tool_result_committed(
-                conversation_id,
-                event,
-                turn_id=_turn_id(event),
-                message_id=message_id,
-                tool_call_id=tool_call_id,
-                tool_name=tool_name,
-                status=status,
-                content=result,
-            ),
-            self._sse_projector.message_committed(
-                conversation_id,
-                event,
-                turn_id=_turn_id(event),
-                message_id=message_id,
-                role="tool",
-                content=[{
-                    "type": "tool_result",
-                    "tool_call_id": tool_call_id,
-                    "tool_name": tool_name,
-                    "content": result,
-                    "status": status,
-                }],
-            ),
-        ]
+        missing = self._sse_projector.missing_tool_result_delta(
+            conversation_id,
+            event,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            text=result,
+        )
+        return [] if missing is None else [missing]
+
+    async def _close_conversation_stream(self, conversation_id: str) -> None:
+        for queue in tuple(self._subscribers.get(conversation_id, ())):
+            await queue.put(_ConversationStreamClose(conversation_id))
 
 
 def _turn_id(event: RuntimeEvent) -> str:

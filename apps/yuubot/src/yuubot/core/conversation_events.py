@@ -13,12 +13,7 @@ from yuuagents.core.eventbus import RuntimeEvent
 
 ConversationFrontendEventType = Literal[
     "turn_started",
-    "assistant_delta",
-    "tool_call_started",
-    "tool_output_snapshot",
-    "tool_result_committed",
-    "message_committed",
-    "turn_completed",
+    "transcript_delta",
     "error",
 ]
 
@@ -58,7 +53,7 @@ class ConversationSSEProjector:
     """Projects internal runtime events into the stable Admin UI SSE protocol."""
 
     _sequence_by_conversation: dict[str, int] = field(default_factory=dict)
-    _tool_output_chunks: dict[_ToolOutputKey, list[str]] = field(default_factory=dict)
+    _tool_result_text_by_key: dict[_ToolOutputKey, str] = field(default_factory=dict)
 
     def project_runtime_event(
         self,
@@ -71,56 +66,21 @@ class ConversationSSEProjector:
             return [self.error(conversation_id, event, _event_error(event))]
         if event.name == "agent.turn_started":
             return [self.turn_started(conversation_id, event)]
-        if event.name == "agent.turn_completed":
-            return [self.turn_completed(conversation_id, event)]
         return []
 
-    def message_committed(
+    def transcript_delta(
         self,
         conversation_id: str,
         event: RuntimeEvent,
         *,
         turn_id: str,
-        message_id: str,
-        role: str,
-        content: list[dict[str, object]],
+        deltas: list[dict[str, object]],
     ) -> ConversationFrontendEvent:
         return self._event(
             conversation_id,
             event,
-            "message_committed",
-            {
-                "turn_id": turn_id,
-                "message_id": message_id,
-                "role": role,
-                "content": content,
-            },
-        )
-
-    def tool_result_committed(
-        self,
-        conversation_id: str,
-        event: RuntimeEvent,
-        *,
-        turn_id: str,
-        message_id: str,
-        tool_call_id: str,
-        tool_name: str,
-        status: str,
-        content: str,
-    ) -> ConversationFrontendEvent:
-        return self._event(
-            conversation_id,
-            event,
-            "tool_result_committed",
-            {
-                "turn_id": turn_id,
-                "message_id": message_id,
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "status": status,
-                "content": content,
-            },
+            "transcript_delta",
+            {"turn_id": turn_id, "deltas": deltas},
         )
 
     def error(
@@ -152,20 +112,31 @@ class ConversationSSEProjector:
             },
         )
 
-    def turn_completed(
+    def missing_tool_result_delta(
         self,
         conversation_id: str,
         event: RuntimeEvent,
-    ) -> ConversationFrontendEvent:
-        return self._event(
+        *,
+        tool_call_id: str,
+        tool_name: str,
+        text: str,
+    ) -> ConversationFrontendEvent | None:
+        key = _ToolOutputKey(conversation_id=conversation_id, tool_call_id=tool_call_id)
+        streamed = self._tool_result_text_by_key.get(key, "")
+        missing = text.removeprefix(streamed) if text.startswith(streamed) else text
+        if not missing:
+            return None
+        self._tool_result_text_by_key[key] = f"{streamed}{missing}"
+        return self.transcript_delta(
             conversation_id,
             event,
-            "turn_completed",
-            {
-                "turn_id": _turn_id(event),
-                "agent_id": event.agent_id or "",
-                "agent_name": event.agent_name or "",
-            },
+            turn_id=_turn_id(event),
+            deltas=[{
+                "type": "tool_result",
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "text_delta": missing,
+            }],
         )
 
     def _project_output_chunk(
@@ -175,36 +146,21 @@ class ConversationSSEProjector:
     ) -> list[ConversationFrontendEvent]:
         data = _chunk_data(event)
         if data.parent_id or data.tool_call_id:
-            return [self._tool_output_snapshot(conversation_id, event, data)]
+            return [self._tool_result_delta(conversation_id, event, data)]
 
-        events: list[ConversationFrontendEvent] = []
-        assistant_blocks = _assistant_blocks(data.blocks)
-        if assistant_blocks:
-            events.append(
-                self._event(
-                    conversation_id,
-                    event,
-                    "assistant_delta",
-                    {"turn_id": _turn_id(event), "blocks": assistant_blocks},
-                )
+        deltas = _assistant_deltas(data.blocks) + _tool_call_deltas(data.blocks)
+        if not deltas:
+            return []
+        return [
+            self.transcript_delta(
+                conversation_id,
+                event,
+                turn_id=_turn_id(event),
+                deltas=deltas,
             )
-        for call in _tool_call_blocks(data.blocks):
-            events.append(
-                self._event(
-                    conversation_id,
-                    event,
-                    "tool_call_started",
-                    {
-                        "turn_id": _turn_id(event),
-                        "tool_call_id": call.tool_call_id,
-                        "tool_name": call.tool_name,
-                        "arguments": call.arguments,
-                    },
-                )
-            )
-        return events
+        ]
 
-    def _tool_output_snapshot(
+    def _tool_result_delta(
         self,
         conversation_id: str,
         event: RuntimeEvent,
@@ -212,22 +168,21 @@ class ConversationSSEProjector:
     ) -> ConversationFrontendEvent:
         tool_call_id = data.tool_call_id or data.parent_id or data.entity_id
         key = _ToolOutputKey(conversation_id=conversation_id, tool_call_id=tool_call_id)
-        chunks = self._tool_output_chunks.setdefault(key, [])
-        chunks.append(_blocks_text(data.blocks))
-        return self._event(
+        text_delta = render_tool_output_final_text(_blocks_text(data.blocks))
+        self._tool_result_text_by_key[key] = (
+            self._tool_result_text_by_key.get(key, "") + text_delta
+        )
+        return self.transcript_delta(
             conversation_id,
             event,
-            "tool_output_snapshot",
-            {
-                "turn_id": _turn_id(event),
+            turn_id=_turn_id(event),
+            deltas=[{
+                "type": "tool_result",
                 "tool_call_id": tool_call_id,
                 "tool_name": data.tool_name,
                 "stream": data.stream,
-                "format": "terminal",
-                "revision": data.chunk_index,
-                "content": render_tool_output_final_text(chunks),
-                "complete": False,
-            },
+                "text_delta": text_delta,
+            }],
         )
 
     def _event(
@@ -336,19 +291,22 @@ def _chunk_data(event: RuntimeEvent) -> _ChunkData:
     )
 
 
-def _assistant_blocks(blocks: tuple[object, ...]) -> list[dict[str, object]]:
+def _assistant_deltas(blocks: tuple[object, ...]) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for block in blocks:
         source = _block_source(block)
         block_type = str(source.get("type") or "")
         if block_type == "text" and isinstance(source.get("text"), str):
-            result.append({"type": "text", "text": str(source["text"])})
+            result.append({"type": "text", "text_delta": str(source["text"])})
         if block_type == "thinking" and isinstance(source.get("thinking"), str):
-            result.append({"type": "thinking", "thinking": str(source["thinking"])})
+            result.append({
+                "type": "thinking",
+                "text_delta": str(source["thinking"]),
+            })
     return result
 
 
-def _tool_call_blocks(blocks: tuple[object, ...]) -> list[_ToolCallData]:
+def _tool_call_deltas(blocks: tuple[object, ...]) -> list[dict[str, object]]:
     result: list[_ToolCallData] = []
     for block in blocks:
         source = _block_source(block)
@@ -361,7 +319,20 @@ def _tool_call_blocks(blocks: tuple[object, ...]) -> list[_ToolCallData]:
                 arguments=msgspec.to_builtins(source.get("arguments", {})),
             )
         )
-    return result
+    return [_tool_call_delta(call) for call in result]
+
+
+def _tool_call_delta(call: _ToolCallData) -> dict[str, object]:
+    delta: dict[str, object] = {
+        "type": "tool_call",
+        "tool_call_id": call.tool_call_id,
+        "tool_name": call.tool_name,
+    }
+    if isinstance(call.arguments, str):
+        delta["arguments_text_delta"] = call.arguments
+    else:
+        delta["arguments_delta"] = call.arguments
+    return delta
 
 
 def _blocks_text(blocks: tuple[object, ...]) -> str:

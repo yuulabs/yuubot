@@ -12,7 +12,7 @@ from yuubot.core.conversations import ConversationManager
 
 
 async def test_handle_tool_result_persists_message() -> None:
-    """Verify _handle_tool_result persists a role="tool" message and returns SSE event."""
+    """Verify _handle_tool_result persists a role="tool" message and returns visible delta."""
     event = RuntimeEvent(
         name="tool.result_appended",
         agent_id="agent-1",
@@ -52,16 +52,15 @@ async def test_handle_tool_result_persists_message() -> None:
     assert call_kwargs["content"][0]["status"] == "completed"
 
     assert result is not None
-    assert [event.event_type for event in result] == [
-        "tool_result_committed",
-        "message_committed",
-    ]
+    assert [event.event_type for event in result] == ["transcript_delta"]
     payload = result[0].as_dict()
-    assert payload["tool_call_id"] == "call_abc"
-    assert payload["tool_name"] == "echo.echo"
-    assert payload["content"] == "echoed: hello"
-    assert payload["status"] == "completed"
     assert payload["conversation_id"] == "conv-1"
+    assert payload["deltas"] == [{
+        "type": "tool_result",
+        "tool_call_id": "call_abc",
+        "tool_name": "echo.echo",
+        "text_delta": "echoed: hello",
+    }]
 
 
 async def test_handle_tool_result_failed_status() -> None:
@@ -99,8 +98,39 @@ async def test_handle_tool_result_failed_status() -> None:
     assert call_kwargs["content"][0]["status"] == "failed"
 
     assert result is not None
-    assert result[0].event_type == "tool_result_committed"
-    assert result[0].as_dict()["status"] == "failed"
+    assert result[0].event_type == "transcript_delta"
+    assert result[0].as_dict()["deltas"] == [{
+        "type": "tool_result",
+        "tool_call_id": "call_xyz",
+        "tool_name": "nonexistent.tool",
+        "text_delta": "Tool nonexistent.tool is not available",
+    }]
+
+
+async def test_turn_completed_closes_subscription_without_completion_event() -> None:
+    manager = manager_with_store()
+    subscription = manager.subscribe_events("conv-1")
+    first = asyncio.ensure_future(subscription.__anext__())
+    await asyncio.sleep(0)
+
+    result = await manager._record_event(
+        "conv-1",
+        RuntimeEvent(
+            name="agent.turn_completed",
+            agent_id="agent-1",
+            agent_name="test-agent",
+            data={"task_id": "task-1"},
+            timestamp=1234567892.0,
+        ),
+    )
+
+    assert result == []
+    try:
+        await first
+    except StopAsyncIteration:
+        pass
+    else:
+        raise AssertionError("subscription yielded a completion event")
 
 
 async def test_send_message_returns_before_turn_completes() -> None:
@@ -154,3 +184,15 @@ async def test_send_message_returns_before_turn_completes() -> None:
 
     release.set()
     await asyncio.wait_for(asyncio.gather(*manager._turn_tasks), timeout=1)
+
+
+def manager_with_store() -> ConversationManager:
+    mock_store = MagicMock()
+    mock_store.append_message = AsyncMock()
+    return ConversationManager(
+        store=mock_store,
+        repository=MagicMock(),
+        yuuagents_config=MagicMock(),
+        python_sessions=MagicMock(),
+        llm_session_factory_factory=MagicMock(),
+    )
