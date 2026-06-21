@@ -58,11 +58,10 @@ from yuubot.runtime.daemon.handlers import (
     _sse_event,  # noqa: F401  # re-exported for tests
     make_conversation_events_handler,
     make_conversation_messages_handler,
-    make_create_conversation_handler,
-    make_ensure_conversation_agent_handler,
     make_get_conversation_handler,
     make_health_handler,
     make_list_conversations_handler,
+    make_model_history_handler,
     make_plugin_ingest_handler,
     make_refresh_handler,
     make_send_conversation_message_handler,
@@ -408,19 +407,9 @@ def build_daemon_asgi_app(
             methods=("GET",),
         ),
         Route(
-            "/api/admin/conversations",
-            make_create_conversation_handler(conversation_manager),
-            methods=("POST",),
-        ),
-        Route(
             "/api/admin/conversations/{conversation_id}",
             make_get_conversation_handler(conversation_manager),
             methods=("GET",),
-        ),
-        Route(
-            "/api/admin/conversations/{conversation_id}/agents",
-            make_ensure_conversation_agent_handler(conversation_manager),
-            methods=("POST",),
         ),
         Route(
             "/api/admin/conversations/{conversation_id}/events",
@@ -436,6 +425,11 @@ def build_daemon_asgi_app(
             "/api/admin/conversations/{conversation_id}/messages",
             make_send_conversation_message_handler(conversation_manager),
             methods=("POST",),
+        ),
+        Route(
+            "/api/admin/conversations/{conversation_id}/model-history",
+            make_model_history_handler(conversation_manager),
+            methods=("GET",),
         ),
         Mount(
             "/api/resources",

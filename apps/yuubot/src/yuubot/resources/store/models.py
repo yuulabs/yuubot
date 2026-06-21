@@ -7,6 +7,7 @@ from yuubot.resources.records import (
     ActorIngressRuleRecord,
     CapabilitySetRecord,
     CharacterRecord,
+    ConversationHistoryItemRecord,
     ConversationMessageRecord,
     ConversationRecord,
     IntegrationRecord,
@@ -148,6 +149,20 @@ ConversationMessageORM = resource_model(
         "role": char(max_length=16),
         "raw_content": text(),
         "timestamp": FieldSpec(kind="int"),
+        "created_at": FieldSpec(kind="datetime"),
+    },
+)
+
+ConversationHistoryItemORM = resource_model(
+    "ConversationHistoryItemORM",
+    ConversationHistoryItemRecord,
+    table="conversation_history_items",
+    module=__name__,
+    field_specs={
+        "id": FieldSpec(kind="int", primary_key=True),
+        "conversation_id": char(max_length=255),
+        "item_kind": char(max_length=16),
+        "item_json": text(),
         "created_at": FieldSpec(kind="datetime"),
     },
 )

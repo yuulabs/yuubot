@@ -61,16 +61,17 @@ async def test_system_prompt_freezes_within_runtime_lifetime(
             base_url="http://testserver",
             headers={"X-Daemon-Secret": yuubot_config.server.daemon_secret},
         ) as client:
+            # First send creates the conversation row + persisted prefix
+            # atomically; the persisted binding locks actor / character /
+            # capability_set / llm_backend / model for all subsequent turns.
             created = await client.post(
-                "/api/admin/conversations",
+                f"/api/admin/conversations/{CONVERSATION_ID}/messages",
                 json={
-                    "conversation_id": CONVERSATION_ID,
                     "actor_id": ACTOR_ID,
+                    "text": "first turn",
                 },
             )
-            assert created.status_code == 201, created.text
-
-            await _send_message(client, CONVERSATION_ID, "first turn")
+            assert created.status_code == 202, created.text
         await capture.wait_for_calls(1)
         system_1 = _captured_system_text(capture.calls[0])
 

@@ -9,34 +9,31 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
 
 import msgspec
 import yuullm
-from tortoise import Model
 from yuuagents import Agent, ProviderPoolSessionFactory
 from yuuagents.core.eventbus import RuntimeEvent
 
 from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
 from yuubot.core.assembly import YuuAgentsActorRuntime, start_yuuagents_actor
+from yuubot.core.assembly._history_codec import (
+    decode_prompt_item,
+    encode_prompt_item,
+)
 from yuubot.core.bindings import AgentBinding, conversation_agent_binding
 from yuubot.core.conversation_events import (
     ConversationFrontendEvent,
     ConversationSSEProjector,
     render_tool_output_final_text,
 )
-from yuubot.core.conversation_utils import (
-    _content_to_builtins,
-    _decode_content,
-    _event_metadata,
-)
 from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.resources.records import (
     ActorRecord,
     CapabilitySetRecord,
     CharacterRecord,
-    ConversationMessageRecord,
+    ConversationHistoryItemRecord,
     ConversationRecord,
     LLMBackendRecord,
     YuuAgentBudget,
@@ -48,7 +45,7 @@ from yuubot.resources.store.models import (
     ActorORM,
     CapabilitySetORM,
     CharacterORM,
-    ConversationMessageORM,
+    ConversationHistoryItemORM,
     ConversationORM,
     LLMBackendORM,
 )
@@ -64,24 +61,19 @@ def _conversation_sort_key(record: ConversationRecord) -> tuple[float, str]:
 
 
 @dataclass(frozen=True)
-class ConversationCreate:
+class ConversationSendBinding:
+    """Binding fields carried on the first send request body.
+
+    ``actor_id`` is required on first send; the remaining fields default
+    from the actor's ``default_*`` records when omitted.
+    """
+
     conversation_id: str
-    character: CharacterRecord
-    capability_set: CapabilitySetRecord
-    llm_backend: LLMBackendRecord
-    model: str
-    llm_options: YuuAgentLLMOptions
-    budget: YuuAgentBudget
-    actor_id: str = ""
-    title: str = ""
-    reply_address: str = ""
-    metadata: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ConversationCreateResult:
-    conversation: ConversationRecord
-    created: bool
+    actor_id: str
+    character_id: str = ""
+    capability_set_id: str = ""
+    llm_backend_id: str = ""
+    model: str = ""
 
 
 @dataclass
@@ -91,7 +83,7 @@ class ConversationBindingConflict(Exception):
     def __str__(self) -> str:
         return (
             f"conversation {self.conversation.conversation_id!r} already has "
-            "messages and is bound to different actor defaults"
+            "messages and is bound to a different actor/binding"
         )
 
 
@@ -236,103 +228,43 @@ def _tool_calls(value: object) -> tuple[dict[str, object], ...]:
 class ConversationStore:
     store: Store
 
-    async def create_conversation(
+    async def create_conversation_row(
         self,
         *,
-        request: ConversationCreate,
-    ) -> ConversationCreateResult:
+        conversation_id: str,
+        character: CharacterRecord,
+        capability_set: CapabilitySetRecord,
+        llm_backend: LLMBackendRecord,
+        model: str,
+        llm_options: YuuAgentLLMOptions,
+        budget: YuuAgentBudget,
+        actor_id: str,
+        title: str = "",
+        reply_address: str = "",
+        metadata: dict[str, object] | None = None,
+    ) -> ConversationRecord:
         with self.store.db.activate():
-            existing = await ConversationORM.get_or_none(
-                conversation_id=request.conversation_id
-            ).select_related(
-                "character",
-                "capability_set",
-                "llm_backend",
-            )
-            if existing is not None:
-                return await self._handle_existing_conversation(
-                    row=existing,
-                    request=request,
-                )
-
             row = await ConversationORM.create(
-                conversation_id=request.conversation_id,
-                character_id=request.character.id,
-                capability_set_id=request.capability_set.id,
-                llm_backend_id=request.llm_backend.id,
-                model=request.model,
-                llm_options=msgspec.to_builtins(request.llm_options),
-                budget=msgspec.to_builtins(request.budget),
-                actor_id=request.actor_id,
-                title=request.title,
-                reply_address=request.reply_address,
-                metadata=request.metadata,
+                conversation_id=conversation_id,
+                character_id=character.id,
+                capability_set_id=capability_set.id,
+                llm_backend_id=llm_backend.id,
+                model=model,
+                llm_options=msgspec.to_builtins(llm_options),
+                budget=msgspec.to_builtins(budget),
+                actor_id=actor_id,
+                title=title,
+                reply_address=reply_address,
+                metadata=metadata or {},
             )
             row = await ConversationORM.get(
-                conversation_id=request.conversation_id
+                conversation_id=conversation_id,
             ).select_related(
                 "character",
                 "capability_set",
                 "llm_backend",
             )
-            return ConversationCreateResult(
-                conversation=await from_orm(row, ConversationRecord),
-                created=True,
-            )
-
-    async def _handle_existing_conversation(
-        self,
-        *,
-        row: Model,
-        request: ConversationCreate,
-    ) -> ConversationCreateResult:
-        current = await from_orm(row, ConversationRecord)
-        if self._binding_matches(current, request):
-            return ConversationCreateResult(conversation=current, created=False)
-
-        has_messages = await ConversationMessageORM.filter(
-            conversation_id=request.conversation_id
-        ).exists()
-        if has_messages:
-            raise ConversationBindingConflict(conversation=current)
-
-        await ConversationORM.filter(conversation_id=request.conversation_id).update(
-            character_id=request.character.id,
-            capability_set_id=request.capability_set.id,
-            llm_backend_id=request.llm_backend.id,
-            model=request.model,
-            llm_options=msgspec.to_builtins(request.llm_options),
-            budget=msgspec.to_builtins(request.budget),
-            actor_id=request.actor_id,
-            title=request.title,
-            reply_address=request.reply_address,
-            metadata=request.metadata,
-            updated_at=datetime.now(),
-        )
-        updated = await ConversationORM.get(
-            conversation_id=request.conversation_id
-        ).select_related(
-            "character",
-            "capability_set",
-            "llm_backend",
-        )
-        return ConversationCreateResult(
-            conversation=await from_orm(updated, ConversationRecord),
-            created=False,
-        )
-
-    def _binding_matches(
-        self,
-        conversation: ConversationRecord,
-        request: ConversationCreate,
-    ) -> bool:
-        return (
-            conversation.actor_id == request.actor_id
-            and conversation.character.id == request.character.id
-            and conversation.capability_set.id == request.capability_set.id
-            and conversation.llm_backend.id == request.llm_backend.id
-            and conversation.model == request.model
-        )
+            return await from_orm(row, ConversationRecord)
 
     async def get_conversation(
         self,
@@ -340,11 +272,17 @@ class ConversationStore:
     ) -> ConversationRecord | None:
         with self.store.db.activate():
             row = await ConversationORM.get_or_none(
-                conversation_id=conversation_id
+                conversation_id=conversation_id,
             ).select_related("character", "capability_set", "llm_backend")
             if row is None:
                 return None
             return await from_orm(row, ConversationRecord)
+
+    async def conversation_exists(self, conversation_id: str) -> bool:
+        with self.store.db.activate():
+            return await ConversationORM.filter(
+                conversation_id=conversation_id,
+            ).exists()
 
     async def list_conversations(
         self,
@@ -364,65 +302,80 @@ class ConversationStore:
             records = [await from_orm(r, ConversationRecord) for r in rows]
         return sorted(records, key=_conversation_sort_key, reverse=True)
 
-    async def append_message(
+    # ── Ordered history items (canonical conversation state) ──────────
+
+    async def append_history_item(
         self,
-        *,
-        message_id: str,
         conversation_id: str,
-        role: str,
-        content: list[dict[str, object]],
-        metadata: dict[str, object] | None = None,
-        timestamp: int | None = None,
-    ) -> ConversationMessageRecord:
-        msg_ts = timestamp if timestamp is not None else int(time.time())
+        item: yuullm.PromptItem,
+    ) -> ConversationHistoryItemRecord:
+        item_kind, item_json = encode_prompt_item(item)
         with self.store.db.activate():
-            row = await ConversationMessageORM.create(
-                message_id=message_id,
+            row = await ConversationHistoryItemORM.create(
                 conversation_id=conversation_id,
-                role=role,
-                raw_content=msgspec.json.encode(content).decode(),
-                metadata=metadata or {},
-                timestamp=msg_ts,
+                item_kind=item_kind,
+                item_json=item_json,
             )
             now = datetime.now()
-            await ConversationORM.filter(conversation_id=conversation_id).update(
-                updated_at=now,
-            )
+            await ConversationORM.filter(
+                conversation_id=conversation_id,
+            ).update(updated_at=now)
         return msgspec.convert(
-            to_builtins(row), type=ConversationMessageRecord, strict=False
+            to_builtins(row), type=ConversationHistoryItemRecord, strict=False
         )
 
-    async def list_messages(
+    async def append_history_items(
         self,
         conversation_id: str,
-        *,
-        limit: int = 100,
-    ) -> list[ConversationMessageRecord]:
+        items: list[yuullm.PromptItem],
+    ) -> list[ConversationHistoryItemRecord]:
+        if not items:
+            return []
+        encoded = [encode_prompt_item(item) for item in items]
+        with self.store.db.activate():
+            async with self.store.transaction():
+                rows: list[ConversationHistoryItemRecord] = []
+                for item_kind, item_json in encoded:
+                    row = await ConversationHistoryItemORM.create(
+                        conversation_id=conversation_id,
+                        item_kind=item_kind,
+                        item_json=item_json,
+                    )
+                    rows.append(
+                        msgspec.convert(
+                            to_builtins(row),
+                            type=ConversationHistoryItemRecord,
+                            strict=False,
+                        )
+                    )
+                now = datetime.now()
+                await ConversationORM.filter(
+                    conversation_id=conversation_id,
+                ).update(updated_at=now)
+        return rows
+
+    async def list_history_items(
+        self,
+        conversation_id: str,
+    ) -> list[ConversationHistoryItemRecord]:
         with self.store.db.activate():
             rows = (
-                await ConversationMessageORM.filter(
+                await ConversationHistoryItemORM.filter(
                     conversation_id=conversation_id,
                 )
-                .order_by("timestamp", "id")
-                .limit(limit)
+                .order_by("id")
+                .limit(1000)
             )
         return [
             msgspec.convert(
-                to_builtins(r), type=ConversationMessageRecord, strict=False
+                to_builtins(r), type=ConversationHistoryItemRecord, strict=False
             )
             for r in rows
         ]
 
     async def history(self, conversation_id: str) -> yuullm.History:
-        messages = await self.list_messages(conversation_id, limit=1000)
-        return [
-            yuullm.Message(
-                cast(Any, record.role),
-                cast(Any, _decode_content(record.raw_content)),
-            )
-            for record in messages
-            if record.role in {"user", "assistant", "system", "tool"}
-        ]
+        rows = await self.list_history_items(conversation_id)
+        return [decode_prompt_item(row.item_kind, row.item_json) for row in rows]
 
 
 _PROJECTED_RUNTIME_EVENTS = {
@@ -465,112 +418,123 @@ class ConversationManager:
         init=False,
     )
 
-    async def create_conversation(
-        self,
-        *,
-        request: ConversationCreate,
-    ) -> ConversationCreateResult:
-        return await self.store.create_conversation(request=request)
-
-    async def create_from_actor_defaults(
-        self,
-        *,
-        conversation_id: str,
-        actor_id: str,
-        title: str = "",
-        reply_address: str = "",
-        metadata: dict[str, object] | None = None,
-    ) -> ConversationCreateResult:
-        actor = await self._active_actor(actor_id)
-        return await self.create_conversation(
-            request=ConversationCreate(
-                conversation_id=conversation_id,
-                actor_id=actor.id,
-                character=actor.default_character,
-                capability_set=actor.capability_set,
-                llm_backend=actor.default_llm_backend,
-                model=actor.default_model,
-                llm_options=actor.default_llm_options,
-                budget=actor.default_budget,
-                title=title,
-                reply_address=reply_address,
-                metadata=metadata or {},
-            )
-        )
-
-    async def create_from_refs(
-        self,
-        *,
-        conversation_id: str,
-        character_id: str,
-        capability_set_id: str,
-        llm_backend_id: str,
-        model: str = "",
-        title: str = "",
-        reply_address: str = "",
-        metadata: dict[str, object] | None = None,
-    ) -> ConversationCreateResult:
-        character = await self._require_character(character_id)
-        capability_set = await self._require_capability_set(capability_set_id)
-        llm_backend = await self._require_llm_backend(llm_backend_id)
-        return await self.create_conversation(
-            request=ConversationCreate(
-                conversation_id=conversation_id,
-                character=character,
-                capability_set=capability_set,
-                llm_backend=llm_backend,
-                model=model,
-                llm_options=YuuAgentLLMOptions(),
-                budget=YuuAgentBudget(),
-                title=title,
-                reply_address=reply_address,
-                metadata=metadata or {},
-            )
-        )
-
-    async def ensure_agent(self, conversation_id: str) -> dict[str, str]:
-        conversation = await self._require_conversation(conversation_id)
-        runtime = await self._runtime_for(conversation)
-        agent = await runtime.ensure_conversation_agent(
-            conversation_id,
-            await self.store.history(conversation_id),
-        )
-        agent_id = _agent_id(agent)
-        self._agent_to_conversation[agent_id] = conversation_id
-        return {
-            "conversation_id": conversation_id,
-            "actor_id": conversation.actor_id,
-            "agent_id": agent_id,
-            "agent_name": agent.name,
-        }
-
     async def send_message(
         self,
         *,
         conversation_id: str,
-        content: list[dict[str, object]],
+        text: str,
+        binding: ConversationSendBinding | None = None,
         message_id: str | None = None,
-    ) -> ConversationMessageRecord:
-        conversation = await self._require_conversation(conversation_id)
+    ) -> tuple[ConversationRecord, str]:
+        """Persist a user Message and run the conversation turn.
+
+        ``binding`` carries first-send binding fields (``actor_id`` etc.).
+        On the first real send it is required and the conversation row is
+        created from it; on subsequent sends the persisted binding is the
+        authority and any conflicting ``binding.actor_id`` raises
+        :class:`ConversationBindingConflict`.
+
+        Returns the persisted ``ConversationRecord`` and the user message id.
+        The turn itself runs on a background task — the method returns
+        before the turn completes, mirroring the prior 202 semantics.
+        """
+        exists = await self.store.conversation_exists(conversation_id)
+        if exists:
+            conversation = await self._require_conversation(conversation_id)
+            self._check_subsequent_send_binding(conversation, binding)
+        else:
+            conversation = await self._create_first_send_conversation(
+                conversation_id=conversation_id,
+                binding=binding,
+            )
+
         runtime = await self._runtime_for(conversation)
-        history = await self.store.history(conversation_id)
+
+        # Cache hit on the in-memory agent short-circuits the DB history
+        # read on the hot path. Cache miss (restart / idle expiry) and
+        # first-send both branch inside runtime.ensure_conversation_agent.
+        if exists and runtime.conversation_agents.get(conversation_id) is None:
+            history = await self.store.history(conversation_id)
+        else:
+            history = []
+
         agent = await runtime.ensure_conversation_agent(conversation_id, history)
         self._agent_to_conversation[_agent_id(agent)] = conversation_id
+
+        # Persist the freshly-built prompt prefix on the first-send path
+        # (prefix lives inside agent.history now). Persisted before the
+        # user Message so ordering stays [tool_specs?, system, user, ...].
+        if not exists:
+            prefix = list(agent.history)
+            if prefix:
+                await self.store.append_history_items(conversation_id, prefix)
+
         message_id = message_id or uuid.uuid4().hex
-        record = await self.store.append_message(
-            conversation_id=conversation_id,
-            message_id=message_id,
-            role="user",
-            content=content,
-            metadata={},
-        )
+        user_message = yuullm.user(text)
+        await self.store.append_history_item(conversation_id, user_message)
+
         self._start_turn_task(
             conversation_id=conversation_id,
             runtime=runtime,
-            message=yuullm.Message("user", cast(Any, content)),
-            history=history,
+            message=user_message,
         )
-        return record
+        return conversation, message_id
+
+    def _check_subsequent_send_binding(
+        self,
+        conversation: ConversationRecord,
+        binding: ConversationSendBinding | None,
+    ) -> None:
+        if binding is None:
+            return
+        supplied_actor = (binding.actor_id or "").strip()
+        if supplied_actor and supplied_actor != conversation.actor_id:
+            raise ConversationBindingConflict(conversation=conversation)
+
+    async def _create_first_send_conversation(
+        self,
+        *,
+        conversation_id: str,
+        binding: ConversationSendBinding | None,
+    ) -> ConversationRecord:
+        if binding is None or not binding.actor_id.strip():
+            raise LookupError(
+                f"first send for conversation {conversation_id!r} requires actor_id"
+            )
+        actor = await self._active_actor(binding.actor_id.strip())
+        character_id = binding.character_id.strip() or actor.default_character.id
+        capability_set_id = (
+            binding.capability_set_id.strip() or actor.capability_set.id
+        )
+        llm_backend_id = binding.llm_backend_id.strip() or actor.default_llm_backend.id
+        model = binding.model.strip() or actor.default_model
+
+        if character_id != actor.default_character.id:
+            character = await self._require_character(character_id)
+        else:
+            character = actor.default_character
+        if capability_set_id != actor.capability_set.id:
+            capability_set = await self._require_capability_set(capability_set_id)
+        else:
+            capability_set = actor.capability_set
+        if llm_backend_id != actor.default_llm_backend.id:
+            llm_backend = await self._require_llm_backend(llm_backend_id)
+        else:
+            llm_backend = actor.default_llm_backend
+
+        return await self.store.create_conversation_row(
+            conversation_id=conversation_id,
+            character=character,
+            capability_set=capability_set,
+            llm_backend=llm_backend,
+            model=model,
+            llm_options=actor.default_llm_options,
+            budget=actor.default_budget,
+            actor_id=actor.id,
+            title="",
+            reply_address="",
+            metadata={},
+        )
 
     def _start_turn_task(
         self,
@@ -578,14 +542,12 @@ class ConversationManager:
         conversation_id: str,
         runtime: YuuAgentsActorRuntime,
         message: yuullm.Message,
-        history: yuullm.History,
     ) -> None:
         task = asyncio.create_task(
             self._run_turn_task(
                 conversation_id=conversation_id,
                 runtime=runtime,
                 message=message,
-                history=history,
             )
         )
         self._turn_tasks.add(task)
@@ -597,13 +559,11 @@ class ConversationManager:
         conversation_id: str,
         runtime: YuuAgentsActorRuntime,
         message: yuullm.Message,
-        history: yuullm.History,
     ) -> None:
         try:
             await runtime.handle_conversation_message(
                 conversation_id,
                 message,
-                history,
             )
         except Exception as exc:
             event = RuntimeEvent(
@@ -638,6 +598,28 @@ class ConversationManager:
             subscribers.discard(queue)
             if not subscribers:
                 self._subscribers.pop(conversation_id, None)
+
+    def drop_cached_conversation_agent(self, conversation_id: str) -> bool:
+        """Evict the in-memory runtime+agent cache for ``conversation_id``.
+
+        Forces the next :meth:`send_message` to fall into the restart
+        branch: a fresh runtime is built and ``ensure_conversation_agent``
+        reads ``store.history`` to restore the persisted prefix.
+
+        Used by tests to simulate a daemon-restart cache drop without
+        losing the on-disk history. Returns ``True`` if a cached runtime
+        was evicted.
+        """
+        runtime = self._runtimes.pop(conversation_id, None)
+        if runtime is None:
+            return False
+        # Drop this conversation's agent-to-conversation index entries;
+        # the next send re-registers them via ensure_conversation_agent.
+        for agent_id, stored_id in list(self._agent_to_conversation.items()):
+            if stored_id == conversation_id:
+                self._agent_to_conversation.pop(agent_id, None)
+        self._observed_runtimes.pop(conversation_id, None)
+        return True
 
     async def _require_conversation(self, conversation_id: str) -> ConversationRecord:
         conversation = await self.store.get_conversation(conversation_id)
@@ -779,16 +761,7 @@ class ConversationManager:
         finished = LLMFinishedData.from_event(event)
         message = finished.message
         if isinstance(message, yuullm.Message):
-            content = _content_to_builtins(message.content)
-            message_id = uuid.uuid4().hex
-            await self.store.append_message(
-                conversation_id=conversation_id,
-                message_id=message_id,
-                role=message.role,
-                content=content,
-                metadata=_event_metadata(event),
-                timestamp=int(event.timestamp),
-            )
+            await self.store.append_history_item(conversation_id, message)
 
     async def _handle_tool_result(
         self,
@@ -800,21 +773,16 @@ class ConversationManager:
         result = render_tool_output_final_text(str(data.get("result") or ""))
         tool_name = str(data.get("tool_name") or "")
         status = str(data.get("status") or "completed")
-        message_id = uuid.uuid4().hex
+        _ = status
 
-        await self.store.append_message(
-            conversation_id=conversation_id,
-            message_id=message_id,
-            role="tool",
-            content=[{
-                "type": "tool_result",
-                "tool_call_id": tool_call_id,
-                "tool_name": tool_name,
-                "content": result,
-                "status": status,
-            }],
-            metadata=_event_metadata(event),
-            timestamp=int(event.timestamp),
+        # Persist the canonical yuullm.tool(...) Message shape: role="tool",
+        # content=[{type:"tool_result", tool_call_id, content}]. The SSE
+        # projector continues to consume the decorated fields from the
+        # runtime event for frontend rendering; only the persisted item
+        # uses the canonical shape.
+        await self.store.append_history_item(
+            conversation_id,
+            yuullm.tool(tool_call_id, result),
         )
 
         missing = self._sse_projector.missing_tool_result_delta(

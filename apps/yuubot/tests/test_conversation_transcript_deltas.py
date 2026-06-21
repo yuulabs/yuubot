@@ -169,7 +169,10 @@ async def test_final_tool_result_emits_only_missing_visible_delta() -> None:
 
 def manager_with_store() -> ConversationManager:
     store = MagicMock()
-    store.append_message = AsyncMock()
+    store.append_history_item = AsyncMock()
+    store.append_history_items = AsyncMock()
+    store.conversation_exists = AsyncMock(return_value=True)
+    store.list_history_items = AsyncMock(return_value=[])
     return ConversationManager(
         store=store,
         repository=MagicMock(),

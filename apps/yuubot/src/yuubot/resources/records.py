@@ -256,3 +256,19 @@ class ConversationMessageRecord(msgspec.Struct):
     timestamp: int
     id: int = 0
     created_at: datetime | None = None
+
+
+class ConversationHistoryItemRecord(msgspec.Struct):
+    """One persisted ``yuullm.PromptItem`` in an ordered conversation history.
+
+    Append-only. ``id`` is the auto-increment integer primary key and acts as
+    the canonical sequence number. ``item_kind`` is ``"tools"`` for
+    ``yuullm.ToolSpecs`` and ``"message"`` for ``yuullm.Message``.
+    ``item_json`` is the stable JSON encoding of the PromptItem.
+    """
+
+    id: int = 0
+    conversation_id: str = ""
+    item_kind: str = ""
+    item_json: str = ""
+    created_at: datetime | None = None

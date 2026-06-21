@@ -8,19 +8,21 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from datetime import datetime
 from typing import cast
 
 import msgspec
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
+import yuullm
 
 from yuubot.bootstrap.config import ServerConfig
 from yuubot.core.actors import ActorManager
+from yuubot.core.assembly._history_codec import decode_prompt_item
 from yuubot.core.conversations import (
     ConversationBindingConflict,
     ConversationManager,
+    ConversationSendBinding,
 )
 from yuubot.resources.records import ConversationRecord
 from yuubot.core.integrations import IntegrationCore
@@ -42,26 +44,21 @@ logger = logging.getLogger(__name__)
 # -- Shared request structs (was in app.py) --
 
 
-class ConversationRequest(msgspec.Struct, forbid_unknown_fields=False):
-    """Typed boundary for conversation creation requests."""
+class ConversationMessageRequest(msgspec.Struct, forbid_unknown_fields=False):
+    """Typed boundary for conversation message send requests.
 
-    conversation_id: str = ""
+    ``text`` is the user message body required on every send. ``actor_id``
+    (and friends) are consumed on the first send only and ignored on
+    subsequent sends, where the persisted binding is authoritative.
+    """
+
+    text: str = ""
+    message_id: str = ""
     actor_id: str = ""
     character_id: str = ""
     capability_set_id: str = ""
     llm_backend_id: str = ""
     model: str = ""
-    title: str = ""
-    reply_address: str = ""
-    metadata: dict[str, object] = msgspec.field(default_factory=dict)
-
-
-class ConversationMessageRequest(msgspec.Struct, forbid_unknown_fields=False):
-    """Typed boundary for conversation message requests."""
-
-    text: str = ""
-    content: list[dict[str, object]] = msgspec.field(default_factory=list)
-    message_id: str = ""
 
 
 # --
@@ -139,54 +136,9 @@ async def _resource_changed_from_request(
         return error_response(str(exc), status_code=400)
 
 
-async def _conversation_payload_from_request(
+async def _conversation_message_request_from_request(
     request: Request,
-) -> ConversationRequest | JSONResponse:
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError:
-        return error_response("request body must be valid JSON", status_code=400)
-    if not isinstance(payload, dict):
-        return error_response("request body must be a JSON object", status_code=400)
-
-    try:
-        req = msgspec.convert(payload, type=ConversationRequest, strict=False)
-    except msgspec.ValidationError, msgspec.DecodeError:
-        return error_response("invalid request body", status_code=400)
-
-    if not req.actor_id.strip() and not (
-        req.character_id.strip()
-        and req.capability_set_id.strip()
-        and req.llm_backend_id.strip()
-    ):
-        return error_response(
-            "actor_id or character_id/capability_set_id/llm_backend_id must be provided",
-            status_code=400,
-        )
-    return req
-
-
-def _content_items_from_request(
-    req: ConversationMessageRequest,
-) -> list[dict[str, object]] | JSONResponse:
-    if req.text.strip():
-        return [{"type": "text", "text": req.text.strip()}]
-
-    if not req.content:
-        return error_response(
-            "text or content must be provided",
-            status_code=400,
-        )
-
-    result: list[dict[str, object]] = []
-    for item in req.content:
-        result.append({str(key): value for key, value in item.items()})
-    return result
-
-
-async def _conversation_message_payload_from_request(
-    request: Request,
-) -> dict[str, object] | JSONResponse:
+) -> ConversationMessageRequest | JSONResponse:
     try:
         payload = await request.json()
     except json.JSONDecodeError:
@@ -196,19 +148,12 @@ async def _conversation_message_payload_from_request(
 
     try:
         req = msgspec.convert(payload, type=ConversationMessageRequest, strict=False)
-    except msgspec.ValidationError, msgspec.DecodeError:
+    except (msgspec.ValidationError, msgspec.DecodeError):
         return error_response("invalid request body", status_code=400)
 
-    content = _content_items_from_request(req)
-    if isinstance(content, JSONResponse):
-        return content
-
-    message_id = req.message_id.strip() or None
-
-    return {
-        "content": content,
-        "message_id": message_id,
-    }
+    if not req.text.strip():
+        return error_response("text must be provided", status_code=400)
+    return req
 
 
 def _bearer_token(request: Request) -> str | None:
@@ -387,54 +332,6 @@ def make_plugin_ingest_handler(
     return plugin_ingest
 
 
-def make_create_conversation_handler(
-    conversation_manager: ConversationManager,
-):
-    async def create_conversation(request: Request) -> JSONResponse:
-        payload_or_response = await _conversation_payload_from_request(request)
-        if isinstance(payload_or_response, JSONResponse):
-            return payload_or_response
-        req = payload_or_response
-        conversation_id = req.conversation_id.strip() or uuid.uuid4().hex
-        try:
-            if req.actor_id.strip():
-                conversation = await conversation_manager.create_from_actor_defaults(
-                    conversation_id=conversation_id,
-                    actor_id=req.actor_id.strip(),
-                    title=req.title,
-                    reply_address=req.reply_address,
-                    metadata=req.metadata,
-                )
-            else:
-                conversation = await conversation_manager.create_from_refs(
-                    conversation_id=conversation_id,
-                    character_id=req.character_id.strip(),
-                    capability_set_id=req.capability_set_id.strip(),
-                    llm_backend_id=req.llm_backend_id.strip(),
-                    model=req.model.strip(),
-                    title=req.title,
-                    reply_address=req.reply_address,
-                    metadata=req.metadata,
-                )
-        except ConversationBindingConflict as exc:
-            return _conversation_conflict_response(exc)
-        except LookupError as exc:
-            return error_response(str(exc), status_code=404)
-        except TypeError as exc:
-            return error_response(str(exc), status_code=400)
-        except ValueError as exc:
-            return error_response(str(exc), status_code=400)
-        return JSONResponse(
-            {
-                "status": "ok",
-                "data": _conversation_metadata(conversation.conversation),
-            },
-            status_code=201 if conversation.created else 200,
-        )
-
-    return create_conversation
-
-
 def make_get_conversation_handler(
     conversation_manager: ConversationManager,
 ):
@@ -493,73 +390,119 @@ def make_list_conversations_handler(
     return list_conversations
 
 
-def make_ensure_conversation_agent_handler(
-    conversation_manager: ConversationManager,
-):
-    async def ensure_conversation_agent(request: Request) -> JSONResponse:
-        conversation_id = request.path_params["conversation_id"]
-        try:
-            data = await conversation_manager.ensure_agent(conversation_id)
-        except LookupError as exc:
-            return error_response(str(exc), status_code=404)
-        except ConfigurationError as exc:
-            return _configuration_error_response(exc)
-        except TypeError as exc:
-            return error_response(str(exc), status_code=400)
-        except ValueError as exc:
-            return error_response(str(exc), status_code=400)
-        return JSONResponse({"status": "ok", "data": data})
-
-    return ensure_conversation_agent
-
-
 def make_conversation_messages_handler(
     conversation_manager: ConversationManager,
 ):
     async def conversation_messages(request: Request) -> JSONResponse:
         conversation_id = request.path_params["conversation_id"]
         try:
-            messages = await conversation_manager.store.list_messages(conversation_id)
+            exists = (
+                await conversation_manager.store.conversation_exists(conversation_id)
+            )
+            if not exists:
+                return error_response(
+                    f"conversation {conversation_id!r} does not exist",
+                    status_code=404,
+                )
+            items = await conversation_manager.store.list_history_items(
+                conversation_id
+            )
         except LookupError as exc:
             return error_response(str(exc), status_code=404)
         except ValueError as exc:
             return error_response(str(exc), status_code=400)
+
+        data: list[dict[str, object]] = []
+        for item in items:
+            if item.item_kind != "message":
+                continue
+            try:
+                decoded = decode_prompt_item(item.item_kind, item.item_json)
+            except ValueError:
+                continue
+            # decode_prompt_item returns Message for item_kind="message".
+            if not isinstance(decoded, yuullm.Message):
+                continue
+            if decoded.role not in {"user", "assistant", "tool"}:
+                continue
+            data.append(
+                _project_message_history_row(
+                    item_id=item.id,
+                    conversation_id=item.conversation_id,
+                    message=decoded,
+                    created_at=item.created_at,
+                )
+            )
+        return JSONResponse({"status": "ok", "data": data})
+
+    return conversation_messages
+
+
+def make_model_history_handler(
+    conversation_manager: ConversationManager,
+):
+    async def model_history(request: Request) -> JSONResponse:
+        conversation_id = request.path_params["conversation_id"]
+        exists = await conversation_manager.store.conversation_exists(conversation_id)
+        if not exists:
+            return error_response(
+                f"conversation {conversation_id!r} does not exist",
+                status_code=404,
+            )
+        items = await conversation_manager.store.list_history_items(conversation_id)
+        data: list[dict[str, object]] = []
+        for item in items:
+            try:
+                decoded = decode_prompt_item(item.item_kind, item.item_json)
+            except ValueError:
+                continue
+            data.append(
+                {
+                    "sequence": item.id,
+                    "item_kind": item.item_kind,
+                    "item": _decoded_item_to_builtins(decoded),
+                }
+            )
         return JSONResponse(
             {
                 "status": "ok",
-                "data": [
-                    {
-                        "id": message.id,
-                        "message_id": message.message_id,
-                        "conversation_id": message.conversation_id,
-                        "role": message.role,
-                        "raw_content": message.raw_content,
-                        "metadata": message.metadata,
-                        "timestamp": message.timestamp,
-                    }
-                    for message in messages
-                ],
+                "data": {
+                    "conversation_id": conversation_id,
+                    "history": data,
+                },
             }
         )
 
-    return conversation_messages
+    return model_history
 
 
 def make_send_conversation_message_handler(
     conversation_manager: ConversationManager,
 ):
     async def send_conversation_message(request: Request) -> JSONResponse:
-        payload_or_response = await _conversation_message_payload_from_request(request)
-        if isinstance(payload_or_response, JSONResponse):
-            return payload_or_response
-        payload = payload_or_response
+        req_or_response = await _conversation_message_request_from_request(request)
+        if isinstance(req_or_response, JSONResponse):
+            return req_or_response
+        req = req_or_response
         conversation_id = request.path_params["conversation_id"]
+
+        binding = ConversationSendBinding(
+            conversation_id=conversation_id,
+            actor_id=req.actor_id,
+            character_id=req.character_id,
+            capability_set_id=req.capability_set_id,
+            llm_backend_id=req.llm_backend_id,
+            model=req.model,
+        )
         try:
-            record = await conversation_manager.send_message(
+            _, message_id = await conversation_manager.send_message(
                 conversation_id=conversation_id,
-                content=cast(list[dict[str, object]], payload["content"]),
-                message_id=cast(str | None, payload.get("message_id")),
+                text=req.text,
+                binding=binding,
+                message_id=req.message_id.strip() or None,
             )
+        except ConversationBindingConflict as exc:
+            return _conversation_conflict_response(exc)
         except LookupError as exc:
             return error_response(str(exc), status_code=404)
         except ConfigurationError as exc:
@@ -572,8 +515,8 @@ def make_send_conversation_message_handler(
             {
                 "status": "accepted",
                 "data": {
-                    "conversation_id": record.conversation_id,
-                    "message_id": record.message_id,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
                 },
             },
             status_code=202,
@@ -613,3 +556,43 @@ def make_conversation_events_handler(
         return StreamingResponse(stream(), media_type="text/event-stream")
 
     return conversation_events
+
+
+# -- Projection helpers for conversation_history_items --
+
+
+def _project_message_history_row(
+    *,
+    item_id: int,
+    conversation_id: str,
+    message: yuullm.Message,
+    created_at: datetime | None,
+) -> dict[str, object]:
+    """Project one persisted ``yuullm.Message`` history item row.
+
+    Shape mirrors the prior ``conversation_messages`` row for backwards
+    compatibility with transcript consumers: ``id``, ``message_id`` (empty
+    — no longer tracked at this layer), ``conversation_id``, ``role``,
+    ``raw_content`` (JSON-encoded content list), ``metadata`` (empty — the
+    canonical yuullm.Message no longer carries event metadata), and
+    ``timestamp`` (the row id for ordering stability).
+    """
+    raw_content = msgspec.json.encode(
+        msgspec.to_builtins(message.content)
+    ).decode("utf-8")
+    timestamp = int(created_at.timestamp()) if created_at is not None else item_id
+    return {
+        "id": item_id,
+        "message_id": "",
+        "conversation_id": conversation_id,
+        "role": message.role,
+        "raw_content": raw_content,
+        "metadata": {},
+        "timestamp": timestamp,
+        "created_at": _iso_or_none(created_at),
+    }
+
+
+def _decoded_item_to_builtins(item: yuullm.PromptItem) -> object:
+    """Stable JSON-safe builtins form of a decoded history item."""
+    return msgspec.to_builtins(item)

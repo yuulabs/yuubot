@@ -57,19 +57,11 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
             assert conversation_page.status_code == 200
             assert "yuubot test admin" in conversation_page.text
 
-            created = await client.post(
-                "/api/admin/conversations",
-                json={
-                    "conversation_id": "admin-conversation-e2e",
-                    "actor_id": actor["id"],
-                },
-            )
-            assert created.status_code == 201, created.text
-
             conversation = await client.post(
                 "/api/admin/conversations/admin-conversation-e2e/messages",
                 json={
                     "text": CONVERSATION_TEXT,
+                    "actor_id": actor["id"],
                 },
             )
             messages = await _conversation_messages(client, "admin-conversation-e2e")

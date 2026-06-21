@@ -123,10 +123,15 @@ async def test_final_tool_result_persists_and_emits_visible_delta() -> None:
         "text_delta": "20%|##        | 2/10done\n",
     }]
 
-    call_kwargs = store.append_message.call_args.kwargs
-    assert call_kwargs["role"] == "tool"
-    assert call_kwargs["content"][0]["content"] == "20%|##        | 2/10done\n"
-    assert "10%|#         | 1/10" not in call_kwargs["content"][0]["content"]
+    # Persisted canonical yuullm.tool Message — content carries the final
+    # rendered text only (no progress-bar prefix).
+    assert store.append_history_item.call_count == 1
+    persisted_message = store.append_history_item.call_args.args[1]
+    assert persisted_message.role == "tool"
+    assert persisted_message.content[0]["type"] == "tool_result"
+    assert persisted_message.content[0]["tool_call_id"] == "call-1"
+    assert persisted_message.content[0]["content"] == "20%|##        | 2/10done\n"
+    assert "10%|#         | 1/10" not in persisted_message.content[0]["content"]
 
 
 def test_terminal_final_text_handles_backspace_and_strips_ansi() -> None:
@@ -174,7 +179,10 @@ def test_projector_does_not_emit_raw_runtime_event_names() -> None:
 
 def manager_with_store() -> tuple[ConversationManager, MagicMock]:
     store = MagicMock()
-    store.append_message = AsyncMock()
+    store.append_history_item = AsyncMock()
+    store.append_history_items = AsyncMock()
+    store.conversation_exists = AsyncMock(return_value=True)
+    store.list_history_items = AsyncMock(return_value=[])
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),

@@ -120,8 +120,21 @@ class YuuAgentsActorRuntime:
             return agent
         definition = self._conversation_definition(conversation_id)
         agent = create_agent(self.stage, definition)
-        self._init_agent_state(agent, definition)
-        agent.history.extend(history)
+        if history:
+            # Cache miss after restart / idle expiry: replace the freshly
+            # built in-memory agent history with the persisted prefix.
+            # create_agent() seeds [system_message] from
+            # definition.prompt.system — that snapshot is the LIVE one
+            # (mutated AGENTS.md / Character) and must not leak into the
+            # resumed conversation. Restoration here only replays rows
+            # already written to conversation_history_items at first send.
+            self._init_agent_budget(agent, definition)
+            agent.replace_history(list(history))
+        else:
+            # First send: build the prompt prefix (tools + system) from
+            # the live binding snapshot. The prefix is persisted as
+            # ordered history items by ConversationManager.send_message.
+            self._init_agent_state(agent, definition)
         self.conversation_agents[conversation_id] = agent
         self._track_agent(agent)
         await emit_agent_started(self.stage.eventbus, agent, definition)
@@ -131,9 +144,8 @@ class YuuAgentsActorRuntime:
         self,
         conversation_id: str,
         message: yuullm.Message,
-        history: yuullm.History,
     ) -> Agent:
-        agent = await self.ensure_conversation_agent(conversation_id, history)
+        agent = await self.ensure_conversation_agent(conversation_id, [])
         agent.append(message)
         await self._run_agent_turn(agent)
         return agent
@@ -472,30 +484,58 @@ class YuuAgentsActorRuntime:
         agent: Agent,
         definition: AgentDefinition,
     ) -> None:
-        """Create budget from definition, link pricing, build tool specs."""
+        """Full non-conversation actor state init: budget + prompt prefix.
+
+        Used by the delegate / schedule-trigger code paths, which always
+        start with an empty agent and need the freshly-snapshotted prefix.
+        The conversation path uses :meth:`_init_agent_budget` and
+        :meth:`_init_agent_prompt_prefix` separately so the restart branch
+        can replay persisted history while still setting up budget/pricing.
+        """
+        self._init_agent_budget(agent, definition)
+        self._init_agent_prompt_prefix(agent, definition)
+
+    def _init_agent_budget(
+        self,
+        agent: Agent,
+        definition: AgentDefinition,
+    ) -> None:
+        """Materialize the budget for ``agent`` and link its pricing table."""
         budget = definition.budget.to_budget()
         self._agent_budgets[agent.id] = budget
         pricing = self.agent_pricings.pop(definition.name, None)
         if pricing is not None:
             self.agent_pricings[agent.id] = pricing
 
+    def _init_agent_prompt_prefix(
+        self,
+        agent: Agent,
+        definition: AgentDefinition,
+    ) -> None:
+        """Build the model-visible prompt prefix (tool specs + system message).
+
+        Replaces ``agent.history`` with the freshly-snapshotted prefix,
+        preserving any pre-existing non-system Message items (none on the
+        first-send path — the manager appends the user Message afterwards).
+        """
         tool_specs = _build_tool_specs_for_agent(self.stage)
-        if tool_specs or definition.prompt.system:
-            history: yuullm.History = []
-            if tool_specs:
-                history.append(yuullm.tools(tool_specs))
-            if definition.prompt.system:
-                history.append(yuullm.system(definition.prompt.system))
-            existing = [
-                m for m in agent.history
-                if isinstance(m, yuullm.Message) and m.role != "system"
-            ]
-            if existing:
-                agent.replace_history(history)
-                for msg in existing:
-                    agent.append(msg)
-            else:
-                agent.replace_history(history)
+        prefix: yuullm.History = []
+        if tool_specs:
+            prefix.append(yuullm.tools(tool_specs))
+        if definition.prompt.system:
+            prefix.append(yuullm.system(definition.prompt.system))
+        if not prefix:
+            return
+        existing = [
+            m for m in agent.history
+            if isinstance(m, yuullm.Message) and m.role != "system"
+        ]
+        if existing:
+            agent.replace_history(prefix)
+            for msg in existing:
+                agent.append(msg)
+        else:
+            agent.replace_history(prefix)
 
     def _track_agent(self, agent: Agent) -> None:
         self.agents[agent.id] = agent
