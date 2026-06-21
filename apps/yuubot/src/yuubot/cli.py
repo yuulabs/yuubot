@@ -277,12 +277,13 @@ def _build_web(config: BootstrapConfig) -> None:
         return
 
     pm = _detect_package_manager(web_root)
+    install_cmd = _install_command(pm, web_root)
 
     # Install dependencies if node_modules is missing
     if not (web_root / "node_modules").is_dir():
         click.echo(f"installing frontend dependencies with {pm} ...")
         result = subprocess.run(
-            [pm, "install"],
+            install_cmd,
             cwd=str(web_root),
             capture_output=True,
             text=True,
@@ -308,6 +309,44 @@ def _detect_package_manager(web_root: Path) -> str:
     if (web_root / "pnpm-lock.yaml").exists():
         return "pnpm"
     return "npm"
+
+
+def _install_command(pm: str, web_root: Path) -> list[str]:
+    """Build the install command, pointing pnpm / npm at ``.tmp/cache``.
+
+    Auto-discovers the monorepo root by walking up from ``web_root`` until
+    ``uv.lock`` is found (the uv workspace root marker). The shared store
+    lives at ``<monorepo_root>/.tmp/cache/pnpm-store`` for pnpm and
+    ``<monorepo_root>/.tmp/cache/npm`` for npm; both are created on first
+    run so a fresh ``ybot dev`` from a worktree does not need a manual
+    ``pnpm install --store-dir ...`` invocation.
+
+    npm uses ``--cache``; pnpm uses ``--store-dir``. Falls back to the
+    plain ``install`` command when the monorepo root can't be detected,
+    so behavior outside the monorepo (e.g. a standalone checkout) is
+    unchanged.
+    """
+    monorepo_root = _find_monorepo_root(web_root)
+    if monorepo_root is None:
+        return [pm, "install"]
+    cache_dir = monorepo_root / ".tmp" / "cache" / (pm if pm == "npm" else "pnpm-store")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    flag = "--cache" if pm == "npm" else "--store-dir"
+    return [pm, "install", flag, str(cache_dir)]
+
+
+def _find_monorepo_root(start: Path) -> Path | None:
+    """Walk up from ``start`` to the directory holding ``uv.lock``.
+
+    The uv workspace root carries ``uv.lock``; subpackages do not.
+    Returns ``None`` when no ancestor up to the filesystem root contains it
+    (e.g. a standalone checkout of just ``apps/yuubot``).
+    """
+    candidate = start.resolve()
+    for parent in [candidate, *candidate.parents]:
+        if (parent / "uv.lock").is_file():
+            return parent
+    return None
 
 
 def _web_build_is_fresh(web_root: Path, web_dist: Path) -> bool:
