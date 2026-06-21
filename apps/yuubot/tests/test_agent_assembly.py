@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import msgspec
 from yuuagents.core.task import Owner, OwnerType
 from yuuagents.obs import EntityLog
 from yuuagents.python.runtime import PythonRuntime
@@ -20,10 +21,9 @@ from yuubot.core.assembly._python_tool import ExecutePythonParams, ExecutePython
 from yuubot.core.assembly import build_agent_definition
 from yuubot.core.bindings import ActorBinding
 from yuubot.core.facade import ActorFacadeBinding
-from yuubot.core.integrations.impls.echo import ECHO_CAPABILITY_SPEC
 
 
-def test_python_tool_facade_imports_follow_visible_capabilities(tmp_path: Path) -> None:
+def test_python_tool_facade_imports_include_supported_surfaces(tmp_path: Path) -> None:
     character = make_character_record("actor-1")
     backend = make_llm_backend_record("actor-1")
     actor = make_actor_record(
@@ -37,33 +37,33 @@ def test_python_tool_facade_imports_follow_visible_capabilities(tmp_path: Path) 
         binding,
         facade=_facade(tmp_path, capabilities=()),
     ).tools["execute_python"]
-    echo_tool = build_agent_definition(
+    github_tool = build_agent_definition(
         binding,
-        facade=_facade(tmp_path, capabilities=(ECHO_CAPABILITY_SPEC,)),
+        facade=_facade(tmp_path, capabilities=(_github_capability(),)),
     ).tools["execute_python"]
 
     no_capability_imports = {
         item["module"]
         for item in cast(list[dict[str, str]], no_capability_tool["imports"])
     }
-    echo_imports = {
-        item["module"] for item in cast(list[dict[str, str]], echo_tool["imports"])
+    github_imports = {
+        item["module"] for item in cast(list[dict[str, str]], github_tool["imports"])
     }
     no_capability_expand_functions = cast(
         tuple[str, ...],
         no_capability_tool["expand_functions"],
     )
-    echo_expand_functions = cast(tuple[str, ...], echo_tool["expand_functions"])
+    github_expand_functions = cast(tuple[str, ...], github_tool["expand_functions"])
     assert "yb.delegate" in no_capability_imports
     assert "tim" in no_capability_imports
     assert "yb.schedule" in no_capability_imports
-    assert "yext.echo" not in no_capability_imports
-    assert "yext.echo" in echo_imports
+    assert "yext.github" not in no_capability_imports
+    assert "yext.github" in github_imports
     assert "yb.delegate.*" in no_capability_expand_functions
     assert "tim.*" in no_capability_expand_functions
     assert "yb.schedule.*" in no_capability_expand_functions
-    assert "yext.echo.*" not in no_capability_expand_functions
-    assert "yext.echo.*" in echo_expand_functions
+    assert "yext.github.*" not in no_capability_expand_functions
+    assert "yext.github.*" in github_expand_functions
 
 
 def test_agent_prompt_guidance_is_mode_specific(tmp_path: Path) -> None:
@@ -127,7 +127,7 @@ async def test_execute_python_tool_reports_crash_and_resets_session() -> None:
     )
 
     assert "Python execution crashed:" in result
-    assert "ModuleNotFoundError: No module named 'yext.github._client'" in result
+    assert "RuntimeError: startup failed" in result
     assert "The Python session was reset" in result
     assert session.closed
     assert tool._session is None
@@ -161,6 +161,37 @@ def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
     assert definition.tools["write"]["workspace_root"] == str(tmp_path / "workspace")
 
 
+def test_execute_python_description_can_import_github_facade(tmp_path: Path) -> None:
+    character = make_character_record("char-1")
+    llm_backend = make_llm_backend_record("llm-1")
+    actor = make_actor_record(
+        "actor-1",
+        character=character,
+        llm_backend=llm_backend,
+    )
+    binding = ActorBinding(actor=actor).default_agent_binding(
+        workspace_path=tmp_path / "workspace",
+    )
+    definition = build_agent_definition(
+        binding,
+        facade=_facade(tmp_path, capabilities=(_github_capability(),)),
+        workspace_path=str(tmp_path / "workspace"),
+    )
+    tool = ExecutePythonTool(
+        runtime=None,
+        config=msgspec.convert(
+            definition.tools["execute_python"],
+            type=PythonRuntime,
+            strict=False,
+        ),
+    )
+
+    description = tool.definition.description
+
+    assert "import yext.github" in description
+    assert "metadata unavailable" not in description
+
+
 def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> None:
     character = make_character_record("char-1")
     llm_backend = make_llm_backend_record("llm-1")
@@ -182,10 +213,6 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
 
     assert "github.issue.list" in system
     assert "Non-builtin capabilities are async Python facade functions" in system
-    assert (
-        "github.issue.list -> await yext.github.issue.list(owner='OWNER', repo='REPO', per_page=5)"
-        in system
-    )
     assert "Do not call github.* capability ids as top-level tools" in system
 
 
@@ -202,7 +229,7 @@ class _CrashingPythonSession:
     ) -> PythonExecResult:
         return PythonExecResult(
             status="crashed",
-            traceback=("ModuleNotFoundError: No module named 'yext.github._client'",),
+            traceback=("RuntimeError: startup failed",),
         )
 
     async def close(self) -> None:
@@ -218,6 +245,14 @@ def _facade(tmp_path, *, capabilities):
         capabilities=tuple(capabilities),
         root=tmp_path,
         sys_path=[str(tmp_path)],
-        startup_code="import yb\nimport yext",
+        startup_code="import yb\nimport tim\nimport yext.github",
         session_state={},
     )
+
+
+def _github_capability():
+    from yuubot.core.integrations.impls.github.integration import (
+        GITHUB_ISSUE_LIST_CAPABILITY_SPEC,
+    )
+
+    return GITHUB_ISSUE_LIST_CAPABILITY_SPEC

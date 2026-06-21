@@ -1,4 +1,4 @@
-"""Facade workspace management — directory layout, symlinks, and actor bindings."""
+"""Facade workspace management -- actor-local context bindings."""
 
 from __future__ import annotations
 
@@ -8,12 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from yuubot.core.capabilities import AnyCapabilitySpec
-from yuubot.core.facade.codegen import (
-    YEXT_PACKAGE,
-    clear_facade_module_cache,
-    write_facade_package,
-)
 from yuubot.core.facade.context import FACADE_CONTEXT_MODULE, render_context_module
+
+YEXT_PACKAGE = "yext"
 
 
 @dataclass
@@ -38,21 +35,16 @@ class ActorFacadeBinding:
 
 @dataclass
 class FacadeWorkspace:
-    """Owns generated yext packages and actor-specific facade bindings."""
+    """Owns actor-specific facade context bindings."""
 
     root: Path
     package_name: str = YEXT_PACKAGE
 
     def generate_catalog(self, capabilities: Iterable[AnyCapabilitySpec]) -> Path:
+        _ = tuple(capabilities)
         catalog_root = self.root / "catalog"
         _replace_dir(catalog_root)
-        write_facade_package(
-            catalog_root,
-            capabilities=capabilities,
-            package_name=self.package_name,
-        )
-        clear_facade_module_cache(self.package_name)
-        return catalog_root / self.package_name
+        return catalog_root
 
     def bind_actor(
         self,
@@ -68,22 +60,9 @@ class FacadeWorkspace:
 
         path_id = safe_actor_path_id(actor_id)
         actor_root = self.root / "actors" / path_id
-        source_root = self.root / "actor-packages" / path_id
         visible_capabilities = tuple(capabilities)
 
-        _replace_dir(source_root)
-        write_facade_package(
-            source_root,
-            capabilities=visible_capabilities,
-            package_name=self.package_name,
-        )
-        clear_facade_module_cache(self.package_name)
         actor_root.mkdir(parents=True, exist_ok=True)
-        _replace_path(actor_root / self.package_name)
-        (actor_root / self.package_name).symlink_to(
-            source_root / self.package_name,
-            target_is_directory=True,
-        )
         (actor_root / f"{FACADE_CONTEXT_MODULE}.py").write_text(
             render_context_module(
                 actor_id=actor_id,
@@ -106,7 +85,8 @@ class FacadeWorkspace:
             sys_path=[str(actor_root)],
             startup_code=(
                 "import yb\n"
-                f"import {self.package_name}\n"
+                "import tim\n"
+                f"import {self.package_name}.github\n"
                 f"import {FACADE_CONTEXT_MODULE} as facade_context"
             ),
             session_state={
@@ -124,7 +104,6 @@ class FacadeWorkspace:
 
         path_id = safe_actor_path_id(actor_id)
         _replace_path(self.root / "actors" / path_id)
-        _replace_path(self.root / "actor-packages" / path_id)
 
 
 def _replace_dir(path: Path) -> None:

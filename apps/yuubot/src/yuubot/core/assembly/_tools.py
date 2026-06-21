@@ -12,7 +12,7 @@ import msgspec
 from yuuagents import PythonImport, PythonKernelConfig
 from yuuagents.python.runtime import PythonRuntime
 
-from yuubot.core.facade import ActorFacadeBinding, facade_module_name
+from yuubot.core.facade import ActorFacadeBinding
 from yuubot.core.builtin_tools import BUILTIN_CAPABILITY_BY_ID
 from yuubot.core.tools import ToolRegistry
 from yuubot.core.validation import ConfigurationError
@@ -126,25 +126,27 @@ def _python_tool_runtime(
 
 
 def _facade_imports(facade: ActorFacadeBinding) -> tuple[PythonImport, ...]:
-    modules = {
-        facade_module_name(capability)
-        for capability in facade.capabilities
-    }
+    modules = _handwritten_external_modules(facade)
     return (
         *FACADE_IMPORTS,
-        *(PythonImport(module=module) for module in sorted(modules) if module != "yext"),
+        *(PythonImport(module=module) for module in sorted(modules)),
     )
 
 
 def _facade_expand_functions(facade: ActorFacadeBinding) -> tuple[str, ...]:
-    modules = {
-        facade_module_name(capability)
-        for capability in facade.capabilities
-    }
+    modules = _handwritten_external_modules(facade)
     return (
         *FACADE_EXPAND_FUNCTIONS,
-        *(f"{module}.*" for module in sorted(modules) if module != "yext"),
+        *(f"{module}.*" for module in sorted(modules)),
     )
+
+
+def _handwritten_external_modules(facade: ActorFacadeBinding) -> set[str]:
+    modules: set[str] = set()
+    for capability in facade.capabilities:
+        if capability.id.startswith("github."):
+            modules.add("yext.github")
+    return modules
 
 
 def _python_session_state(

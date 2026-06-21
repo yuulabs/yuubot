@@ -2,10 +2,8 @@
 
 Submodules:
 - bridge: RPC bridge and background task protocol
-- codegen: package code generation
 - context: actor-local context module rendering
 - workspace: workspace and actor binding management
-- client: generated client template
 - protocol: shared RPC request/response Structs
 """
 
@@ -14,16 +12,6 @@ from yuubot.core.facade.bridge import (
     FacadeBackgroundTaskStarted as FacadeBackgroundTaskStarted,
     FacadeDelegateTask as FacadeDelegateTask,
     IntegrationInvokeBridge as IntegrationInvokeBridge,
-)
-from yuubot.core.facade.client import (
-    render_client_module as _render_client_module,  # noqa: F401 — used by tests
-)
-from yuubot.core.facade.codegen import (
-    YEXT_PACKAGE as YEXT_PACKAGE,
-    clear_facade_module_cache as clear_facade_module_cache,
-    facade_call_path as facade_call_path,
-    facade_module_name as facade_module_name,
-    write_facade_package as write_facade_package,
 )
 from yuubot.core.facade.context import (
     FACADE_CONTEXT_MODULE as FACADE_CONTEXT_MODULE,
@@ -40,4 +28,13 @@ from yuubot.core.facade.workspace import (
     ActorFacadeBinding as ActorFacadeBinding,
     FacadeEndpoint as FacadeEndpoint,
     FacadeWorkspace as FacadeWorkspace,
+    YEXT_PACKAGE as YEXT_PACKAGE,
 )
+
+
+def facade_call_path(capability: object) -> str:
+    """Return the supported hand-written call path for a capability."""
+    capability_id = str(getattr(capability, "id", ""))
+    if capability_id == "github.issue.list":
+        return "yext.github.repo().issues.list_recent"
+    raise LookupError(f"no hand-written facade call path for {capability_id!r}")

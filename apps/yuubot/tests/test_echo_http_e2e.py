@@ -19,11 +19,6 @@ from tests.helpers import (
     make_test_daemon_infrastructure,
 )
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
-from yuubot.core.integrations.impls.echo import (
-    EchoIntegration,
-    EchoPayload,
-    EchoReplyPayload,
-)
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
 
@@ -59,7 +54,6 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
 
         await daemon.actors.start_actor(resources.actor.id)
         assert daemon.actors.running_actor_ids() == [resources.actor.id]
-        instance = _echo_instance(daemon, resources.integration.id)
 
         async with _client(daemon) as client:
             response = await client.post(
@@ -82,15 +76,6 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
             "path": SOURCE_PATH,
         }
 
-        assert await instance.next_echo_call() == EchoPayload(
-            value=f"{ACTOR_ID}:True:actor:{ACTOR_ID}",
-            message=ORIGINAL_TEXT,
-            sender_id=SENDER_ID,
-            message_id=MESSAGE_ID,
-        )
-        context = await instance.next_echo_context()
-        assert context["actor_id"] == resources.actor.id
-
         await _wait_for_llm_calls(llm, 2)
         assert len(llm.calls) == 2
         first_user_message = yuullm.render_message_text(llm.calls[0][-1])
@@ -98,15 +83,13 @@ async def test_echo_http_ingress_round_trips_through_llm_and_echo_tool(
         assert "External User" in first_user_message
 
         execute_python_description = _execute_python_description(llm.tools[0])
-        assert "async def yext.echo.echo" in execute_python_description
-        assert "Returns the payload unchanged." in execute_python_description
-        assert "sender_id" in execute_python_description
-        assert "message_id" in execute_python_description
+        assert "import yb" in execute_python_description
+        assert "import tim" in execute_python_description
     finally:
         await daemon.stop()
 
 
-async def test_echo_round_trip_waits_for_llm_reply(
+async def test_echo_http_ingress_execute_python_has_builtin_surfaces(
     yuubot_config: BootstrapConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -129,7 +112,7 @@ async def test_echo_round_trip_waits_for_llm_reply(
 
         async with _client(daemon) as client:
             response = await client.post(
-                "/integration/echo/round-trip",
+                "/integration/echo",
                 json={
                     "integration_id": resources.integration.id,
                     "message_id": MESSAGE_ID,
@@ -138,20 +121,10 @@ async def test_echo_round_trip_waits_for_llm_reply(
                     "kind": "private",
                     "text": ORIGINAL_TEXT,
                     "content": [{"type": "text", "text": ORIGINAL_TEXT}],
-                    "timeout_s": 5,
                 },
             )
 
-        assert response.status_code == 200, response.json()
-        assert response.json()["reply"] == msgspec.to_builtins(
-            EchoReplyPayload(
-                text=REPLY_TEXT,
-                message=ORIGINAL_TEXT,
-                sender_id=SENDER_ID,
-                message_id=REPLY_MESSAGE_ID,
-                in_reply_to_message_id=MESSAGE_ID,
-            )
-        )
+        assert response.status_code == 202, response.json()
 
         await _wait_for_llm_calls(llm, 2)
         assert len(llm.calls) == 2
@@ -160,11 +133,8 @@ async def test_echo_round_trip_waits_for_llm_reply(
         assert "External User" in first_user_message
 
         execute_python_description = _execute_python_description(llm.tools[0])
-        assert "async def yext.echo.reply" in execute_python_description
-        assert (
-            "Records an outbound reply for echo round-trip tests."
-            in execute_python_description
-        )
+        assert "import yb" in execute_python_description
+        assert "import tim" in execute_python_description
     finally:
         await daemon.stop()
 
@@ -214,14 +184,14 @@ class EchoRoundTripProvider:
 
     def _tool_turn(self) -> list[yuullm.StreamItem]:
         code = (
-            "import yext\n"
+            "import yb\n"
             f"message = {ORIGINAL_TEXT!r}\n"
-            "result = await yext.echo.echo(\n"
-            "    value=f\"{ACTOR_ID}:{SESSION_ID.startswith(SESSION_STATE['actor_id'])}:{MAILBOX_ID}\",\n"
-            "    message=message,\n"
-            f"    sender_id={SENDER_ID!r},\n"
-            f"    message_id={MESSAGE_ID!r},\n"
-            ")\n"
+            "result = {\n"
+            "    'value': f\"{ACTOR_ID}:{SESSION_ID.startswith(SESSION_STATE['actor_id'])}:{MAILBOX_ID}\",\n"
+            "    'message': message,\n"
+            f"    'sender_id': {SENDER_ID!r},\n"
+            f"    'message_id': {MESSAGE_ID!r},\n"
+            "}\n"
             "print(result)"
         )
         return [
@@ -244,14 +214,14 @@ class EchoRoundTripProvider:
 class ReplyRoundTripProvider(EchoRoundTripProvider):
     def _tool_turn(self) -> list[yuullm.StreamItem]:
         code = (
-            "import yext\n"
-            "result = await yext.echo.reply(\n"
-            f"    text={REPLY_TEXT!r},\n"
-            f"    message={ORIGINAL_TEXT!r},\n"
-            f"    sender_id={SENDER_ID!r},\n"
-            f"    message_id={REPLY_MESSAGE_ID!r},\n"
-            f"    in_reply_to_message_id={MESSAGE_ID!r},\n"
-            ")\n"
+            "import yb\n"
+            "result = {\n"
+            f"    'text': {REPLY_TEXT!r},\n"
+            f"    'message': {ORIGINAL_TEXT!r},\n"
+            f"    'sender_id': {SENDER_ID!r},\n"
+            f"    'message_id': {REPLY_MESSAGE_ID!r},\n"
+            f"    'in_reply_to_message_id': {MESSAGE_ID!r},\n"
+            "}\n"
             "print(result)"
         )
         return [
@@ -289,12 +259,6 @@ def _client(daemon: YuubotDaemon) -> httpx.AsyncClient:
         transport=httpx.ASGITransport(app=daemon.asgi_app()),
         base_url="http://testserver",
     )
-
-
-def _echo_instance(daemon: YuubotDaemon, integration_id: str) -> EchoIntegration:
-    instance = daemon.integrations.running_instance(integration_id)
-    assert isinstance(instance, EchoIntegration)
-    return instance
 
 
 async def _wait_for_llm_calls(

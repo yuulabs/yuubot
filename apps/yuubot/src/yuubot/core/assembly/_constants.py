@@ -24,7 +24,6 @@ FACADE_IMPORTS = (
     PythonImport(module="yb.schedule"),
     PythonImport(module="yb.tasks"),
     PythonImport(module="tim"),
-    PythonImport(module="yext"),
 )
 FACADE_EXPAND_FUNCTIONS = (
     "yb.*",
@@ -33,7 +32,6 @@ FACADE_EXPAND_FUNCTIONS = (
     "yb.schedule.*",
     "yb.tasks.*",
     "tim.*",
-    "yext.*",
 )
 
 _YUUAGENTS_KNOWN_FACTORIES: frozenset[str] = frozenset({"openai", "anthropic", "openrouter"})

@@ -36,9 +36,8 @@ class ExecutePythonToolVisibility(PromptScenario):
     def description(self) -> str:
         return (
             "Verifies that the execute_python tool spec exists and its "
-            "description documents the available capability imports "
-            "(e.g. yext.echo.echo), and that the system prompt includes "
-            "IM-mode guidance."
+            "description documents stable built-in facade imports, and "
+            "that the system prompt includes IM-mode guidance."
         )
 
     async def setup(self, ctx: ScenarioContext) -> None:
@@ -81,13 +80,13 @@ class ExecutePythonToolVisibility(PromptScenario):
             ScenarioStep(
                 assertion=AssertToolDescriptionContains(
                     "execute_python",
-                    "yext.echo.echo",
+                    "import yb",
                 ),
             ),
             ScenarioStep(
                 assertion=AssertToolDescriptionContains(
                     "execute_python",
-                    "Returns the payload unchanged.",
+                    "import tim",
                 ),
             ),
             ScenarioStep(

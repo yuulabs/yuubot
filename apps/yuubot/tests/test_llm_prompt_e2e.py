@@ -261,12 +261,8 @@ async def test_tool_spec_includes_execute_python_with_capability_imports(
         )
         description = execute_python.get("description", "")
 
-        assert "yext.echo.echo" in description, (
-            "Tool spec should document the echo capability."
-        )
-        assert "Returns the payload unchanged." in description, (
-            "Tool spec should describe what echo does."
-        )
+        assert "import yb" in description
+        assert "import tim" in description
     finally:
         await daemon.stop()
 

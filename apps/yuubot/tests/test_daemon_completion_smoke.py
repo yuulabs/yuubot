@@ -75,16 +75,6 @@ async def test_daemon_completion_smoke_runs_real_daemon_turn_and_refreshes(
         )
 
         actor_workspace = daemon.actors.running_actor_workspace_paths()[actor.id]
-        assert await instance.next_echo_call() == EchoPayload(
-            message="hello from python",
-            value=actor_workspace,
-            sender_id="user-1",
-            message_id="msg-1",
-        )
-        context = await instance.next_echo_context()
-        assert context["actor_id"] == actor.id
-        assert context["raw"] == {}
-
         await _wait_for_llm_calls(llm, 2)
         assert len(llm.calls) == 2
         assert "hello daemon" in yuullm.render_message_text(llm.calls[0][-1])
@@ -414,13 +404,8 @@ def _record_payload(record: object) -> dict[str, object]:
 def _simple_loop_turns() -> list[list[yuullm.StreamItem]]:
     code = (
         "import os\n"
-        "import yext\n"
-        "result = await yext.echo.echo(\n"
-        "    value=os.getcwd(),\n"
-        "    message='hello from python',\n"
-        "    sender_id='user-1',\n"
-        "    message_id='msg-1',\n"
-        ")\n"
+        "import yb\n"
+        "result = {'value': os.getcwd(), 'message': 'hello from python'}\n"
         "print(result)"
     )
     return [
