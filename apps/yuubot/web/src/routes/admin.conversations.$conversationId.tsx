@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Send, Loader2, Brain, Hammer, SquareTerminal } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
-import { sendConversationMessage, createConversation, ensureConversationAgent, getConversation, getConversationMessages } from "@/lib/api";
+import { sendConversationMessage, getConversation, getConversationMessages } from "@/lib/api";
 import {
   appendRenderBlocks,
   historyItemsFromMessages,
@@ -244,6 +244,8 @@ function MessageBlockView({ block }: { block: RenderBlock }) {
 
 function AdminConversationPage() {
   const { conversationId } = Route.useParams();
+  const navigate = useNavigate();
+  const isDraft = conversationId === "new";
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
   const runningActors = actors.filter((a) => a.enabled);
   const [actorId, setActorId] = useState<string>(runningActors[0]?.id ?? "");
@@ -386,6 +388,13 @@ function AdminConversationPage() {
     setActorLocked(false);
     setLoadingHistory(true);
 
+    if (isDraft) {
+      // Draft route: no backend row exists yet. Render empty UI and wait for
+      // the first send, which mints the real conversation id and navigates.
+      setLoadingHistory(false);
+      return;
+    }
+
     void (async () => {
       try {
         const metadata = await getConversation(conversationId);
@@ -418,7 +427,7 @@ function AdminConversationPage() {
       cancelled = true;
       closeSse();
     };
-  }, [conversationId]);
+  }, [conversationId, isDraft]);
 
   // Existing persisted conversations may listen for runtime events, but opening
   // a draft route must not create the backend row or agent.
@@ -442,11 +451,16 @@ function AdminConversationPage() {
     const text = input.trim();
     if (!text || !actorId || sendingRef.current) return;
 
+    const isDraftSend = isDraft;
+    const targetConversationId = isDraft
+      ? `conversation-${crypto.randomUUID()}`
+      : conversationId;
+
     const userMsgId = `user-${crypto.randomUUID()}`;
     const turnKey = `turn-${userMsgId}`;
     const userMsg: ConversationMessage = {
       id: 0,
-      conversation_id: conversationId,
+      conversation_id: targetConversationId,
       message_id: userMsgId,
       role: "user",
       raw_content: JSON.stringify([{ type: "text", text }]),
@@ -467,15 +481,24 @@ function AdminConversationPage() {
     const hadMetadata = conversationMetadata !== null;
     void (async () => {
       try {
-        let metadata = conversationMetadata;
-        if (metadata === null) {
-          metadata = await createConversation({ actorId, conversationId });
-          setConversationMetadata(metadata);
-          setActorId(metadata.actor_id);
+        await sendConversationMessage({
+          conversationId: targetConversationId,
+          text,
+          messageId: userMsgId,
+          actorId: isDraftSend ? actorId : undefined,
+        });
+        if (isDraftSend) {
+          // Quietly switch to the real conversation URL. The remount triggers
+          // getConversation + getConversationMessages + connectSse on the
+          // freshly-created row; the daemon's first send already appended the
+          // user message, started the turn, and is streaming assistant output.
+          navigate({
+            to: "/admin/conversations/$conversationId",
+            params: { conversationId: targetConversationId },
+            replace: true,
+          });
+          return;
         }
-        await ensureConversationAgent({ conversationId });
-        await connectSse();
-        await sendConversationMessage({ conversationId, text, messageId: userMsgId });
         setActorLocked(true);
       } catch (err: unknown) {
         if (activeTurnKeyRef.current === turnKey) {
@@ -486,7 +509,7 @@ function AdminConversationPage() {
         }
         setDisplayItems((prev) => prev.filter((item) => item.key !== userItemKey));
         setError(err instanceof Error ? err.message : "Send failed");
-        if (!hadMetadata) {
+        if (!hadMetadata && !isDraftSend) {
           try {
             const metadata = await getConversation(conversationId);
             if (metadata !== null) {
@@ -512,7 +535,7 @@ function AdminConversationPage() {
         <a href="/admin/conversations" onClick={(e) => { e.preventDefault(); window.history.back(); }}>
           <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
         </a>
-        <div className="flex-1"><h2 className="text-sm font-semibold">{conversationId}</h2></div>
+        <div className="flex-1"><h2 className="text-sm font-semibold">{isDraft ? "New conversation" : conversationId}</h2></div>
         <div className="flex items-center gap-2">
           <Select value={actorId} onValueChange={setActorId} disabled={actorLocked || isSending}>
             <SelectTrigger className="h-8 w-44 text-xs"><SelectValue placeholder="Select actor" /></SelectTrigger>

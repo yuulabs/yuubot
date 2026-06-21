@@ -332,18 +332,6 @@ export interface ConversationCreateResponse {
   data: ConversationData;
 }
 
-export interface ConversationAgentData {
-  conversation_id: string;
-  actor_id: string;
-  agent_id: string;
-  agent_name: string;
-}
-
-export interface ConversationAgentResponse {
-  status: string;
-  data: ConversationAgentData;
-}
-
 export interface SendMessageResponse {
   status: string;
   data: {

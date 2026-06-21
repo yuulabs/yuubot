@@ -19,6 +19,7 @@ import type {
   ResourceType,
   SingleResponse,
   ErrorResponse,
+  SendMessageResponse,
 } from "@/types/api";
 
 const BASE = "/api";
@@ -138,33 +139,6 @@ export async function getLiveCapabilities(): Promise<LiveCapability[]> {
 // Admin Conversation API
 // ---------------------------------------------------------------------------
 
-export async function createConversation(args: {
-  actorId: string;
-  conversationId: string;
-}): Promise<ConversationData> {
-  const res = await request<ConversationCreateResponse>(
-    `${BASE}/admin/conversations`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        actor_id: args.actorId,
-        conversation_id: args.conversationId,
-      }),
-    },
-  );
-  return res.data;
-}
-
-export async function ensureConversationAgent(args: {
-  conversationId: string;
-}): Promise<import("@/types/api").ConversationAgentData> {
-  const res = await request<import("@/types/api").ConversationAgentResponse>(
-    `${BASE}/admin/conversations/${args.conversationId}/agents`,
-    { method: "POST" },
-  );
-  return res.data;
-}
-
 export async function getConversation(
   conversationId: string,
 ): Promise<ConversationData | null> {
@@ -181,17 +155,31 @@ export async function getConversation(
   }
 }
 
+/**
+ * Send a user message to a conversation.
+ *
+ * On the first send to a freshly-minted conversation id, callers MUST pass
+ * `actorId`: the daemon creates the conversation row, binds the agent,
+ * persists the prompt prefix, appends the user Message and starts the turn
+ * (returning 202). Subsequent sends MUST omit `actorId` — the persisted
+ * binding is authoritative and mismatched actor ids are rejected.
+ */
 export async function sendConversationMessage(args: {
   conversationId: string;
   text: string;
   messageId?: string;
-}): Promise<import("@/types/api").SendMessageResponse["data"]> {
-  const res = await request<import("@/types/api").SendMessageResponse>(
+  actorId?: string;
+}): Promise<SendMessageResponse["data"]> {
+  const body: Record<string, unknown> = {
+    text: args.text,
+    message_id: args.messageId,
+  };
+  if (args.actorId) {
+    body.actor_id = args.actorId;
+  }
+  const res = await request<SendMessageResponse>(
     `${BASE}/admin/conversations/${args.conversationId}/messages`,
-    {
-      method: "POST",
-      body: JSON.stringify({ text: args.text, message_id: args.messageId }),
-    },
+    { method: "POST", body: JSON.stringify(body) },
   );
   return res.data;
 }

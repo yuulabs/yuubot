@@ -42,8 +42,10 @@ function AdminConversationsPage() {
     : conversations;
 
   const handleNewConversation = () => {
-    const id = `conversation-${crypto.randomUUID()}`;
-    navigate({ to: `/admin/conversations/${id}` });
+    navigate({
+      to: "/admin/conversations/$conversationId",
+      params: { conversationId: "new" },
+    });
   };
 
   if (location.pathname !== "/admin/conversations") {
