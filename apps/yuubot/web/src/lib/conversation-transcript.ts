@@ -1,4 +1,9 @@
-import type { ConversationMessage, ConversationSSEEvent, TranscriptDelta } from "@/types/api";
+import type {
+  ConversationMessage,
+  ConversationSSEBaseEvent,
+  ConversationSSEEvent,
+  TranscriptDelta,
+} from "@/types/api";
 
 export type ConversationBlockType =
   | "thinking"
@@ -25,6 +30,43 @@ export interface DisplayItem {
   role: "user" | "actor";
   blocks: RenderBlock[];
   timestamp: number;
+}
+
+export interface ToolDisplay {
+  name: string;
+  argsText: string;
+  code?: string;
+}
+
+export function toolDisplay(block: RenderBlock): ToolDisplay {
+  const name = block.toolName ?? (block.content.replace(/^Tool:\s*/, "") || "tool");
+  const args = toolDisplayArgs(block.toolArgs);
+  const argsText = args === undefined
+    ? "{}"
+    : typeof args === "string"
+      ? args
+      : JSON.stringify(args, null, 2);
+  const code = args && typeof args === "object" && typeof (args as Record<string, unknown>).code === "string"
+    ? String((args as Record<string, unknown>).code)
+    : undefined;
+  return { name, argsText, code };
+}
+
+function toolDisplayArgs(toolArgs: string | undefined): unknown {
+  if (!toolArgs) {
+    return undefined;
+  }
+  const raw = parseJsonMaybe(toolArgs);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return raw;
+  }
+
+  const source = raw as Record<string, unknown>;
+  const wrappedArgs = source.arguments ?? source.args ?? source.input;
+  if (wrappedArgs === undefined) {
+    return source;
+  }
+  return typeof wrappedArgs === "string" ? parseJsonMaybe(wrappedArgs) : wrappedArgs;
 }
 
 /** Extract human-readable text from a raw block dict without dropping unknown content. */
@@ -140,6 +182,28 @@ export function parseJsonMaybe(value: string): unknown {
   }
 }
 
+export function conversationSseEventKeys(data: ConversationSSEBaseEvent): string[] {
+  const keys = [`sequence:${data.sequence}`];
+  if (data.event_id) {
+    keys.push(`event:${data.event_id}`);
+  }
+  return keys;
+}
+
+export function rememberConversationSseEvent(
+  seenKeys: Set<string>,
+  data: ConversationSSEBaseEvent,
+): boolean {
+  const keys = conversationSseEventKeys(data);
+  if (keys.some((key) => seenKeys.has(key))) {
+    return false;
+  }
+  for (const key of keys) {
+    seenKeys.add(key);
+  }
+  return true;
+}
+
 export function renderBlocksFromEvent(
   data: ConversationSSEEvent,
   keyPrefix: string,
@@ -241,6 +305,18 @@ function appendToolResultToGroup(group: RenderBlock, result: RenderBlock): Rende
     toolResult: mergeToolResultContent(group.toolResult, result.content),
     toolStatus: result.toolStatus ?? group.toolStatus,
   };
+}
+
+export function markToolBlocksCompleted(blocks: RenderBlock[]): RenderBlock[] {
+  return blocks.map((block) => {
+    if (block.type === "tool_group" && block.toolResult) {
+      return { ...block, toolStatus: "completed" };
+    }
+    if (block.type === "tool_result") {
+      return { ...block, toolStatus: "completed" };
+    }
+    return block;
+  });
 }
 
 function mergeToolResultContent(existing: string | undefined, incoming: string): string {

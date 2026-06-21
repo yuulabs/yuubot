@@ -7,8 +7,10 @@ import {
   appendRenderBlocks,
   historyItemsFromMessages,
   liveItemKey,
-  parseJsonMaybe,
+  markToolBlocksCompleted,
+  rememberConversationSseEvent,
   renderBlocksFromEvent,
+  toolDisplay,
   type DisplayItem,
   type RenderBlock,
 } from "@/lib/conversation-transcript";
@@ -23,29 +25,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-interface ToolDisplay {
-  name: string;
-  argsText: string;
-  code?: string;
-}
-
-function toolDisplay(block: RenderBlock): ToolDisplay {
-  const name = block.toolName ?? (block.content.replace(/^Tool:\s*/, "") || "tool");
-  const raw = block.toolArgs ? parseJsonMaybe(block.toolArgs) : undefined;
-  const source = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-  const rawArgs = source.arguments ?? source.args ?? source.input;
-  const args = typeof rawArgs === "string" ? parseJsonMaybe(rawArgs) : rawArgs;
-  const argsText = args === undefined
-    ? "{}"
-    : typeof args === "string"
-      ? args
-      : JSON.stringify(args, null, 2);
-  const code = args && typeof args === "object" && typeof (args as Record<string, unknown>).code === "string"
-    ? String((args as Record<string, unknown>).code)
-    : undefined;
-  return { name, argsText, code };
-}
 
 function pythonHighlightedSegments(line: string): Array<{ text: string; kind: "plain" | "keyword" | "string" | "comment" | "number" }> {
   const commentIndex = line.indexOf("#");
@@ -156,13 +135,12 @@ function hasLiveBlocksForTurn(items: LiveItem[], turnKey: string): boolean {
   return items.some((item) => item.turnKey === turnKey && item.blocks.length > 0);
 }
 
-function liveItemsHaveToolResult(items: LiveItem[]): boolean {
-  return items.some((item) =>
-    item.blocks.some((block) =>
-      block.type === "tool_result" ||
-      (block.type === "tool_group" && Boolean(block.toolResult))
-    )
-  );
+function markLiveTurnCompleted(items: LiveItem[], turnKey: string): LiveItem[] {
+  return items.map((item) => (
+    item.turnKey === turnKey
+      ? { ...item, blocks: markToolBlocksCompleted(item.blocks) }
+      : item
+  ));
 }
 
 function MessageBlockView({ block }: { block: RenderBlock }) {
@@ -287,37 +265,35 @@ function AdminConversationPage() {
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
-  const [streamReady, setStreamReady] = useState(false);
   const [conversationMetadata, setConversationMetadata] = useState<ConversationData | null>(null);
   const [actorLocked, setActorLocked] = useState(false);
   const [liveItems, setLiveItems] = useState<LiveItem[]>([]);
   const liveItemsRef = useRef<LiveItem[]>([]);
-  const [streamStatus, setStreamStatus] = useState<"connected" | "disconnected">("connected");
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
-  const connectingSseRef = useRef(false);
   const connectingSsePromiseRef = useRef<Promise<void> | null>(null);
   const activeTurnKeyRef = useRef("");
   const currentAssistantItemKeyRef = useRef("");
   const liveItemIndexRef = useRef(0);
   const liveBlockIndexRef = useRef(0);
   const intentionalCloseRef = useRef(false);
+  const seenSseEventKeysRef = useRef<Set<string>>(new Set());
 
   const actor = actors.find((a) => a.id === actorId);
 
   const connectSse = (): Promise<void> => {
-    if (sseRef.current && streamReady) {
-      return Promise.resolve();
-    }
     if (connectingSsePromiseRef.current) {
       return connectingSsePromiseRef.current;
     }
-    connectingSseRef.current = true;
-    setStreamReady(false);
-
+    if (sseRef.current) {
+      return Promise.resolve();
+    }
     const pending = new Promise<void>((resolve, reject) => {
       const appendAssistantEvent = (data: ConversationSSEEvent) => {
+        if (!rememberConversationSseEvent(seenSseEventKeysRef.current, data)) {
+          return;
+        }
         const turnId = "turn_id" in data ? data.turn_id : "";
         const turnKey = activeTurnKeyRef.current || `event-${turnId || data.sequence}`;
         activeTurnKeyRef.current = turnKey;
@@ -354,6 +330,13 @@ function AdminConversationPage() {
       };
 
       const markGenerationComplete = () => {
+        const completedTurnKey = activeTurnKeyRef.current;
+        if (completedTurnKey) {
+          setLiveItems(syncLiveItemsRef(
+            liveItemsRef,
+            (prev) => markLiveTurnCompleted(prev, completedTurnKey),
+          ));
+        }
         intentionalCloseRef.current = true;
         activeTurnKeyRef.current = "";
         currentAssistantItemKeyRef.current = "";
@@ -363,7 +346,6 @@ function AdminConversationPage() {
 
       const handleErrorEvent = (e: MessageEvent) => {
         markGenerationComplete();
-        setStreamReady(false);
         try {
           const raw = JSON.parse(e.data);
           if (raw && typeof raw === "object" && "error" in raw) {
@@ -375,20 +357,14 @@ function AdminConversationPage() {
       const es = new EventSource(`/api/admin/conversations/${conversationId}/events`);
       sseRef.current = es;
       es.onopen = () => {
-        connectingSseRef.current = false;
         connectingSsePromiseRef.current = null;
-        setStreamReady(true);
-        setStreamStatus("connected");
         intentionalCloseRef.current = false;
         resolve();
       };
       es.onerror = () => {
-        connectingSseRef.current = false;
         connectingSsePromiseRef.current = null;
         if (sendingRef.current) {
           markGenerationComplete();
-          setStreamStatus("disconnected");
-          setStreamReady(false);
           es.close();
           if (sseRef.current === es) {
             sseRef.current = null;
@@ -396,8 +372,11 @@ function AdminConversationPage() {
           resolve();
           return;
         }
+        if (sseRef.current === es) {
+          sseRef.current = null;
+        }
+        es.close();
         if (!intentionalCloseRef.current) {
-          setStreamStatus("disconnected");
           reject(new Error("Conversation stream setup failed"));
         }
       };
@@ -410,9 +389,6 @@ function AdminConversationPage() {
   };
 
   const closeSse = (): void => {
-    setStreamReady(false);
-    setStreamStatus("disconnected");
-    connectingSseRef.current = false;
     connectingSsePromiseRef.current = null;
     if (sseRef.current) {
       sseRef.current.close();
@@ -427,6 +403,7 @@ function AdminConversationPage() {
     currentAssistantItemKeyRef.current = "";
     liveItemIndexRef.current = 0;
     liveBlockIndexRef.current = 0;
+    seenSseEventKeysRef.current = new Set();
     liveItemsRef.current = [];
     sendingRef.current = false;
     intentionalCloseRef.current = false;
@@ -552,30 +529,6 @@ function AdminConversationPage() {
     ? hasLiveBlocksForTurn(liveItems, activeTurnKeyRef.current)
     : false;
 
-  const conversationInProgress = (() => {
-    if (messages.length === 0) return false;
-    const lastMsg = messages[messages.length - 1];
-    // If last message is a tool result, check if there's a follow-up assistant message
-    if (lastMsg.role === "tool") return false;
-    // If last message is assistant with tool_call, turn is in progress
-    try {
-      const parsed = JSON.parse(lastMsg.raw_content);
-      if (Array.isArray(parsed) && parsed.some((b: Record<string,unknown>) => b.type === "tool_call")) {
-        // Check if there's a subsequent tool result
-        const hasToolResult = messages.some((m) => {
-          if (m.role !== "tool") return false;
-          try {
-            const content = JSON.parse(m.raw_content);
-            return Array.isArray(content) && content.some((b: Record<string,unknown>) => b.type === "tool_result");
-          } catch { return false; }
-        });
-        const hasLiveToolResult = liveItemsHaveToolResult(liveItems);
-        return !(hasToolResult || hasLiveToolResult);
-      }
-    } catch { /* ignore */ }
-    return false;
-  })();
-
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b px-4 py-3">
@@ -624,12 +577,6 @@ function AdminConversationPage() {
         )}
         <div ref={bottomRef} />
       </div>
-
-      {((conversationMetadata !== null && streamStatus === "disconnected") || conversationInProgress) && !loadingHistory && (
-        <div className="mx-4 mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/30">
-          后台运行中，结果可能不同步，若需查看更新请刷新~
-        </div>
-      )}
 
       {error && (
         <div className="mx-4 mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
