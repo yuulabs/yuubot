@@ -18,13 +18,19 @@ test("conversation route hosts the binding panel markers", () => {
 });
 
 test("conversation route exposes a real Open Workspace link (B-phase landed)", () => {
-  // The route source must drive the workspace link from the daemon-surfaced
-  // capability_set.workspace_path — the URL segment IS the relative disk path
-  // under <data_dir>/workspace. The literal `${conversationMetadata.workspace_path}`
-  // is source text in this assertion, not JS interpolation here.
+  // The link source must reference the actor's capability_set.workspace_path
+  // field — the daemon already eagerly loads capability_set on every actor
+  // returned from /api/resources/actors, so this works on /new (draft, before
+  // first send) as well as on existing conversations.
   assert.ok(
-    routeSrc.includes("/workspace/${conversationMetadata.workspace_path}"),
-    "missing actual workspace link driven by capability_set.workspace_path",
+    routeSrc.includes("capability_set?.workspace_path") ||
+    routeSrc.includes("capability_set.workspace_path"),
+    "Open Workspace link must read actor.capability_set.workspace_path",
+  );
+  // The conversation metadata must no longer be the source of the workspace link.
+  assert.ok(
+    !routeSrc.includes("conversationMetadata.workspace_path"),
+    "should not read workspace_path from conversationMetadata anymore",
   );
   assert.ok(
     !routeSrc.includes("/workspace/${actorId}"),
