@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import yuullm
-from yuuagents.core.eventbus import RuntimeEvent
+from yuuagents.core.eventbus import EventBus, RuntimeEvent
 
+from yuubot.core.assembly._runtime import YuuAgentsActorRuntime
 from yuubot.core.conversation_events import ConversationFrontendEvent, ConversationSSEHeartbeat
 from yuubot.core.conversations import (
     ConversationBindingConflict,
@@ -800,3 +801,193 @@ async def test_cancel_turn_persists_partial_assistant_to_db() -> None:
     assistant_persisted = persisted_messages[roles.index("assistant")]
     assert isinstance(assistant_persisted, yuullm.Message)
     assert assistant_persisted.role == "assistant"
+
+
+async def test_cancel_during_tool_execution_does_not_double_persist_assistant() -> None:
+    """When ``cancel_turn`` lands DURING tool execution (after the LLM step
+    already emitted a natural ``llm.finished``), the real
+    ``_run_agent_turn`` must NOT re-emit ``llm.finished`` — the LLM stage
+    already signed off its own message on the natural terminal path. Only
+    Stage B (tool execution) is interrupted, so only Stage B's handler runs:
+    it calls ``_cancel_agent_tools`` which synthesises ``[cancelled]``
+    tool_results and emits ``tool.result_appended`` for each.
+
+    Closes Phase 4 side note #1: the single CancelledError handler
+    couldn't tell which stage it was in, so it re-emitted ``llm.finished``
+    carrying the same already-persisted assistant → two DB writes for one
+    message. Phase 5 splits the single handler into two: Stage A (LLM step)
+    owns ``llm.finished``; Stage B (tool execution) owns
+    ``tool.result_appended`` via ``_cancel_agent_tools``.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    # Persisted-message recorder (mirrors _mock_store_by_role but inline so
+    # we can assert assistant/tool roles + counts).
+    persisted: list[yuullm.Message] = []
+
+    async def capture_item(conversation_id: str, item: yuullm.PromptItem) -> MagicMock:
+        if isinstance(item, yuullm.Message):
+            persisted.append(item)
+        record = MagicMock()
+        record.message_id = "msg-1"
+        record.conversation_id = conversation_id
+        return record
+
+    record = MagicMock(message_id="message-1")
+    store = MagicMock()
+    store.conversation_exists = AsyncMock(return_value=True)
+    store.append_history_item = AsyncMock(side_effect=capture_item)
+    store.append_history_items = AsyncMock(return_value=[record])
+    store.get_conversation = AsyncMock(return_value=MagicMock())
+    store.history = AsyncMock(return_value=[])
+
+    manager = ConversationManager(
+        store=store,
+        repository=MagicMock(),
+        yuuagents_config=MagicMock(),
+        python_sessions=MagicMock(),
+        llm_session_factory_factory=MagicMock(),
+    )
+
+    # A real EventBus so emits flow through to manager._on_runtime_event.
+    eventbus = EventBus()
+    fake_runtime = MagicMock()
+    fake_runtime.cancel_agent_tasks = AsyncMock()
+
+    # wait_task blocks until the test releases it (simulating a long-running
+    # tool). submit_tool_call returns a lightweight task handle whose .id
+    # is referenced by wait_task and the result-rendering path (never reached
+    # because wait_task is cancelled).
+    fake_runtime.submit_tool_call = AsyncMock(return_value=MagicMock(id="task-1"))
+
+    async def wait_task(task_id: str, timeout: float | None = None) -> MagicMock:
+        _ = task_id, timeout
+        started.set()  # Stage A's natural llm.finished has already fired.
+        await release.wait()
+        return MagicMock()
+
+    fake_runtime.wait_task = AsyncMock(side_effect=wait_task)
+    # registry is accessed by _build_tool_specs_for_agent only on the cache-
+    # miss path; we cache-hit via conversation_agents so it stays untouched.
+    fake_runtime.registry = MagicMock(_definitions={})
+
+    stage = MagicMock()
+    stage.eventbus = eventbus
+    stage.runtime = fake_runtime
+
+    # The assistant message the fake LLM step "produces": one tool_call that
+    # drives Stage B into the (cancelled) wait_task.
+    assistant_with_tool_call = yuullm.Message(
+        role="assistant",
+        content=[
+            {"type": "text", "text": "let me run a tool"},
+            {
+                "type": "tool_call",
+                "id": "call-1",
+                "name": "echo",
+                "arguments": "{}",
+            },
+        ],
+    )
+
+    class _FakeAgent:
+        """Minimal Agent stand-in: list-backed history, no-op flush, step()
+        appends the assistant message exactly like the real Agent.step."""
+
+        def __init__(self) -> None:
+            self.id = "agent-1"
+            self.name = "test-agent"
+            self.llm = MagicMock(model="test-model")
+            self.log = MagicMock()
+            self._history: list[yuullm.Message] = []
+
+        @property
+        def history(self) -> list[yuullm.Message]:
+            return self._history
+
+        @property
+        def done(self) -> bool:
+            # Always has a pending tool call → loop continues into Stage B.
+            return False
+
+        def append(self, message: yuullm.Message) -> None:
+            self._history.append(message)
+
+        async def step(self) -> tuple[yuullm.Message, MagicMock]:
+            # Mirrors real Agent.step: the final assistant message is the
+            # one committed to history. _extract_tool_calls reads it back
+            # out of message.content below.
+            self._history.append(assistant_with_tool_call)
+            store = MagicMock(usage=None, provider_cost=None)
+            return assistant_with_tool_call, store
+
+        async def flush_entitylog(self) -> None:
+            return None
+
+    fake_agent = _FakeAgent()
+
+    # Real YuuAgentsActorRuntime: its handle_conversation_message calls the
+    # REAL _run_agent_turn under test (cache-hit on conversation_agents so
+    # ensure_conversation_agent doesn't try to build a real LLM session).
+    runtime = YuuAgentsActorRuntime(
+        stage=stage,
+        definitions={},
+        conversation_definition=MagicMock(),
+    )
+    runtime.conversation_agents["conv-1"] = fake_agent
+    # Wire the manager's event listener onto the runtime's real eventbus so
+    # llm.finished / tool.result_appended reach _handle_* and the store.
+    runtime.stage.eventbus.subscribe(manager._on_runtime_event)
+    manager._agent_to_conversation[fake_agent.id] = "conv-1"
+
+    # Independently record raw eventbus events (names) to assert llm.finished
+    # was emitted exactly once on the tool-execution-cancel path.
+    emitted_events: list[str] = []
+
+    def record_event(event: RuntimeEvent) -> None:
+        emitted_events.append(event.name)
+        return None
+
+    eventbus.subscribe(record_event)
+
+    with (
+        patch.object(
+            manager,
+            "_require_conversation",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch.object(manager, "_runtime_for", new=AsyncMock(return_value=runtime)),
+    ):
+        await manager.send_message(
+            conversation_id="conv-1",
+            text="hello",
+            message_id="message-1",
+        )
+        # Wait until _run_agent_turn has run Stage A (natural llm.finished)
+        # AND is now blocked in Stage B's wait_task.
+        await asyncio.wait_for(started.wait(), timeout=2)
+
+        # Cancel while inside wait_task: should land in Stage B's handler,
+        # NOT Stage A's.
+        result = await asyncio.wait_for(manager.cancel_turn("conv-1"), timeout=2)
+
+    await asyncio.sleep(0)  # let done-callbacks fire
+
+    assert result["cancelled"] is True
+    assert "conv-1" not in manager._in_flight_tasks
+
+    roles = [m.role for m in persisted]
+    # The bug (Phase 4 single-handler): the except re-emitted llm.finished
+    # carrying the SAME already-persisted assistant → 2 assistant writes.
+    # Phase 5: Stage B's handler does NOT re-emit llm.finished.
+    assert roles.count("assistant") == 1
+    assert roles.count("user") == 1
+    # Stage B's _cancel_agent_tools synthesised a [cancelled] tool_result and
+    # emitted tool.result_appended → _handle_tool_result persisted it.
+    assert roles.count("tool") == 1
+
+    # Exactly one llm.finished event on the whole turn (Stage A natural).
+    assert emitted_events.count("llm.finished") == 1
+    # At least one tool.result_appended fired from _cancel_agent_tools.
+    assert emitted_events.count("tool.result_appended") >= 1

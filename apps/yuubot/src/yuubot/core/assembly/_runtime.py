@@ -342,8 +342,9 @@ class YuuAgentsActorRuntime:
                     # loop is between awaits (e.g. just finished a
                     # synchronous step), the cancel may not land until the
                     # next LLM stream starts. This explicit check closes
-                    # that window — raise to enter the CancelledError
-                    # handler below, which drains + decides.
+                    # that window — raise into Stage A's handler below,
+                    # which decides whether there's a new partial to
+                    # finalise.
                     if cancel_event is not None and cancel_event.is_set():
                         raise asyncio.CancelledError
 
@@ -351,6 +352,13 @@ class YuuAgentsActorRuntime:
                         await emit_budget_exceeded(self.stage.eventbus, agent)
                         break
 
+                    # ── Stage A: LLM step ───────────────────────────────
+                    # The LLM stream is one natural interruptible unit of
+                    # work; its own except handler finalises the partial
+                    # assistant (emit ``llm.finished`` + flush reporter)
+                    # when interrupted. The party that got interrupted is
+                    # the party that signals — LLM stage owns ``llm.finished``.
+                    last_emitted_assistant = _last_assistant_message(agent.history)
                     try:
                         # Step 1: Emit LLM start event (trace observability)
                         await self.stage.eventbus.emit(
@@ -361,7 +369,7 @@ class YuuAgentsActorRuntime:
                             },
                         )
 
-                        # Step 2: Call LLM
+                        # Step 2: Call LLM  ← await #1: LLM stream
                         message, store = await agent.step()
 
                         # Step 3: Calculate cost and charge budget
@@ -390,6 +398,9 @@ class YuuAgentsActorRuntime:
                                 budget.charge("tokens", tokens)
 
                         # Step 5: Emit LLM finish event (trace observability)
+                        # ↑ normal-path emit; agent.history now has the FINAL
+                        # assistant. Stage B's handler must NOT re-emit
+                        # ``llm.finished`` — the LLM stage already signed off.
                         await self.stage.eventbus.emit(
                             "llm.finished",
                             {
@@ -401,10 +412,43 @@ class YuuAgentsActorRuntime:
                                 "message": message,
                             },
                         )
+                    except asyncio.CancelledError:
+                        # LLM stream was interrupted in flight (or the
+                        # single-point ``cancel_event`` raised because no
+                        # await was in flight). session.py already appended
+                        # the partial assistant to agent.history; emit
+                        # ``llm.finished`` so _handle_llm_finished persists
+                        # it (mirrors opencode's "interrupt = just another
+                        # terminal path"). The ``is not`` guard handles the
+                        # between-awaits raise where step() hadn't produced
+                        # anything new — nothing to finalise, just break.
+                        partial = _last_assistant_message(agent.history)
+                        if partial is not None and partial is not last_emitted_assistant:
+                            await self.stage.eventbus.emit(
+                                "llm.finished",
+                                {
+                                    "agent_id": agent.id,
+                                    "agent_name": agent.name,
+                                    "usage": None,
+                                    "cost": None,
+                                    "model": agent.llm.model,
+                                    "message": partial,
+                                },
+                            )
+                        await agent.flush_entitylog()
+                        break
 
-                        # Step 6: Execute tools
-                        tools = _extract_tool_calls(message)
-                        if tools:
+                    # ── Stage B: tool execution ────────────────────────
+                    # The tool batch is the second natural interruptible
+                    # unit of work; its own except handler calls
+                    # ``_cancel_agent_tools`` (which synthesises
+                    # ``[cancelled]`` tool_results + emits
+                    # ``tool.result_appended``). The LLM stage already
+                    # emitted ``llm.finished`` naturally above — do NOT
+                    # re-emit it here (Phase 4 side note #1 fix).
+                    tools = _extract_tool_calls(message)
+                    if tools:
+                        try:
                             new_tasks: list[tuple[yuullm.ToolCall, YuuTask]] = []
                             for tc in tools:
                                 context = ToolContext(
@@ -437,6 +481,7 @@ class YuuAgentsActorRuntime:
                                     )
 
                             for tc, yt in new_tasks:
+                                # ← await #2: tool execution
                                 ct = await self.stage.runtime.wait_task(yt.id)
                                 rt = _render_task_result(ct)
                                 agent.append(yuullm.tool(tc.id, rt))
@@ -452,52 +497,25 @@ class YuuAgentsActorRuntime:
                                         "status": str(ct.status),
                                     },
                                 )
+                        except asyncio.CancelledError:
+                            # Tool execution was interrupted. Synthesize
+                            # ``[cancelled]`` tool_results for any tool_calls
+                            # without results (and emit ``tool.result_appended``
+                            # so the frontend + DB see them). The LLM message
+                            # was already naturally emitted in Stage A — do
+                            # NOT re-emit ``llm.finished`` here.
+                            await self._cancel_agent_tools(agent)
+                            break
 
-                        # Step 7: Charge step
-                        if budget is not None:
-                            budget.charge("steps", 1)
-
-                    except asyncio.CancelledError:
-                        # Mid-stream or mid-tool cancellation. The yuullm
-                        # session already appended partial assistant content
-                        # to history (if mid-stream). Force-flush the reporter
-                        # so SSE gets the last ``output.chunk``, cancel any
-                        # running tools, and synthesise ``[cancelled]`` tool
-                        # results so the in-memory history is legal. Then
-                        # break out of the loop — the turn ends here (no
-                        # ``continue``; the queue mechanism is gone, the
-                        # input box itself is the buffer).
-                        await agent.flush_entitylog()
-                        await self._cancel_agent_tools(agent)
-                        # Mirror opencode processor.ts cleanup()+halt(): the
-                        # interrupt path is just another terminal path, so
-                        # finalise the partial assistant message and persist
-                        # it exactly like the normal terminal path does.
-                        # Without this emit, the partial stays in agent
-                        # memory (in-memory only) but never reaches
-                        # conversation_messages → on refresh, the agent
-                        # rebuilds from DB without it and the LLM sees
-                        # consecutive user messages instead of
-                        # user → assistant → user.
-                        partial = _last_assistant_message(agent.history)
-                        if partial is not None:
-                            await self.stage.eventbus.emit(
-                                "llm.finished",
-                                {
-                                    "agent_id": agent.id,
-                                    "agent_name": agent.name,
-                                    "usage": None,  # partial — no provider
-                                    "cost": None,
-                                    "model": agent.llm.model,
-                                    "message": partial,
-                                },
-                            )
-                        break
+                    # Step 7: Charge step
+                    if budget is not None:
+                        budget.charge("steps", 1)
                 else:
                     # while...else: loop exited via ``not agent.done`` (the
                     # natural completion path). Rollover only runs here, NOT
-                    # on a break-out from the CancelledError handler (a pure
-                    # stop ends the turn; no rollover needed for a dead turn).
+                    # on a break-out from either CancelledError handler (a
+                    # pure stop ends the turn; no rollover needed for a dead
+                    # turn).
                     await self._rollover_if_needed(agent, budget)
 
                 self._touch_agent(agent)
@@ -518,12 +536,19 @@ class YuuAgentsActorRuntime:
     async def _cancel_agent_tools(self, agent: Agent) -> None:
         """Cancel running tool tasks and synthesize ``[cancelled]`` results.
 
-        Called from the cancel path (both event-detected and
-        CancelledError-detected). After this, the in-memory agent history
-        is legal: every tool_call in the last assistant message has a
-        matching tool_result. Since ``send_message`` prioritises the
-        in-memory agent cache, subsequent turns see the correct history.
-        Only "cancel then immediate power loss" loses this — accepted.
+        Called from Stage B's (tool-execution) CancelledError handler. After
+        this, the in-memory agent history is legal: every tool_call in the
+        last assistant message has a matching tool_result. Since
+        ``send_message`` prioritises the in-memory agent cache, subsequent
+        turns see the correct history. Only "cancel then immediate power
+        loss" loses this — accepted.
+
+        For each synthesised ``[cancelled]`` result, emits
+        ``tool.result_appended`` so the Stage B (tool-execution) segment
+        signs off its own terminal events (the party that got interrupted
+        is the party that signals) — the assistant message was already
+        signed off naturally by Stage A, so this does NOT re-emit
+        ``llm.finished``.
         """
         # Cancel any still-running tool tasks (bash subprocess, python
         # kernel, file I/O, …). yuuagents.Runtime.cancel_agent_tasks
@@ -562,7 +587,20 @@ class YuuAgentsActorRuntime:
                             existing_results.add(tc_id)
         for tc in tool_calls:
             if tc.id not in existing_results:
-                agent.append(yuullm.tool(tc.id, "[cancelled by user]"))
+                cancelled_result = "[cancelled by user]"
+                agent.append(yuullm.tool(tc.id, cancelled_result))
+                await self.stage.eventbus.emit(
+                    "tool.result_appended",
+                    {
+                        "agent_id": agent.id,
+                        "agent_name": agent.name,
+                        "tool_call_id": tc.id,
+                        "tool_name": tc.name,
+                        "result": cancelled_result,
+                        "task_id": "",
+                        "status": "cancelled",
+                    },
+                )
 
     async def _rollover_if_needed(self, agent: Agent, budget: Budget | None) -> None:
         if not self.rollover_enabled or not _agent_needs_rollover(agent, budget):
