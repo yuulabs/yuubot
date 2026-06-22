@@ -57,3 +57,13 @@ yuuagents:
     background: {}
     schedule:
       db_path: ${YUU_DATA_DIR}/schedule.sqlite3
+
+# Global daily spend ceiling. Summed across every conversation from the
+# trace DB's yuu.cost events for the trailing UTC day. When exceeded, the
+# daemon's send handler returns HTTP 402 Payment Required and refuses to
+# start a new turn; the in-flight turn drains to its next budget checkpoint
+# (budget.is_exceeded in _run_agent_turn) and exits naturally — no
+# hard actor_manager.stop() is issued.
+# 0 (the default) disables the guard: no send is blocked, no DB query runs.
+budget:
+  daily_limit_usd: 0
