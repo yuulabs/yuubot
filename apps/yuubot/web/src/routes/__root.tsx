@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 import {
   Bot,
@@ -5,6 +6,8 @@ import {
   Layers,
   LayoutDashboard,
   MessageSquare,
+  PanelLeft,
+  PanelLeftClose,
   Plug,
   Route as RouteIcon,
   Settings,
@@ -52,11 +55,15 @@ export const Route = createRootRoute({
 });
 
 function RootLayout() {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   return (
     <div className="flex h-screen bg-background">
-      <Sidebar />
+      {!sidebarCollapsed && <Sidebar />}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar />
+        <Topbar
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
+        />
         <main className="flex-1 overflow-auto">
           <Outlet />
         </main>
@@ -112,10 +119,25 @@ function Sidebar() {
   );
 }
 
-function Topbar() {
+function Topbar({
+  sidebarCollapsed,
+  onToggleSidebar,
+}: {
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+}) {
+  const ToggleIcon = sidebarCollapsed ? PanelLeft : PanelLeftClose;
   return (
     <header className="flex h-11 shrink-0 items-center justify-between border-b px-4">
       <div className="flex items-center gap-3">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onToggleSidebar}
+          aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        >
+          <ToggleIcon className="size-4" />
+        </Button>
         <span className="text-sm font-medium">Dashboard</span>
         <span className="text-xs text-muted-foreground">Overview</span>
       </div>
