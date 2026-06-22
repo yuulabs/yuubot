@@ -1,32 +1,60 @@
-# Repository Guidelines
+# packages/yuutools
 
-## Project Structure & Module Organization
+Explicit, async-first tool framework for LLM agents. Tiny, narrow public API —
+a `@tool` decorator, a `ToolSpec`/`ParamSpec` model, a `ToolManager` registry
+with dependency-injection lookup, and a `depends()` marker for runtime deps.
+Public exports live in `src/yuutools/__init__.py`.
 
-`yuutools` is a small Python library in `src/yuutools/` with a narrow public API exposed from `src/yuutools/__init__.py`. Core implementation lives in `_tool.py`, `_spec.py`, `_schema.py`, and `_depends.py`. Tests live in `tests/` and focus on the public decorator, registry, and schema conversion behavior.
+This package is a workspace member of the monorepo at the repo root. It has no
+runtime dependency on `yuubot` or `yuuagents`; `yuuagents.tool.primitives` is a
+separate, host-facing tool type system that can interoperate with this one.
 
-## Build, Test, and Development Commands
+## Source Map (`src/yuutools/`)
 
-Use `uv` from the package root:
+| Path | Responsibility |
+|---|---|
+| `__init__.py` | Public API surface: `tool` (decorator), `Tool`, `BoundTool`, `ToolSpec`, `ParamSpec`, `ToolManager`, `depends`, `DependencyMarker`. |
+| `_tool.py` | `Tool` / `BoundTool` — wraps a Python callable into a tool with a spec; binding resolves `depends()` params into a runnable async handler. |
+| `_spec.py` | `ToolSpec`, `ParamSpec` — the declared shape of a tool (name, description, params) independent of the callable. |
+| `_schema.py` | Spec → JSON-schema conversion for LLM tool-call schemas. |
+| `_depends.py` | `depends(marker)` / `DependencyMarker` — declares a runtime dependency the `ToolManager` resolves at call time (no global state). |
+| `_manager.py` | `ToolManager` — registry + lookup: holds specs and dependency providers, dispatches a tool call to the right `BoundTool`. |
+
+## Execution model (quick reference)
+
+```text
+@tool
+def search(query: str, http: HttpClient = depends(HttpClient)) -> str: ...
+  → registers a ToolSpec (name, params schema) + a callable
+    → ToolManager.bind(providers={HttpClient: instance}) → BoundTool
+      → ToolManager.invoke(name, args) → resolves depends() → runs callable → result
+```
+
+Invariants to preserve:
+
+- No global state — all runtime deps flow through `ToolManager` providers.
+- `ToolSpec`/`ParamSpec` are the only thing an LLM ever sees; the Python
+  callable is an implementation detail hidden behind `BoundTool`.
+- Schema conversion (`_schema.py`) must round-trip `ParamSpec` to JSON Schema
+  and back losslessly for the param types we declare.
+
+## Commands
 
 ```bash
-uv sync
-uv run pytest
+uv sync                 # from monorepo root
+uv run pytest           # from this package directory
 uv run pytest tests/test_core.py -v
 uv run ruff check src/ tests/
 uv run ruff format src/ tests/
 uv build
 ```
 
-Install the library with `uv add yuutools`, or include the YAML extra with `uv add 'yuutools[yaml]'`.
+Install with `uv add yuutools`, or the YAML extra `uv add 'yuutools[yaml]'`.
 
-## Coding Style & Naming Conventions
+## Coding style
 
-Target Python 3.12+. Use 4-space indentation, `from __future__ import annotations`, and standard type hints like `list[int]` and `str | None`. Keep functions and modules in `snake_case`, classes in `PascalCase`, and constants in `UPPER_SNAKE_CASE`. Prefer `attrs.define(slots=True)` for runtime classes and keep the public API surface small and explicit.
-
-## Testing Guidelines
-
-The test suite uses `pytest` with `pytest-asyncio` for async execution. Name tests `tests/test_*.py` and keep them close to the behavior they cover. Add regression tests for spec generation, dependency injection, and `ToolManager` lookup rules when changing core behavior. Run the full package suite before opening a PR.
-
-## Commit & Pull Request Guidelines
-
-Recent history in this repo uses short imperative commits with Conventional Commit prefixes such as `chore:`, `feat:`, and `fix:`. Keep commits focused on one change. PRs should describe the user-visible effect, mention any API or schema changes, and list the verification commands you ran.
+Python 3.12+. `from __future__ import annotations`, `list[int]` / `str | None`
+hints, `snake_case` modules / `PascalCase` classes / `UPPER_SNAKE_CASE` consts.
+Prefer `attrs.define(slots=True)` for runtime classes. Add regression tests for
+spec generation, dependency injection, and `ToolManager` lookup rules when
+changing core behavior.

@@ -336,17 +336,51 @@ def _install_command(pm: str, web_root: Path) -> list[str]:
 
 
 def _find_monorepo_root(start: Path) -> Path | None:
-    """Walk up from ``start`` to the directory holding ``uv.lock``.
+    """Resolve the shared monorepo root for cross-worktree caches.
 
-    The uv workspace root carries ``uv.lock``; subpackages do not.
-    Returns ``None`` when no ancestor up to the filesystem root contains it
-    (e.g. a standalone checkout of just ``apps/yuubot``).
+    Prefers ``git rev-parse --git-common-dir`` so a worktree resolves to the
+    *main* repository checkout, where ``.tmp/cache/`` is shared across every
+    worktree. Falls back to walking up for ``uv.lock`` (the uv workspace root
+    marker) when not inside a git worktree (e.g. a standalone checkout).
+
+    Returns ``None`` only when neither anchor is found.
     """
+    git_root = _git_common_dir_parent(start)
+    if git_root is not None and (git_root / "uv.lock").is_file():
+        return git_root
     candidate = start.resolve()
     for parent in [candidate, *candidate.parents]:
         if (parent / "uv.lock").is_file():
             return parent
     return None
+
+
+def _git_common_dir_parent(start: Path) -> Path | None:
+    """Return the directory holding the main repo's ``.git``.
+
+    ``git rev-parse --git-common-dir`` prints the shared git dir, which is the
+    same path for the main checkout and every worktree. Its parent is therefore
+    the real monorepo root. Returns ``None`` when git is unavailable or the path
+    is not inside a repository.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(start),
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    git_dir = Path(result.stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = (start / git_dir).resolve()
+    return git_dir.parent if git_dir.name else None
 
 
 def _web_build_is_fresh(web_root: Path, web_dist: Path) -> bool:
