@@ -122,6 +122,7 @@ function ActorsPage() {
                     <TableHead>Backend</TableHead>
                     <TableHead>Model</TableHead>
                     <TableHead>Capability Set</TableHead>
+                    <TableHead>Workspace</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Actions</TableHead>
                   </TableRow>
@@ -144,6 +145,20 @@ function ActorsPage() {
                         <code className="text-xs">{actor.default_model}</code>
                       </TableCell>
                       <TableCell className="text-sm">{actor.capability_set?.name ?? "—"}</TableCell>
+                      <TableCell className="text-sm">
+                        {actor.capability_set?.workspace_path ? (
+                          <a
+                            href={`/workspace/${actor.capability_set.workspace_path}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+                          >
+                            Open
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </TableCell>
                       <TableCell>
                         <Badge variant={actor.enabled ? "default" : "secondary"}>
                           {actor.enabled ? "running" : "stopped"}

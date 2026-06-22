@@ -97,7 +97,6 @@ def _conversation_metadata(conversation: ConversationRecord) -> dict[str, object
         "actor_id": conversation.actor_id,
         "character_id": conversation.character.id,
         "capability_set_id": conversation.capability_set.id,
-        "workspace_path": conversation.capability_set.workspace_path,
         "llm_backend_id": conversation.llm_backend.id,
         "model": conversation.model,
         "created_at": _iso_or_none(conversation.created_at),

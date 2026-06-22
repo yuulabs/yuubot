@@ -713,7 +713,6 @@ function AdminConversationPage() {
         onActorChange={setActorId}
         collapsed={panelCollapsed}
         onToggleCollapsed={() => setPanelCollapsed((v) => !v)}
-        conversationMetadata={conversationMetadata}
       />
     </div>
   );
@@ -728,7 +727,6 @@ function BindingPanel({
   onActorChange,
   collapsed,
   onToggleCollapsed,
-  conversationMetadata,
 }: {
   actorId: string;
   actors: ActorResource[];
@@ -738,7 +736,6 @@ function BindingPanel({
   onActorChange: (id: string) => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  conversationMetadata: ConversationData | null;
 }) {
   if (collapsed) {
     return (
@@ -775,9 +772,9 @@ function BindingPanel({
           {/* Uses the user-configured CapabilitySet.workspace_path —
               a relative path under <data_dir>/workspace. If empty,
               no workspace was configured for this actor's CapabilitySet. */}
-          {conversationMetadata?.workspace_path ? (
+          {actor?.capability_set?.workspace_path ? (
             <a
-              href={`/workspace/${conversationMetadata.workspace_path}`}
+              href={`/workspace/${actor.capability_set.workspace_path}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
