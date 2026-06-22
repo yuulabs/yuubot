@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, PanelLeftClose, SquareTerminal } from "lucide-react";
+import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, PanelLeftClose, SquareTerminal, BookOpen, FileEdit, FilePen, Play } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
 import { sendConversationMessage, getConversation, getConversationMessages } from "@/lib/api";
 import {
@@ -103,7 +103,7 @@ function BashRenderer(block: RenderBlock): ReactElement {
   const display = toolDisplay(block);
   const isRunning = !block.toolResult;
   const command = extractBashCommand(block.toolArgs ?? display.argsText);
-  const result = stripAnsi(block.toolResult ?? "running");
+  const result = isRunning ? null : stripAnsi(block.toolResult ?? "");
   return (
     <div className="rounded-md border border-border/70 bg-background/70 p-2 text-xs shadow-sm">
       <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
@@ -131,9 +131,14 @@ function BashRenderer(block: RenderBlock): ReactElement {
             <SquareTerminal className="size-3.5" />
             <span>result</span>
           </div>
-          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
-            {result}
-          </pre>
+          {isRunning
+            ? <PendingToolBanner toolName={display.name} />
+            : (
+              <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+                {result}
+              </pre>
+            )
+          }
         </div>
       </div>
     </div>
@@ -177,6 +182,7 @@ function EditRenderer(block: RenderBlock): ReactElement | null {
       >
         {args.path}
       </div>
+      {isRunning && <PendingToolBanner toolName="edit" />}
       <pre className="max-h-96 overflow-auto rounded-md border border-slate-700 bg-slate-950 p-3 font-mono text-[12px] leading-5 shadow-inner">
         <code>
           {diff.map((line, index) => (
@@ -245,21 +251,82 @@ function markLiveTurnCompleted(items: DisplayItem[], turnKey: string): DisplayIt
   ));
 }
 
-function MessageBlockView({ block }: { block: RenderBlock }) {
+function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming: boolean }) {
+  // Default-expanded with a fixed ceiling: shorter content renders in full;
+  // when it exceeds max-h, the container scrolls so newer deltas land at the
+  // bottom and older text scrolls out the top. Auto-stick to bottom while the
+  // turn is still streaming; once done, let the user scroll freely.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!isStreaming) return;
+    const node = scrollRef.current;
+    if (node) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [content, isStreaming]);
+  return (
+    <details open className="group rounded-md border border-border/60 bg-background/60 text-xs text-muted-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 font-medium text-muted-foreground [&::-webkit-details-marker]:hidden">
+        <Brain className="size-3.5" />
+        <span>thinking</span>
+        {isStreaming && <Loader2 className="size-3 animate-spin text-muted-foreground/70" />}
+        <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:hidden">expand</span>
+        <span className="ml-auto hidden text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:inline">collapse</span>
+      </summary>
+      <div
+        ref={scrollRef}
+        className="max-h-64 overflow-y-auto border-t border-border/50 px-3 py-2 whitespace-pre-wrap break-words"
+      >
+        {content}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * Pending-status label shown in a tool block's result panel while the tool is
+ * still running (no `toolResult` arrived yet). Maps tool kind to a verb so the
+ * user sees "Reading..." / "Editing..." / "Running python..." rather than a
+ * bare "running".
+ *
+ * `toolName` may be a registered yuubot tool (`bash`, `execute_python`, `read`,
+ * `edit`, `write`) or an integration facade (`yext.<integration>.<capability>`).
+ */
+function pendingToolLabel(toolName: string | undefined): string {
+  const name = toolName ?? "";
+  if (name === "bash") return "Running bash...";
+  if (name === "execute_python" || name.endsWith(".execute_python")) return "Running python...";
+  if (name === "read") return "Reading...";
+  if (name === "edit") return "Editing...";
+  if (name === "write") return "Writing...";
+  if (name.startsWith("yext.")) return `Running ${name}...`;
+  return "Running...";
+}
+
+function pendingToolIcon(toolName: string | undefined): typeof BookOpen {
+  const name = toolName ?? "";
+  if (name === "read") return BookOpen;
+  if (name === "edit") return FileEdit;
+  if (name === "write") return FilePen;
+  if (name === "bash" || name === "execute_python" || name.endsWith(".execute_python")) return Play;
+  return Hammer;
+}
+
+function PendingToolBanner({ toolName }: { toolName: string | undefined }) {
+  const Icon = pendingToolIcon(toolName);
+  const label = pendingToolLabel(toolName);
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+      <Icon className="size-3.5" />
+      <span>{label}</span>
+      <Loader2 className="ml-auto size-3.5 animate-spin" />
+    </div>
+  );
+}
+
+function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStreaming: boolean }) {
   if (block.type === "thinking") {
-    return (
-      <details className="group rounded-md border border-border/60 bg-background/60 text-xs text-muted-foreground">
-        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 font-medium text-muted-foreground [&::-webkit-details-marker]:hidden">
-          <Brain className="size-3.5" />
-          <span>thinking</span>
-          <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:hidden">expand</span>
-          <span className="ml-auto hidden text-[10px] uppercase tracking-wide text-muted-foreground/70 group-open:inline">collapse</span>
-        </summary>
-        <div className="border-t border-border/50 px-3 py-2 whitespace-pre-wrap break-words">
-          {block.content}
-        </div>
-      </details>
-    );
+    return <ThinkingBlock content={block.content} isStreaming={isStreaming} />;
   }
   if (block.type === "tool_group") {
     const display = toolDisplay(block);
@@ -277,9 +344,15 @@ function MessageBlockView({ block }: { block: RenderBlock }) {
             <div className="min-w-0">
               <PythonCodeBlock code={display.code ?? display.argsText} />
             </div>
-            <pre className="max-h-96 min-h-24 overflow-auto whitespace-pre-wrap break-words rounded-md border border-emerald-900/50 bg-zinc-950 p-3 font-mono text-[12px] leading-5 text-emerald-200 shadow-inner">
-              {block.toolResult ?? "running"}
-            </pre>
+            {isRunning ? (
+              <div className="flex min-h-24 flex-col justify-center rounded-md border border-emerald-900/50 bg-zinc-950 text-emerald-200 shadow-inner">
+                <PendingToolBanner toolName={display.name} />
+              </div>
+            ) : (
+              <pre className="max-h-96 min-h-24 overflow-auto whitespace-pre-wrap break-words rounded-md border border-emerald-900/50 bg-zinc-950 p-3 font-mono text-[12px] leading-5 text-emerald-200 shadow-inner">
+                {block.toolResult ?? "running"}
+              </pre>
+            )}
           </div>
         </div>
       );
@@ -318,9 +391,14 @@ function MessageBlockView({ block }: { block: RenderBlock }) {
               <SquareTerminal className="size-3.5" />
               <span>tool result</span>
             </div>
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
-              {block.toolResult ?? "pending"}
-            </pre>
+            {isRunning
+              ? <PendingToolBanner toolName={display.name} />
+              : (
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+                  {block.toolResult ?? "pending"}
+                </pre>
+              )
+            }
           </div>
         </div>
       </div>
@@ -677,15 +755,20 @@ function AdminConversationPage() {
           {!loadingHistory && displayItems.length === 0 && (
             <p className="text-xs text-muted-foreground text-center">No messages yet. Select an actor and start the conversation!</p>
           )}
-          {displayItems.map((item) => (
+          {displayItems.map((item) => {
+            const itemIsStreaming = isSending
+              && !!item.turnKey
+              && item.turnKey === activeTurnKeyRef.current;
+            return (
             <div key={item.key} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
               <div className={`max-w-[80%] space-y-2 rounded-lg px-4 py-2 text-sm ${item.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
                 {item.blocks.map((block) => (
-                  <MessageBlockView key={block.key} block={block} />
+                  <MessageBlockView key={block.key} block={block} isStreaming={itemIsStreaming} />
                 ))}
               </div>
             </div>
-          ))}
+            );
+          })}
           {/* Pending indicator */}
           {isSending && !currentTurnHasLiveBlocks && (
             <div className="flex justify-start">
