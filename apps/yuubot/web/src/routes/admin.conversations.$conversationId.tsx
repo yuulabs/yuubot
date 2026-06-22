@@ -34,6 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { CostBadge } from "@/components/conversation/cost-badge";
 
 function pythonHighlightedSegments(line: string): Array<{ text: string; kind: "plain" | "keyword" | "string" | "comment" | "number" }> {
   const commentIndex = line.indexOf("#");
@@ -458,6 +459,7 @@ function AdminConversationPage() {
   const [conversationMetadata, setConversationMetadata] = useState<ConversationData | null>(null);
   const [actorLocked, setActorLocked] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [totalCost, setTotalCost] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
@@ -546,6 +548,22 @@ function AdminConversationPage() {
         } catch { /* transport error, see onerror below */ }
       };
 
+      // Phase 5-2 "cost_update" SSE event: emitted once per `llm.finished`
+      // RuntimeEvent with the running cumulative USD spend for this
+      // conversation. No quota field — daily budget is global; only
+      // the running `$<total> spent` figure is surfaced in the header.
+      const handleCostUpdateEvent = (e: MessageEvent) => {
+        try {
+          const raw = JSON.parse(e.data) as {
+            total_cost?: number;
+            turn_cost?: number;
+          };
+          if (typeof raw.total_cost === "number" && Number.isFinite(raw.total_cost)) {
+            setTotalCost(raw.total_cost);
+          }
+        } catch { /* malformed cost frame — ignore without breaking the stream */ }
+      };
+
       const es = new EventSource(`/api/admin/conversations/${conversationId}/events`);
       sseRef.current = es;
       es.onopen = () => {
@@ -572,6 +590,7 @@ function AdminConversationPage() {
       es.addEventListener("transcript_delta", handleAssistantStreamEvent);
       es.addEventListener("turn_completed", handleTurnCompletedEvent);
       es.addEventListener("error", handleErrorEvent);
+      es.addEventListener("cost_update", handleCostUpdateEvent);
     });
     connectingSsePromiseRef.current = pending;
     return pending;
@@ -598,6 +617,7 @@ function AdminConversationPage() {
     setDisplayItems([]);
     setConversationMetadata(null);
     setActorLocked(false);
+    setTotalCost(0);
     setLoadingHistory(true);
 
     if (isDraft) {
@@ -772,7 +792,12 @@ function AdminConversationPage() {
           <a href="/admin/conversations" onClick={(e) => { e.preventDefault(); window.history.back(); }}>
             <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
           </a>
-          <div className="flex-1"><h2 className="text-sm font-semibold">{isDraft ? "New conversation" : conversationId}</h2></div>
+          <div className="flex-1">
+            <h2 className="text-sm font-semibold">{isDraft ? "New conversation" : conversationId}</h2>
+          </div>
+          {/* Running cumulative USD spend — fed by `cost_update` SSE frames.
+              No quota (`/ $limit`) per Phase 5-3 spec: daily budget is global. */}
+          {!isDraft && <CostBadge totalCost={totalCost} />}
         </header>
 
         <div className="flex-1 space-y-4 overflow-auto p-4">
