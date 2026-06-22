@@ -19,6 +19,7 @@ import yuullm
 from yuubot.bootstrap.config import ServerConfig
 from yuubot.core.actors import ActorManager
 from yuubot.core.assembly._history_codec import decode_prompt_item
+from yuubot.core.conversation_events import ConversationSSEHeartbeat
 from yuubot.core.conversations import (
     ConversationBindingConflict,
     ConversationManager,
@@ -534,12 +535,18 @@ def make_conversation_events_handler(
         async def stream():
             try:
                 async for event in conversation_manager.subscribe_events(
-                    conversation_id
+                    conversation_id,
                 ):
                     if await request.is_disconnected():
                         break
+                    if isinstance(event, ConversationSSEHeartbeat):
+                        # SSE comment frame: keeps the connection alive across
+                        # idle periods (user typing, waiting on tool output)
+                        # without surfacing anything to EventSource clients.
+                        yield ": heartbeat\n\n"
+                        continue
                     yield _sse_event(event.event_type, event.as_dict())
-                    if event.event_type in ("turn_completed", "error"):
+                    if event.event_type == "error":
                         break
             except LookupError:
                 logger.exception(

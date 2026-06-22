@@ -155,7 +155,11 @@ async def test_record_event_sequences_are_monotonic() -> None:
     )
 
     all_events = first + second
-    assert [item.as_dict()["sequence"] for item in all_events] == [1]
+    assert [item.as_dict()["sequence"] for item in all_events] == [1, 2]
+    assert [item.event_type for item in all_events] == [
+        "transcript_delta",
+        "turn_completed",
+    ]
 
 
 def test_projector_does_not_emit_raw_runtime_event_names() -> None:

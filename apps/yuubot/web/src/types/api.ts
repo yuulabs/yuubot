@@ -416,6 +416,11 @@ export interface TranscriptDeltaEvent extends ConversationSSEBaseEvent {
   deltas: TranscriptDelta[];
 }
 
+export interface TurnCompletedEvent extends ConversationSSEBaseEvent {
+  event_type: "turn_completed";
+  turn_id: string;
+}
+
 export interface ConversationErrorEvent extends ConversationSSEBaseEvent {
   event_type: "error";
   turn_id?: string;
@@ -426,4 +431,5 @@ export interface ConversationErrorEvent extends ConversationSSEBaseEvent {
 export type ConversationSSEEvent =
   | TurnStartedEvent
   | TranscriptDeltaEvent
+  | TurnCompletedEvent
   | ConversationErrorEvent;

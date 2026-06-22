@@ -14,8 +14,27 @@ from yuuagents.core.eventbus import RuntimeEvent
 ConversationFrontendEventType = Literal[
     "turn_started",
     "transcript_delta",
+    "turn_completed",
     "error",
 ]
+
+
+@dataclass(frozen=True)
+class ConversationSSEHeartbeat:
+    """In-band keepalive marker yielded by ``subscribe_events``.
+
+    Long-lived SSE streams sit idle between turns; without a periodic frame
+    the daemon-to-admin HTTP hop and any proxying middleboxes close the
+    connection on idle timeout and ``EventSource`` reconnects silently.
+
+    The projector never produces this — it is synthesised by
+    ``ConversationManager.subscribe_events`` when its queue.get() times out.
+    The daemon SSE handler renders it as an SSE comment frame ``: heartbeat\\n\\n``
+    (no event_type) which the browser ``EventSource`` silently discards
+    while keeping the connection alive.
+    """
+
+    conversation_id: str
 
 _ANSI_PATTERN = re.compile(
     r"\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-Z\\-_]"
@@ -66,6 +85,8 @@ class ConversationSSEProjector:
             return [self.error(conversation_id, event, _event_error(event))]
         if event.name == "agent.turn_started":
             return [self.turn_started(conversation_id, event)]
+        if event.name == "agent.turn_completed":
+            return [self.turn_completed(conversation_id, event)]
         return []
 
     def transcript_delta(
@@ -110,6 +131,26 @@ class ConversationSSEProjector:
                 "agent_id": event.agent_id or "",
                 "agent_name": event.agent_name or "",
             },
+        )
+
+    def turn_completed(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> ConversationFrontendEvent:
+        """Emit a named ``turn_completed`` event without closing the stream.
+
+        The frontend depends on this event to flip ``isSending`` off and
+        mark live tool blocks as completed. Closing the HTTP stream on turn
+        completion (the prior regression) meant the next send had no
+        subscriber and silently dropped every delta — see the scenario in
+        ``subscribe_events``.
+        """
+        return self._event(
+            conversation_id,
+            event,
+            "turn_completed",
+            {"turn_id": _turn_id(event)},
         )
 
     def missing_tool_result_delta(

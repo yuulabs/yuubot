@@ -387,7 +387,6 @@ function AdminConversationPage() {
   const currentAssistantItemKeyRef = useRef("");
   const liveItemIndexRef = useRef(0);
   const liveBlockIndexRef = useRef(0);
-  const intentionalCloseRef = useRef(false);
   const seenSseEventKeysRef = useRef<Set<string>>(new Set());
 
   const actor = actors.find((a) => a.id === actorId);
@@ -436,11 +435,26 @@ function AdminConversationPage() {
         if (completedTurnKey) {
           setDisplayItems((prev) => markLiveTurnCompleted(prev, completedTurnKey));
         }
-        intentionalCloseRef.current = true;
         activeTurnKeyRef.current = "";
         currentAssistantItemKeyRef.current = "";
         sendingRef.current = false;
         setIsSending(false);
+      };
+
+      const handleTurnCompletedEvent = (e: MessageEvent) => {
+        // Named turn-completion signal: the daemon emits this instead of
+        // closing the stream. Leaves the EventSource open so the next send
+        // already has a subscriber — fixes the "every second message hangs"
+        // regression caused by the prior close-on-turn_completed design.
+        try {
+          const data = JSON.parse(e.data) as ConversationSSEEvent;
+          if (!rememberConversationSseEvent(seenSseEventKeysRef.current, data)) {
+            return;
+          }
+        } catch {
+          /* malformed frame; still mark complete to avoid hanging */
+        }
+        markGenerationComplete();
       };
 
       const handleErrorEvent = (e: MessageEvent) => {
@@ -450,37 +464,34 @@ function AdminConversationPage() {
           if (raw && typeof raw === "object" && "error" in raw) {
             setError(String(raw.error));
           }
-        } catch { /* connection error, auto-reconnect */ }
+        } catch { /* transport error, see onerror below */ }
       };
 
       const es = new EventSource(`/api/admin/conversations/${conversationId}/events`);
       sseRef.current = es;
       es.onopen = () => {
         connectingSsePromiseRef.current = null;
-        intentionalCloseRef.current = false;
         resolve();
       };
       es.onerror = () => {
-        connectingSsePromiseRef.current = null;
-        if (sendingRef.current) {
-          markGenerationComplete();
-          es.close();
-          if (sseRef.current === es) {
-            sseRef.current = null;
-          }
-          resolve();
+        if (connectingSsePromiseRef.current) {
+          // Initial connect failed before onopen fired.
+          connectingSsePromiseRef.current = null;
+          reject(new Error("Conversation stream setup failed"));
           return;
         }
-        if (sseRef.current === es) {
-          sseRef.current = null;
+        if (sendingRef.current) {
+          // Mid-turn transport drop: daemon may still be running the turn,
+          // but we have no durable replay on the SSE side. Surface it.
+          markGenerationComplete();
+          setError("Conversation stream disconnected mid-turn");
         }
-        es.close();
-        if (!intentionalCloseRef.current) {
-          reject(new Error("Conversation stream setup failed"));
-        }
+        // EventSource reconnects by default; do not close, do not reject.
+        // The long-lived stream survives idle disconnects between turns.
       };
 
       es.addEventListener("transcript_delta", handleAssistantStreamEvent);
+      es.addEventListener("turn_completed", handleTurnCompletedEvent);
       es.addEventListener("error", handleErrorEvent);
     });
     connectingSsePromiseRef.current = pending;
@@ -504,7 +515,6 @@ function AdminConversationPage() {
     liveBlockIndexRef.current = 0;
     seenSseEventKeysRef.current = new Set();
     sendingRef.current = false;
-    intentionalCloseRef.current = false;
     closeSse();
     setDisplayItems([]);
     setConversationMetadata(null);

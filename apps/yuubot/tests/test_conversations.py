@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import yuullm
 from yuuagents.core.eventbus import RuntimeEvent
 
+from yuubot.core.conversation_events import ConversationFrontendEvent, ConversationSSEHeartbeat
 from yuubot.core.conversations import (
     ConversationBindingConflict,
     ConversationManager,
@@ -141,14 +142,21 @@ async def test_handle_tool_result_failed_status_persists_canonical_message() -> 
     }]
 
 
-async def test_turn_completed_closes_subscription_without_completion_event() -> None:
+async def test_turn_completed_emits_named_event_and_keeps_stream_open() -> None:
+    """``agent.turn_completed`` projects to a ``turn_completed`` SSE event
+    and does **not** close the subscriber's stream.
+
+    Regression guard for the prior "close stream per turn" design that
+    caused every second user message to hang: the stream died after the
+    first turn, so the next send had no subscriber and dropped every delta.
+    """
     manager = manager_with_store()
-    subscription = manager.subscribe_events("conv-1")
+    manager._agent_to_conversation["agent-1"] = "conv-1"
+    subscription = manager.subscribe_events("conv-1", heartbeat_interval=3600.0)
     first = asyncio.ensure_future(subscription.__anext__())
     await asyncio.sleep(0)
 
-    result = await manager._record_event(
-        "conv-1",
+    await manager._on_runtime_event(
         RuntimeEvent(
             name="agent.turn_completed",
             agent_id="agent-1",
@@ -158,13 +166,39 @@ async def test_turn_completed_closes_subscription_without_completion_event() -> 
         ),
     )
 
-    assert result == []
-    try:
-        await first
-    except StopAsyncIteration:
-        pass
-    else:
-        raise AssertionError("subscription yielded a completion event")
+    emitted = await asyncio.wait_for(first, timeout=1)
+    assert isinstance(emitted, ConversationFrontendEvent)
+    assert emitted.event_type == "turn_completed"
+    assert emitted.as_dict()["turn_id"] == "task-1"
+
+    # Stream must still be open: a subsequent delta event arrives on the
+    # same subscription. This is the exact path the regression broke.
+    second = asyncio.ensure_future(subscription.__anext__())
+    await asyncio.sleep(0)
+    await manager._on_runtime_event(
+        RuntimeEvent(
+            name="output.chunk",
+            agent_id="agent-1",
+            agent_name="test-agent",
+            data={"blocks": [{"type": "text", "text": "second-turn"}]},
+            timestamp=1234567893.0,
+        ),
+    )
+    second_emitted = await asyncio.wait_for(second, timeout=1)
+    assert isinstance(second_emitted, ConversationFrontendEvent)
+    assert second_emitted.event_type == "transcript_delta"
+
+
+async def test_subscribe_events_heartbeat_keeps_idle_stream_alive() -> None:
+    """When no event arrives within ``heartbeat_interval``, subscribe_events
+    yields a ``ConversationSSEHeartbeat`` so the daemon can emit a comment
+    frame and prevent idle-timeout disconnects from middleboxes."""
+    manager = manager_with_store()
+    subscription = manager.subscribe_events("conv-1", heartbeat_interval=0.05)
+    first = asyncio.ensure_future(subscription.__anext__())
+    heartbeat = await asyncio.wait_for(first, timeout=1)
+    assert isinstance(heartbeat, ConversationSSEHeartbeat)
+    assert heartbeat.conversation_id == "conv-1"
 
 
 async def test_send_message_returns_before_turn_completes() -> None:

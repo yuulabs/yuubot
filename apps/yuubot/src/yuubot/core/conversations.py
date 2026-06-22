@@ -25,6 +25,7 @@ from yuubot.core.assembly._history_codec import (
 from yuubot.core.bindings import AgentBinding, conversation_agent_binding
 from yuubot.core.conversation_events import (
     ConversationFrontendEvent,
+    ConversationSSEHeartbeat,
     ConversationSSEProjector,
     render_tool_output_final_text,
 )
@@ -382,13 +383,9 @@ _PROJECTED_RUNTIME_EVENTS = {
     "output.chunk",
     "agent.turn.error",
     "agent.turn_started",
+    "agent.turn_completed",
     "budget.exceeded",
 }
-
-
-@dataclass(frozen=True)
-class _ConversationStreamClose:
-    conversation_id: str
 
 
 @dataclass
@@ -407,7 +404,7 @@ class ConversationManager:
     _observed_runtimes: dict[str, int] = field(default_factory=dict, init=False)
     _subscribers: dict[
         str,
-        set[asyncio.Queue[ConversationFrontendEvent | _ConversationStreamClose]],
+        set[asyncio.Queue[ConversationFrontendEvent | ConversationSSEHeartbeat]],
     ] = field(
         default_factory=dict,
         init=False,
@@ -584,15 +581,45 @@ class ConversationManager:
     async def subscribe_events(
         self,
         conversation_id: str,
-    ) -> AsyncIterator[ConversationFrontendEvent]:
-        queue: asyncio.Queue[ConversationFrontendEvent | _ConversationStreamClose] = asyncio.Queue()
+        *,
+        heartbeat_interval: float = 25.0,
+    ) -> AsyncIterator[ConversationFrontendEvent | ConversationSSEHeartbeat]:
+        """Subscribe to the long-lived SSE stream for one conversation.
+
+        The stream stays open across turns. ``agent.turn_completed`` is
+        projected to a named ``turn_completed`` event that the frontend
+        listens for; it does **not** close the stream. Closing on each
+        turn was the regression that dropped the second turn's events:
+
+        ```
+        mount → connectSse (stream open)
+        User msg 1 → daemon emits transcript_delta → turn_completed
+          → stream closed by daemon → EventSource onerror → frontend
+            tears down the EventSource  ← completion signalled via TCP close
+        User msg 2 → handleSend does not reopen stream
+          → daemon emits transcript_delta into an empty subscriber set
+          → events dropped → "Waiting for response…" hangs
+        ```
+
+        A heartbeat (: heartbeat\\n\\n comment frame, rendered by the
+        daemon SSE handler) is yielded whenever no event arrives within
+        ``heartbeat_interval`` seconds — short enough to keep any idle
+        HTTP hop or middlebox from closing the connection, long enough
+        to be negligible overhead (default 25s).
+        """
+        queue: asyncio.Queue[ConversationFrontendEvent | ConversationSSEHeartbeat] = asyncio.Queue()
         subscribers = self._subscribers.setdefault(conversation_id, set())
         subscribers.add(queue)
         try:
             while True:
-                event = await queue.get()
-                if isinstance(event, _ConversationStreamClose):
-                    break
+                try:
+                    event = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=heartbeat_interval,
+                    )
+                except asyncio.TimeoutError:
+                    yield ConversationSSEHeartbeat(conversation_id)
+                    continue
                 yield event
         finally:
             subscribers.discard(queue)
@@ -748,9 +775,6 @@ class ConversationManager:
             return []
         if event.name == "tool.result_appended":
             return await self._handle_tool_result(conversation_id, event)
-        if event.name == "agent.turn_completed":
-            await self._close_conversation_stream(conversation_id)
-            return []
         return []
 
     async def _handle_llm_finished(
@@ -793,10 +817,6 @@ class ConversationManager:
             text=result,
         )
         return [] if missing is None else [missing]
-
-    async def _close_conversation_stream(self, conversation_id: str) -> None:
-        for queue in tuple(self._subscribers.get(conversation_id, ())):
-            await queue.put(_ConversationStreamClose(conversation_id))
 
 
 def _turn_id(event: RuntimeEvent) -> str:
