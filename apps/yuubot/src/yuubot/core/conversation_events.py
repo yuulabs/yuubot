@@ -15,6 +15,7 @@ ConversationFrontendEventType = Literal[
     "turn_started",
     "transcript_delta",
     "turn_completed",
+    "cost_update",
     "error",
 ]
 
@@ -151,6 +152,31 @@ class ConversationSSEProjector:
             event,
             "turn_completed",
             {"turn_id": _turn_id(event)},
+        )
+
+    def cost_update(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+        *,
+        turn_cost: float,
+        total_cost: float,
+    ) -> ConversationFrontendEvent:
+        """Project an ``llm.finished`` event into a ``cost_update`` SSE event.
+
+        The frontend renders this as ``$X spent`` (no quota display in this
+        phase — quota / progress-to-ceiling is Phase 5-3's responsibility).
+        ``turn_cost`` is the cost of the single LLM call that just
+        finished; ``total_cost`` is the running cumulative USD spend held
+        by the in-memory ``Budget`` for this agent (falling back to
+        ``turn_cost`` when the Budget is unavailable, e.g. on the cold
+        first call after a daemon restart).
+        """
+        return self._event(
+            conversation_id,
+            event,
+            "cost_update",
+            {"turn_cost": turn_cost, "total_cost": total_cost},
         )
 
     def missing_tool_result_delta(

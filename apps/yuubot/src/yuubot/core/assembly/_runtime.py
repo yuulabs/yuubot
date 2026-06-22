@@ -716,6 +716,21 @@ class YuuAgentsActorRuntime:
             if item is agent:
                 self.conversation_agents.pop(conversation_id, None)
 
+    # ── Budget accessors ──────────────────────────────────────────
+    # Read-only lookups for the host app. The charging / is_exceeded
+    # logic itself stays inside ``_run_agent_turn`` (frozen); these only
+    # expose the already-maintained ``_agent_budgets`` entries so the
+    # ConversationManager can publish realtime cost SSE events.
+
+    def budget_for_agent(self, agent_id: str) -> Budget | None:
+        """Return the in-memory ``Budget`` for ``agent_id``, or ``None``.
+
+        Used by the host (yuubot ConversationManager) to read the running
+        cumulative USD spend when projecting a ``cost_update`` SSE event
+        after each ``llm.finished``. Read-only — never charges.
+        """
+        return self._agent_budgets.get(agent_id)
+
     def _touch_agent(self, agent: Agent) -> None:
         self._agent_last_used[agent.id] = asyncio.get_running_loop().time()
         if self.idle_timeout_s <= 0:

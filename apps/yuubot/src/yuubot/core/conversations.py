@@ -13,7 +13,7 @@ from pathlib import Path
 
 import msgspec
 import yuullm
-from yuuagents import Agent, ProviderPoolSessionFactory
+from yuuagents import Agent, Budget, ProviderPoolSessionFactory
 from yuuagents.core.eventbus import RuntimeEvent
 
 from yuubot.bootstrap.config import YuuAgentsConfig
@@ -213,6 +213,24 @@ def _cost_value(value: object) -> dict[str, object] | float | None:
     if isinstance(value, int | float):
         return float(value)
     return _dict_value(value)
+
+
+def _cost_total(value: dict[str, object] | float | None) -> float | None:
+    """Extract the ``total_cost`` USD figure from an ``llm.finished`` cost payload.
+
+    The runtime emits ``cost`` as a ``yuullm.Cost`` msgspec.Struct; by the
+    time it reaches ``LLMFinishedData`` it has been normalised to a dict
+    (``{"total_cost": float, ...}``). A bare ``float`` (legacy / scalar
+    cost) is returned as-is. ``None`` (no usage / no pricing) → ``None``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    total = value.get("total_cost")
+    if isinstance(total, int | float):
+        return float(total)
+    return None
 
 
 def _tool_calls(value: object) -> tuple[dict[str, object], ...]:
@@ -877,10 +895,64 @@ class ConversationManager:
             return self._sse_projector.project_runtime_event(conversation_id, event)
         if event.name == "llm.finished":
             await self._handle_llm_finished(conversation_id, event)
-            return []
+            return self._cost_update_events(conversation_id, event)
         if event.name == "tool.result_appended":
             return await self._handle_tool_result(conversation_id, event)
         return []
+
+    def _cost_update_events(
+        self,
+        conversation_id: str,
+        event: RuntimeEvent,
+    ) -> list[ConversationFrontendEvent]:
+        """Project a ``cost_update`` SSE event from an ``llm.finished`` event.
+
+        Only emitted when the LLM step produced a cost. When the in-memory
+        ``Budget`` is available (normal path), ``total_cost`` is the
+        running cumulative USD spend held by the agent's Budget; when the
+        budget lookup misses (cold path after a daemon restart where the
+        agent was rebuilt but the budget was reset), ``total_cost`` falls
+        back to the per-call ``turn_cost`` so the frontend still gets a
+        non-zero "$X spent" frame.
+        """
+        finished = LLMFinishedData.from_event(event)
+        turn_cost = _cost_total(finished.cost)
+        if turn_cost is None:
+            return []
+        budget = self._budget_for_event(event)
+        total_cost = (
+            float(budget.usage.get("usd", 0.0)) if budget is not None else turn_cost
+        )
+        return [
+            self._sse_projector.cost_update(
+                conversation_id,
+                event,
+                turn_cost=turn_cost,
+                total_cost=total_cost,
+            )
+        ]
+
+    def _budget_for_event(self, event: RuntimeEvent) -> Budget | None:
+        """Look up the in-memory ``Budget`` for the agent that emitted ``event``.
+
+        ``Budget`` is owned by ``YuuAgentsActorRuntime._agent_budgets`` (the
+        orchestrator, not the Agent). The ``ConversationManager`` creates
+        each runtime and tracks it by conversation_id, so the lookup goes
+        conversation_id → runtime → ``budget_for_agent(agent_id)``. Returns
+        ``None`` when no runtime is cached (e.g. event arrived after the
+        runtime was evicted) — callers fall back to per-turn cost.
+        """
+        agent_id = event.agent_id or ""
+        if not agent_id:
+            return None
+        conversation_id = self._agent_to_conversation.get(agent_id)
+        if conversation_id is None:
+            return None
+        runtime = self._runtimes.get(conversation_id)
+        if runtime is None:
+            return None
+        return runtime.budget_for_agent(agent_id)
+
 
     async def _handle_llm_finished(
         self,
