@@ -14,6 +14,15 @@ import {
   type RenderBlock,
 } from "@/lib/conversation-transcript";
 import type { ActorResource, ConversationData, ConversationMessage, ConversationSSEEvent } from "@/types/api";
+import {
+  extractBashCommand,
+  parseEditArgs,
+  renderSimpleDiff,
+  stripAnsi,
+  type DiffLine,
+  type EditArgs,
+} from "@/lib/tool-renderers";
+import type { ReactElement } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -80,6 +89,111 @@ function PythonCodeBlock({ code }: { code: string }) {
   );
 }
 
+/**
+ * Per-tool renderers for `tool_group` blocks.
+ *
+ * A renderer returns the JSX to render, or `null` to fall back to the
+ * inline generic side-by-side branch in `MessageBlockView`. Keeping the
+ * generic branch inline here preserves its prior rendering byte-for-byte.
+ */
+type ToolRenderer = (block: RenderBlock) => ReactElement | null;
+
+function BashRenderer(block: RenderBlock): ReactElement {
+  const display = toolDisplay(block);
+  const isRunning = !block.toolResult;
+  const command = extractBashCommand(block.toolArgs ?? display.argsText);
+  const result = stripAnsi(block.toolResult ?? "running");
+  return (
+    <div className="rounded-md border border-border/70 bg-background/70 p-2 text-xs shadow-sm">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
+        <Hammer className="size-3.5" />
+        <span>bash</span>
+        {isRunning && <Loader2 className="ml-auto size-3.5 animate-spin" />}
+        {block.toolStatus && (
+          <Badge variant="secondary" className={isRunning ? "h-5 px-1.5 text-[10px]" : "ml-auto h-5 px-1.5 text-[10px]"}>
+            {block.toolStatus}
+          </Badge>
+        )}
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        <div className="min-w-0 rounded-md border border-blue-200 bg-blue-50/80 p-2 dark:border-blue-900/70 dark:bg-blue-950/30">
+          <div className="mb-1 flex items-center gap-1.5 font-semibold text-blue-700 dark:text-blue-300">
+            <SquareTerminal className="size-3.5" />
+            <span>command</span>
+          </div>
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+            {command}
+          </pre>
+        </div>
+        <div className="min-w-0 rounded-md border border-emerald-200 bg-emerald-50/80 p-2 dark:border-emerald-900/70 dark:bg-emerald-950/30">
+          <div className="mb-1 flex items-center gap-1.5 font-semibold text-emerald-700 dark:text-emerald-300">
+            <SquareTerminal className="size-3.5" />
+            <span>result</span>
+          </div>
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+            {result}
+          </pre>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function diffLineClass(kind: DiffLine["kind"]): string {
+  if (kind === "add") return "text-emerald-300";
+  if (kind === "del") return "text-rose-300";
+  return "text-slate-300";
+}
+
+function diffLinePrefix(kind: DiffLine["kind"]): string {
+  if (kind === "add") return "+";
+  if (kind === "del") return "-";
+  return " ";
+}
+
+function EditRenderer(block: RenderBlock): ReactElement | null {
+  const args: EditArgs | null = parseEditArgs(block.toolArgs ?? "");
+  if (args === null) {
+    return null;
+  }
+  const diff = renderSimpleDiff(args.old_string, args.new_string);
+  const isRunning = !block.toolResult;
+  return (
+    <div className="rounded-md border border-border/70 bg-background/70 p-2 text-xs shadow-sm">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-muted-foreground">
+        <Hammer className="size-3.5" />
+        <span>edit</span>
+        {isRunning && <Loader2 className="ml-auto size-3.5 animate-spin" />}
+        {block.toolStatus && (
+          <Badge variant="secondary" className={isRunning ? "h-5 px-1.5 text-[10px]" : "ml-auto h-5 px-1.5 text-[10px]"}>
+            {block.toolStatus}
+          </Badge>
+        )}
+      </div>
+      <div
+        className="mb-2 break-all font-mono text-[11px] text-muted-foreground"
+        title={args.path}
+      >
+        {args.path}
+      </div>
+      <pre className="max-h-96 overflow-auto rounded-md border border-slate-700 bg-slate-950 p-3 font-mono text-[12px] leading-5 shadow-inner">
+        <code>
+          {diff.map((line, index) => (
+            <span key={index} className={`block min-h-5 ${diffLineClass(line.kind)}`}>
+              {diffLinePrefix(line.kind)}
+              {line.text}
+            </span>
+          ))}
+        </code>
+      </pre>
+    </div>
+  );
+}
+
+const toolRendererRegistry: Record<string, ToolRenderer> = {
+  bash: BashRenderer,
+  edit: EditRenderer,
+};
 
 export const Route = createFileRoute("/admin/conversations/$conversationId")({
   component: AdminConversationPage,
@@ -168,6 +282,13 @@ function MessageBlockView({ block }: { block: RenderBlock }) {
           </div>
         </div>
       );
+    }
+    const renderer = toolRendererRegistry[display.name];
+    if (renderer) {
+      const rendered = renderer(block);
+      if (rendered !== null) {
+        return rendered;
+      }
     }
     return (
       <div className="rounded-md border border-border/70 bg-background/70 p-2 text-xs shadow-sm">
