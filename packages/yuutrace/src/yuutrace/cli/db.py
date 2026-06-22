@@ -7,10 +7,12 @@ query functions for the REST API.
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import hashlib
 import json
 import sqlite3
-from typing import cast
+import time
+from typing import Literal, cast
 
 from .._typing import (
     ConversationListResult,
@@ -531,3 +533,396 @@ def get_span(conn: sqlite3.Connection, span_id: str) -> SpanRecord | None:
     span = _span_record_from_row(row)
     _attach_events(conn, [span])
     return span
+
+
+# ---------------------------------------------------------------------------
+# Usage analytics queries
+#
+# These power the /api/usage/* REST routes and the daemon's daily-budget
+# guard. They are pure read-only functions over the existing trace DB
+# schema — no schema changes, no new tables or columns.
+# ---------------------------------------------------------------------------
+
+RangePeriod = Literal["day", "week", "month", "year", "total"]
+
+_NS_PER_SECOND = 1_000_000_000
+_NS_PER_DAY = 86_400 * _NS_PER_SECOND
+
+
+def time_range(period: RangePeriod) -> tuple[int, int]:
+    """Return ``(start_ns, end_ns)`` for the given named period.
+
+    ``day``   = today 00:00 UTC → now
+    ``week``  = now − 7 days → now  (rolling)
+    ``month`` = now − 30 days → now  (rolling)
+    ``year``  = now − 365 days → now  (rolling)
+    ``total`` = 0 → now  (all recorded history)
+    """
+    now_ns = time.time_ns()
+    if period == "day":
+        today_utc = _dt.datetime.now(_dt.timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        start_ns = int(today_utc.timestamp() * _NS_PER_SECOND)
+    elif period == "total":
+        start_ns = 0
+    elif period == "week":
+        start_ns = now_ns - 7 * _NS_PER_DAY
+    elif period == "month":
+        start_ns = now_ns - 30 * _NS_PER_DAY
+    elif period == "year":
+        start_ns = now_ns - 365 * _NS_PER_DAY
+    else:  # pragma: no cover - Literal exhausts the cases
+        raise ValueError(f"unknown range period: {period!r}")
+    return start_ns, now_ns
+
+
+# JSON-extract paths for the event attributes used by the analytics queries.
+_PATH_COST_AMOUNT = '$."yuu.cost.amount"'
+_PATH_USAGE_INPUT = '$."yuu.llm.usage.input_tokens"'
+_PATH_USAGE_OUTPUT = '$."yuu.llm.usage.output_tokens"'
+_PATH_USAGE_CACHE_READ = '$."yuu.llm.usage.cache_read_tokens"'
+_PATH_TOOL_NAME = '$."yuu.event.tool_name"'
+
+
+def get_usage_summary(
+    conn: sqlite3.Connection, *, start_ns: int, end_ns: int
+) -> dict[str, float | int]:
+    """Aggregate cost + token metrics across all traces in the time range.
+
+    Returns::
+
+        {
+            "cost": float,                 # SUM(yuu.cost.amount)
+            "requests": int,              # COUNT(yuu.llm.usage events)
+            "input_tokens_uncached": int,  # SUM(input_tokens - cache_read_tokens)
+            "cached_input_tokens": int,    # SUM(cache_read_tokens)
+            "output_tokens": int,          # SUM(output_tokens)
+        }
+    """
+    row = conn.execute(
+        f"""
+        SELECT
+            COALESCE(SUM(
+                CASE WHEN e.name = 'yuu.cost'
+                     THEN CAST(json_extract(e.attributes_json, '{_PATH_COST_AMOUNT}') AS REAL)
+                     ELSE 0 END
+            ), 0) AS cost,
+            SUM(CASE WHEN e.name = 'yuu.llm.usage' THEN 1 ELSE 0 END) AS requests,
+            SUM(CASE WHEN e.name = 'yuu.llm.usage'
+                     THEN COALESCE(
+                            CAST(json_extract(e.attributes_json, '{_PATH_USAGE_INPUT}') AS INTEGER),
+                            0
+                         )
+                       - COALESCE(
+                            CAST(json_extract(e.attributes_json, '{_PATH_USAGE_CACHE_READ}') AS INTEGER),
+                            0
+                         )
+                     ELSE 0 END) AS input_tokens_uncached,
+            SUM(CASE WHEN e.name = 'yuu.llm.usage'
+                     THEN COALESCE(
+                            CAST(json_extract(e.attributes_json, '{_PATH_USAGE_CACHE_READ}') AS INTEGER),
+                            0
+                         )
+                     ELSE 0 END) AS cached_input_tokens,
+            SUM(CASE WHEN e.name = 'yuu.llm.usage'
+                     THEN COALESCE(
+                            CAST(json_extract(e.attributes_json, '{_PATH_USAGE_OUTPUT}') AS INTEGER),
+                            0
+                         )
+                     ELSE 0 END) AS output_tokens
+        FROM events e
+        WHERE e.time_unix_nano >= ? AND e.time_unix_nano < ?
+        """,
+        (start_ns, end_ns),
+    ).fetchone()
+    if row is None:
+        return {
+            "cost": 0.0,
+            "requests": 0,
+            "input_tokens_uncached": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+        }
+    return {
+        "cost": _as_float(row["cost"], 0.0),
+        "requests": _as_int(row["requests"], 0),
+        "input_tokens_uncached": _as_int(row["input_tokens_uncached"], 0),
+        "cached_input_tokens": _as_int(row["cached_input_tokens"], 0),
+        "output_tokens": _as_int(row["output_tokens"], 0),
+    }
+
+
+def get_tool_call_counts(
+    conn: sqlite3.Connection, *, start_ns: int, end_ns: int
+) -> list[dict[str, object]]:
+    """Count tool calls grouped by ``yuu.event.tool_name``.
+
+    Returns ``[{"tool_name": "bash", "count": 42}, ...]`` sorted by
+    descending count.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT
+            json_extract(e.attributes_json, '{_PATH_TOOL_NAME}') AS tool_name,
+            COUNT(*) AS count
+        FROM events e
+        WHERE e.name = 'tool.result_appended'
+          AND e.time_unix_nano >= ? AND e.time_unix_nano < ?
+        GROUP BY tool_name
+        ORDER BY count DESC
+        """,
+        (start_ns, end_ns),
+    ).fetchall()
+
+    result: list[dict[str, object]] = []
+    for row in rows:
+        name = row["tool_name"]
+        if not isinstance(name, str):
+            # Skip events without a tool_name attribute — defensive.
+            continue
+        result.append({"tool_name": name, "count": _as_int(row["count"], 0)})
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Latency stats
+# ---------------------------------------------------------------------------
+
+
+def _ms_from_ns(delta_ns: int | float | None) -> float:
+    if delta_ns is None:
+        return 0.0
+    try:
+        return float(delta_ns) / 1_000_000.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_latency_stats(
+    conn: sqlite3.Connection, *, start_ns: int, end_ns: int
+) -> dict[str, float | int]:
+    """Average latency metrics across all turns in the time range.
+
+    Returns::
+
+        {
+            "avg_first_token_latency_ms": float,
+            "avg_turn_time_ms": float,
+            "avg_tool_execution_time_ms": float,
+            "tool_execution_samples": int,   # turns that had tool calls
+        }
+    """
+    # avg_turn_time_ms — pure SQL over 'turn' spans.
+    turn_row = conn.execute(
+        """
+        SELECT AVG(end_time_unix_nano - start_time_unix_nano) AS avg_ns
+        FROM spans
+        WHERE name = 'turn'
+          AND start_time_unix_nano >= ? AND start_time_unix_nano < ?
+        """,
+        (start_ns, end_ns),
+    ).fetchone()
+    avg_turn_time_ms = _ms_from_ns(turn_row["avg_ns"] if turn_row is not None else None)
+
+    # First-token latency and tool-execution time both need per-turn pairing
+    # against child spans / events. Fetch turn spans, then for each turn
+    # fetch its descendant entity + turn-span-level events.
+    turn_rows = conn.execute(
+        """
+        SELECT span_id, start_time_unix_nano
+        FROM spans
+        WHERE name = 'turn'
+          AND start_time_unix_nano >= ? AND start_time_unix_nano < ?
+        """,
+        (start_ns, end_ns),
+    ).fetchall()
+
+    first_token_latencies_ms: list[float] = []
+    tool_execution_ms: list[float] = []  # one per turn that has tool.result_appended
+
+    for trow in turn_rows:
+        turn_id = _row_str(trow, "span_id")
+        turn_start = _row_int(trow, "start_time_unix_nano")
+
+        # First-token latency: earliest start_time of any child 'entity',
+        # 'entity.chunk', or 'entity.end' span (content output markers).
+        # Falling back to the turn's own llm.started event time if no entity
+        # spans exist.
+        child_row = conn.execute(
+            """
+            SELECT MIN(start_time_unix_nano) AS first_child_start
+            FROM spans
+            WHERE parent_span_id = ?
+              AND name IN ('entity', 'entity.chunk', 'entity.end')
+            """,
+            (turn_id,),
+        ).fetchone()
+        first_child_start = (
+            _row_int(child_row, "first_child_start", default=0)
+            if child_row is not None
+            else 0
+        )
+        if first_child_start == 0:
+            # Fall back to llm.started event time on the turn span.
+            llm_started_row = conn.execute(
+                """
+                SELECT MIN(time_unix_nano) AS first_started
+                FROM events
+                WHERE span_id = ? AND name = 'llm.started'
+                """,
+                (turn_id,),
+            ).fetchone()
+            first_child_start = (
+                _row_int(llm_started_row, "first_started", default=0)
+                if llm_started_row is not None
+                else 0
+            )
+
+        if first_child_start > 0:
+            first_token_latencies_ms.append(
+                _ms_from_ns(first_child_start - turn_start)
+            )
+
+        # Tool-execution time: MAX(tool.result_appended.time) -
+        # MIN(yuu.llm.usage.time) for this turn (only if it has at least
+        # one tool.result_appended event).
+        tool_row = conn.execute(
+            """
+            SELECT
+                (SELECT MAX(time_unix_nano) FROM events
+                 WHERE span_id = ? AND name = 'tool.result_appended') AS max_tool_time,
+                (SELECT MIN(time_unix_nano) FROM events
+                 WHERE span_id = ? AND name = 'yuu.llm.usage') AS min_usage_time
+            """,
+            (turn_id, turn_id),
+        ).fetchone()
+        if tool_row is not None:
+            max_tool = _row_int(tool_row, "max_tool_time", default=0)
+            min_usage = _row_int(tool_row, "min_usage_time", default=0)
+            if max_tool > 0 and min_usage > 0:
+                tool_execution_ms.append(_ms_from_ns(max_tool - min_usage))
+
+    avg_first_token_ms = (
+        sum(first_token_latencies_ms) / len(first_token_latencies_ms)
+        if first_token_latencies_ms
+        else 0.0
+    )
+    avg_tool_execution_ms = (
+        sum(tool_execution_ms) / len(tool_execution_ms) if tool_execution_ms else 0.0
+    )
+
+    return {
+        "avg_first_token_latency_ms": avg_first_token_ms,
+        "avg_turn_time_ms": avg_turn_time_ms,
+        "avg_tool_execution_time_ms": avg_tool_execution_ms,
+        "tool_execution_samples": len(tool_execution_ms),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-turn phase breakdown
+# ---------------------------------------------------------------------------
+
+
+def get_phase_breakdown(
+    conn: sqlite3.Connection, *, start_ns: int, end_ns: int
+) -> dict[str, float]:
+    """Per-turn phase duration breakdown (thinking / text / tool_call /
+    tool_execution), summed across all turns in range.
+
+    Returns::
+
+        {
+            "thinking_time_ms": float,       # sum across all turns
+            "text_time_ms": float,
+            "tool_call_time_ms": float,      # args streaming time
+            "tool_execution_time_ms": float, # last result_appended - llm.finished
+        }
+    """
+    turns = conn.execute(
+        """
+        SELECT span_id
+        FROM spans
+        WHERE name = 'turn'
+          AND start_time_unix_nano >= ? AND start_time_unix_nano < ?
+        """,
+        (start_ns, end_ns),
+    ).fetchall()
+
+    thinking_ms = 0.0
+    text_ms = 0.0
+    tool_call_ms = 0.0
+    tool_execution_ms = 0.0
+
+    for trow in turns:
+        turn_id = _row_str(trow, "span_id")
+
+        # Pair 'entity' (start marker) spans with 'entity.end' spans by
+        # entity_id. Point markers: duration = end.start_time - start.start_time.
+        starts = conn.execute(
+            """
+            SELECT
+                json_extract(attributes_json, '$."yuu.entity.id"') AS entity_id,
+                json_extract(attributes_json, '$."yuu.entity.type"') AS entity_type,
+                start_time_unix_nano AS start_time
+            FROM spans
+            WHERE parent_span_id = ? AND name = 'entity'
+            """,
+            (turn_id,),
+        ).fetchall()
+        ends = conn.execute(
+            """
+            SELECT
+                json_extract(attributes_json, '$."yuu.entity.id"') AS entity_id,
+                start_time_unix_nano AS end_time
+            FROM spans
+            WHERE parent_span_id = ? AND name = 'entity.end'
+            """,
+            (turn_id,),
+        ).fetchall()
+        end_by_id: dict[str, int] = {}
+        for erow in ends:
+            eid = erow["entity_id"]
+            if isinstance(eid, str):
+                end_by_id[eid] = _row_int(erow, "end_time", 0)
+
+        for srow in starts:
+            eid = srow["entity_id"]
+            etype = srow["entity_type"]
+            if not isinstance(eid, str) or not isinstance(etype, str):
+                continue
+            if eid not in end_by_id:
+                continue
+            duration_ms = _ms_from_ns(end_by_id[eid] - _row_int(srow, "start_time", 0))
+            if etype == "thinking":
+                thinking_ms += duration_ms
+            elif etype == "text":
+                text_ms += duration_ms
+            elif etype == "tool_call":
+                tool_call_ms += duration_ms
+            # Other entity types (e.g. unknown) are not counted.
+
+        # Tool-execution time per turn (only if turn has tool.result_appended).
+        tool_row = conn.execute(
+            """
+            SELECT
+                (SELECT MAX(time_unix_nano) FROM events
+                 WHERE span_id = ? AND name = 'tool.result_appended') AS max_tool_time,
+                (SELECT MIN(time_unix_nano) FROM events
+                 WHERE span_id = ? AND name = 'yuu.llm.usage') AS min_usage_time
+            """,
+            (turn_id, turn_id),
+        ).fetchone()
+        if tool_row is not None:
+            max_tool = _row_int(tool_row, "max_tool_time", default=0)
+            min_usage = _row_int(tool_row, "min_usage_time", default=0)
+            if max_tool > 0 and min_usage > 0:
+                tool_execution_ms += _ms_from_ns(max_tool - min_usage)
+
+    return {
+        "thinking_time_ms": thinking_ms,
+        "text_time_ms": text_ms,
+        "tool_call_time_ms": tool_call_ms,
+        "tool_execution_time_ms": tool_execution_ms,
+    }
