@@ -200,25 +200,23 @@ export async function getConversationMessages(
 }
 
 /**
- * Flush the in-flight turn for a conversation (POST /cancel).
+ * Stop the in-flight turn for a conversation (POST /cancel).
  *
  * The daemon's `ConversationManager.cancel_turn` sets the cancel event (a
  * single-point safety trip so a CancelledError lands even if the loop is
- * between awaits) and calls `task.cancel()`. It does NOT await the task and
- * does NOT synthesise `turn_completed`. The loop's CancelledError handler
- * runs `drain_pending(agent)`: if the pending queue was non-empty the merged
- * user message is appended and the loop continues (turn stays live, the
- * `queue.flushed` SSE event later tears down the frontend queue band); if the
- * queue was empty the loop breaks and `turn_completed` fires naturally via
- * the loop's exit path.
+ * between awaits), calls `task.cancel()`, and then **awaits the task** so
+ * the HTTP response returns only after the loop's CancelledError handler
+ * has completed (flush_entitylog + cancel_agent_tools + synthesize
+ * `[cancelled]` tool_results) and the loop's own exit path has emitted
+ * `agent.turn_completed`. The HTTP response itself is the "stop receipt"
+ * the frontend waits for.
  *
- * Returns `{ cancelled, drained }`. `drained` is always `false` at POST time
- * — the real drain outcome is disclosed via the `queue.flushed` SSE event.
- * `cancelled` is `true` when a turn task was actually signalled.
- *
- * The frontend caller should NOT locally mutate `isSending` on this call's
- * return; rely on the SSE `turn_completed` (Flush-with-empty-queue break) or
- * the continued stream (Flush-with-pending, turn stays live) for UI teardown.
+ * Returns `{ cancelled }`. `cancelled` is `true` when a turn task was
+ * actually signalled and awaited to completion; `false` when there was no
+ * live task to cancel. No `drained` field — the per-conversation pending
+ * queue mechanism is gone (the input box itself is the buffer; a send while
+ * generating is not reachable from the UI because the Send button is
+ * replaced by the Stop button during generation).
  */
 export async function cancelConversationTurn(
   conversationId: string,

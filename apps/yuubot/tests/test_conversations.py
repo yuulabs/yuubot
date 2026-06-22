@@ -235,9 +235,8 @@ async def test_send_message_returns_before_turn_completes() -> None:
         conversation_id: str,
         message: yuullm.Message,
         cancel_event: asyncio.Event | None = None,
-        drain_callback=None,
     ) -> None:
-        _ = conversation_id, message, cancel_event, drain_callback
+        _ = conversation_id, message, cancel_event
         started.set()
         await release.wait()
 
@@ -393,18 +392,20 @@ def manager_with_store() -> ConversationManager:
 
 async def test_cancel_turn_returns_false_when_idle() -> None:
     """``cancel_turn`` on an idle conversation (no in-flight task) returns
-    a payload with ``cancelled=False`` and ``drained=False``."""
+    a payload with ``cancelled=False`` and no ``drained`` field."""
     manager = manager_with_store()
     result = await manager.cancel_turn("conv-idle")
-    assert result == {"cancelled": False, "drained": False}
+    assert result == {"cancelled": False}
 
 
-async def test_send_during_inflight_turn_enqueues_and_emits_queue_event() -> None:
-    """A second ``send_message`` while a turn is in flight must NOT start a
-    new turn task. Instead: the user Message is persisted, the text is
-    appended to the per-conversation pending queue, and a ``queue.appended``
-    SSE event is fanned out to subscribers. The queue is not drained until
-    ``drain_pending`` is explicitly invoked (the agent loop drives that)."""
+async def test_cancel_turn_awaits_task_and_returns_receipt() -> None:
+    """``cancel_turn`` awaits the cancelled task before returning the "stop
+    receipt" — the HTTP response lands only after the loop's CancelledError
+    handler has run (flush_entitylog + cancel_agent_tasks + synthesize
+    ``[cancelled]`` tool_results) and the loop's own exit path has emitted
+    ``agent.turn_completed`` (the sole emitter). The return dict carries
+    ``cancelled`` only — no ``drained``. No ``queue.*`` SSE event is emitted
+    anywhere (the queue mechanism is gone)."""
     started = asyncio.Event()
     release = asyncio.Event()
     record = MagicMock()
@@ -424,23 +425,57 @@ async def test_send_during_inflight_turn_enqueues_and_emits_queue_event() -> Non
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
+    manager._agent_to_conversation["agent-1"] = "conv-1"
 
     runtime = MagicMock()
     fake_agent = MagicMock(id="agent-1")
     runtime.conversation_agents = {}  # cache miss path
     runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
 
+    # The mock mimics ``_run_agent_turn``'s CancelledError handler: on cancel
+    # it flushes the reporter, cancels tool tasks, synthesises ``[cancelled]``
+    # results, then breaks out of the loop and emits ``agent.turn_completed``
+    # via the normal loop-exit path (no synthetic emission by ``cancel_turn``).
+    call_log: list[str] = []
+
     async def handle_conversation_message(
         conversation_id: str,
         message: yuullm.Message,
         cancel_event: asyncio.Event | None = None,
-        drain_callback=None,
     ) -> None:
-        _ = conversation_id, message, cancel_event, drain_callback
+        _ = conversation_id, message, cancel_event
         started.set()
-        await release.wait()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            call_log.append("cancelled-raised")
+            fake_agent.flush_entitylog()
+            call_log.append("flushed")
+            runtime.stage.runtime.cancel_agent_tasks(fake_agent.id)
+            call_log.append("tools-cancelled")
+            # Synthesise [cancelled] tool_results for any outstanding tool
+            # calls in the last assistant message. Here the fixture's user
+            # message has no tool calls, so synthesize is a no-op.
+            call_log.append("synthesized")
+            # Loop break → normal exit → sole emitter of turn_completed.
+            await manager._on_runtime_event(
+                RuntimeEvent(
+                    name="agent.turn_completed",
+                    agent_id=fake_agent.id,
+                    agent_name="test-agent",
+                    data={"task_id": "turn-1"},
+                    timestamp=1234567890.0,
+                ),
+            )
+            call_log.append("turn-completed-emitted")
+            return
 
     runtime.handle_conversation_message = handle_conversation_message
+
+    # Open the SSE subscriber first so we can observe the turn_completed event.
+    subscription = manager.subscribe_events("conv-1", heartbeat_interval=3600.0)
+    turn_completed_future = asyncio.ensure_future(subscription.__anext__())
+    await asyncio.sleep(0)
 
     with (
         patch.object(
@@ -450,147 +485,169 @@ async def test_send_during_inflight_turn_enqueues_and_emits_queue_event() -> Non
         ),
         patch.object(manager, "_runtime_for", new=AsyncMock(return_value=runtime)),
     ):
-        # Open the SSE subscriber first so we can observe the queue event.
-        subscription = manager.subscribe_events("conv-1", heartbeat_interval=3600.0)
-        first_event_future = asyncio.ensure_future(subscription.__anext__())
-        await asyncio.sleep(0)
-
         await manager.send_message(
             conversation_id="conv-1",
-            text="first",
+            text="hello",
             message_id="message-1",
         )
         await asyncio.wait_for(started.wait(), timeout=1)
 
-        second_text = "second queued message"
-        await manager.send_message(
-            conversation_id="conv-1",
-            text=second_text,
-            message_id="message-2",
-        )
+        # cancel_turn awaits the task — the receipt does not return until the
+        # loop's CancelledError handler has completed.
+        result = await asyncio.wait_for(manager.cancel_turn("conv-1"), timeout=2)
 
-        # (1) Exactly one in-flight task — the second send did NOT start a turn.
-        assert len(manager._in_flight_tasks) == 1
-        # (2) Pending queue holds exactly the second text.
-        queue = manager._pending_queues.get("conv-1", [])
-        assert queue == [second_text]
-        # (3) A queue.appended event was fanned out with the correct preview.
-        appended = await asyncio.wait_for(first_event_future, timeout=1)
-        assert isinstance(appended, ConversationFrontendEvent)
-        assert appended.event_type == "queue.appended"
-        payload = appended.as_dict()
-        assert payload["idx"] == 0
-        assert second_text.startswith(str(payload["preview"]))
-        assert "\n" not in str(payload["preview"])
+    # Let any pending done-callbacks fire.
+    await asyncio.sleep(0)
 
-        # Draining happens at the loop boundary, NOT on turn completion.
-        # Release the blocked turn; the mock runtime simply returns (no
-        # real loop runs drain_pending). The queue must still hold the
-        # second text — proving the drain is loop-driven, not
-        # turn-completion-driven.
-        release.set()
-        await asyncio.wait_for(asyncio.gather(*manager._in_flight_tasks.values()), timeout=1)
-        assert manager._pending_queues.get("conv-1") == [second_text]
-        assert "conv-1" not in manager._in_flight_tasks  # turn finished
+    # (1) The in-flight task is gone (cleanup popped it on task-done). The
+    # task object itself is done — proving cancel_turn awaited it.
+    assert "conv-1" not in manager._in_flight_tasks
 
-        # Now drain explicitly via the public primitive.
-        fake_drain_agent = MagicMock()
-        fake_drain_agent.append = MagicMock()
-        had_pending = await manager.drain_pending("conv-1", fake_drain_agent)
-        assert had_pending is True
-        # Queue is now empty.
-        assert manager._pending_queues.get("conv-1") == []
-        # Agent.append was called once with a user Message carrying the marker
-        # prefix and the second send's text in the merged body.
-        assert fake_drain_agent.append.call_count == 1
-        appended_msg = fake_drain_agent.append.call_args.args[0]
-        assert isinstance(appended_msg, yuullm.Message)
-        assert appended_msg.role == "user"
-        rendered = yuullm.render_message_text(appended_msg)
-        assert rendered.startswith("用户在你执行任务的过程中又追加了以下消息：")
-        assert second_text in rendered
-        # A queue.flushed event landed on the subscriber queue.
-        flushed_future: asyncio.Future = asyncio.ensure_future(
-            subscription.__anext__()
-        )
-        flushed = await asyncio.wait_for(flushed_future, timeout=1)
-        assert isinstance(flushed, ConversationFrontendEvent)
-        assert flushed.event_type == "queue.flushed"
-        assert flushed.as_dict()["count"] == 1
-        await subscription.aclose()
+    # (2) Return shape: {cancelled: True} and NO ``drained`` field.
+    assert result["cancelled"] is True
+    assert "drained" not in result
+
+    # (3) CancelledError propagated into the mock runtime's
+    # ``handle_conversation_message``; the cleanup callbacks ran in order.
+    assert call_log == [
+        "cancelled-raised",
+        "flushed",
+        "tools-cancelled",
+        "synthesized",
+        "turn-completed-emitted",
+    ]
+    fake_agent.flush_entitylog.assert_called_once()
+    runtime.stage.runtime.cancel_agent_tasks.assert_called_once_with(fake_agent.id)
+
+    # (4) ``turn_completed`` was produced via the normal loop-exit path (the
+    # mock emitted it after the CancelledError handler; ``cancel_turn`` did
+    # NOT synthesise it).
+    emitted = await asyncio.wait_for(turn_completed_future, timeout=1)
+    assert isinstance(emitted, ConversationFrontendEvent)
+    assert emitted.event_type == "turn_completed"
+
+    # (5) No ``queue.*`` SSE event was emitted anywhere.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(subscription.__anext__(), timeout=0.2)
+    await subscription.aclose()
 
 
-async def test_cancel_turn_drains_pending_and_does_not_synthesize_turn_completed() -> None:
-    """``cancel_turn`` sets the cancel event and calls ``task.cancel()`` but
-    does NOT synthesise a ``turn_completed`` SSE event itself — the loop's own
-    exit path is the sole emitter. Draining of any pending queue happens
-    inside the loop's CancelledError handler via the drain_callback."""
-    manager = manager_with_store()
+async def test_send_during_inflight_awaits_existing_task() -> None:
+    """A second ``send_message`` while a turn is in flight does NOT enqueue
+    (the queue mechanism is gone). It defensively awaits the existing
+    in-flight task to completion, then starts a new turn task. Exactly one
+    in-flight task remains at the end (the second one, still in flight).
+    Two user messages were persisted. No ``queue.appended`` SSE event was
+    emitted."""
+    record = MagicMock()
+    record.message_id = "message-1"
+
+    store = MagicMock()
+    store.conversation_exists = AsyncMock(return_value=True)
+    store.append_history_item = AsyncMock(return_value=record)
+    store.append_history_items = AsyncMock(return_value=[record])
+    store.get_conversation = AsyncMock(return_value=MagicMock())
+    store.history = AsyncMock(return_value=[])
+
+    manager = ConversationManager(
+        store=store,
+        repository=MagicMock(),
+        yuuagents_config=MagicMock(),
+        python_sessions=MagicMock(),
+        llm_session_factory_factory=MagicMock(),
+    )
     manager._agent_to_conversation["agent-1"] = "conv-1"
+
+    runtime = MagicMock()
+    fake_agent = MagicMock(id="agent-1")
+    runtime.conversation_agents = {}  # cache miss path
+    runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
+
+    # Each call to handle_conversation_message waits on its own release event.
+    # The first call blocks until release_events[0] is set; the second blocks
+    # on release_events[1] (never set within the test — the second turn stays
+    # in flight, which is what the assertions check).
+    release_events: list[asyncio.Event] = []
+
+    async def handle_conversation_message(
+        conversation_id: str,
+        message: yuullm.Message,
+        cancel_event: asyncio.Event | None = None,
+    ) -> None:
+        _ = conversation_id, message, cancel_event
+        rel = asyncio.Event()
+        release_events.append(rel)
+        await rel.wait()
+
+    runtime.handle_conversation_message = handle_conversation_message
 
     subscription = manager.subscribe_events("conv-1", heartbeat_interval=3600.0)
     await asyncio.sleep(0)  # ensure subscriber queue is registered
 
-    fake_agent = MagicMock(id="agent-1")
-    fake_agent.append = MagicMock()
-
-    # Seed the in-flight state the way _start_turn_task would.
-    manager._pending_queues["conv-1"] = ["hello", "world"]
-    cancel_event = asyncio.Event()
-    drain_invoked: list[bool] = []
-
-    async def fake_turn(
-        *,
-        conversation_id: str,
-        runtime,
-        message,
-        cancel_event: asyncio.Event | None = None,
-        drain_callback=None,
-    ) -> None:
-        _ = conversation_id, runtime, message
-        try:
-            if cancel_event is not None:
-                # Block until cancelled (cancel_turn sets the event and
-                # calls task.cancel(); the loop normally raises here).
-                await asyncio.wait_for(cancel_event.wait(), timeout=30)
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            # Mirrors the loop's CancelledError handler: drain then decide.
-            had_pending = False
-            if drain_callback is not None:
-                had_pending = await drain_callback(fake_agent)
-            drain_invoked.append(had_pending)
-            return
-
-    task = asyncio.create_task(
-        fake_turn(
+    with (
+        patch.object(
+            manager,
+            "_require_conversation",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch.object(manager, "_runtime_for", new=AsyncMock(return_value=runtime)),
+    ):
+        # First send: starts turn #1; handle_conversation_message is now
+        # blocked on release_events[0].
+        first_result = await manager.send_message(
             conversation_id="conv-1",
-            runtime=MagicMock(),
-            message=MagicMock(),
-            cancel_event=cancel_event,
-            drain_callback=lambda agent: manager.drain_pending("conv-1", agent),
+            text="first",
+            message_id="message-1",
         )
-    )
-    manager._in_flight_tasks["conv-1"] = task
-    manager._cancel_events["conv-1"] = cancel_event
-    await asyncio.sleep(0)  # let the task start
+        assert first_result[1] == "message-1"
+        assert len(manager._in_flight_tasks) == 1
+        first_task = manager._in_flight_tasks["conv-1"]
 
-    result = await manager.cancel_turn("conv-1")
-    assert isinstance(result, dict)
-    assert result["cancelled"] is True
-    assert result["drained"] is False  # drained disclosed via SSE later
+        # Second send while the first turn is still in flight. The defensive
+        # path: send_message awaits the first task, then starts a new one.
+        async def second_send() -> tuple[object, str]:
+            # Yield enough times to let send_message reach ``await existing``
+            # before we unblock the first task.
+            fut = asyncio.ensure_future(
+                manager.send_message(
+                    conversation_id="conv-1",
+                    text="second",
+                    message_id="message-2",
+                ),
+            )
+            for _ in range(5):
+                await asyncio.sleep(0)
+            # Unblock the first turn task so the defensive ``await existing``
+            # in send_message can complete.
+            release_events[0].set()
+            return await asyncio.wait_for(fut, timeout=2)
 
-    # cancel_event was set as the single-point safety trip.
-    assert cancel_event.is_set() is True
+        second_result = await asyncio.wait_for(second_send(), timeout=3)
+        assert second_result[1] == "message-2"
 
-    # Let the loop's CancelledError handler run drain_pending (it merges
-    # the pending queue into the agent history via the drain_callback).
-    await asyncio.wait_for(task, timeout=1)
-    assert drain_invoked == [True]  # drain ran and reported had_pending
+    # (1) The first turn task completed before the second send_message
+    # returned (defensive await).
+    assert first_task.done() is True
 
-    # The synthetic turn_completed is NOT emitted by cancel_turn itself.
-    # The real emitter is the loop's natural exit path; this fake task
-    # exits without emitting one, so the subscriber must stay idle.
+    # (2) Exactly one in-flight task remains — the second one, still blocked
+    # on release_events[1] (never set within the test).
+    assert len(manager._in_flight_tasks) == 1
+    assert "conv-1" in manager._in_flight_tasks
+    second_task = manager._in_flight_tasks["conv-1"]
+    assert second_task is not first_task
+
+    # (3) Two user messages were persisted (one per send_message).
+    assert store.append_history_item.call_count == 2
+
+    # (4) No ``queue.appended`` event was emitted (the queue mechanism is
+    # gone — send_message started a real turn task, not an enqueue).
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(subscription.__anext__(), timeout=0.2)
+
+    # Tear down the second turn task to avoid leaking a pending task.
+    second_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await second_task
+    manager._in_flight_tasks.pop("conv-1", None)
+    manager._cancel_events.pop("conv-1", None)
     await subscription.aclose()

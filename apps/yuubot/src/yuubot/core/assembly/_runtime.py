@@ -9,7 +9,6 @@ the sibling modules.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import cast as typecast
 
@@ -146,14 +145,12 @@ class YuuAgentsActorRuntime:
         conversation_id: str,
         message: yuullm.Message,
         cancel_event: asyncio.Event | None = None,
-        drain_callback: "Callable[[Agent], Awaitable[bool]] | None" = None,
     ) -> Agent:
         agent = await self.ensure_conversation_agent(conversation_id, [])
         agent.append(message)
         await self._run_agent_turn(
             agent,
             cancel_event=cancel_event,
-            drain_callback=drain_callback,
         )
         return agent
 
@@ -314,7 +311,6 @@ class YuuAgentsActorRuntime:
         self,
         agent: Agent,
         cancel_event: asyncio.Event | None = None,
-        drain_callback: "Callable[[Agent], Awaitable[bool]] | None" = None,
     ) -> None:
         """Execute one agent turn: LLM step → cost → tools → repeat until done.
 
@@ -323,25 +319,10 @@ class YuuAgentsActorRuntime:
         awaits still trips before the next LLM stream starts. The real cancel
         delivery is ``task.cancel()`` → ``CancelledError``.
 
-        ``drain_callback`` is the conversation-manager-side pending-queue
-        drain primitive. It is invoked at two trigger points:
-
-        - Trigger A (batch boundary): after every tool batch finishes and
-          before the next ``agent.step()``. If the queue was non-empty, the
-          merged user message has been appended to the agent history and the
-          loop continues normally (the turn is NOT interrupted).
-        - Trigger B (Flush button): inside the ``CancelledError`` handler.
-          The handler flushes the reporter, cancels tool tasks, synthesises
-          ``[cancelled]`` results, then calls ``drain_callback``. If it
-          returned ``True`` (pending was drained), the loop ``continue``s so
-          the next ``agent.step()`` sees the appended user message; if it
-          returned ``False`` (pure stop), the loop ``break``s.
-
         ``agent.turn_completed`` is emitted unconditionally by this method's
-        terminal path — the loop's own exit (natural done OR break-without-
-        pending) — so ``cancel_turn`` no longer synthesises it. Rollover
-        only runs on natural completion (``while...else``), never on a
-        cancel break-out.
+        terminal path — the loop's own exit (natural done OR a cancel break-
+        out) — so ``cancel_turn`` does not synthesise it. Rollover only runs
+        on natural completion (``while...else``), never on a cancel break-out.
         """
         lock = self._agent_locks.setdefault(agent.id, asyncio.Lock())
         async with lock:
@@ -472,39 +453,22 @@ class YuuAgentsActorRuntime:
                                     },
                                 )
 
-                            # ── Trigger A: batch-boundary drain ──────────────
-                            # All tool results for this batch are in and
-                            # appended to history. Drain any pending queue
-                            # BEFORE the next ``agent.step()`` so the next
-                            # LLM call naturally sees the merged user message.
-                            # No-op when the queue is empty. The turn is NOT
-                            # interrupted by this drain — the loop continues.
-                            if drain_callback is not None:
-                                await drain_callback(agent)
-
                         # Step 7: Charge step
                         if budget is not None:
                             budget.charge("steps", 1)
 
                     except asyncio.CancelledError:
-                        # ── Trigger B: Flush button path ────────────────────
                         # Mid-stream or mid-tool cancellation. The yuullm
                         # session already appended partial assistant content
                         # to history (if mid-stream). Force-flush the reporter
                         # so SSE gets the last ``output.chunk``, cancel any
                         # running tools, and synthesise ``[cancelled]`` tool
                         # results so the in-memory history is legal. Then
-                        # drain pending: if anything was queued, the merged
-                        # user message has been appended and the loop
-                        # ``continue``s (the next ``agent.step()`` will see
-                        # it); otherwise break out (pure stop).
+                        # break out of the loop — the turn ends here (no
+                        # ``continue``; the queue mechanism is gone, the
+                        # input box itself is the buffer).
                         await agent.flush_entitylog()
                         await self._cancel_agent_tools(agent)
-                        had_pending = False
-                        if drain_callback is not None:
-                            had_pending = await drain_callback(agent)
-                        if had_pending:
-                            continue
                         break
                 else:
                     # while...else: loop exited via ``not agent.done`` (the
@@ -516,10 +480,10 @@ class YuuAgentsActorRuntime:
                 self._touch_agent(agent)
 
                 # ``agent.turn_completed`` is the sole turn-end signal. The
-                # natural-done path emits it directly; the cancel-without-
-                # pending break-out also reaches here and emits it (the turn
-                # is genuinely over). The cancel-WITH-pending ``continue``
-                # path does NOT reach here until the turn genuinely completes.
+                # natural-done path emits it directly; the cancel break-out
+                # also reaches here and emits it (the turn is genuinely
+                # over). ``cancel_turn`` awaits the cancelled task, so this
+                # emit lands before the HTTP "stop receipt" returns.
                 await self.stage.eventbus.emit(
                     "agent.turn_completed",
                     {

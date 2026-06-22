@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -410,21 +411,13 @@ class ConversationManager:
         init=False,
     )
     # One in-flight turn task per conversation. A conversation can only have
-    # one active turn at a time — “input is never disabled”, so a second
-    # ``send_message`` while a turn is in flight is queued into
-    # ``_pending_queues[cid]`` instead of starting a parallel turn (see
-    # ``send_message`` for the branch and ``drain_pending`` for the merge).
+    # one active turn at a time. The frontend disables the Send button during
+    # generation (replaced by the Stop button), so a second ``send_message``
+    # while a turn is in flight is not normally reachable from the UI. If one
+    # does arrive, ``send_message`` defensively awaits the existing task
+    # before starting a new one (no server-side queue is needed — the input
+    # box itself is the buffer).
     _in_flight_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict, init=False)
-    # Per-conversation pending-message queue. Populated by ``send_message``
-    # when a turn is already running; drained by ``drain_pending`` at two
-    # trigger points inside ``_run_agent_turn``:
-    # (A) batch boundary — after a tool batch finishes, before the next
-    #     ``agent.step()``; the merged user message is appended and the loop
-    #     continues without interrupting the turn.
-    # (B) Flush button (``task.cancel()``) — the loop's CancelledError handler
-    #     calls drain; if the queue had pending (``True``) the loop continues,
-    #     otherwise it breaks and the turn ends.
-    _pending_queues: dict[str, list[str]] = field(default_factory=dict, init=False)
     # Per-conversation cancel event. ``cancel_turn`` sets the event AND calls
     # ``task.cancel()``; the agent loop checks it once at the top of each
     # ``while not agent.done`` iteration as a single-point safety net (closes
@@ -491,24 +484,16 @@ class ConversationManager:
         user_message = yuullm.user(text)
         await self.store.append_history_item(conversation_id, user_message)
 
-        # Branch on in-flight turn. “Input is never disabled”: a send while a
-        # turn is already running enqueues the text into the per-conversation
-        # pending queue and returns immediately (no second in-flight task is
-        # created). The queue is drained into the agent history at two
-        # trigger points inside ``_run_agent_turn`` (batch boundary and the
-        # Flush-button CancelledError handler) — see ``drain_pending``.
-        inflight = self._in_flight_tasks.get(conversation_id)
-        if inflight is not None and not inflight.done():
-            queue = self._pending_queues.setdefault(conversation_id, [])
-            idx = len(queue)
-            queue.append(text)
-            preview = (text or "").replace("\n", " ")[:30]
-            appended = self._sse_projector.queue_appended(
-                conversation_id, idx, preview
-            )
-            for sub_queue in tuple(self._subscribers.get(conversation_id, ())):
-                await sub_queue.put(appended)
-            return conversation, message_id
+        # Defensive: if a previous turn task is somehow still live (the
+        # frontend contract replaces Send with Stop during generation, so
+        # this path is not normally reachable), wait for it before starting
+        # a new one. Avoids two concurrent turn tasks racing on the same
+        # agent/history. The input box itself is the buffer — no server-side
+        # queue is needed.
+        existing = self._in_flight_tasks.get(conversation_id)
+        if existing is not None and not existing.done():
+            with suppress(asyncio.CancelledError, Exception):
+                await existing
 
         self._start_turn_task(
             conversation_id=conversation_id,
@@ -582,13 +567,6 @@ class ConversationManager:
     ) -> None:
         cancel_event = asyncio.Event()
         self._cancel_events[conversation_id] = cancel_event
-        # Ensure a pending queue exists even if no send happens during this
-        # turn — drain_pending and the loop's batch-boundary call both
-        # expect a list (possibly empty) to be present.
-        self._pending_queues.setdefault(conversation_id, [])
-
-        async def drain_callback(agent: object) -> bool:
-            return await self.drain_pending(conversation_id, agent)
 
         task = asyncio.create_task(
             self._run_turn_task(
@@ -596,7 +574,6 @@ class ConversationManager:
                 runtime=runtime,
                 message=message,
                 cancel_event=cancel_event,
-                drain_callback=drain_callback,
             )
         )
         self._in_flight_tasks[conversation_id] = task
@@ -607,13 +584,6 @@ class ConversationManager:
             # ``_cancel_events`` is turn-scoped (the event for *this* turn's
             # single-point safety trip); pop on task-done.
             self._cancel_events.pop(cid, None)
-            # NOTE: ``_pending_queues[cid]`` is *not* popped here — the
-            # queue is conversation-scoped (drain happens at the loop's
-            # batch boundary inside the live turn; the mock runtime used
-            # in tests may finish without ever entering the loop body, so
-            # entries legitimately survive task-done for an explicit
-            # ``drain_pending`` after the fact). The real loop drains and
-            # empties the list in place; ``drain_pending`` does the clear.
 
         task.add_done_callback(_cleanup)
 
@@ -624,20 +594,19 @@ class ConversationManager:
         runtime: YuuAgentsActorRuntime,
         message: yuullm.Message,
         cancel_event: asyncio.Event | None = None,
-        drain_callback: "Callable[[object], Awaitable[bool]] | None" = None,
     ) -> None:
         try:
             await runtime.handle_conversation_message(
                 conversation_id,
                 message,
                 cancel_event=cancel_event,
-                drain_callback=drain_callback,
             )
         except asyncio.CancelledError:
             # The agent loop's own CancelledError handler already ran
-            # (flushed the reporter, cancelled tools, synthesised results,
-            # and drained any pending queue per the loop's decision). The
-            # task ends here. Re-raise so asyncio marks the task cancelled.
+            # (flushed the reporter, cancelled tools, synthesised results).
+            # The loop is the sole emitter of ``agent.turn_completed``;
+            # ``cancel_turn`` does NOT synthesise it. Re-raise so asyncio
+            # marks the task cancelled.
             raise
         except Exception as exc:
             event = RuntimeEvent(
@@ -655,86 +624,31 @@ class ConversationManager:
             for queue in tuple(self._subscribers.get(conversation_id, ())):
                 await queue.put(frontend_event)
 
-    async def drain_pending(
-        self,
-        conversation_id: str,
-        agent: object,
-    ) -> bool:
-        """Merge the per-conversation pending queue into one user message
-        appended to ``agent.history`` and emit a ``queue.flushed`` SSE event.
-
-        This is the single drain primitive the agent loop calls at two
-        trigger points (see ``_run_agent_turn`` for the rationale):
-
-        - Trigger A (batch boundary, no interrupt): after a tool batch
-          finishes, before the next ``agent.step()``. The turn continues
-          and the next LLM step naturally sees the appended message.
-        - Trigger B (Flush button → ``task.cancel()`` → CancelledError):
-          inside the loop's CancelledError handler. If this returns
-          ``True`` (queue was non-empty), the loop ``continue``s so the
-          next ``agent.step()`` sees the appended message; if ``False``,
-          the loop ``break``s (pure stop).
-
-        The merged message is a runtime-synthesised user-facing note, not a
-        fresh human message — the original user messages were already
-        persisted by ``send_message`` before they entered the queue. The
-        agent history's legality is the loop's responsibility; this method
-        does not write to ``store``.
-
-        Returns ``True`` if the queue was non-empty (and was drained),
-        ``False`` if there was nothing to drain.
-        """
-        queue = self._pending_queues.get(conversation_id, [])
-        if not queue:
-            return False
-        count = len(queue)
-        merged = "\n\n".join(queue)
-        # Clear in place: any reference the loop holds elsewhere (e.g. the
-        # ``_pending_queues[cid]`` alias ``_run_agent_turn`` captured during
-        # an in-flight step) sees an empty list from here on. Re-appends go
-        # into the same list identity.
-        queue.clear()
-        # Append the synthesised user message to the agent's history so the
-        # next ``agent.step()`` observes it. ``Agent.append`` is the public
-        # append API; we deliberately do not touch ``store`` here.
-        append_fn = getattr(agent, "append", None)
-        if callable(append_fn):
-            append_fn(
-                yuullm.user(
-                    f"用户在你执行任务的过程中又追加了以下消息：\n{merged}"
-                )
-            )
-        flushed = self._sse_projector.queue_flushed(conversation_id, count)
-        for sub_queue in tuple(self._subscribers.get(conversation_id, ())):
-            await sub_queue.put(flushed)
-        return True
-
     async def cancel_turn(self, conversation_id: str) -> dict[str, bool]:
-        """Cancel the in-flight turn for ``conversation_id`` (Flush button).
+        """Cancel the in-flight turn for ``conversation_id`` (Stop button).
 
         Sets the single-point safety ``cancel_event`` and calls
         ``task.cancel()``. The loop's own CancelledError handler then:
-        flushes the reporter, cancels running tools, synthesises
-        ``[cancelled]`` tool results, and drains any pending queue. If
-        the drain found pending (``True``), the loop ``continue``s (the turn
-        stays live and ``turn_completed`` fires later naturally); otherwise
-        the loop ``break``s and ``turn_completed`` emits via the normal
+        flushes the reporter, cancels running tools, and synthesises
+        ``[cancelled]`` tool results so the in-memory history stays legal.
+        The loop ``break``s out of the turn (always — there is no
+        ``continue`` branch anymore; the queue mechanism is gone), so the
+        loop's terminal path emits ``agent.turn_completed`` via the normal
         loop-exit path. ``cancel_turn`` itself does NOT synthesise
         ``turn_completed`` — the loop is the sole emitter.
 
-        Does NOT await the task — the loop's CancelledError handler may run
-        long (an LLM stream boundary, a tool task awaiting cancel); the
-        real drain outcome is disclosed to the frontend via the
-        ``queue.flushed`` SSE event, not the HTTP response.
+        Awaits the cancelled task before returning — the HTTP response is
+        the "stop receipt" the frontend waits for (the button transitions
+        from "stopping" back to "Send" only after the CancelledError handler
+        has completed and the loop has emitted ``turn_completed``).
 
-        Returns ``{"cancelled": bool, "drained": bool}``. ``drained`` is
-        always ``False`` at POST time (the task hasn't been awaited); see
-        the docstring above for why the SSE event is the authoritative
-        signal.
+        Returns ``{"cancelled": bool}`` — ``True`` when a turn task was
+        actually signalled and awaited to completion, ``False`` when there
+        was no live task to cancel.
         """
         task = self._in_flight_tasks.get(conversation_id)
         if task is None or task.done():
-            return {"cancelled": False, "drained": False}
+            return {"cancelled": False}
 
         # Single-point safety trip: the loop checks ``cancel_event.is_set()``
         # once at the top of each iteration; if true it raises
@@ -750,14 +664,24 @@ class ConversationManager:
         # completing task; we report ``cancelled=False`` in that case.
         scheduled = task.cancel()
         if not scheduled:
-            return {"cancelled": False, "drained": False}
+            return {"cancelled": False}
 
-        # The cleanup callback registered in ``_start_turn_task`` pops
-        # ``_in_flight_tasks`` / ``_cancel_events`` / ``_pending_queues``
-        # on task done. We do NOT await here — disclosure of the drain
-        # outcome is via the ``queue.flushed`` SSE event the loop emits
-        # once its CancelledError handler runs ``drain_callback``.
-        return {"cancelled": True, "drained": False}
+        # Await the task so the CancelledError handler completes (flush +
+        # cancel tools + synthesise [cancelled] tool_results) before the
+        # HTTP response returns. This is the "stop receipt" the frontend
+        # waits for. The loop's own exit path emits ``agent.turn_completed``
+        # → SSE ``turn_completed``; ``cancel_turn`` does NOT synthesise it.
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # Loop's error path already emitted an error SSE event; suppress
+            # so the HTTP receipt still returns 200 (the frontend drops
+            # ``isSending`` via the error SSE or ``turn_completed``).
+            pass
+
+        return {"cancelled": True}
 
     async def subscribe_events(
         self,

@@ -536,20 +536,12 @@ def make_cancel_conversation_turn_handler(
         except LookupError as exc:
             return error_response(str(exc), status_code=404)
         cancelled = bool(result.get("cancelled"))
-        drained = bool(result.get("drained"))
         return JSONResponse(
             {
                 "status": "cancelled" if cancelled else "idle",
                 "data": {
                     "conversation_id": conversation_id,
                     "cancelled": cancelled,
-                    # ``drained`` is False at POST time: ``cancel_turn``
-                    # deliberately does NOT await the task — the loop's
-                    # CancelledError handler may run long (LLM stream
-                    # boundary, tool task awaiting cancel). The real drain
-                    # outcome is disclosed to the frontend via the
-                    # ``queue.flushed`` SSE event the loop emits.
-                    "drained": drained,
                 },
             },
             status_code=200,
