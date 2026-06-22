@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Send, Loader2, Brain, Hammer, SquareTerminal } from "lucide-react";
+import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, PanelLeftClose, SquareTerminal } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
 import { sendConversationMessage, getConversation, getConversationMessages } from "@/lib/api";
 import {
@@ -256,6 +256,7 @@ function AdminConversationPage() {
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [conversationMetadata, setConversationMetadata] = useState<ConversationData | null>(null);
   const [actorLocked, setActorLocked] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
@@ -530,17 +531,113 @@ function AdminConversationPage() {
     : false;
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b px-4 py-3">
-        <a href="/admin/conversations" onClick={(e) => { e.preventDefault(); window.history.back(); }}>
-          <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
-        </a>
-        <div className="flex-1"><h2 className="text-sm font-semibold">{isDraft ? "New conversation" : conversationId}</h2></div>
-        <div className="flex items-center gap-2">
-          <Select value={actorId} onValueChange={setActorId} disabled={actorLocked || isSending}>
-            <SelectTrigger className="h-8 w-44 text-xs"><SelectValue placeholder="Select actor" /></SelectTrigger>
+    <div className="flex h-full">
+      <div className="flex flex-1 flex-col">
+        <header className="flex items-center gap-3 border-b px-4 py-3">
+          <a href="/admin/conversations" onClick={(e) => { e.preventDefault(); window.history.back(); }}>
+            <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
+          </a>
+          <div className="flex-1"><h2 className="text-sm font-semibold">{isDraft ? "New conversation" : conversationId}</h2></div>
+        </header>
+
+        <div className="flex-1 space-y-4 overflow-auto p-4">
+          {loadingHistory && <p className="text-xs text-muted-foreground text-center">Loading history...</p>}
+          {!loadingHistory && displayItems.length === 0 && (
+            <p className="text-xs text-muted-foreground text-center">No messages yet. Select an actor and start the conversation!</p>
+          )}
+          {displayItems.map((item) => (
+            <div key={item.key} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[80%] space-y-2 rounded-lg px-4 py-2 text-sm ${item.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+                {item.blocks.map((block) => (
+                  <MessageBlockView key={block.key} block={block} />
+                ))}
+              </div>
+            </div>
+          ))}
+          {/* Pending indicator */}
+          {isSending && !currentTurnHasLiveBlocks && (
+            <div className="flex justify-start">
+              <div className="flex items-center gap-2 rounded-lg bg-muted px-4 py-2 text-sm text-muted-foreground">
+                <Loader2 className="size-3 animate-spin" /> Waiting for response…
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {error && (
+          <div className="mx-4 mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
+        )}
+
+        <form onSubmit={(e) => { e.preventDefault(); void handleSend(); }} className="flex items-center gap-2 border-t p-4">
+          <Input value={input} onChange={(e) => setInput(e.target.value)}
+            placeholder={actor ? `Message ${actor.name}...` : "Select an actor..."}
+            className="flex-1" />
+          <Button
+            type="submit"
+            size="icon"
+            disabled={!input.trim() || !actorId || isSending}
+          >
+            {isSending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+          </Button>
+        </form>
+      </div>
+      <BindingPanel
+        actorId={actorId}
+        actors={runningActors}
+        actor={actor}
+        actorLocked={actorLocked}
+        isSending={isSending}
+        onActorChange={setActorId}
+        collapsed={panelCollapsed}
+        onToggleCollapsed={() => setPanelCollapsed((v) => !v)}
+      />
+    </div>
+  );
+}
+
+function BindingPanel({
+  actorId,
+  actors,
+  actor,
+  actorLocked,
+  isSending,
+  onActorChange,
+  collapsed,
+  onToggleCollapsed,
+}: {
+  actorId: string;
+  actors: ActorResource[];
+  actor: ActorResource | undefined;
+  actorLocked: boolean;
+  isSending: boolean;
+  onActorChange: (id: string) => void;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  if (collapsed) {
+    return (
+      <aside className="flex w-9 shrink-0 flex-col items-center border-l bg-card py-3">
+        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} aria-label="Expand binding panel">
+          <PanelLeft className="size-4" />
+        </Button>
+      </aside>
+    );
+  }
+  return (
+    <aside className="flex w-[280px] shrink-0 flex-col border-l bg-card">
+      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
+        <span className="text-sm font-semibold">Binding</span>
+        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} aria-label="Collapse binding panel">
+          <PanelLeftClose className="size-4" />
+        </Button>
+      </div>
+      <div className="flex-1 space-y-4 overflow-auto p-4">
+        <section className="space-y-2">
+          <Select value={actorId} onValueChange={onActorChange} disabled={actorLocked || isSending}>
+            <SelectTrigger className="h-8 w-full text-xs"><SelectValue placeholder="Select actor" /></SelectTrigger>
             <SelectContent>
-              {runningActors.map((a) => (
+              {actors.map((a) => (
                 <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
               ))}
             </SelectContent>
@@ -550,50 +647,13 @@ function AdminConversationPage() {
               {actor.enabled ? "running" : "stopped"}
             </Badge>
           )}
-        </div>
-      </header>
-
-      <div className="flex-1 space-y-4 overflow-auto p-4">
-        {loadingHistory && <p className="text-xs text-muted-foreground text-center">Loading history...</p>}
-        {!loadingHistory && displayItems.length === 0 && (
-          <p className="text-xs text-muted-foreground text-center">No messages yet. Select an actor and start the conversation!</p>
-        )}
-        {displayItems.map((item) => (
-          <div key={item.key} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[80%] space-y-2 rounded-lg px-4 py-2 text-sm ${item.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
-              {item.blocks.map((block) => (
-                <MessageBlockView key={block.key} block={block} />
-              ))}
-            </div>
-          </div>
-        ))}
-        {/* Pending indicator */}
-        {isSending && !currentTurnHasLiveBlocks && (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-2 rounded-lg bg-muted px-4 py-2 text-sm text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" /> Waiting for response…
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
+          {/* TODO(B-phase): Open Workspace link — served by the workspace browser backend */}
+        </section>
+        {/* TODO(TODO-B): Character / CapabilitySet / LLM Backend */}
+        {/* TODO(TODO-C): Runtime params (model/temp/reasoning) */}
+        {/* TODO(TODO-D): Model Context inspector */}
+        {/* TODO(avatar): Avatar / Actor profile */}
       </div>
-
-      {error && (
-        <div className="mx-4 mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
-      )}
-
-      <form onSubmit={(e) => { e.preventDefault(); void handleSend(); }} className="flex items-center gap-2 border-t p-4">
-        <Input value={input} onChange={(e) => setInput(e.target.value)}
-          placeholder={actor ? `Message ${actor.name}...` : "Select an actor..."}
-          className="flex-1" />
-        <Button
-          type="submit"
-          size="icon"
-          disabled={!input.trim() || !actorId || isSending}
-        >
-          {isSending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-        </Button>
-      </form>
-    </div>
+    </aside>
   );
 }
