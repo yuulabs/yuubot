@@ -93,8 +93,57 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
         await daemon.stop()
 
 
-async def test_admin_spa_entry_revalidates_to_avoid_stale_chunks(
+async def test_conversation_metadata_exposes_capability_set_workspace_path(
     yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon's conversation metadata must surface workspace_path so the
+    admin React BindingPanel can build a direct ``/workspace/<workspace_path>``
+    link — independent of any actor_id -> slug reverse-lookup.
+    """
+    llm = AdminConversationProvider()
+    register_test_llm_provider("openai", llm)
+
+    daemon = await _build_daemon(yuubot_config, tmp_path)
+    await daemon.start()
+    try:
+        await _connect_admin_proxy_to_daemon(monkeypatch, daemon)
+        admin_app = _build_admin_app(daemon, yuubot_config, tmp_path)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=admin_app),
+            base_url="http://admin.test",
+        ) as client:
+            backend = await _create_llm_backend(client)
+            character = await _create_character(client)
+            capability_set = await _create_capability_set(
+                client, workspace_path="this-path"
+            )
+            actor = await _create_actor(
+                client, character["id"], capability_set["id"], backend["id"]
+            )
+
+            send = await client.post(
+                "/api/admin/conversations/admin-conversation-workspace-path/messages",
+                json={
+                    "text": CONVERSATION_TEXT,
+                    "actor_id": actor["id"],
+                },
+            )
+            assert send.status_code == 202, send.text
+
+            metadata = await client.get(
+                "/api/admin/conversations/admin-conversation-workspace-path"
+            )
+            assert metadata.status_code == 200, metadata.text
+            data = metadata.json()["data"]
+            assert data["workspace_path"] == "this-path"
+    finally:
+        await daemon.stop()
+
+
+async def test_admin_spa_entry_revalidates_to_avoid_stale_chunks(    yuubot_config: BootstrapConfig,
     tmp_path: Path,
 ) -> None:
     daemon = await _build_daemon(yuubot_config, tmp_path)
@@ -361,12 +410,17 @@ async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
     return _created(response)
 
 
-async def _create_capability_set(client: httpx.AsyncClient) -> dict[str, Any]:
+async def _create_capability_set(
+    client: httpx.AsyncClient,
+    *,
+    workspace_path: str = "",
+) -> dict[str, Any]:
     response = await client.post(
         "/api/resources/capability-sets",
         json={
             "name": "admin-conversation-capabilities",
             "description": "E2E admin conversation capability set",
+            "workspace_path": workspace_path,
         },
     )
     return _created(response)
