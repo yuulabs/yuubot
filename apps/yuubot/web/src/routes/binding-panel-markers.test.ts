@@ -18,10 +18,18 @@ test("conversation route hosts the binding panel markers", () => {
 });
 
 test("conversation route exposes a real Open Workspace link (B-phase landed)", () => {
-  // The route source must contain the literal JSX template-literal expression
-  // `/workspace/${actorId}` — note the ${actorId} is literal source text, not
-  // JS interpolation in this assertion.
-  assert.ok(routeSrc.includes("/workspace/${actorId}"), "missing actual workspace link");
+  // The route source must drive the workspace link from the daemon-surfaced
+  // capability_set.workspace_path — the URL segment IS the relative disk path
+  // under <data_dir>/workspace. The literal `${conversationMetadata.workspace_path}`
+  // is source text in this assertion, not JS interpolation here.
+  assert.ok(
+    routeSrc.includes("/workspace/${conversationMetadata.workspace_path}"),
+    "missing actual workspace link driven by capability_set.workspace_path",
+  );
+  assert.ok(
+    !routeSrc.includes("/workspace/${actorId}"),
+    "wrong: route still references actorId for workspace link",
+  );
   assert.ok(!routeSrc.includes("TODO(B-phase)"), "B-phase placeholder still present");
 });
 
