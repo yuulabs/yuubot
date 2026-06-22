@@ -56,6 +56,7 @@ from yuubot.runtime.daemon.commands import (
 from yuubot.runtime.daemon.handlers import (
     _configuration_error_response,  # noqa: F401  # re-exported for compat
     _sse_event,  # noqa: F401  # re-exported for tests
+    make_cancel_conversation_turn_handler,
     make_conversation_events_handler,
     make_conversation_messages_handler,
     make_get_conversation_handler,
@@ -424,6 +425,11 @@ def build_daemon_asgi_app(
         Route(
             "/api/admin/conversations/{conversation_id}/messages",
             make_send_conversation_message_handler(conversation_manager),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/admin/conversations/{conversation_id}/cancel",
+            make_cancel_conversation_turn_handler(conversation_manager),
             methods=("POST",),
         ),
         Route(

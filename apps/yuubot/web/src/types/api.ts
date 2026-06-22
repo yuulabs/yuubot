@@ -340,6 +340,19 @@ export interface SendMessageResponse {
   };
 }
 
+export interface CancelTurnResponse {
+  status: string;
+  data: {
+    conversation_id: string;
+    cancelled: boolean;
+    /** Whether the drain primitive appended queued messages into the live
+     *  turn. Always `false` at POST time — `cancel_turn` sets the cancel event
+     *  + cancels the task but does not await the drain outcome. The real drain
+     *  result is disclosed via the `queue.flushed` SSE event the loop emits. */
+    drained: boolean;
+  };
+}
+
 export interface ConversationListItem {
   conversation_id: string;
   actor_id: string;
@@ -427,9 +440,30 @@ export interface ConversationErrorEvent extends ConversationSSEBaseEvent {
   error: string;
 }
 
+/** Emitted by `send_message` when a send is enqueued behind an in-flight
+ *  turn rather than starting a new turn. `idx` is the 0-based queue position
+ *  at append time; `preview` is the first ~30 chars of the user text. */
+export interface QueueAppendedEvent extends ConversationSSEBaseEvent {
+  event_type: "queue.appended";
+  idx: number;
+  preview: string;
+}
+
+/** Emitted by `drain_pending` after the queued user messages were merged
+ *  into one agent-visible user message. `count` is the number of originally
+ *  queued messages flushed. The frontend tears down queue-state UI on
+ *  receipt regardless of whether the drain was Trigger A (batch boundary)
+ *  or Trigger B (Flush button). */
+export interface QueueFlushedEvent extends ConversationSSEBaseEvent {
+  event_type: "queue.flushed";
+  count: number;
+}
+
 /** SSE event from /api/admin/conversations/{id}/events */
 export type ConversationSSEEvent =
   | TurnStartedEvent
   | TranscriptDeltaEvent
   | TurnCompletedEvent
-  | ConversationErrorEvent;
+  | ConversationErrorEvent
+  | QueueAppendedEvent
+  | QueueFlushedEvent;

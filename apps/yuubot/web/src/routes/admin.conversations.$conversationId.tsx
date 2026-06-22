@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, PanelLeftClose, SquareTerminal, BookOpen, FileEdit, FilePen, Play } from "lucide-react";
+import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, PanelLeftClose, SquareTerminal, BookOpen, FileEdit, FilePen, Play, FastForward } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
-import { sendConversationMessage, getConversation, getConversationMessages } from "@/lib/api";
+import { sendConversationMessage, cancelConversationTurn, getConversation, getConversationMessages } from "@/lib/api";
 import {
   appendRenderBlocks,
   historyItemsFromMessages,
@@ -452,6 +452,11 @@ function AdminConversationPage() {
   const [displayItems, setDisplayItems] = useState<DisplayItem[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
+  /** Pending queued sends: each entry corresponds to one `queue.appended`
+   *  SSE event from the backend. The backend is the source of truth; the
+   *  frontend never乐观-入队 (optimistically enqueues). `queue.flushed`
+   *  clears this list. The latest entry's `preview` drives the queue band. */
+  const [queuedMessages, setQueuedMessages] = useState<{ idx: number; preview: string }[]>([]);
   const [error, setError] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [conversationMetadata, setConversationMetadata] = useState<ConversationData | null>(null);
@@ -468,6 +473,9 @@ function AdminConversationPage() {
   const seenSseEventKeysRef = useRef<Set<string>>(new Set());
 
   const actor = actors.find((a) => a.id === actorId);
+  /** True while the backend reports at least one queued send behind the
+   *  in-flight turn. Drives the queue band + the Flush button. */
+  const queueActive = queuedMessages.length > 0;
 
   const connectSse = (): Promise<void> => {
     if (connectingSsePromiseRef.current) {
@@ -545,6 +553,34 @@ function AdminConversationPage() {
         } catch { /* transport error, see onerror below */ }
       };
 
+      // Phase 2 queue-state events. The backend (Phase 1) emits these:
+      //   queue.appended { idx, preview } — when a send_message enqueues
+      //     behind an in-flight turn rather than starting a new turn.
+      //   queue.flushed { count } — after drain_pending merged the queued
+      //     messages into one agent-visible user message (either at the
+      //     batch boundary, Trigger A, or via the Flush button, Trigger B).
+      // The frontend keeps queuedMessages as the mirror of the backend's
+      // pending queue; it never appends optimistically on send.
+      const handleQueueAppendedEvent = (e: MessageEvent) => {
+        try {
+          const raw = JSON.parse(e.data) as { idx?: number; preview?: string };
+          if (typeof raw.idx !== "number" || typeof raw.preview !== "string") {
+            return;
+          }
+          setQueuedMessages((prev) => [...prev, { idx: raw.idx as number, preview: raw.preview as string }]);
+        } catch { /* malformed frame; ignore */ }
+      };
+
+      const handleQueueFlushedEvent = (_e: MessageEvent) => {
+        // Drain ran on the backend (either boundary or Flush). Clear local
+        // queue state unconditionally — the backend has already cleared its
+        // pending_queue. The turn's isSending state is NOT touched here:
+        // for Trigger B with a non-empty queue the loop continues (turn
+        // stays live), and for Trigger B with an empty queue the loop
+        // breaks and turn_completed fires via the existing handler.
+        setQueuedMessages([]);
+      };
+
       const es = new EventSource(`/api/admin/conversations/${conversationId}/events`);
       sseRef.current = es;
       es.onopen = () => {
@@ -571,6 +607,8 @@ function AdminConversationPage() {
       es.addEventListener("transcript_delta", handleAssistantStreamEvent);
       es.addEventListener("turn_completed", handleTurnCompletedEvent);
       es.addEventListener("error", handleErrorEvent);
+      es.addEventListener("queue.appended", handleQueueAppendedEvent);
+      es.addEventListener("queue.flushed", handleQueueFlushedEvent);
     });
     connectingSsePromiseRef.current = pending;
     return pending;
@@ -658,9 +696,34 @@ function AdminConversationPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [displayItems]);
 
+  const handleFlush = async () => {
+    // Flush = POST /cancel. The backend's cancel_turn sets the cancel event
+    // (single-point safety trip) + cancels the task; the loop's
+    // CancelledError handler runs drain_pending. If the queue was non-empty
+    // the loop continues (the appended message becomes visible to the next
+    // LLM step) and emits `queue.flushed` — the SSE handler clears the queue
+    // band. If the queue was empty the loop breaks and `turn_completed`
+    // fires naturally — the existing handler flips isSending.
+    //
+    // No local state mutation here on success: rely on the SSE events. The
+    // /cancel endpoint no longer synthesises turn_completed (Phase 1 change).
+    // On a network/daemon error we best-effort clear the queue band so the
+    // user is not wedged on a visible queue with no Flush effect.
+    if (isDraft) return;
+    try {
+      await cancelConversationTurn(conversationId);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to flush queued messages");
+      setQueuedMessages([]);
+    }
+  };
+
   const handleSend = async () => {
     const text = input.trim();
-    if (!text || !actorId || sendingRef.current) return;
+    // Input is never disabled during generation: a send while a turn is
+    // in-flight is enqueued server-side and surfaces as a `queue.appended`
+    // SSE event. Only the empty-input / no-actor guards remain.
+    if (!text || !actorId) return;
 
     const isDraftSend = isDraft;
     const targetConversationId = isDraft
@@ -784,17 +847,41 @@ function AdminConversationPage() {
           <div className="mx-4 mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
         )}
 
-        <form onSubmit={(e) => { e.preventDefault(); void handleSend(); }} className="flex items-center gap-2 border-t p-4">
-          <Input value={input} onChange={(e) => setInput(e.target.value)}
-            placeholder={actor ? `Message ${actor.name}...` : "Select an actor..."}
-            className="flex-1" />
-          <Button
-            type="submit"
-            size="icon"
-            disabled={!input.trim() || !actorId || isSending}
-          >
-            {isSending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-          </Button>
+        <form onSubmit={(e) => { e.preventDefault(); void handleSend(); }} className="flex flex-col gap-2 border-t p-4">
+          {queueActive && (
+            <div className="flex items-center gap-2 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-300">
+              <Loader2 className="size-3.5 animate-spin" />
+              <span className="min-w-0 truncate">
+                ⏳ 队列中有消息：{queuedMessages[queuedMessages.length - 1]?.preview ?? ""}…
+              </span>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Input value={input} onChange={(e) => setInput(e.target.value)}
+              placeholder={actor ? `Message ${actor.name}...` : "Select an actor..."}
+              className="flex-1"
+            />
+            {queueActive && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                onClick={() => { void handleFlush(); }}
+                aria-label="Flush queued messages into the running turn"
+                title="Flush queued messages"
+              >
+                <FastForward className="size-4" />
+              </Button>
+            )}
+            <Button
+              type="submit"
+              size="icon"
+              disabled={!input.trim() || !actorId}
+              aria-label="Send message"
+            >
+              {isSending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+            </Button>
+          </div>
         </form>
       </div>
       <BindingPanel

@@ -10,6 +10,7 @@ import type {
   ConversationCreateResponse,
   ConversationData,
   ConversationMessagesResponse,
+  CancelTurnResponse,
   ConversationMessage,
   HealthResponse,
   IntegrationKind,
@@ -194,6 +195,37 @@ export async function getConversationMessages(
 ): Promise<ConversationMessage[]> {
   const res = await request<ConversationMessagesResponse>(
     `${BASE}/admin/conversations/${conversationId}/messages`,
+  );
+  return res.data;
+}
+
+/**
+ * Flush the in-flight turn for a conversation (POST /cancel).
+ *
+ * The daemon's `ConversationManager.cancel_turn` sets the cancel event (a
+ * single-point safety trip so a CancelledError lands even if the loop is
+ * between awaits) and calls `task.cancel()`. It does NOT await the task and
+ * does NOT synthesise `turn_completed`. The loop's CancelledError handler
+ * runs `drain_pending(agent)`: if the pending queue was non-empty the merged
+ * user message is appended and the loop continues (turn stays live, the
+ * `queue.flushed` SSE event later tears down the frontend queue band); if the
+ * queue was empty the loop breaks and `turn_completed` fires naturally via
+ * the loop's exit path.
+ *
+ * Returns `{ cancelled, drained }`. `drained` is always `false` at POST time
+ * — the real drain outcome is disclosed via the `queue.flushed` SSE event.
+ * `cancelled` is `true` when a turn task was actually signalled.
+ *
+ * The frontend caller should NOT locally mutate `isSending` on this call's
+ * return; rely on the SSE `turn_completed` (Flush-with-empty-queue break) or
+ * the continued stream (Flush-with-pending, turn stays live) for UI teardown.
+ */
+export async function cancelConversationTurn(
+  conversationId: string,
+): Promise<CancelTurnResponse["data"]> {
+  const res = await request<CancelTurnResponse>(
+    `${BASE}/admin/conversations/${conversationId}/cancel`,
+    { method: "POST" },
   );
   return res.data;
 }
