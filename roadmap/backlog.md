@@ -10,3 +10,7 @@
   trace 默认存语义事件 + 紧凑摘要,不存每个渲染块。详细方向见
   `roadmap/archive/v2-observability-terminal-output.md`。推进 **Constitution M1
   (observability) + M5(可观测性/可解释性)**。lazy: 原散件已归档,此处仅一行索引。
+- **`monitor` LLM 计时显示 bug**(来自 `warroom/TODO.md`)— cost-guard 合并后,
+  monitor 的 Tool Execution 占比 ~100%,因 LLM 执行时间报为 0。非阻塞,不影响
+  budget / cost 事件 / dashboard。疑似 LLM 计时 emit 问题。推进 **M1
+  (observability)**。
