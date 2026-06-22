@@ -321,7 +321,6 @@ export interface ConversationData {
   actor_id: string;
   character_id: string;
   capability_set_id: string;
-  workspace_path: string;
   llm_backend_id: string;
   model: string;
   created_at?: string;
