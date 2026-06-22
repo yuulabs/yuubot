@@ -38,6 +38,10 @@ from yuubot.runtime.admin.handlers import (
     make_uninstall_plugin_handler,
     make_validate_provider_handler,
 )
+from yuubot.runtime.admin.workspace_browser import (
+    make_workspace_file_handler,
+    make_workspace_index_handler,
+)
 from yuubot.resources.root import Resources
 from yuubot.runtime.plugin_manager import (
     ExternalPluginFactoryLoader,
@@ -123,6 +127,8 @@ def build_admin_asgi_app(
             plugins_dir=layout.plugins_dir,
             data_root=layout.data_dir,
         )
+    else:
+        layout = DataLayout.from_path(plugin_manager.data_root)
 
     # Assemble handlers via explicit-dependency factories.
     routes: list[Route | Mount] = [
@@ -284,6 +290,23 @@ def build_admin_asgi_app(
                 name="tutorials",
             )
         )
+
+    # Actor workspace browser — directory listings + file responses.
+    # Registered BEFORE the SPA catch-all so it owns /workspace/* paths.
+    routes.append(
+        Route(
+            "/workspace/{actor_id}/",
+            make_workspace_index_handler(data_dir=layout.data_dir),
+            methods=("GET",),
+        )
+    )
+    routes.append(
+        Route(
+            "/workspace/{actor_id}/{path:path}",
+            make_workspace_file_handler(data_dir=layout.data_dir),
+            methods=("GET",),
+        )
+    )
 
     # Serve index.html explicitly at the root
     index_path = web_path / "index.html"
