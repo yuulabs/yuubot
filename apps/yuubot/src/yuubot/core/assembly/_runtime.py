@@ -469,6 +469,29 @@ class YuuAgentsActorRuntime:
                         # input box itself is the buffer).
                         await agent.flush_entitylog()
                         await self._cancel_agent_tools(agent)
+                        # Mirror opencode processor.ts cleanup()+halt(): the
+                        # interrupt path is just another terminal path, so
+                        # finalise the partial assistant message and persist
+                        # it exactly like the normal terminal path does.
+                        # Without this emit, the partial stays in agent
+                        # memory (in-memory only) but never reaches
+                        # conversation_messages → on refresh, the agent
+                        # rebuilds from DB without it and the LLM sees
+                        # consecutive user messages instead of
+                        # user → assistant → user.
+                        partial = _last_assistant_message(agent.history)
+                        if partial is not None:
+                            await self.stage.eventbus.emit(
+                                "llm.finished",
+                                {
+                                    "agent_id": agent.id,
+                                    "agent_name": agent.name,
+                                    "usage": None,  # partial — no provider
+                                    "cost": None,
+                                    "model": agent.llm.model,
+                                    "message": partial,
+                                },
+                            )
                         break
                 else:
                     # while...else: loop exited via ``not agent.done`` (the
@@ -746,6 +769,19 @@ def _extract_tool_calls(message: yuullm.Message) -> list[yuullm.ToolCall]:
                 )
             )
     return result
+
+
+def _last_assistant_message(history: yuullm.History) -> yuullm.Message | None:
+    """Return the most recent assistant Message in ``history``, or None.
+
+    Used by the CancelledError handler to locate the partial assistant
+    yuullm already appended to agent.history so it can be emitted via
+    ``llm.finished`` and persisted by ``ConversationManager``.
+    """
+    for item in reversed(history):
+        if isinstance(item, yuullm.Message) and item.role == "assistant":
+            return item
+    return None
 
 
 def _render_task_result(task: YuuTask) -> ToolResult:

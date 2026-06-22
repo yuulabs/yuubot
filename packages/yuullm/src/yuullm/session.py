@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -27,6 +28,8 @@ from .types import (
     ToolCallItem,
     ToolResultItem,
     StreamResult,
+    is_text_item,
+    is_tool_call_item,
 )
 
 
@@ -180,6 +183,37 @@ class YuuSession:
                         )
                     )
                     return
+
+                except asyncio.CancelledError:
+                    # Mid-stream cancellation (e.g. user clicked Stop):
+                    # append whatever content was accumulated so the session
+                    # history stays legal. The agent loop will synthesize
+                    # tool results for any tool calls in the partial message.
+                    if pending_content:
+                        # Mirror opencode's cleanup principle: the partial
+                        # assistant must be a legal "assistant turn" for the
+                        # provider's request format. The OpenAI-compatible
+                        # converter routes thinking items to
+                        # ``reasoning_content`` and produces an entry with no
+                        # ``content`` and no ``tool_calls`` when
+                        # pending_content has ONLY thinking/redacted_thinking
+                        # items — providers (DeepSeek notably) reject this as
+                        # "consecutive user messages". Patch: if no text or
+                        # tool_call item is present, append an empty text
+                        # placeholder so the entry has at least one content
+                        # block.
+                        has_text_or_tool = any(
+                            is_text_item(item) or is_tool_call_item(item)
+                            for item in pending_content
+                        )
+                        if not has_text_or_tool:
+                            pending_content = pending_content + [
+                                {"type": "text", "text": ""}
+                            ]
+                        self._history.append(
+                            Message(role="assistant", content=pending_content)
+                        )
+                    raise
 
                 except (ConnectionError, TimeoutError, OSError) as exc:
                     last_error = exc

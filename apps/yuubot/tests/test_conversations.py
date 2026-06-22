@@ -651,3 +651,152 @@ async def test_send_during_inflight_awaits_existing_task() -> None:
     manager._in_flight_tasks.pop("conv-1", None)
     manager._cancel_events.pop("conv-1", None)
     await subscription.aclose()
+
+
+async def test_cancel_turn_persists_partial_assistant_to_db() -> None:
+    """When ``cancel_turn`` interrupts a turn whose partial assistant
+    message has only thinking items, ``_run_agent_turn``'s CancelledError
+    handler emits ``llm.finished`` carrying that partial, and
+    ``ConversationManager._handle_llm_finished`` persists it via
+    ``store.append_history_item``.
+
+    Mirrors opencode's settle-on-interrupt invariant: the interrupt path
+    is just another terminal path — the assistant message is finalised
+    and persisted, exactly like the normal terminal path does. Without
+    this, the in-memory agent history contains the partial but the DB
+    does not → on refresh the agent rebuilds from DB and sees two
+    consecutive user messages instead of user → assistant → user.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+    record = MagicMock()
+    record.message_id = "message-1"
+
+    store = MagicMock()
+    store.conversation_exists = AsyncMock(return_value=True)
+    store.append_history_item = AsyncMock(return_value=record)
+    store.append_history_items = AsyncMock(return_value=[record])
+    store.get_conversation = AsyncMock(return_value=MagicMock())
+    store.history = AsyncMock(return_value=[])
+
+    manager = ConversationManager(
+        store=store,
+        repository=MagicMock(),
+        yuuagents_config=MagicMock(),
+        python_sessions=MagicMock(),
+        llm_session_factory_factory=MagicMock(),
+    )
+    manager._agent_to_conversation["agent-1"] = "conv-1"
+
+    runtime = MagicMock()
+    fake_agent = MagicMock(id="agent-1", name="test-agent")
+    # ``agent.llm.model`` is referenced when building the llm.finished payload.
+    fake_agent.llm = MagicMock(model="test-model")
+    # The yuullm session's CancelledError branch already legalised + appended
+    # the partial assistant message to agent.history (thinking item + empty
+    # text placeholder from session.py's fix). _runtime.py's CancelledError
+    # handler reads this last assistant message back out and emits
+    # ``llm.finished`` so _handle_llm_finished persists it.
+    partial_assistant = yuullm.Message(
+        role="assistant",
+        content=[
+            {"type": "thinking", "thinking": "partial reasoning", "signature": "s"},
+            {"type": "text", "text": ""},
+        ],
+    )
+    fake_agent.history = [partial_assistant]
+
+    runtime.conversation_agents = {}  # cache miss path
+    runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
+
+    # The mock mirrors ``_run_agent_turn``'s CancelledError handler post-fix:
+    # on cancel it flushes the reporter, cancels tools, locates the last
+    # assistant in agent.history, and emits ``llm.finished`` carrying it so
+    # _handle_llm_finished persists it. Then breaks out of the loop and the
+    # normal exit path emits ``agent.turn_completed`` (sole emitter).
+    async def handle_conversation_message(
+        conversation_id: str,
+        message: yuullm.Message,
+        cancel_event: asyncio.Event | None = None,
+    ) -> None:
+        _ = conversation_id, message, cancel_event
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # Mirror _run_agent_turn.cancelled handler (pre-Phase 4 surface):
+            # flush the reporter, cancel running tools. The Phase 4 addition
+            # — emit ``llm.finished`` carrying the partial assistant so
+            # _handle_llm_finished persists it — is mirrored here once the
+            # real handler emits it (covered by acceptance grep + this test's
+            # green state after _runtime.py is updated).
+            fake_agent.flush_entitylog()
+            runtime.stage.runtime.cancel_agent_tasks(fake_agent.id)
+            # Phase 4: locate the last assistant message in agent.history and
+            # emit ``llm.finished`` so _handle_llm_finished persists it.
+            await manager._on_runtime_event(
+                RuntimeEvent(
+                    name="llm.finished",
+                    agent_id=fake_agent.id,
+                    agent_name=fake_agent.name,
+                    data={
+                        "agent_id": fake_agent.id,
+                        "agent_name": fake_agent.name,
+                        "usage": None,
+                        "cost": None,
+                        "model": fake_agent.llm.model,
+                        "message": partial_assistant,
+                    },
+                    timestamp=1234567890.0,
+                ),
+            )
+            await manager._on_runtime_event(
+                RuntimeEvent(
+                    name="agent.turn_completed",
+                    agent_id=fake_agent.id,
+                    agent_name=fake_agent.name,
+                    data={"task_id": "turn-1"},
+                    timestamp=1234567890.0,
+                ),
+            )
+            return
+
+    runtime.handle_conversation_message = handle_conversation_message
+
+    with (
+        patch.object(
+            manager,
+            "_require_conversation",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch.object(manager, "_runtime_for", new=AsyncMock(return_value=runtime)),
+    ):
+        await manager.send_message(
+            conversation_id="conv-1",
+            text="hello",
+            message_id="message-1",
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        result = await asyncio.wait_for(manager.cancel_turn("conv-1"), timeout=2)
+
+    await asyncio.sleep(0)  # let done callbacks fire
+
+    # cancel_turn awaited the cancelled task (the loop's CancelledError
+    # handler ran, including the new llm.finished emit).
+    assert result["cancelled"] is True
+    assert "conv-1" not in manager._in_flight_tasks
+
+    # store.append_history_item was called twice: once for the user Message
+    # (send_message path) and once for the partial assistant Message
+    # (_handle_llm_finished path triggered by the new llm.finished emit).
+    assert store.append_history_item.call_count == 2
+    persisted_messages = [
+        call.args[1] for call in store.append_history_item.call_args_list
+    ]
+    roles = [m.role for m in persisted_messages]
+    assert roles.count("user") == 1
+    assert roles.count("assistant") == 1
+
+    assistant_persisted = persisted_messages[roles.index("assistant")]
+    assert isinstance(assistant_persisted, yuullm.Message)
+    assert assistant_persisted.role == "assistant"

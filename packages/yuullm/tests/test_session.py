@@ -446,6 +446,123 @@ async def test_stream_multiple_response_items_concatenated(mock_pool) -> None:
     ]
 
 
+@pytest.mark.asyncio
+async def test_stream_cancelled_midstream_appends_partial_content(mock_pool) -> None:
+    """When the stream is cancelled mid-iteration, whatever content was
+    accumulated so far is appended to history so the session state stays
+    legal (the agent loop can read the partial assistant message).
+    """
+    import asyncio
+
+    async def _cancelable_stream():
+        yield _text_response("partial ")
+        yield _text_response("answer")
+        # The caller will cancel before this reaches the end.
+        await asyncio.Event().wait()  # blocks forever
+
+    mock_pool.resolve.return_value = [_binding()]
+    mock_client = MagicMock()
+    mock_client.stream = AsyncMock(
+        return_value=(_cancelable_stream(), Store())
+    )
+    mock_pool.get_client.return_value = mock_client
+
+    session = _make_session(mock_pool)
+
+    stream, _store = await session.stream()
+    consumer = asyncio.ensure_future(_consume_stream(stream))
+
+    # Let the consumer process the first two items, then cancel.
+    await asyncio.sleep(0.05)
+    consumer.cancel()
+    try:
+        await consumer
+    except asyncio.CancelledError:
+        pass
+
+    # The partial assistant message was appended to history.
+    assert len(session.history) == 1
+    assert session.history[0].role == "assistant"
+    text = "".join(
+        item.get("text", "")
+        for item in session.history[0].content
+        if item.get("type") == "text"
+    )
+    assert "partial" in text
+
+
+async def _consume_stream(stream):
+    async for _ in stream:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_stream_cancelled_during_thinking_appends_legal_assistant(
+    mock_pool,
+) -> None:
+    """When the stream is cancelled during the thinking phase (only a
+    ThinkingBlock has been finalised into pending_content; no text or
+    tool_call chunk has arrived), the partial assistant message yuullm
+    appends must be convertible to a legal OpenAI-chat assistant entry.
+
+    Without the placeholder, the assistant entry would carry only a
+    ``reasoning_content`` field — DeepSeek rejects this as an empty
+    assistant turn ("consecutive user messages are not allowed"). The
+    CancelledError handler therefore appends an empty text placeholder
+    so the entry has at least one content block.
+    """
+    import asyncio
+
+    from yuullm.providers._openai_chat import convert_openai_chat_messages
+    from yuullm.types import is_text_item, is_tool_call_item
+
+    async def _cancelable_during_thinking_stream():
+        # Reasoning text is buffered and finalised into a thinking item by
+        # the trailing ThinkingBlock. No Response/ToolCall ever arrives —
+        # the stream blocks until cancel arrives.
+        yield _reasoning("reasoning about the question...")
+        yield _thinking_block(thinking="deep thoughts", signature="sig-ph4")
+        await asyncio.Event().wait()  # blocks forever
+
+    mock_pool.resolve.return_value = [_binding()]
+    mock_client = MagicMock()
+    mock_client.stream = AsyncMock(
+        return_value=(_cancelable_during_thinking_stream(), Store())
+    )
+    mock_pool.get_client.return_value = mock_client
+
+    # Seed a user message so convert_openai_chat_messages([user, assistant])
+    # is realistic (two messages, the assistant follows the user).
+    session = _make_session(mock_pool)
+    session.append(Message(role="user", content=[{"type": "text", "text": "hi"}]))
+
+    stream, _store = await session.stream()
+    consumer = asyncio.ensure_future(_consume_stream(stream))
+
+    # Let the consumer process the Reasoning + ThinkingBlock, then cancel.
+    await asyncio.sleep(0.05)
+    consumer.cancel()
+    try:
+        await consumer
+    except asyncio.CancelledError:
+        pass
+
+    # The partial assistant message was appended to history.
+    assert len(session.history) == 2
+    assert session.history[-1].role == "assistant"
+    content = session.history[-1].content
+    # The placeholder text item is present so the assistant turn is legal
+    # for OpenAI-compatible providers.
+    assert any(is_text_item(item) or is_tool_call_item(item) for item in content)
+
+    # The provider request reconstruction produces an assistant entry with
+    # a non-empty ``content`` (or non-empty ``tool_calls``) — i.e. an
+    # entry DeepSeek accepts as a real assistant turn.
+    entries = convert_openai_chat_messages(session.history)
+    assert entries[-1]["role"] == "assistant"
+    assert entries[-1].get("content") or entries[-1].get("tool_calls")
+
+
 # ---------------------------------------------------------------------------
 # YuuSession.stream() tests — fallback chain
 # ---------------------------------------------------------------------------
