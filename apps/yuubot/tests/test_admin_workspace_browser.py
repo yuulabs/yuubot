@@ -1,28 +1,34 @@
-"""Admin-served actor-workspace browser tests.
+"""Admin workspace browser tests — direct path-based serving.
 
-Covers the backend HTTP surface:
-  * GET /workspace/{actor_id}/         — directory listing (http.server-style)
-  * GET /workspace/{actor_id}/{path}   — nested dir listing / file response
-  * GET /workspace/{actor_id}/<..>      — 403 on path escape
-  * GET /workspace/<unknown>/          — 404 on nonexistent actor workspace
+Covers the backend HTTP surface after dropping the ``safe_actor_path_id``
+slug indirection. The user-configured ``CapabilitySet.workspace_path`` (a
+relative path like ``this-path``) IS the URL segment. Admin serves
+``<data_dir>/workspace/<workspace_path>`` directly — ``python -m http.server``
+rooted at ``<data_dir>/workspace``.
+
+  * GET /workspace/                       — root listing of <data_dir>/workspace
+  * GET /workspace/this-path              — directory listing of configured workspace
+  * GET /workspace/this-path/outputs/...  — nested file with MIME
+  * GET /workspace/this-path/outputs/    — nested dir listing with parent link
+  * GET /workspace/this-path/../../../../etc/passwd — path escape -> 403
+  * GET /workspace/this-path/missing.html         — missing file -> 404
 """
 
 from __future__ import annotations
 
-import msgspec
 from pathlib import Path
 
 import httpx
+import msgspec
 import pytest
 
 from yuubot.bootstrap.config import BootstrapConfig
-from yuubot.core.actors.workspace import safe_actor_path_id
 from yuubot.core.integrations import default_integration_factories
 from yuubot.resources.root import Resources
 from yuubot.runtime.admin import DaemonClient, build_admin_asgi_app
-from yuubot.runtime.plugin import ExternalPluginManager
+from yuubot.runtime.plugin_manager import ExternalPluginManager
 
-ACTOR_ID = "actor-1"
+WORKSPACE_REL = "this-path"  # matches CapabilitySet.workspace_path value
 
 
 def _client(app) -> httpx.AsyncClient:
@@ -34,12 +40,8 @@ def _client(app) -> httpx.AsyncClient:
 
 @pytest.fixture
 def workspace_root(tmp_path: Path) -> Path:
-    root = (
-        tmp_path
-        / "workspace"
-        / "actors"
-        / safe_actor_path_id(ACTOR_ID)
-    )
+    """The configured workspace directory: ``<data_dir>/workspace/<WORKSPACE_REL>``."""
+    root = tmp_path / "workspace" / WORKSPACE_REL
     root.mkdir(parents=True)
     return root
 
@@ -70,7 +72,20 @@ def admin_app(
     )
 
 
-async def test_workspace_index_lists_files_and_dirs_and_hidden(
+async def test_root_listing_lists_configured_workspaces(
+    admin_app,
+    workspace_root: Path,
+) -> None:
+    # workspace_root exists on disk under <data_dir>/workspace/this-path.
+    # The root listing of <data_dir>/workspace should enumerate it.
+    async with _client(admin_app) as client:
+        response = await client.get("/workspace/")
+
+    assert response.status_code == 200
+    assert "this-path/" in response.text
+
+
+async def test_directory_listing_lists_files_and_dirs(
     admin_app,
     workspace_root: Path,
 ) -> None:
@@ -79,18 +94,21 @@ async def test_workspace_index_lists_files_and_dirs_and_hidden(
         "<h1>chart</h1>", encoding="utf-8"
     )
     (workspace_root / ".secret").write_text("secret", encoding="utf-8")
+    (workspace_root / "subdir").mkdir()
 
     async with _client(admin_app) as client:
-        response = await client.get(f"/workspace/{ACTOR_ID}/")
+        response = await client.get(f"/workspace/{WORKSPACE_REL}")
 
     assert response.status_code == 200
     body = response.text
     assert "outputs/" in body
     assert ".secret" in body
-    assert "chart.html" not in body  # nested file is not listed at root index
+    assert "subdir/" in body
+    # Nested file is NOT listed at this directory level.
+    assert "chart.html" not in body
 
 
-async def test_workspace_nested_file_response_has_mime(
+async def test_nested_file_response_has_mime_type(
     admin_app,
     workspace_root: Path,
 ) -> None:
@@ -102,10 +120,10 @@ async def test_workspace_nested_file_response_has_mime(
 
     async with _client(admin_app) as client:
         html = await client.get(
-            f"/workspace/{ACTOR_ID}/outputs/chart.html"
+            f"/workspace/{WORKSPACE_REL}/outputs/chart.html"
         )
         png = await client.get(
-            f"/workspace/{ACTOR_ID}/outputs/pic.png"
+            f"/workspace/{WORKSPACE_REL}/outputs/pic.png"
         )
 
     assert html.status_code == 200
@@ -116,7 +134,7 @@ async def test_workspace_nested_file_response_has_mime(
     assert png.headers["content-type"] == "image/png"
 
 
-async def test_workspace_nested_directory_listing_has_parent_link(
+async def test_nested_directory_listing_has_parent_link(
     admin_app,
     workspace_root: Path,
 ) -> None:
@@ -127,7 +145,7 @@ async def test_workspace_nested_directory_listing_has_parent_link(
 
     async with _client(admin_app) as client:
         response = await client.get(
-            f"/workspace/{ACTOR_ID}/outputs/"
+            f"/workspace/{WORKSPACE_REL}/outputs/"
         )
 
     assert response.status_code == 200
@@ -136,38 +154,23 @@ async def test_workspace_nested_directory_listing_has_parent_link(
     assert "../" in body  # parent link
 
 
-async def test_workspace_path_escape_returns_403(admin_app) -> None:
+async def test_path_escape_returns_403(admin_app) -> None:
     # Percent-encoded traversal so httpx does not normalise the .. segments
     # before the route matches.
-    escapes = "..%2f..%2f..%2f..%2fetc%2fpasswd"
+    escapes = f"{WORKSPACE_REL}/..%2f..%2f..%2f..%2fetc%2fpasswd"
     async with _client(admin_app) as client:
-        response = await client.get(
-            f"/workspace/{ACTOR_ID}/{escapes}"
-        )
+        response = await client.get(f"/workspace/{escapes}")
 
     assert response.status_code == 403
 
 
-async def test_workspace_unknown_actor_returns_404(
-    admin_app,
-    tmp_path: Path,
-) -> None:
-    assert not (tmp_path / "workspace" / "actors" /
-                safe_actor_path_id("nope")).exists()
-
-    async with _client(admin_app) as client:
-        response = await client.get("/workspace/nope/")
-
-    assert response.status_code == 404
-
-
-async def test_workspace_missing_file_returns_404(
+async def test_missing_file_returns_404(
     admin_app,
     workspace_root: Path,
 ) -> None:
     async with _client(admin_app) as client:
         response = await client.get(
-            f"/workspace/{ACTOR_ID}/missing.html"
+            f"/workspace/{WORKSPACE_REL}/missing.html"
         )
 
     assert response.status_code == 404

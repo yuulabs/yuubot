@@ -1,16 +1,17 @@
-"""Admin-served actor-workspace browser.
+"""Admin workspace browser — direct path-based serving.
 
-Exposes http.server-style directory listings and file responses under
-``/workspace/{actor_id}/...`` on the admin Starlette app. The actor workspace
-root is derived from the bootstrap ``data_dir`` (``<data_dir>/workspace/actors``
-— see :class:`yuubot.bootstrap.layout.DataLayout`). ``safe_actor_path_id`` is
-reused from :mod:`yuubot.core.actors.workspace`; this module never participates
-in the actor ID → workspace mapping decision.
+Serves ``<data_dir>/workspace`` over HTTP exactly like ``python -m http.server``
+rooted at that directory. The user-configured ``CapabilitySet.workspace_path``
+(a relative path like ``this-path``) IS the URL segment:
 
-A path-escape guard is applied on every request that resolves a sub-path:
-both ``workspace_root`` and ``target`` are resolved with ``Path.resolve()``
-and the target must be relative to the resolved root. Violations return HTTP
-403. No string-based comparison.
+    GET /workspace/<workspace_path>                -> directory listing
+    GET /workspace/<workspace_path>/outputs/x.html -> file response (mime guessed)
+
+A path-escape guard is applied on every sub-path request: both ``workspace_root``
+and ``target`` are resolved with ``Path.resolve()`` and the target must be
+relative to the resolved root. Violations return HTTP 403. No string-based
+comparison. The browser never participates in actor_id -> workspace mapping:
+that is the resolver's job in ``core.actors.workspace``.
 """
 
 from __future__ import annotations
@@ -22,118 +23,74 @@ from pathlib import Path
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, Response
 
-from yuubot.core.actors.workspace import safe_actor_path_id
-
-__all__ = [
-    "make_workspace_file_handler",
-    "make_workspace_index_handler",
-]
+__all__ = ["make_workspace_handler"]
 
 
-def make_workspace_index_handler(data_dir: Path):
-    """Handle ``GET /workspace/{actor_id}/`` — top-level directory listing."""
+def make_workspace_handler(workspace_root: Path):
+    """Build a Starlette handler that serves ``workspace_root`` over HTTP.
 
-    async def handler(request: Request) -> Response:
-        actor_id = request.path_params["actor_id"]
-        workspace_root = _workspace_root(data_dir, actor_id)
-        if not workspace_root.is_dir():
-            return Response("workspace not found", status_code=404)
-        return HTMLResponse(
-            _render_listing(actor_id, workspace_root, workspace_root)
-        )
-
-    return handler
-
-
-def make_workspace_file_handler(data_dir: Path):
-    """Handle ``GET /workspace/{actor_id}/{path}`` — nested listing or file."""
+    Registered under ``Route("/workspace/{path:path}", ...)``. Starlette's
+    ``path:path`` converter accepts an empty string, so ``/workspace/`` maps
+    to ``sub=""`` -> ``target=root`` -> directory listing of the root.
+    """
+    root = workspace_root.expanduser().resolve()
 
     async def handler(request: Request) -> Response:
-        actor_id = request.path_params["actor_id"]
         sub = request.path_params["path"]
-        workspace_root = _workspace_root(data_dir, actor_id)
-        # ``sub`` may contain percent-decoded traversal segments; resolve
-        # against the resolved root and verify containment.
-        target = (workspace_root / sub).resolve()
-        if not target.is_relative_to(workspace_root):
+        target = (root / sub).resolve()
+        if not target.is_relative_to(root):
             return Response("forbidden", status_code=403)
         if target.is_dir():
-            return HTMLResponse(
-                _render_listing(actor_id, target, workspace_root)
-            )
-        if not target.is_file():
-            return Response("not found", status_code=404)
-        mime, _ = mimetypes.guess_type(target.name)
-        return FileResponse(target, media_type=mime or "application/octet-stream")
+            return HTMLResponse(_render_listing(root, target, sub))
+        if target.is_file():
+            mime, _ = mimetypes.guess_type(target.name)
+            return FileResponse(target, media_type=mime or "application/octet-stream")
+        return Response("not found", status_code=404)
 
     return handler
 
 
-def _workspace_root(data_dir: Path, actor_id: str) -> Path:
-    """Resolve the actor workspace root, always ``.resolve()``-d.
-
-    Mirrors :class:`yuubot.core.actors.workspace.ActorWorkspaceResolver`:
-    ``<data_dir>/workspace/actors/<safe_actor_path_id(actor_id)>`` without
-    touching the filesystem (the directory may or may not exist).
-    """
-    return (
-        Path(data_dir).expanduser()
-        / "workspace"
-        / "actors"
-        / safe_actor_path_id(actor_id)
-    ).resolve()
-
-
-def _render_listing(
-    actor_id: str,
-    dir_path: Path,
-    workspace_root: Path,
-) -> str:
+def _render_listing(root: Path, dir_path: Path, sub: str) -> str:
     """Render an http.server-style directory listing as HTML.
 
     * Hidden files (dotfiles) are listed (matches ``python -m http.server``
       defaults — Phase 4 explicitly defers any dotfile-hide toggle).
-    * Directory entries get a trailing ``/`` in their href.
-    * A ``../`` (parent directory) link appears only when ``dir_path`` is
-      below ``workspace_root``.
+    * Directory entries get a trailing ``/`` in their href and display name.
+    * A ``../`` (parent directory) link appears whenever ``sub`` is non-empty
+      (i.e. the listed directory is below the served root).
     """
-    rel = _relative_posix(dir_path, workspace_root)
-    header = (
-        f"/workspace/{html.escape(actor_id)}/" + rel
-        + ("/" if rel else "")
-    )
-
+    title_path = f"/workspace/{sub}/" if sub else "/workspace/"
     entries = sorted(dir_path.iterdir(), key=lambda p: p.name)
     lines: list[str] = [
         "<!DOCTYPE html>",
         '<html lang="en">',
         "<head>",
         '<meta charset="utf-8">',
-        f"<title>Directory listing for {html.escape(header)}</title>",
+        f"<title>Directory listing for {html.escape(title_path)}</title>",
         "</head>",
         "<body>",
-        f"<h1>Directory listing for {html.escape(header)}</h1>",
+        f"<h1>Directory listing for {html.escape(title_path)}</h1>",
         "<hr>",
         "<ul>",
     ]
 
-    if dir_path != workspace_root:
-        parent_suffix = _relative_posix(dir_path.parent, workspace_root)
+    if sub:
+        parent_sub = _parent_posix(sub, root, dir_path)
         parent_href = (
-            f"/workspace/{actor_id}/" + parent_suffix
-            + ("/" if parent_suffix else "")
+            f"/workspace/{parent_sub}/" if parent_sub else "/workspace/"
         )
         lines.append(f'<li><a href="{html.escape(parent_href)}">../</a></li>')
 
     for entry in entries:
         name = entry.name
-        entry_suffix = _relative_posix(entry, workspace_root)
+        entry_rel = _relative_posix(entry, root)
         if entry.is_dir():
-            entry_suffix += "/"
-        href = f"/workspace/{actor_id}/{entry_suffix}"
+            href = f"/workspace/{entry_rel}/"
+        else:
+            href = f"/workspace/{entry_rel}"
+        display = f"{name}/" if entry.is_dir() else name
         lines.append(
-            f'<li><a href="{html.escape(href)}">{html.escape(name)}'
-            f"{'/' if entry.is_dir() else ''}</a></li>"
+            f'<li><a href="{html.escape(href)}">{html.escape(display)}</a></li>'
         )
 
     lines.extend(["</ul>", "<hr>", "</body>", "</html>"])
@@ -150,3 +107,8 @@ def _relative_posix(path: Path, root: Path) -> str:
     if rel_posix == ".":
         return ""
     return rel_posix
+
+
+def _parent_posix(sub: str, root: Path, dir_path: Path) -> str:
+    """POSIX-style relative path of ``dir_path.parent`` against ``root``."""
+    return _relative_posix(dir_path.parent, root)

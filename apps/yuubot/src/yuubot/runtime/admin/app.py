@@ -38,10 +38,7 @@ from yuubot.runtime.admin.handlers import (
     make_uninstall_plugin_handler,
     make_validate_provider_handler,
 )
-from yuubot.runtime.admin.workspace_browser import (
-    make_workspace_file_handler,
-    make_workspace_index_handler,
-)
+from yuubot.runtime.admin.workspace_browser import make_workspace_handler
 from yuubot.resources.root import Resources
 from yuubot.runtime.plugin_manager import (
     ExternalPluginFactoryLoader,
@@ -291,19 +288,14 @@ def build_admin_asgi_app(
             )
         )
 
-    # Actor workspace browser — directory listings + file responses.
-    # Registered BEFORE the SPA catch-all so it owns /workspace/* paths.
+    # Workspace browser — directory listings + file responses for
+    # user-configured CapabilitySet.workspace_path values, served directly
+    # from <data_dir>/workspace. Registered BEFORE the SPA catch-all so it
+    # owns /workspace/* paths. The URL segment IS the relative disk path.
     routes.append(
         Route(
-            "/workspace/{actor_id}/",
-            make_workspace_index_handler(data_dir=layout.data_dir),
-            methods=("GET",),
-        )
-    )
-    routes.append(
-        Route(
-            "/workspace/{actor_id}/{path:path}",
-            make_workspace_file_handler(data_dir=layout.data_dir),
+            "/workspace/{path:path}",
+            make_workspace_handler(workspace_root=layout.data_dir / "workspace"),
             methods=("GET",),
         )
     )
