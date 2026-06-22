@@ -771,7 +771,7 @@ function BindingPanel({
           )}
           {actorId ? (
             <a
-              href={`/workspace/${actorId}`}
+              href={`/workspace/${actorId}/`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
