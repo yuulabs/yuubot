@@ -23,7 +23,18 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .db import get_blob, get_conversation, get_span, init_db, list_conversations
+from .db import (
+    get_blob,
+    get_conversation,
+    get_latency_stats,
+    get_phase_breakdown,
+    get_span,
+    get_tool_call_counts,
+    get_usage_summary,
+    init_db,
+    list_conversations,
+    time_range,
+)
 
 if TYPE_CHECKING:
     import uvicorn
@@ -82,6 +93,86 @@ async def _get_blob(request: Request) -> Response:
         return Response(status_code=404)
     media_type, data = result
     return Response(content=data, media_type=media_type)
+
+
+# ---------------------------------------------------------------------------
+# Usage analytics routes
+# ---------------------------------------------------------------------------
+
+_VALID_RANGES = {"day", "week", "month", "year", "total"}
+_PHASE_RANGES = {"day", "week", "month"}
+
+
+def _range_param(request: Request) -> tuple[int, int] | JSONResponse:
+    """Resolve the ``range`` query parameter to ``(start_ns, end_ns)``.
+
+    Returns a 400 JSONResponse if the parameter is missing or invalid.
+    """
+    period = request.query_params.get("range")
+    if period is None or period not in _VALID_RANGES:
+        return JSONResponse(
+            {
+                "error": (
+                    f"invalid or missing 'range' query parameter; "
+                    f"expected one of {sorted(_VALID_RANGES)}"
+                )
+            },
+            status_code=400,
+        )
+    return time_range(period)  # type: ignore[return-value]
+
+
+async def _usage_summary(request: Request) -> JSONResponse:
+    """GET /api/usage/summary?range={day|week|month|year|total}"""
+    rng = _range_param(request)
+    if isinstance(rng, JSONResponse):
+        return rng
+    start_ns, end_ns = rng
+    result = get_usage_summary(request.app.state.db, start_ns=start_ns, end_ns=end_ns)
+    return JSONResponse(result)
+
+
+async def _usage_latency(request: Request) -> JSONResponse:
+    """GET /api/usage/latency?range={day|week|month|year|total}"""
+    rng = _range_param(request)
+    if isinstance(rng, JSONResponse):
+        return rng
+    start_ns, end_ns = rng
+    result = get_latency_stats(request.app.state.db, start_ns=start_ns, end_ns=end_ns)
+    return JSONResponse(result)
+
+
+async def _usage_tools(request: Request) -> JSONResponse:
+    """GET /api/usage/tools?range={day|week|month|year|total}"""
+    rng = _range_param(request)
+    if isinstance(rng, JSONResponse):
+        return rng
+    start_ns, end_ns = rng
+    result = get_tool_call_counts(request.app.state.db, start_ns=start_ns, end_ns=end_ns)
+    return JSONResponse(result)
+
+
+async def _usage_phases(request: Request) -> JSONResponse:
+    """GET /api/usage/phases?range={day|week|month}
+
+    Phase breakdown is computed with a Python per-turn pairing loop and is
+    therefore only available for ``day`` / ``week`` / ``month`` ranges;
+    ``year`` and ``total`` return 400.
+    """
+    period = request.query_params.get("range")
+    if period is None or period not in _PHASE_RANGES:
+        return JSONResponse(
+            {
+                "error": (
+                    "phase breakdown not available for year/total range; "
+                    "use one of day, week, month"
+                )
+            },
+            status_code=400,
+        )
+    start_ns, end_ns = time_range(period)
+    result = get_phase_breakdown(request.app.state.db, start_ns=start_ns, end_ns=end_ns)
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +248,10 @@ def _build_app(db_path: str) -> Starlette:
         Route("/api/conversations/{id:path}", _get_conversation, methods=["GET"]),
         Route("/api/spans/{id:path}", _get_span, methods=["GET"]),
         Route("/api/blobs/{sha256}", _get_blob, methods=["GET"]),
+        Route("/api/usage/summary", _usage_summary, methods=["GET"]),
+        Route("/api/usage/latency", _usage_latency, methods=["GET"]),
+        Route("/api/usage/tools", _usage_tools, methods=["GET"]),
+        Route("/api/usage/phases", _usage_phases, methods=["GET"]),
     ]
 
     # Mount static files last — html=True enables SPA fallback

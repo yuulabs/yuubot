@@ -19,6 +19,7 @@ import yuullm
 from yuubot.bootstrap.config import ServerConfig
 from yuubot.core.actors import ActorManager
 from yuubot.core.assembly._history_codec import decode_prompt_item
+from yuubot.core.cost_guard import DailyBudgetGuard
 from yuubot.core.conversation_events import ConversationSSEHeartbeat
 from yuubot.core.conversations import (
     ConversationBindingConflict,
@@ -479,8 +480,25 @@ def make_model_history_handler(
 
 def make_send_conversation_message_handler(
     conversation_manager: ConversationManager,
+    daily_guard: DailyBudgetGuard | None = None,
 ):
     async def send_conversation_message(request: Request) -> JSONResponse:
+        # Send-time daily budget gate. Evaluated *before* the request body
+        # is parsed so that an exceeded ceiling short-circuits without
+        # touching the conversation store. ``limit <= 0`` disables the
+        # guard (the default config), so the fast path is a single boolean.
+        if daily_guard is not None and daily_guard.is_exceeded():
+            return JSONResponse(
+                {
+                    "status": "error",
+                    "code": "budget_exceeded",
+                    "reason": "Daily budget exceeded",
+                    "detail": "Daily budget exceeded",
+                    "limit": daily_guard.limit,
+                    "spent": daily_guard.current_cost,
+                },
+                status_code=402,
+            )
         req_or_response = await _conversation_message_request_from_request(request)
         if isinstance(req_or_response, JSONResponse):
             return req_or_response

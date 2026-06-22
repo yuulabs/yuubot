@@ -3,6 +3,7 @@ import { Activity, CircleDot, DollarSign, FileText } from "lucide-react";
 import { useHealth, useResourceList } from "@/hooks/use-resources";
 import type { ActorResource, LLMBackendResource, ActorIngressRuleResource } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CostDashboard } from "@/components/cost-dashboard";
 
 export const Route = createFileRoute("/monitor")({
   component: MonitorPage,
@@ -59,29 +60,11 @@ function MonitorPage() {
         </CardContent>
       </Card>
 
-      {/* Placeholders */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Traces</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Trace data will appear here when the trace service is connected.
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Cost Dashboard</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Cost analytics will appear here when pricing data is available.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      {/* Cost & usage analytics dashboard (replaces placeholder Cards).
+          All four /monitor/trace/api/usage/* endpoints are queried by the
+          CostDashboard hooks; switching the range selector re-fires every
+          query. Phase breakdown shows "N/A for this range" for year/total. */}
+      <CostDashboard />
     </div>
   );
 }

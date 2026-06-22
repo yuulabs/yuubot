@@ -17,7 +17,11 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.routing import Mount, Route
 
-from yuubot.bootstrap.config import BootstrapConfig, ServerConfig, YuuAgentsConfig
+from yuubot.bootstrap.config import (
+    BootstrapConfig,
+    ServerConfig,
+    YuuAgentsConfig,
+)
 from yuubot.bootstrap.layout import DataLayout
 from yuubot.core.actors import (
     ActorFactoryRegistry,
@@ -28,6 +32,7 @@ from yuubot.core.actors import (
 )
 from yuubot.core.assembly import llm_session_factory_for_binding
 from yuubot.core.bindings import AgentBinding
+from yuubot.core.cost_guard import DailyBudgetGuard
 from yuubot.core.conversations import ConversationManager, ConversationStore
 from yuubot.core.events import Event
 from yuubot.core.gateway import Gateway
@@ -229,6 +234,7 @@ class YuubotDaemon:
     python_sessions: ActorPythonSessionFactory
     llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None]
     trace_context: YuubotTraceContextProvider | None = None
+    daily_guard: DailyBudgetGuard | None = None
     tool_factories: ToolRegistry = field(default_factory=default_tool_factories)
     workspace_root: Path = field(
         default_factory=lambda: Path("~/.yuubot/workspace").expanduser()
@@ -262,6 +268,7 @@ class YuubotDaemon:
             llm_session_factory_factory=self.llm_session_factory_factory,
             trace_context=self.trace_context,
             workspace_root=self.workspace_root,
+            daily_guard=self.daily_guard,
         )
 
     async def serve(self) -> None:
@@ -327,6 +334,7 @@ def build_daemon_asgi_app(
     llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None],
     trace_context: YuubotTraceContextProvider | None = None,
     workspace_root: Path | None = None,
+    daily_guard: DailyBudgetGuard | None = None,
 ) -> Starlette:
     """Construct the daemon ASGI application.
 
@@ -424,7 +432,10 @@ def build_daemon_asgi_app(
         ),
         Route(
             "/api/admin/conversations/{conversation_id}/messages",
-            make_send_conversation_message_handler(conversation_manager),
+            make_send_conversation_message_handler(
+                conversation_manager,
+                daily_guard=daily_guard,
+            ),
             methods=("POST",),
         ),
         Route(
@@ -543,6 +554,14 @@ async def build_daemon(
     resources.event_bus.subscribe([ResourceChanged], on_resources_changed)
 
     trace_svc = components.trace_service(config)
+    daily_guard = DailyBudgetGuard(
+        traces_db_path=str(layout.traces_db_path),
+        daily_limit_usd=config.budget.daily_limit_usd,
+    )
+    if config.budget.daily_limit_usd <= 0:
+        # limit <= 0 disables the guard — keep ``None`` so the send handler
+        # fast-paths past the guard entirely (no per-send DB query).
+        daily_guard = None
     return YuubotDaemon(
         config=config.server,
         resources=resources,
@@ -571,6 +590,7 @@ async def build_daemon(
             components.llm_session_factory_factory or llm_session_factory_for_binding
         ),
         trace_context=components.trace_context,
+        daily_guard=daily_guard,
         tool_factories=components.tool_factories,
         workspace_root=layout.workspace_root,
     )

@@ -85,6 +85,20 @@ class YuuAgentsConfig(msgspec.Struct, frozen=True):
     tool_backends: dict[str, dict[str, object]] = msgspec.field(default_factory=dict)
 
 
+class BudgetConfig(msgspec.Struct, frozen=True):
+    """Global spend ceiling for the daemon.
+
+    ``daily_limit_usd`` is the ceiling on the trailing-day cost summed across
+    every conversation, derived from the trace DB's ``yuu.cost`` events. A
+    value of ``0`` (the default) disables the guard entirely — no send is
+    blocked and the per-step checkpoint reuses the in-memory ``Budget.is_exceeded``
+    check only. Quota display in the conversation panel is the frontend's
+    responsibility (Phase 5-3), not the guard's.
+    """
+
+    daily_limit_usd: float = 0.0
+
+
 class BootstrapConfig(msgspec.Struct, frozen=True):
     admin: AdminConfig = msgspec.field(default_factory=AdminConfig)
     server: ServerConfig = msgspec.field(default_factory=ServerConfig)
@@ -93,6 +107,7 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
     trace: TraceConfig = msgspec.field(default_factory=TraceConfig)
     paths: PathsConfig = msgspec.field(default_factory=PathsConfig)
     yuuagents: YuuAgentsConfig = msgspec.field(default_factory=YuuAgentsConfig)
+    budget: BudgetConfig = msgspec.field(default_factory=BudgetConfig)
 
     def validate(self) -> Self:
         if not _is_loopback_host(self.admin.host) and not self.admin.secret:

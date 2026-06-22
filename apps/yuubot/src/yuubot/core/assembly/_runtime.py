@@ -658,10 +658,20 @@ class YuuAgentsActorRuntime:
         agent: Agent,
         definition: AgentDefinition,
     ) -> None:
-        """Materialize the budget for ``agent`` and link its pricing table."""
+        """Materialize the budget for ``agent`` and link its pricing table.
+
+        ``agent_pricings`` is staged at construction time keyed by
+        ``self.conversation_definition.name`` (the IM-mode definition name).
+        ``definition`` here is a *derived* definition (per-conversation or
+        per-delegate) whose ``.name`` carries an identifying suffix
+        (``:conversation:{id}`` / ``:delegate:{name}``) — using that key
+        would miss the staged entry. Pop from the base definition name
+        instead so the pricing table is rehomed to ``agent.id`` for the
+        run-time budget lookup.
+        """
         budget = definition.budget.to_budget()
         self._agent_budgets[agent.id] = budget
-        pricing = self.agent_pricings.pop(definition.name, None)
+        pricing = self.agent_pricings.pop(self.conversation_definition.name, None)
         if pricing is not None:
             self.agent_pricings[agent.id] = pricing
 
@@ -715,6 +725,21 @@ class YuuAgentsActorRuntime:
         for conversation_id, item in list(self.conversation_agents.items()):
             if item is agent:
                 self.conversation_agents.pop(conversation_id, None)
+
+    # ── Budget accessors ──────────────────────────────────────────
+    # Read-only lookups for the host app. The charging / is_exceeded
+    # logic itself stays inside ``_run_agent_turn`` (frozen); these only
+    # expose the already-maintained ``_agent_budgets`` entries so the
+    # ConversationManager can publish realtime cost SSE events.
+
+    def budget_for_agent(self, agent_id: str) -> Budget | None:
+        """Return the in-memory ``Budget`` for ``agent_id``, or ``None``.
+
+        Used by the host (yuubot ConversationManager) to read the running
+        cumulative USD spend when projecting a ``cost_update`` SSE event
+        after each ``llm.finished``. Read-only — never charges.
+        """
+        return self._agent_budgets.get(agent_id)
 
     def _touch_agent(self, agent: Agent) -> None:
         self._agent_last_used[agent.id] = asyncio.get_running_loop().time()
