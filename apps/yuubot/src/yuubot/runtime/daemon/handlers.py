@@ -526,6 +526,38 @@ def make_send_conversation_message_handler(
     return send_conversation_message
 
 
+def make_cancel_conversation_turn_handler(
+    conversation_manager: ConversationManager,
+):
+    async def cancel_conversation_turn(request: Request) -> JSONResponse:
+        conversation_id = request.path_params["conversation_id"]
+        try:
+            result = await conversation_manager.cancel_turn(conversation_id)
+        except LookupError as exc:
+            return error_response(str(exc), status_code=404)
+        cancelled = bool(result.get("cancelled"))
+        drained = bool(result.get("drained"))
+        return JSONResponse(
+            {
+                "status": "cancelled" if cancelled else "idle",
+                "data": {
+                    "conversation_id": conversation_id,
+                    "cancelled": cancelled,
+                    # ``drained`` is False at POST time: ``cancel_turn``
+                    # deliberately does NOT await the task — the loop's
+                    # CancelledError handler may run long (LLM stream
+                    # boundary, tool task awaiting cancel). The real drain
+                    # outcome is disclosed to the frontend via the
+                    # ``queue.flushed`` SSE event the loop emits.
+                    "drained": drained,
+                },
+            },
+            status_code=200,
+        )
+
+    return cancel_conversation_turn
+
+
 def make_conversation_events_handler(
     conversation_manager: ConversationManager,
 ):

@@ -9,6 +9,7 @@ the sibling modules.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import cast as typecast
 
@@ -144,10 +145,16 @@ class YuuAgentsActorRuntime:
         self,
         conversation_id: str,
         message: yuullm.Message,
+        cancel_event: asyncio.Event | None = None,
+        drain_callback: "Callable[[Agent], Awaitable[bool]] | None" = None,
     ) -> Agent:
         agent = await self.ensure_conversation_agent(conversation_id, [])
         agent.append(message)
-        await self._run_agent_turn(agent)
+        await self._run_agent_turn(
+            agent,
+            cancel_event=cancel_event,
+            drain_callback=drain_callback,
+        )
         return agent
 
     async def run_delegate(
@@ -303,12 +310,38 @@ class YuuAgentsActorRuntime:
 
     # ── Agent turn / rollover ────────────────────────────────────
 
-    async def _run_agent_turn(self, agent: Agent) -> None:
+    async def _run_agent_turn(
+        self,
+        agent: Agent,
+        cancel_event: asyncio.Event | None = None,
+        drain_callback: "Callable[[Agent], Awaitable[bool]] | None" = None,
+    ) -> None:
         """Execute one agent turn: LLM step → cost → tools → repeat until done.
 
-        Custom orchestrator loop — not using yuuagents.run_agent_loop().
-        The loop charges budget, executes tools via the new Runtime, and
-        handles rollover when token limits are exceeded.
+        ``cancel_event`` is the single-point safety net (checked once at the
+        top of each loop iteration) so a ``task.cancel()`` scheduled between
+        awaits still trips before the next LLM stream starts. The real cancel
+        delivery is ``task.cancel()`` → ``CancelledError``.
+
+        ``drain_callback`` is the conversation-manager-side pending-queue
+        drain primitive. It is invoked at two trigger points:
+
+        - Trigger A (batch boundary): after every tool batch finishes and
+          before the next ``agent.step()``. If the queue was non-empty, the
+          merged user message has been appended to the agent history and the
+          loop continues normally (the turn is NOT interrupted).
+        - Trigger B (Flush button): inside the ``CancelledError`` handler.
+          The handler flushes the reporter, cancels tool tasks, synthesises
+          ``[cancelled]`` results, then calls ``drain_callback``. If it
+          returned ``True`` (pending was drained), the loop ``continue``s so
+          the next ``agent.step()`` sees the appended user message; if it
+          returned ``False`` (pure stop), the loop ``break``s.
+
+        ``agent.turn_completed`` is emitted unconditionally by this method's
+        terminal path — the loop's own exit (natural done OR break-without-
+        pending) — so ``cancel_turn`` no longer synthesises it. Rollover
+        only runs on natural completion (``while...else``), never on a
+        cancel break-out.
         """
         lock = self._agent_locks.setdefault(agent.id, asyncio.Lock())
         async with lock:
@@ -323,82 +356,109 @@ class YuuAgentsActorRuntime:
                 pricing = self.agent_pricings.get(agent.id)
 
                 while not agent.done:
+                    # Single-point safety net: ``task.cancel()`` schedules
+                    # ``CancelledError`` delivery at the next await. If the
+                    # loop is between awaits (e.g. just finished a
+                    # synchronous step), the cancel may not land until the
+                    # next LLM stream starts. This explicit check closes
+                    # that window — raise to enter the CancelledError
+                    # handler below, which drains + decides.
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise asyncio.CancelledError
+
                     if budget is not None and budget.is_exceeded():
                         await emit_budget_exceeded(self.stage.eventbus, agent)
                         break
 
-                    # Step 1: Emit LLM start event (trace observability)
-                    await self.stage.eventbus.emit(
-                        "llm.started",
-                        {
-                            "agent_id": agent.id,
-                            "agent_name": agent.name,
-                        },
-                    )
-
-                    # Step 2: Call LLM
-                    message, store = await agent.step()
-
-                    # Step 3: Calculate cost and charge budget
-                    cost_value: yuullm.Cost | None = None
-                    if store.usage is not None:
-                        # Provider-reported cost takes precedence
-                        if store.provider_cost is not None:
-                            cost_value = yuullm.Cost(
-                                input_cost=0.0,
-                                output_cost=0.0,
-                                total_cost=store.provider_cost,
-                                source="provider",
-                            )
-                        elif pricing is not None:
-                            cost_value = calculate_cost(
-                                store.usage, pricing, agent.llm.model
-                            )
-                        if cost_value is not None and budget is not None:
-                            budget.charge("usd", cost_value.total_cost)
-
-                    # Step 4: Charge tokens
-                    if store.usage is not None and budget is not None:
-                        tokens = (store.usage.input_tokens or 0) + (
-                            store.usage.output_tokens or 0
+                    try:
+                        # Step 1: Emit LLM start event (trace observability)
+                        await self.stage.eventbus.emit(
+                            "llm.started",
+                            {
+                                "agent_id": agent.id,
+                                "agent_name": agent.name,
+                            },
                         )
-                        if tokens:
-                            budget.charge("tokens", tokens)
 
-                    # Step 5: Emit LLM finish event (trace observability)
-                    await self.stage.eventbus.emit(
-                        "llm.finished",
-                        {
-                            "agent_id": agent.id,
-                            "agent_name": agent.name,
-                            "usage": store.usage,
-                            "cost": cost_value,
-                            "model": agent.llm.model,
-                            "message": message,
-                        },
-                    )
+                        # Step 2: Call LLM
+                        message, store = await agent.step()
 
-                    # Step 4: Execute tools
-                    tools = _extract_tool_calls(message)
-                    if tools:
-                        new_tasks: list[tuple[yuullm.ToolCall, YuuTask]] = []
-                        for tc in tools:
-                            context = ToolContext(
-                                agent_id=agent.id,
-                                tool_call_id=tc.id,
-                                eventbus=self.stage.eventbus,
-                                entity_log=agent.log,
-                            )
-                            try:
-                                yt = await self.stage.runtime.submit_tool_call(
-                                    Owner(type=OwnerType.AGENT, id=agent.id),
-                                    tc,
-                                    context,
+                        # Step 3: Calculate cost and charge budget
+                        cost_value: yuullm.Cost | None = None
+                        if store.usage is not None:
+                            if store.provider_cost is not None:
+                                cost_value = yuullm.Cost(
+                                    input_cost=0.0,
+                                    output_cost=0.0,
+                                    total_cost=store.provider_cost,
+                                    source="provider",
                                 )
-                                new_tasks.append((tc, yt))
-                            except KeyError:
-                                error_msg = f"Tool {tc.name} is not available"
-                                agent.append(yuullm.tool(tc.id, error_msg))
+                            elif pricing is not None:
+                                cost_value = calculate_cost(
+                                    store.usage, pricing, agent.llm.model
+                                )
+                            if cost_value is not None and budget is not None:
+                                budget.charge("usd", cost_value.total_cost)
+
+                        # Step 4: Charge tokens
+                        if store.usage is not None and budget is not None:
+                            tokens = (store.usage.input_tokens or 0) + (
+                                store.usage.output_tokens or 0
+                            )
+                            if tokens:
+                                budget.charge("tokens", tokens)
+
+                        # Step 5: Emit LLM finish event (trace observability)
+                        await self.stage.eventbus.emit(
+                            "llm.finished",
+                            {
+                                "agent_id": agent.id,
+                                "agent_name": agent.name,
+                                "usage": store.usage,
+                                "cost": cost_value,
+                                "model": agent.llm.model,
+                                "message": message,
+                            },
+                        )
+
+                        # Step 6: Execute tools
+                        tools = _extract_tool_calls(message)
+                        if tools:
+                            new_tasks: list[tuple[yuullm.ToolCall, YuuTask]] = []
+                            for tc in tools:
+                                context = ToolContext(
+                                    agent_id=agent.id,
+                                    tool_call_id=tc.id,
+                                    eventbus=self.stage.eventbus,
+                                    entity_log=agent.log,
+                                )
+                                try:
+                                    yt = await self.stage.runtime.submit_tool_call(
+                                        Owner(type=OwnerType.AGENT, id=agent.id),
+                                        tc,
+                                        context,
+                                    )
+                                    new_tasks.append((tc, yt))
+                                except KeyError:
+                                    error_msg = f"Tool {tc.name} is not available"
+                                    agent.append(yuullm.tool(tc.id, error_msg))
+                                    await self.stage.eventbus.emit(
+                                        "tool.result_appended",
+                                        {
+                                            "agent_id": agent.id,
+                                            "agent_name": agent.name,
+                                            "tool_call_id": tc.id,
+                                            "tool_name": tc.name,
+                                            "result": error_msg,
+                                            "task_id": "",
+                                            "status": "failed",
+                                        },
+                                    )
+
+                            for tc, yt in new_tasks:
+                                ct = await self.stage.runtime.wait_task(yt.id)
+                                rt = _render_task_result(ct)
+                                agent.append(yuullm.tool(tc.id, rt))
                                 await self.stage.eventbus.emit(
                                     "tool.result_appended",
                                     {
@@ -406,36 +466,60 @@ class YuuAgentsActorRuntime:
                                         "agent_name": agent.name,
                                         "tool_call_id": tc.id,
                                         "tool_name": tc.name,
-                                        "result": error_msg,
-                                        "task_id": "",
-                                        "status": "failed",
+                                        "result": rt,
+                                        "task_id": yt.id,
+                                        "status": str(ct.status),
                                     },
                                 )
 
-                        for tc, yt in new_tasks:
-                            ct = await self.stage.runtime.wait_task(yt.id)
-                            rt = _render_task_result(ct)
-                            agent.append(yuullm.tool(tc.id, rt))
-                            await self.stage.eventbus.emit(
-                                "tool.result_appended",
-                                {
-                                    "agent_id": agent.id,
-                                    "agent_name": agent.name,
-                                    "tool_call_id": tc.id,
-                                    "tool_name": tc.name,
-                                    "result": rt,
-                                    "task_id": yt.id,
-                                    "status": str(ct.status),
-                                },
-                            )
+                            # ── Trigger A: batch-boundary drain ──────────────
+                            # All tool results for this batch are in and
+                            # appended to history. Drain any pending queue
+                            # BEFORE the next ``agent.step()`` so the next
+                            # LLM call naturally sees the merged user message.
+                            # No-op when the queue is empty. The turn is NOT
+                            # interrupted by this drain — the loop continues.
+                            if drain_callback is not None:
+                                await drain_callback(agent)
 
-                    # Step 6: Charge step
-                    if budget is not None:
-                        budget.charge("steps", 1)
+                        # Step 7: Charge step
+                        if budget is not None:
+                            budget.charge("steps", 1)
 
-                await self._rollover_if_needed(agent, budget)
+                    except asyncio.CancelledError:
+                        # ── Trigger B: Flush button path ────────────────────
+                        # Mid-stream or mid-tool cancellation. The yuullm
+                        # session already appended partial assistant content
+                        # to history (if mid-stream). Force-flush the reporter
+                        # so SSE gets the last ``output.chunk``, cancel any
+                        # running tools, and synthesise ``[cancelled]`` tool
+                        # results so the in-memory history is legal. Then
+                        # drain pending: if anything was queued, the merged
+                        # user message has been appended and the loop
+                        # ``continue``s (the next ``agent.step()`` will see
+                        # it); otherwise break out (pure stop).
+                        await agent.flush_entitylog()
+                        await self._cancel_agent_tools(agent)
+                        had_pending = False
+                        if drain_callback is not None:
+                            had_pending = await drain_callback(agent)
+                        if had_pending:
+                            continue
+                        break
+                else:
+                    # while...else: loop exited via ``not agent.done`` (the
+                    # natural completion path). Rollover only runs here, NOT
+                    # on a break-out from the CancelledError handler (a pure
+                    # stop ends the turn; no rollover needed for a dead turn).
+                    await self._rollover_if_needed(agent, budget)
+
                 self._touch_agent(agent)
 
+                # ``agent.turn_completed`` is the sole turn-end signal. The
+                # natural-done path emits it directly; the cancel-without-
+                # pending break-out also reaches here and emits it (the turn
+                # is genuinely over). The cancel-WITH-pending ``continue``
+                # path does NOT reach here until the turn genuinely completes.
                 await self.stage.eventbus.emit(
                     "agent.turn_completed",
                     {
@@ -443,6 +527,55 @@ class YuuAgentsActorRuntime:
                         "agent_name": agent.name,
                     },
                 )
+
+    async def _cancel_agent_tools(self, agent: Agent) -> None:
+        """Cancel running tool tasks and synthesize ``[cancelled]`` results.
+
+        Called from the cancel path (both event-detected and
+        CancelledError-detected). After this, the in-memory agent history
+        is legal: every tool_call in the last assistant message has a
+        matching tool_result. Since ``send_message`` prioritises the
+        in-memory agent cache, subsequent turns see the correct history.
+        Only "cancel then immediate power loss" loses this — accepted.
+        """
+        # Cancel any still-running tool tasks (bash subprocess, python
+        # kernel, file I/O, …). yuuagents.Runtime.cancel_agent_tasks
+        # calls task.cancel() on each run_task and finalises its Task
+        # record with status=CANCELLED.
+        await self.stage.runtime.cancel_agent_tasks(agent.id)
+
+        # Synthesize tool results for any tool calls without results.
+        history = agent.history
+        last_assistant_idx: int | None = None
+        for i in range(len(history) - 1, -1, -1):
+            item = history[i]
+            if isinstance(item, yuullm.Message) and item.role == "assistant":
+                last_assistant_idx = i
+                break
+        if last_assistant_idx is None:
+            return
+        assistant_item = history[last_assistant_idx]
+        if not isinstance(assistant_item, yuullm.Message):
+            return
+        assistant_msg = assistant_item
+        tool_calls = _extract_tool_calls(assistant_msg)
+        if not tool_calls:
+            return
+        existing_results: set[str] = set()
+        for j in range(last_assistant_idx + 1, len(history)):
+            item = history[j]
+            if isinstance(item, yuullm.Message) and item.role == "tool":
+                for content_item in item.content:
+                    if (
+                        isinstance(content_item, dict)
+                        and content_item.get("type") == "tool_result"
+                    ):
+                        tc_id = content_item.get("tool_call_id")
+                        if isinstance(tc_id, str):
+                            existing_results.add(tc_id)
+        for tc in tool_calls:
+            if tc.id not in existing_results:
+                agent.append(yuullm.tool(tc.id, "[cancelled by user]"))
 
     async def _rollover_if_needed(self, agent: Agent, budget: Budget | None) -> None:
         if not self.rollover_enabled or not _agent_needs_rollover(agent, budget):

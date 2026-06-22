@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ ConversationFrontendEventType = Literal[
     "transcript_delta",
     "turn_completed",
     "error",
+    "queue.appended",
+    "queue.flushed",
 ]
 
 
@@ -151,6 +154,44 @@ class ConversationSSEProjector:
             event,
             "turn_completed",
             {"turn_id": _turn_id(event)},
+        )
+
+    def queue_appended(
+        self,
+        conversation_id: str,
+        idx: int,
+        preview: str,
+    ) -> ConversationFrontendEvent:
+        """Emit a ``queue.appended`` event when a send is enqueued behind
+        an in-flight turn rather than starting a new turn.
+
+        ``idx`` is the 0-based position in the pending queue at append time;
+        ``preview`` is the first ~30 chars of the user text with newlines
+        stripped, so the frontend can render the queue-state header.
+        """
+        return self._event(
+            conversation_id,
+            _synthetic_event(),
+            "queue.appended",
+            {"idx": idx, "preview": preview},
+        )
+
+    def queue_flushed(
+        self,
+        conversation_id: str,
+        count: int,
+    ) -> ConversationFrontendEvent:
+        """Emit a ``queue.flushed`` event after ``drain_pending`` merged the
+        queued user messages into one agent-visible user message.
+
+        ``count`` is the number of originally-queued messages that were
+        flushed. The frontend tears down its queue-state UI on receipt.
+        """
+        return self._event(
+            conversation_id,
+            _synthetic_event(),
+            "queue.flushed",
+            {"count": count},
         )
 
     def missing_tool_result_delta(
@@ -409,6 +450,23 @@ def _event_error(event: RuntimeEvent) -> str:
 def _turn_id(event: RuntimeEvent) -> str:
     data = event.data
     return str(data.get("turn_id") or data.get("task_id") or event.agent_id or "")
+
+
+def _synthetic_event() -> RuntimeEvent:
+    """A ``RuntimeEvent`` shell for SSE events the conversation layer
+    synthesises locally (queue.appended / queue.flushed) without a
+    corresponding runtime emission.
+
+    Only ``timestamp`` is meaningful; the projector uses it to stamp the
+    frontend event's ``timestamp`` field.
+    """
+    return RuntimeEvent(
+        name="",
+        agent_id="",
+        agent_name="",
+        timestamp=time.time(),
+        data={},
+    )
 
 
 def _stream(value: object) -> str:
