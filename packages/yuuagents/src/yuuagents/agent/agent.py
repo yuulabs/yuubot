@@ -133,7 +133,26 @@ class Agent:
         streamed_reasoning = False
         async for item in stream:
             match item:
-                case yuullm.Tick():
+                case yuullm.Tick() as tick:
+                    partial = tick.partial_tool_call
+                    if partial is not None:
+                        # Cheapest-cut partial signal: write a placeholder
+                        # ToolCallItem with empty arguments before the full
+                        # ToolCall arrives. The SSE projector turns this into
+                        # a tool_call delta so the frontend can render a
+                        # pending-state banner ("Editing...", "Running
+                        # bash...") during argument streaming. The complete
+                        # ToolCall below appends/merges to the same group
+                        # (frontend matches by tool_call_id or tool_name).
+                        await self.log.write(
+                            yuullm.tool_call_item(
+                                yuullm.ToolCall(
+                                    id=partial.id,
+                                    name=partial.name,
+                                    arguments="",
+                                ),
+                            ),
+                        )
                     pass
                 case yuullm.Reasoning(item=reasoning):
                     streamed_reasoning = True

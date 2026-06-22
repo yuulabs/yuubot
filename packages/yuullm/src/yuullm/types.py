@@ -167,6 +167,24 @@ class Response(msgspec.Struct, frozen=True):
     item: ContentItem
 
 
+class PartialToolCall(msgspec.Struct, frozen=True):
+    """Partial tool-call metadata emitted before the full ``ToolCall`` lands.
+
+    Used by providers to surface the tool *name* to consumers as soon as the
+    provider knows it, while the JSON arguments are still streaming. Without
+    this signal, downstream consumers (the agent loop, the SSE projector, the
+    frontend) see nothing until the complete ``ToolCall`` arrives — for tools
+    with large arguments (e.g. ``edit`` with long ``old_string``/``new_string``)
+    that gap is multiple seconds of silence.
+
+    On the cheapest cut only ``id`` and ``name`` are carried; partial JSON
+    argument deltas stay unstreamed (the per-arg-delta version is deferred).
+    """
+
+    name: str
+    id: str = ""
+
+
 class Tick(msgspec.Struct, frozen=True):
     """Lightweight heartbeat yielded during tool-call argument streaming.
 
@@ -176,11 +194,18 @@ class Tick(msgspec.Struct, frozen=True):
     ``on_raw_chunk`` hooks).  ``Tick`` keeps the async-for loop spinning
     so those consumers can act promptly.
 
+    ``partial_tool_call`` is set once per tool call — when the provider
+    has resolved its name (and ``id`` if available) but the arguments
+    are still streaming. Consumers (e.g. ``Agent.step``) MAY write a
+    partial tool call to their EntityLog when this is set so the
+    frontend can render a pending-state banner ("Editing...",
+    "Running bash...") before the full ``ToolCall`` lands.
+
     Consumers that only care about ``Reasoning | ToolCall | Response``
-    can safely ignore ``Tick`` — it carries no payload.
+    can safely ignore ``Tick`` when ``partial_tool_call is None``.
     """
 
-    pass
+    partial_tool_call: PartialToolCall | None = None
 
 
 class ThinkingBlock(msgspec.Struct, frozen=True):

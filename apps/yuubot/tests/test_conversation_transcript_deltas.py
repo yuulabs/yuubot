@@ -77,6 +77,37 @@ def test_tool_call_block_projects_transcript_delta() -> None:
     }]
 
 
+def test_partial_tool_call_block_projects_transcript_delta() -> None:
+    """A partial ToolCallItem (empty arguments str) emitted by Agent.step on
+    a Tick(partial_tool_call=...) projects to a tool_call delta so the frontend
+    can render the pending-state banner before the final arguments land."""
+    projector = ConversationSSEProjector()
+
+    events = projector.project_runtime_event(
+        "conversation-1",
+        event(
+            "output.chunk",
+            {
+                "blocks": [{
+                    "type": "tool_call",
+                    "id": "call-1",
+                    "name": "edit",
+                    "arguments": "",
+                }],
+                "chunk_index": 1,
+            },
+        ),
+    )
+
+    assert [item.event_type for item in events] == ["transcript_delta"]
+    assert events[0].as_dict()["deltas"] == [{
+        "type": "tool_call",
+        "tool_call_id": "call-1",
+        "tool_name": "edit",
+        "arguments_text_delta": "",
+    }]
+
+
 def test_tool_output_chunks_project_appendable_transcript_deltas() -> None:
     projector = ConversationSSEProjector()
 

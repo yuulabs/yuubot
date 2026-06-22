@@ -16,6 +16,7 @@ from ..cache_config import CacheConfig
 from ..types import (
     History,
     Message,
+    PartialToolCall,
     ProviderModel,
     RawChunkHook,
     Reasoning,
@@ -272,6 +273,7 @@ class OpenAIChatCompletionProvider:
                             "id": "",
                             "name": "",
                             "arguments": "",
+                            "name_announced": False,
                         }
                     acc = tool_calls_acc[idx]
                     if tc_delta.id:
@@ -281,6 +283,20 @@ class OpenAIChatCompletionProvider:
                             acc["name"] = tc_delta.function.name
                         if tc_delta.function.arguments:
                             acc["arguments"] += tc_delta.function.arguments
+                    # Cheapest-cut partial tool_call signal: emit a single
+                    # Tick with `partial_tool_call` once the name is known and
+                    # before the complete ToolCall lands. Lets the agent loop
+                    # write a placeholder ToolCallItem to its EntityLog so the
+                    # frontend can render an "Editing..." / "Running bash..."
+                    # banner during long argument streaming.
+                    if acc["name"] and not acc["name_announced"]:
+                        acc["name_announced"] = True
+                        yield Tick(
+                            partial_tool_call=PartialToolCall(
+                                name=acc["name"],
+                                id=acc["id"],
+                            ),
+                        )
                 # Keep the consumer loop spinning so on_raw_chunk
                 # side-effects (e.g. pending_sse) can be flushed.
                 if on_raw_chunk is not None:

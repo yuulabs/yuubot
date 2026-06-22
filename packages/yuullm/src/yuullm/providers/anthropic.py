@@ -18,6 +18,7 @@ from ..types import (
     CacheControl,
     History,
     Message,
+    PartialToolCall,
     ProviderModel,
     RawChunkHook,
     Reasoning,
@@ -484,6 +485,14 @@ class AnthropicMessagesProvider:
                                 "name": block_name,
                                 "arguments": "",
                             }
+                            # Cheapest-cut partial signal: name known before
+                            # arguments stream. See openai.py for rationale.
+                            yield Tick(
+                                partial_tool_call=PartialToolCall(
+                                    name=block_name,
+                                    id=block_id,
+                                ),
+                            )
                     elif block_type == "thinking":
                         thinking_acc[current_block_index] = {
                             "thinking": "",

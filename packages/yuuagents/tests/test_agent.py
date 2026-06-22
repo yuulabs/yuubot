@@ -121,6 +121,62 @@ async def test_agent_streams_reasoning_before_final_text_without_duplicate_think
 
 
 @pytest.mark.asyncio
+async def test_agent_partial_tool_call_tick_writes_placeholder_to_log() -> None:
+    """When the LLM streams a Tick with partial_tool_call before the complete ToolCall,
+    Agent.step writes a ToolCallItem with empty arguments to EntityLog first.
+
+    This lets the frontend render a pending-state banner during long argument
+    streaming (e.g. an `edit` with large old_string/new_string)."""
+    bus = EventBus()
+    chunks: list[EventData] = []
+    bus.subscribe(
+        lambda event: (
+            chunks.append(dict(event.data)) if event.name == "output.chunk" else None
+        )
+    )
+    llm = FakeSessionFactory(
+        [
+            [
+                yuullm.Tick(
+                    partial_tool_call=yuullm.PartialToolCall(
+                        name="edit", id="call_1"
+                    ),
+                ),
+                tool_call("edit", {"path": "x.py"}, call_id="call_1"),
+            ]
+        ]
+    )
+
+    agent = _make_agent(llm, bus)
+    agent.append(yuullm.user("Hi"))
+    await agent.step()
+
+    agent_chunks = [chunk for chunk in chunks if chunk["entity_id"] == agent.id]
+    assert agent_chunks
+    blocks = agent_chunks[0]["blocks"]
+    assert isinstance(blocks, list)
+    content_blocks = [block for block in blocks if isinstance(block, ContentBlock)]
+    contents = [block.content for block in content_blocks]
+
+    # The partial placeholder lands before the complete ToolCall entry.
+    partial = {
+        "type": "tool_call",
+        "id": "call_1",
+        "name": "edit",
+        "arguments": "",
+    }
+    complete = {
+        "type": "tool_call",
+        "id": "call_1",
+        "name": "edit",
+        "arguments": '{"path": "x.py"}',
+    }
+    assert partial in contents
+    assert complete in contents
+    assert contents.index(partial) < contents.index(complete)
+
+
+@pytest.mark.asyncio
 async def test_agent_close_ends_entity() -> None:
     bus = EventBus()
     events: list[ya.RuntimeEvent] = []

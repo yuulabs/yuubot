@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import msgspec
+
 import yuullm
 from yuullm.types import is_tool_call_item, with_last_item_cache_control
 
@@ -53,3 +55,24 @@ def test_with_last_item_cache_control_preserves_message_shape() -> None:
     assert cached.provider_extra == {"id": "prefix"}
     assert cached.content[-1]["cache_control"] == {"type": "ephemeral", "ttl": 3600}
     assert "cache_control" not in message.content[-1]
+
+
+def test_tick_carries_optional_partial_tool_call_payload() -> None:
+    # Default tick stays payload-less for backward compatibility.
+    bare = yuullm.Tick()
+    assert bare.partial_tool_call is None
+
+    # A partial-tool-call tick forwards name (and id when known) to consumers
+    # before the complete ToolCall lands.
+    partial = yuullm.PartialToolCall(name="edit", id="call_1")
+    tick = yuullm.Tick(partial_tool_call=partial)
+    assert tick.partial_tool_call is not None
+    assert tick.partial_tool_call.name == "edit"
+    assert tick.partial_tool_call.id == "call_1"
+
+    # Round-trips via msgspec for downstream serialization boundaries.
+    decoded = msgspec.json.decode(
+        msgspec.json.encode(tick), type=yuullm.Tick
+    )
+    assert decoded.partial_tool_call is not None
+    assert decoded.partial_tool_call.name == "edit"

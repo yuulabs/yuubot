@@ -31,6 +31,7 @@ from .types import (
     Message,
     MessageContent,
     MessageItem,
+    PartialToolCall,
     PromptItem,
     ProtocolItem,
     ProviderModel,
@@ -101,6 +102,7 @@ __all__ = [
     # Stream items
     "Reasoning",
     "ThinkingBlock",
+    "PartialToolCall",
     "ToolCall",
     "Response",
     "Tick",
