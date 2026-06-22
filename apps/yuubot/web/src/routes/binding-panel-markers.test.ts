@@ -10,10 +10,19 @@ const routeSrc = readFileSync(
   path.join(here, "admin.conversations.$conversationId.tsx"), "utf8");
 
 test("conversation route hosts the binding panel markers", () => {
-  assert.ok(routeSrc.includes("TODO(B-phase)"), "missing B-phase Open Workspace placeholder");
+  // TODO(B-phase) is intentionally not asserted here — the B-phase landed test
+  // below asserts its absence and the real Open Workspace link's presence.
   assert.ok(routeSrc.includes("TODO(TODO-B)"), "missing TODO-B reserved section");
   assert.ok(routeSrc.includes("TODO(TODO-C)"), "missing TODO-C reserved section");
   assert.ok(routeSrc.includes("TODO(TODO-D)"), "missing TODO-D reserved section");
+});
+
+test("conversation route exposes a real Open Workspace link (B-phase landed)", () => {
+  // The route source must contain the literal JSX template-literal expression
+  // `/workspace/${actorId}` — note the ${actorId} is literal source text, not
+  // JS interpolation in this assertion.
+  assert.ok(routeSrc.includes("/workspace/${actorId}"), "missing actual workspace link");
+  assert.ok(!routeSrc.includes("TODO(B-phase)"), "B-phase placeholder still present");
 });
 
 test("conversation route no longer renders the Actor Select inside <header>", () => {

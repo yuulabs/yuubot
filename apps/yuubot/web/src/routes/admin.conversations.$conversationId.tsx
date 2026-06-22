@@ -769,7 +769,23 @@ function BindingPanel({
               {actor.enabled ? "running" : "stopped"}
             </Badge>
           )}
-          {/* TODO(B-phase): Open Workspace link — served by the workspace browser backend */}
+          {actorId ? (
+            <a
+              href={`/workspace/${actorId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+            >
+              Open Workspace
+            </a>
+          ) : (
+            <span
+              className="pointer-events-none text-xs text-muted-foreground opacity-50"
+              aria-disabled="true"
+            >
+              Open Workspace
+            </span>
+          )}
         </section>
         {/* TODO(TODO-B): Character / CapabilitySet / LLM Backend */}
         {/* TODO(TODO-C): Runtime params (model/temp/reasoning) */}

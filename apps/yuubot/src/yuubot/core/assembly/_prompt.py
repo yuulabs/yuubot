@@ -130,6 +130,11 @@ def _render_system_instructions(
     ]
     if binding.workspace_path:
         bullets.extend(_workspace_bullets(binding.workspace_path))
+    # Unconditional math guidance: text blocks already render KaTeX (Phase A-4),
+    # so the agent may emit inline ``$...$`` and block ``$$...$$`` LaTeX.
+    bullets.append(
+        "- You may emit LaTeX math in text blocks: inline $...$ and block $$...$$."
+    )
     if mode == "im":
         bullets.append("")
         bullets.append(IM_MODE_SYSTEM_GUIDANCE)
