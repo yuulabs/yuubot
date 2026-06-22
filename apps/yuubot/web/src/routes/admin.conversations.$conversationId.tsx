@@ -26,6 +26,7 @@ import type { ReactElement } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MarkdownRenderer } from "@/components/conversation/markdown-renderer.tsx";
 import {
   Select,
   SelectContent,
@@ -360,7 +361,7 @@ function MessageBlockView({ block }: { block: RenderBlock }) {
       </pre>
     );
   }
-  return <div className="whitespace-pre-wrap break-words">{block.content}</div>;
+  return <MarkdownRenderer content={block.content} />;
 }
 
 function AdminConversationPage() {

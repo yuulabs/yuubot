@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
+import "katex/dist/katex.min.css";
 import "./index.css";
 
 const STALE_BUILD_RELOAD_KEY = "yuubot:stale-build-reload";
