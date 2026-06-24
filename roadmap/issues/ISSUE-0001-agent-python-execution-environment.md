@@ -1,10 +1,13 @@
 ---
 id: ISSUE-0001
 slug: agent-python-execution-environment
-status: in-progress
+status: implemented
 milestone: M-01
 priority: P1
 estimated_work_hours: 7
+actual_work_hours: 8
+implemented_by: feature/agent-python-env
+regression_test: apps/yuubot/tests/test_execute_python_venv.py
 ---
 
 # ISSUE-0001: Agent Python Execution Environment
