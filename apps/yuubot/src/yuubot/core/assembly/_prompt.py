@@ -198,6 +198,12 @@ def _figure_delivery_bullets(
         "a figure was shown when it was not. Only reference files you actually "
         "saved; if a savefig failed, say so instead of inventing an image."
     )
+    bullets.append(
+        "- Label charts in English by default (titles, axis labels, legends). "
+        "Only switch to Chinese text when the user explicitly asks for it — "
+        "headless host font coverage for CJK and emoji is not guaranteed and "
+        "will emit glyph-missing warnings."
+    )
     return bullets
 
 

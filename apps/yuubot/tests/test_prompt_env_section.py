@@ -78,6 +78,7 @@ def test_env_management_bullets_live_inside_system_instructions_section(
 FIGURE_BULLETS = (
     "plt.savefig('artifacts/",
     "Do NOT fabricate external image URLs",
+    "Label charts in English by default",
 )
 
 
