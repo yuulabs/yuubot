@@ -1,7 +1,7 @@
 ---
 id: ISSUE-0007
 slug: admin-crud-visual-baseline
-status: approved
+status: in-progress
 milestone: M-02
 priority: P1
 estimated_work_hours: 8
