@@ -61,7 +61,7 @@ openai / deepseek）。真正的障碍有两块：
       default_model + 默认 budget）
       → 这三条默认记录在各自 CRUD 列表页对用户可见、可编辑、可删
         （与研究员手建的记录混在一起，无视觉/语义区分 — 走向 A：隐式预设）
-  → 研究员点「New Conversation」→ 选该默认 Actor
+  → 研究员进入该默认 Actor → 点「与该 Actor 对话」（见 ISSUE-0010 入口契约）
   → 发一条消息 → Agent 回复
     → 全程不碰 LLMBackend/Character/CapabilitySet/Actor 四张表的手工新建，
       不打开 pricing 页面查输入/输出单价
