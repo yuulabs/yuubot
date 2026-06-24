@@ -19,6 +19,7 @@ def test_bind_actor_provisions_isolated_venv(tmp_path: Path) -> None:
         endpoint=FacadeEndpoint(host="127.0.0.1", port=1, token="t"),
     )
 
+    assert binding.venv_python is not None
     venv_python = Path(binding.venv_python)
     assert venv_python.exists(), f"venv python not found at {venv_python}"
     assert ".venv" in venv_python.parts
@@ -44,11 +45,12 @@ def test_bind_actor_is_idempotent(tmp_path: Path) -> None:
         capabilities=(),
         endpoint=endpoint,
     )
+    assert first.venv_python is not None
     venv_python = Path(first.venv_python)
     venv_mtime_before = venv_python.stat().st_mtime_ns
 
     # Delete the pyproject.toml — if uv sync re-runs, it would be rewritten.
-    pyproject = tmp_path / "actors" / "actor-2" / "pyproject.toml"
+    pyproject = first.root / "pyproject.toml"
     assert pyproject.exists()
     original_pyproject = pyproject.read_text(encoding="utf-8")
     pyproject.unlink()
