@@ -112,6 +112,8 @@ def _python_agent_tool_config(
 
 
 _PRELOADED_DATA_ALIASES = (
+    "import matplotlib\n"
+    'matplotlib.use("Agg")\n'
     "import pandas as pd\n"
     "import numpy as np\n"
     "import matplotlib.pyplot as plt\n"
