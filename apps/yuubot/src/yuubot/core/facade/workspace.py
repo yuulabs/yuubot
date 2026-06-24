@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
+from importlib.resources import files
 from pathlib import Path
 
 from yuubot.core.capabilities import AnyCapabilitySpec
@@ -15,23 +17,6 @@ from yuubot.core.facade.context import FACADE_CONTEXT_MODULE, render_context_mod
 YEXT_PACKAGE = "yext"
 
 logger = logging.getLogger(__name__)
-
-# Dependencies sourced from packages/yuuagents/pyproject.toml — these are
-# the kernel deps the agent's ipykernel needs to start.
-_YUUAGENTS_VENV_DEPS = ("ipykernel", "jupyter-client")
-# Dependencies sourced from apps/yuubot/pyproject.toml — the research/analysis
-# stack the version-真值 source pins, plus msgspec (the facade's only
-# third-party dependency: yb/_client, yb/delegate, yb/schedule, yb/tasks,
-# tim/_channel, yext/github, yuubot/core/facade/protocol import nothing else).
-_YUUBOT_VENV_DEPS = ("pandas", "numpy", "matplotlib", "msgspec")
-
-_VENV_PYPROJECT_TEMPLATE = """\
-[project]
-name = "actor-workspace"
-version = "0"
-requires-python = ">=3.11"
-dependencies = [{deps}]
-"""
 
 
 @dataclass
@@ -135,36 +120,51 @@ class FacadeWorkspace:
         _replace_path(self.root / "actors" / path_id)
 
 
+@lru_cache(maxsize=1)
+def _read_actor_pyproject_template() -> str:
+    """Read the static ``actor_pyproject.toml`` shipped with this package.
+
+    The template is the single source of truth for the actor venv's
+    dependency declaration (lower bounds only; agents may ``uv add`` to
+    pin stricter). Reading it via ``importlib.resources`` resolves both
+    editable installs (source tree) and wheel installs (template included
+    via ``[tool.hatch.build.targets.wheel.force-include]``). The result is
+    cached (``lru_cache``) so repeated ``bind_actor`` calls do not re-read
+    the file.
+    """
+    return (
+        files("yuubot.core.facade") / "actor_pyproject.toml"
+    ).read_text(encoding="utf-8")
+
+
 def _provision_workspace_venv(actor_root: Path) -> str:
-    """Provision an isolated .venv in *actor_root* via ``uv sync``.
+    """Provision an isolated ``.venv`` in *actor_root* via ``uv sync``.
 
     Idempotent: if ``actor_root/.venv/bin/python`` already exists AND the
-    on-disk ``pyproject.toml`` matches the desired dependency set, returns
+    on-disk ``pyproject.toml`` is byte-identical to the static
+    ``actor_pyproject.toml`` template shipped with the daemon, returns
     immediately without touching the workspace. This fast path means a
-    no-op re-bind (same deps) never re-runs ``uv sync``.
+    no-op re-bind (same template) never re-runs ``uv sync``.
 
-    On first provisioning, or when the declared deps have changed since the
-    venv was last provisioned (e.g. the daemon was upgraded to add a new
-    facade dep), writes the pinned ``pyproject.toml`` (version specifiers
-    copied from the owning pyprojects — the daemon pyprojects are the 真值
-    source) and runs ``uv sync`` so the existing venv is reconciled to the
-    new declaration.
+    On first provisioning, or when the shipped template has changed since
+    the venv was last provisioned (e.g. the daemon was upgraded to bump
+    a facade dep baseline), writes the current template content to the
+    workspace ``pyproject.toml`` and runs ``uv sync`` so the existing
+    venv is reconciled to the new declaration.
     """
     venv_python = actor_root / ".venv" / "bin" / "python"
     pyproject = actor_root / "pyproject.toml"
 
-    deps = _resolve_workspace_pins()
-    deps_lines = ", ".join(f'"{d}"' for d in deps)
-    pyproject_content = _VENV_PYPROJECT_TEMPLATE.format(deps=deps_lines)
+    template_content = _read_actor_pyproject_template()
 
     if (
         venv_python.exists()
         and pyproject.exists()
-        and pyproject.read_text(encoding="utf-8") == pyproject_content
+        and pyproject.read_text(encoding="utf-8") == template_content
     ):
         return str(venv_python)
 
-    pyproject.write_text(pyproject_content, encoding="utf-8")
+    pyproject.write_text(template_content, encoding="utf-8")
 
     result = subprocess.run(
         ["uv", "sync"],
@@ -182,73 +182,6 @@ def _provision_workspace_venv(actor_root: Path) -> str:
             f"uv sync did not produce {venv_python} in {actor_root}"
         )
     return str(venv_python)
-
-
-def _resolve_workspace_pins() -> list[str]:
-    """Read version specifiers from the owning pyprojects.
-
-    Pins are copied (not invented): ipykernel + jupyter-client from
-    packages/yuuagents/pyproject.toml; pandas/numpy/matplotlib from
-    apps/yuubot/pyproject.toml.  If a pin cannot be read, falls back to
-    the bare name (uv resolves latest) and logs a warning.
-    """
-    pins: list[str] = []
-    for pyproject_path, deps in (
-        (_yuuagents_pyproject_path(), _YUUAGENTS_VENV_DEPS),
-        (_yuubot_pyproject_path(), _YUUBOT_VENV_DEPS),
-    ):
-        specs = _read_dependency_specs(pyproject_path)
-        for dep in deps:
-            pin = specs.get(dep)
-            if pin is not None:
-                pins.append(pin)
-            else:
-                logger.warning(
-                    "could not read pin for %s from %s; falling back to bare name",
-                    dep,
-                    pyproject_path,
-                )
-                pins.append(dep)
-    return pins
-
-
-def _read_dependency_specs(pyproject_path: Path) -> dict[str, str]:
-    """Parse a pyproject.toml and return {name: PEP-508-spec}.
-
-    The returned value is the raw dependency string (e.g. ``"pandas>=2.0"``
-    or ``"ipykernel>=7.0.0"``) so uv can resolve from the same constraint.
-    """
-    import tomllib
-
-    if not pyproject_path.exists():
-        return {}
-    with pyproject_path.open("rb") as f:
-        data = tomllib.load(f)
-    deps_list = data.get("project", {}).get("dependencies", [])
-    specs: dict[str, str] = {}
-    for entry in deps_list:
-        name = _dep_name(entry)
-        if name:
-            specs[name] = entry
-    return specs
-
-
-def _dep_name(entry: str) -> str:
-    """Extract the canonical (lower-cased, no extra) name from a PEP-508 spec."""
-    name = entry.strip()
-    for sep in (">", "<", "=", "!", "~", ";", "[", " "):
-        idx = name.find(sep)
-        if idx != -1:
-            name = name[:idx]
-    return name.strip().lower()
-
-
-def _yuuagents_pyproject_path() -> Path:
-    return Path(__file__).resolve().parents[6] / "packages" / "yuuagents" / "pyproject.toml"
-
-
-def _yuubot_pyproject_path() -> Path:
-    return Path(__file__).resolve().parents[4] / "pyproject.toml"
 
 
 def _resolve_daemon_facade_src() -> Path | None:
