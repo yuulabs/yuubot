@@ -151,6 +151,12 @@ def _workspace_bullets(workspace_path: Path) -> list[str]:
         "- Create subfolders for project work under the workspace.",
         "- tmp/ is for scratch output; artifacts/ is for local artifacts.",
         "- AGENTS.md at the workspace root is the project map; update it when projects change (create / remove / rename).",
+        "",
+        "Python execution environment:",
+        "- execute_python runs in the workspace's isolated .venv; `pd`, `np`, `plt` are pre-imported there — use them directly.",
+        "- To check what is installed: run `uv pip list` (via bash) — it lists the workspace .venv packages.",
+        "- To add a package: run `uv add <pkg>` (via bash, in the workspace). Do NOT use `pip install` (it bypasses uv cache isolation).",
+        "- After `uv add`/`uv remove`, call the `restart_kernel` tool so the next execute_python starts a fresh kernel in the same .venv and picks up the change.",
     ]
 
 

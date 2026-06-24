@@ -82,6 +82,26 @@ class ExecutePythonTool(Tool[ExecutePythonParams, str]):
             await self._session.close()
             self._session = None
 
+    async def restart_session(self) -> None:
+        """Close the current kernel session handle and drop it.
+
+        Lazy restart semantics: the next ``create_coro`` call sees
+        ``self._session is None`` and re-spawns a fresh kernel via
+        ``_get_session`` using the SAME ``config`` (so the same workspace
+        ``.venv`` interpreter is reused). Safe to call when no session was
+        ever started — the no-op close path mirrors the crash-reset behaviour.
+        """
+        session = self._session
+        if session is None:
+            return
+        self._session = None
+        try:
+            await session.close()
+        except Exception:
+            # Tolerate close errors — the handle is already dropped, and the
+            # crash-reset path in ``create_coro`` is equally tolerant.
+            pass
+
     async def _get_session(self, agent_id: str) -> PythonSession:
         if self._session is not None:
             return self._session
