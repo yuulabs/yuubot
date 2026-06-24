@@ -2,7 +2,7 @@
 id: ISSUE-0003
 slug: qq-integration-instance
 status: approved
-milestone: M-01
+milestone: M-05
 priority: P2
 estimated_work_hours: unknown
 ---

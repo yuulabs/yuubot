@@ -2,7 +2,7 @@
 id: ISSUE-0002
 slug: im-integration-framework
 status: approved
-milestone: M-01
+milestone: M-05
 priority: P1
 estimated_work_hours: 5
 ---
