@@ -73,11 +73,98 @@ def test_env_management_bullets_live_inside_system_instructions_section(
         )
 
 
+# ── figure-delivery contract ──────────────────────────────────────
+
+FIGURE_BULLETS = (
+    "plt.savefig('artifacts/",
+    "Do NOT fabricate external image URLs",
+    "Label charts in English by default",
+)
+
+
+def _make_binding_with_segment(
+    tmp_path: Path,
+    *,
+    segment: str,
+) -> AgentBinding:
+    return _make_binding(
+        workspace_path=tmp_path,
+        cap_workspace_path=segment,
+    )
+
+
+def test_figure_delivery_bullets_present_with_workspace_segment(
+    tmp_path: Path,
+) -> None:
+    binding = _make_binding_with_segment(tmp_path, segment="test")
+    rendered = _render_system_instructions(binding, mode="conversation")
+
+    assert "plt.savefig('artifacts/" in rendered, (
+        f"savefig guidance missing from prompt:\n{rendered}"
+    )
+    assert "/workspace/test/" in rendered, (
+        f"workspace browser URL base missing from prompt:\n{rendered}"
+    )
+    for needle in FIGURE_BULLETS:
+        assert needle in rendered, (
+            f"figure bullet {needle!r} missing from prompt:\n{rendered}"
+        )
+
+
+def test_figure_delivery_falls_back_when_segment_empty(tmp_path: Path) -> None:
+    """An empty capability_set.workspace_path must not produce a '/workspace//'
+    double-slash URL; the relative-path fallback bullet renders instead."""
+    binding = _make_binding(workspace_path=tmp_path)  # default segment == ""
+    rendered = _render_system_instructions(binding, mode="conversation")
+
+    assert "/workspace//" not in rendered, (
+        f"double-slash workspace URL leaked into prompt:\n{rendered}"
+    )
+    assert "artifacts/<name>.png" in rendered, (
+        f"relative-path fallback missing from prompt:\n{rendered}"
+    )
+    assert "Do NOT fabricate external image URLs" in rendered, (
+        f"prohibition bullet missing from prompt:\n{rendered}"
+    )
+
+
+def test_figure_delivery_bullets_absent_without_workspace() -> None:
+    binding = _make_binding(workspace_path=None)
+    rendered = _render_system_instructions(binding, mode="conversation")
+
+    assert "plt.savefig('artifacts/" not in rendered, (
+        f"figure bullets leaked without workspace:\n{rendered}"
+    )
+    assert "Delivering figures/plots to the user:" not in rendered
+
+
+def test_figure_delivery_bullets_live_inside_system_instructions_section(
+    tmp_path: Path,
+) -> None:
+    from yuubot.core.assembly._prompt import _system_prompt
+
+    binding = _make_binding_with_segment(tmp_path, segment="test")
+    system = _system_prompt(binding, mode="conversation")
+
+    sys_inst_pos = system.find("# System Instructions")
+    integ_pos = system.find("# Integration Prompt Sections")
+    section_two = system[sys_inst_pos:integ_pos]
+
+    for needle in ("/workspace/test/", *FIGURE_BULLETS):
+        assert needle in section_two, (
+            f"{needle!r} not inside Section 2 (System Instructions):\n{section_two}"
+        )
+
+
 # ── helpers (mirror tests/test_system_prompt_bullets.py) ──────────
 
 
-def _make_binding(*, workspace_path: Path | None) -> AgentBinding:
-    cap_set = CapabilitySetRecord(name="test-cap")
+def _make_binding(
+    *,
+    workspace_path: Path | None,
+    cap_workspace_path: str = "",
+) -> AgentBinding:
+    cap_set = CapabilitySetRecord(name="test-cap", workspace_path=cap_workspace_path)
     return AgentBinding(
         owner_id="test-owner",
         agent_name="test-agent",

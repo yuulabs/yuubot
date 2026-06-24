@@ -45,6 +45,8 @@
 仅当 `binding.workspace_path` 非空时追加工作区约定 bullet（绝对路径 / cwd / 子目录 /
 `tmp/`、`artifacts/` / `AGENTS.md` 项目地图）。
 
+Figure-delivery 契约（savefig → workspace browser URL → 对话视图内联渲染）的完整语法、管线与约束见 `artifact-delivery.md`。
+
 仅当 `mode == "im"` 时追加 `IM_MODE_SYSTEM_GUIDANCE`（系统级用户可见性语义：
 incoming mailbox 消息只是输入；用户可见回复走 `tim.Channel(path).send(text)`；
 普通 assistant 文本不投递给 IM 用户）。该块是第 2 段的一部分，**不**作为独立的

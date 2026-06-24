@@ -129,7 +129,10 @@ def _render_system_instructions(
         "top-level tools unless they also appear under Tools.",
     ]
     if binding.workspace_path:
-        bullets.extend(_workspace_bullets(binding.workspace_path))
+        workspace_url_segment = binding.capability_set.workspace_path.strip() or None
+        bullets.extend(
+            _workspace_bullets(binding.workspace_path, workspace_url_segment)
+        )
     # Unconditional math guidance: text blocks already render KaTeX (Phase A-4),
     # so the agent may emit inline ``$...$`` and block ``$$...$$`` LaTeX.
     bullets.append(
@@ -141,15 +144,19 @@ def _render_system_instructions(
     return "\n".join(bullets)
 
 
-def _workspace_bullets(workspace_path: Path) -> list[str]:
+def _workspace_bullets(
+    workspace_path: Path,
+    workspace_url_segment: str | None,
+) -> list[str]:
     absolute = str(workspace_path.resolve())
-    return [
+    bullets: list[str] = [
         "",
         "Workspace:",
         f"- Absolute workspace path: {absolute}",
         "- This workspace path IS the current working directory; relative paths in execute_python resolve against it.",
         "- Create subfolders for project work under the workspace.",
-        "- tmp/ is for scratch output; artifacts/ is for local artifacts.",
+        "- tmp/ is for scratch output; artifacts/ is the local artifact store "
+        "(create it first if missing: os.makedirs('artifacts', exist_ok=True)).",
         "- AGENTS.md at the workspace root is the project map; update it when projects change (create / remove / rename).",
         "",
         "Python execution environment:",
@@ -158,6 +165,46 @@ def _workspace_bullets(workspace_path: Path) -> list[str]:
         "- To add a package: run `uv add <pkg>` (via bash, in the workspace). Do NOT use `pip install` (it bypasses uv cache isolation).",
         "- After `uv add`/`uv remove`, call the `restart_kernel` tool so the next execute_python starts a fresh kernel in the same .venv and picks up the change.",
     ]
+    bullets.extend(_figure_delivery_bullets(workspace_url_segment))
+    return bullets
+
+
+def _figure_delivery_bullets(
+    workspace_url_segment: str | None,
+) -> list[str]:
+    bullets: list[str] = [
+        "",
+        "Delivering figures/plots to the user:",
+        "- The runtime is headless: plt.show() and inline auto-display do NOT "
+        "reach the user, and you cannot see rendered images either.",
+        "- To deliver a chart: save it to disk with "
+        "plt.savefig('artifacts/<name>.png') (dpi=150 is a good default), then "
+        "embed the saved file in your reply as a markdown image so the user "
+        "sees it inline.",
+    ]
+    if workspace_url_segment:
+        bullets.append(
+            "- Saved files under the workspace are served by the workspace "
+            f"browser at /workspace/{workspace_url_segment}/. Reference a saved "
+            f"figure as: ![chart](/workspace/{workspace_url_segment}/artifacts/<name>.png)."
+        )
+    else:
+        bullets.append(
+            "- Reference a saved figure by its relative path under the "
+            "workspace, e.g. artifacts/<name>.png."
+        )
+    bullets.append(
+        "- Do NOT fabricate external image URLs (e.g. quickchart.io) or claim "
+        "a figure was shown when it was not. Only reference files you actually "
+        "saved; if a savefig failed, say so instead of inventing an image."
+    )
+    bullets.append(
+        "- Label charts in English by default (titles, axis labels, legends). "
+        "Only switch to Chinese text when the user explicitly asks for it — "
+        "headless host font coverage for CJK and emoji is not guaranteed and "
+        "will emit glyph-missing warnings."
+    )
+    return bullets
 
 
 def _render_integration_sections(binding: AgentBinding) -> str:

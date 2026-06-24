@@ -112,6 +112,24 @@ async def test_pd_np_plt_prebound_without_import(tmp_path: Path) -> None:
     assert "ok" in out, f"plt alias broken:\n{out}"
 
 
+async def test_matplotlib_agg_backend_forced(tmp_path: Path) -> None:
+    """The kernel bootstrap forces the Agg backend so inline auto-capture of
+    figures (which produces the misleading ``<Figure ...>`` repr) is disabled."""
+    facade = _provision_facade(tmp_path)
+    tool = _make_ep_tool(facade)
+
+    out = await _run_code(
+        tool,
+        "import matplotlib\n"
+        "print(matplotlib.get_backend())",
+    )
+
+    assert "Agg" in out, (
+        f"matplotlib backend is not Agg; got:\n{out}\n"
+        "the startup_code must call matplotlib.use('Agg') before importing pyplot."
+    )
+
+
 async def test_restart_kernel_resets_session_state(tmp_path: Path) -> None:
     """After ``ExecutePythonTool.restart_session()``, prior globals are gone.
 
