@@ -4,7 +4,7 @@ slug: conversation-entry-via-actor
 status: approved
 milestone: M-02
 priority: P2
-estimated_work_hours: unknown
+estimated_work_hours: 4
 ---
 
 # ISSUE-0010: Conversation Entry via Actor
