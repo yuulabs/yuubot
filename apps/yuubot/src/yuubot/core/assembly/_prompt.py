@@ -165,45 +165,59 @@ def _workspace_bullets(
         "- To add a package: run `uv add <pkg>` (via bash, in the workspace). Do NOT use `pip install` (it bypasses uv cache isolation).",
         "- After `uv add`/`uv remove`, call the `restart_kernel` tool so the next execute_python starts a fresh kernel in the same .venv and picks up the change.",
     ]
-    bullets.extend(_figure_delivery_bullets(workspace_url_segment))
+    bullets.extend(_file_delivery_bullets(workspace_url_segment))
     return bullets
 
 
-def _figure_delivery_bullets(
+def _file_delivery_bullets(
     workspace_url_segment: str | None,
 ) -> list[str]:
     bullets: list[str] = [
         "",
-        "Delivering figures/plots to the user:",
+        "Delivering files to the user:",
         "- The runtime is headless: plt.show() and inline auto-display do NOT "
         "reach the user, and you cannot see rendered images either.",
-        "- To deliver a chart: save it to disk with "
-        "plt.savefig('artifacts/<name>.png') (dpi=150 is a good default), then "
-        "embed the saved file in your reply as a markdown image so the user "
-        "sees it inline.",
+        "- Save any output files under the workspace (e.g. artifacts/).",
     ]
     if workspace_url_segment:
         bullets.append(
             "- Saved files under the workspace are served by the workspace "
-            f"browser at /workspace/{workspace_url_segment}/. Reference a saved "
-            f"figure as: ![chart](/workspace/{workspace_url_segment}/artifacts/<name>.png)."
+            f"browser at /workspace/{workspace_url_segment}/."
         )
     else:
         bullets.append(
-            "- Reference a saved figure by its relative path under the "
+            "- Reference saved files by their relative path under the "
             "workspace, e.g. artifacts/<name>.png."
         )
-    bullets.append(
-        "- Do NOT fabricate external image URLs (e.g. quickchart.io) or claim "
-        "a figure was shown when it was not. Only reference files you actually "
-        "saved; if a savefig failed, say so instead of inventing an image."
-    )
-    bullets.append(
+    bullets.extend([
+        "",
+        "Image files (png, jpg, gif, svg, etc.):",
+        "- Embed the saved file in your reply as a markdown image so the user "
+        "sees it inline.",
+    ])
+    if workspace_url_segment:
+        bullets.append(
+            f"  Example: ![chart](/workspace/{workspace_url_segment}/artifacts/<name>.png)."
+        )
+    else:
+        bullets.append(
+            "  Example: ![chart](artifacts/<name>.png)."
+        )
+    bullets.extend([
+        "",
+        "Non-image files (pdf, txt, csv, html, zip, etc.):",
+        "- The frontend only renders images inline. For all other file types, "
+        "state the file's path and instruct the user to find it in the workspace.",
+        "",
+        "General rules:",
+        "- Do NOT fabricate external URLs (e.g. quickchart.io) or claim "
+        "a file was created when it was not. Only reference files you actually "
+        "saved.",
         "- Label charts in English by default (titles, axis labels, legends). "
         "Only switch to Chinese text when the user explicitly asks for it — "
         "headless host font coverage for CJK and emoji is not guaranteed and "
-        "will emit glyph-missing warnings."
-    )
+        "will emit glyph-missing warnings.",
+    ])
     return bullets
 
 

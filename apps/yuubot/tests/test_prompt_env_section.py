@@ -76,8 +76,8 @@ def test_env_management_bullets_live_inside_system_instructions_section(
 # ── figure-delivery contract ──────────────────────────────────────
 
 FIGURE_BULLETS = (
-    "plt.savefig('artifacts/",
-    "Do NOT fabricate external image URLs",
+    "Save any output files under the workspace",
+    "Do NOT fabricate external URLs",
     "Label charts in English by default",
 )
 
@@ -99,8 +99,8 @@ def test_figure_delivery_bullets_present_with_workspace_segment(
     binding = _make_binding_with_segment(tmp_path, segment="test")
     rendered = _render_system_instructions(binding, mode="conversation")
 
-    assert "plt.savefig('artifacts/" in rendered, (
-        f"savefig guidance missing from prompt:\n{rendered}"
+    assert "Save any output files under the workspace" in rendered, (
+        f"file delivery guidance missing from prompt:\n{rendered}"
     )
     assert "/workspace/test/" in rendered, (
         f"workspace browser URL base missing from prompt:\n{rendered}"
@@ -123,7 +123,7 @@ def test_figure_delivery_falls_back_when_segment_empty(tmp_path: Path) -> None:
     assert "artifacts/<name>.png" in rendered, (
         f"relative-path fallback missing from prompt:\n{rendered}"
     )
-    assert "Do NOT fabricate external image URLs" in rendered, (
+    assert "Do NOT fabricate external URLs" in rendered, (
         f"prohibition bullet missing from prompt:\n{rendered}"
     )
 
@@ -132,10 +132,10 @@ def test_figure_delivery_bullets_absent_without_workspace() -> None:
     binding = _make_binding(workspace_path=None)
     rendered = _render_system_instructions(binding, mode="conversation")
 
-    assert "plt.savefig('artifacts/" not in rendered, (
-        f"figure bullets leaked without workspace:\n{rendered}"
+    assert "Save any output files under the workspace" not in rendered, (
+        f"file delivery bullets leaked without workspace:\n{rendered}"
     )
-    assert "Delivering figures/plots to the user:" not in rendered
+    assert "Delivering files to the user:" not in rendered
 
 
 def test_figure_delivery_bullets_live_inside_system_instructions_section(
