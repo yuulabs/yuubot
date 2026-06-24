@@ -74,9 +74,11 @@ def default_tool_factories() -> ToolRegistry:
     )
     from yuubot.core.tools.impls.bash import BashToolFactory
     from yuubot.core.tools.impls.execute_python import ExecutePythonToolFactory
+    from yuubot.core.tools.impls.restart_kernel import RestartKernelToolFactory
 
     registry = ToolRegistry()
     registry.register(ExecutePythonToolFactory())
+    registry.register(RestartKernelToolFactory())
     registry.register(BashToolFactory())
     registry.register(ReadToolFactory())
     registry.register(EditToolFactory())

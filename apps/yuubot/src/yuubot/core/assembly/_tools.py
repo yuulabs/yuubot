@@ -18,7 +18,12 @@ from yuubot.core.tools import ToolRegistry
 from yuubot.core.validation import ConfigurationError
 from yuubot.resources.records import ToolConfig
 
-from ._constants import FACADE_EXPAND_FUNCTIONS, FACADE_IMPORTS, PYTHON_PROVIDER_KEY
+from ._constants import (
+    FACADE_EXPAND_FUNCTIONS,
+    FACADE_IMPORTS,
+    PYTHON_PROVIDER_KEY,
+    RESTART_KERNEL_TOOL_KEY,
+)
 
 _tool_registry: ToolRegistry | None = None
 
@@ -73,6 +78,7 @@ def _agent_tool_configs(
             facade,
             workspace_path=workspace_path,
         )
+        result[RESTART_KERNEL_TOOL_KEY] = {}
     return result
 
 
@@ -105,16 +111,28 @@ def _python_agent_tool_config(
     return msgspec.to_builtins(_python_tool_runtime(facade, workspace_path=workspace_path))
 
 
+_PRELOADED_DATA_ALIASES = (
+    "import pandas as pd\n"
+    "import numpy as np\n"
+    "import matplotlib.pyplot as plt\n"
+)
+
+
 def _python_tool_runtime(
     facade: ActorFacadeBinding,
     *,
     workspace_path: str | None = None,
 ) -> PythonRuntime:
+    startup_code = facade.startup_code
+    if startup_code and not startup_code.endswith("\n"):
+        startup_code += "\n"
+    startup_code += _PRELOADED_DATA_ALIASES
     return PythonRuntime(
         config=PythonKernelConfig(
+            python=facade.venv_python,
             cwd=workspace_path,
             sys_path=tuple(facade.sys_path),
-            startup_code=facade.startup_code,
+            startup_code=startup_code,
         ),
         imports=_facade_imports(facade),
         state=_python_session_state(facade),
