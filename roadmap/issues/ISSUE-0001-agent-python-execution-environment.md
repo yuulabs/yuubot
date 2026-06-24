@@ -1,7 +1,7 @@
 ---
 id: ISSUE-0001
 slug: agent-python-execution-environment
-status: approved
+status: in-progress
 milestone: M-01
 priority: P1
 estimated_work_hours: 7
