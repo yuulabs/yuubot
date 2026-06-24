@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 # the kernel deps the agent's ipykernel needs to start.
 _YUUAGENTS_VENV_DEPS = ("ipykernel", "jupyter-client")
 # Dependencies sourced from apps/yuubot/pyproject.toml — the research/analysis
-# stack the version-真值 source pins.
-_YUUBOT_VENV_DEPS = ("pandas", "numpy", "matplotlib")
+# stack the version-真值 source pins, plus msgspec (the facade's only
+# third-party dependency: yb/_client, yb/delegate, yb/schedule, yb/tasks,
+# tim/_channel, yext/github, yuubot/core/facade/protocol import nothing else).
+_YUUBOT_VENV_DEPS = ("pandas", "numpy", "matplotlib", "msgspec")
 
 _VENV_PYPROJECT_TEMPLATE = """\
 [project]
@@ -96,6 +98,11 @@ class FacadeWorkspace:
             encoding="utf-8",
         )
         venv_python = _provision_workspace_venv(actor_root)
+        daemon_src = _resolve_daemon_facade_src()
+        sys_path: list[str] = []
+        if daemon_src is not None:
+            sys_path.append(str(daemon_src))
+        sys_path.append(str(actor_root))
         return ActorFacadeBinding(
             actor_id=actor_id,
             agent_name=agent_name,
@@ -103,7 +110,7 @@ class FacadeWorkspace:
             mailbox_id=mailbox_id,
             capabilities=visible_capabilities,
             root=actor_root,
-            sys_path=[str(actor_root)],
+            sys_path=sys_path,
             startup_code=(
                 "import yb\n"
                 "import tim\n"
@@ -131,19 +138,33 @@ class FacadeWorkspace:
 def _provision_workspace_venv(actor_root: Path) -> str:
     """Provision an isolated .venv in *actor_root* via ``uv sync``.
 
-    Idempotent: if ``actor_root/.venv/bin/python`` already exists, returns
-    immediately without touching the workspace.  On first provisioning, writes
-    a pinned ``pyproject.toml`` (version specifiers copied from the owning
-    pyprojects — the daemon pyprojects are the 真值 source) and runs ``uv sync``.
+    Idempotent: if ``actor_root/.venv/bin/python`` already exists AND the
+    on-disk ``pyproject.toml`` matches the desired dependency set, returns
+    immediately without touching the workspace. This fast path means a
+    no-op re-bind (same deps) never re-runs ``uv sync``.
+
+    On first provisioning, or when the declared deps have changed since the
+    venv was last provisioned (e.g. the daemon was upgraded to add a new
+    facade dep), writes the pinned ``pyproject.toml`` (version specifiers
+    copied from the owning pyprojects — the daemon pyprojects are the 真值
+    source) and runs ``uv sync`` so the existing venv is reconciled to the
+    new declaration.
     """
     venv_python = actor_root / ".venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    pyproject = actor_root / "pyproject.toml"
 
     deps = _resolve_workspace_pins()
     deps_lines = ", ".join(f'"{d}"' for d in deps)
     pyproject_content = _VENV_PYPROJECT_TEMPLATE.format(deps=deps_lines)
-    (actor_root / "pyproject.toml").write_text(pyproject_content, encoding="utf-8")
+
+    if (
+        venv_python.exists()
+        and pyproject.exists()
+        and pyproject.read_text(encoding="utf-8") == pyproject_content
+    ):
+        return str(venv_python)
+
+    pyproject.write_text(pyproject_content, encoding="utf-8")
 
     result = subprocess.run(
         ["uv", "sync"],
@@ -228,6 +249,36 @@ def _yuuagents_pyproject_path() -> Path:
 
 def _yuubot_pyproject_path() -> Path:
     return Path(__file__).resolve().parents[4] / "pyproject.toml"
+
+
+def _resolve_daemon_facade_src() -> Path | None:
+    """Absolute path of the daemon's ``apps/yuubot/src`` directory.
+
+    The facade source (``yb``, ``tim``, ``yext``, ``yuubot``) lives at
+    ``apps/yuubot/src`` and is exposed in the daemon process only via the
+    editable ``.pth`` — the isolated actor venv does not have it. The kernel
+    bootstrap runs ``import yb; import tim; import yext.github`` (the facade
+    ``startup_code``), so the binding's ``sys_path`` must include this dir so
+    those modules import from the same source the daemon runs.
+
+    Resolution uses the daemon's own editably-imported ``yb``: its ``__file__``
+    sits at ``apps/yuubot/src/yb/<...>.py``, so ``parent.parent`` is
+    ``apps/yuubot/src``. Both ``yb`` and ``yuubot`` and ``tim`` and ``yext``
+    live as siblings under that dir, so resolving from ``yb`` covers all of
+    them. If ``yb`` is not importable in this process (e.g. running outside the
+    daemon), return ``None`` — the kernel will then fail to import ``yb``,
+    which is an honest environment error to surface, not a provisioning bug.
+    Do not hardcode paths and do not make this overridable via config.
+    """
+    try:
+        import yb
+    except ImportError:
+        logger.warning(
+            "could not resolve daemon facade src: 'yb' is not importable in "
+            "this process; facade imports will not resolve on the actor venv"
+        )
+        return None
+    return Path(yb.__file__).resolve().parent.parent
 
 
 def _replace_dir(path: Path) -> None:
