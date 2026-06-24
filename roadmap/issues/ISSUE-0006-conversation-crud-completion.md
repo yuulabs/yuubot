@@ -4,7 +4,7 @@ slug: conversation-crud-completion
 status: approved
 milestone: M-02
 priority: P1
-estimated_work_hours: unknown
+estimated_work_hours: 2
 ---
 
 # ISSUE-0006: Conversation CRUD Completion

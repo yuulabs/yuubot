@@ -4,7 +4,7 @@ slug: admin-crud-visual-baseline
 status: approved
 milestone: M-02
 priority: P1
-estimated_work_hours: unknown
+estimated_work_hours: 8
 ---
 
 # ISSUE-0007: Admin CRUD Visual Baseline

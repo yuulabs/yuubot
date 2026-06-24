@@ -4,7 +4,7 @@ slug: out-of-box-conversation-for-common-providers
 status: approved
 milestone: M-02
 priority: P1
-estimated_work_hours: unknown
+estimated_work_hours: 4
 ---
 
 # ISSUE-0005: Out-of-Box Conversation for Common Providers

@@ -4,7 +4,7 @@ slug: monitor-llm-timing-bug
 status: approved
 milestone: none
 priority: P1
-estimated_work_hours: unknown
+estimated_work_hours: 8
 ---
 
 # ISSUE-0009: Monitor LLM Timing Bug (Observability)
