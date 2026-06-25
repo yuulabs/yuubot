@@ -11,7 +11,6 @@ import {
   Plug,
   Route as RouteIcon,
   Settings,
-  Wand2,
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -30,7 +29,6 @@ const navGroups = [
     items: [
       { to: "/actors", icon: Bot, label: "Actors" },
       { to: "/capability-sets", icon: Layers, label: "Capability Sets" },
-      { to: "/characters", icon: Wand2, label: "Characters" },
       { to: "/routes", icon: RouteIcon, label: "Ingress Rules" },
     ],
   },

@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 
 export const Route = createFileRoute("/actors")({
@@ -32,7 +33,7 @@ export const Route = createFileRoute("/actors")({
 
 interface ActorFormData {
   name: string;
-  characterId: string;
+  characterPrompt: string;
   backendId: string;
   capabilitySetId: string;
   model: string;
@@ -41,7 +42,7 @@ interface ActorFormData {
 
 const defaultForm: ActorFormData = {
   name: "",
-  characterId: "",
+  characterPrompt: "",
   backendId: "",
   capabilitySetId: "",
   model: "",
@@ -50,11 +51,11 @@ const defaultForm: ActorFormData = {
 
 function ActorsPage() {
   const { data: actors = [], isLoading, error } = useResourceList<ActorResource>("actors");
-  const { data: characters = [] } = useResourceList<CharacterResource>("characters");
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: capabilitySets = [] } =
     useResourceList<CapabilitySetResource>("capability-sets");
-  const createMutation = useCreateResource<ActorResource>("actors");
+  const createActorMutation = useCreateResource<ActorResource>("actors");
+  const createCharacterMutation = useCreateResource<CharacterResource>("characters");
   const deleteMutation = useDeleteResource("actors");
 
   const [form, setForm] = useState<ActorFormData>(defaultForm);
@@ -67,9 +68,8 @@ function ActorsPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    const character = characters.find((c) => c.id === form.characterId);
     const backend = backends.find((b) => b.id === form.backendId);
-    if (!character || !backend) return;
+    if (!backend) return;
     const model = form.model.trim();
     if (!model) {
       setFormError("Select a model.");
@@ -79,9 +79,27 @@ function ActorsPage() {
       setFormError("Select a capability set.");
       return;
     }
+    if (!form.characterPrompt.trim()) {
+      setFormError("Enter a character prompt.");
+      return;
+    }
     setFormError("");
 
-    await createMutation.mutateAsync({
+    // Fold character under Actor (ISSUE-0011): front-end dual-call — create the
+    // persona Character first, then the Actor referencing it. The Character CRUD
+    // top-level page is removed; the persona is owned by the Actor from the
+    // researcher's mental model.
+    const character = await createCharacterMutation.mutateAsync({
+      name: form.name,
+      description: "",
+      system_prompt: form.characterPrompt,
+      facade_module: "yb",
+      default_hints: { language: "zh-CN", tone: "" },
+      is_builtin: false,
+      builtin_version: "",
+      cloned_from: "",
+    });
+    await createActorMutation.mutateAsync({
       name: form.name,
       type: "simple_loop",
       enabled: true,
@@ -204,20 +222,14 @@ function ActorsPage() {
                   required
                 />
               </FormField>
-              <FormField label="Character" required>
-                <Select
-                  value={form.characterId}
-                  onValueChange={(v) => setForm({ ...form, characterId: v })}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select character" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {characters.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <FormField label="Character Prompt" required>
+                <Textarea
+                  value={form.characterPrompt}
+                  onChange={(e) => setForm({ ...form, characterPrompt: e.target.value })}
+                  rows={6}
+                  placeholder="System prompt first section — this Actor's persona."
+                  required
+                />
               </FormField>
               <FormField label="LLM Backend" required>
                 <Select
@@ -279,17 +291,17 @@ function ActorsPage() {
                   </Select>
                 )}
               </FormField>
-              {(formError || createMutation.error) && (
+              {(formError || createActorMutation.error || createCharacterMutation.error) && (
                 <p className="text-xs text-destructive">
-                  {formError || createMutation.error?.message}
+                  {formError || createActorMutation.error?.message || createCharacterMutation.error?.message}
                 </p>
               )}
               <Button
                 type="submit"
                 className="w-full"
-                disabled={createMutation.isPending}
+                disabled={createActorMutation.isPending || createCharacterMutation.isPending}
               >
-                {createMutation.isPending ? "Creating..." : "Create Actor"}
+                {(createActorMutation.isPending || createCharacterMutation.isPending) ? "Creating..." : "Create Actor"}
               </Button>
             </form>
           </CardContent>

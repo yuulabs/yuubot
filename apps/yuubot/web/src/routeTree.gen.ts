@@ -14,13 +14,11 @@ import { Route as RoutesRouteImport } from './routes/routes'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as MonitorRouteImport } from './routes/monitor'
 import { Route as IntegrationsRouteImport } from './routes/integrations'
-import { Route as CharactersRouteImport } from './routes/characters'
 import { Route as CapabilitySetsRouteImport } from './routes/capability-sets'
 import { Route as ActorsRouteImport } from './routes/actors'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProvidersIdRouteImport } from './routes/providers.$id'
 import { Route as IntegrationsIdRouteImport } from './routes/integrations.$id'
-import { Route as CharactersIdRouteImport } from './routes/characters.$id'
 import { Route as AdminConversationsRouteImport } from './routes/admin.conversations'
 import { Route as ActorsIdRouteImport } from './routes/actors.$id'
 import { Route as AdminConversationsConversationIdRouteImport } from './routes/admin.conversations.$conversationId'
@@ -50,11 +48,6 @@ const IntegrationsRoute = IntegrationsRouteImport.update({
   path: '/integrations',
   getParentRoute: () => rootRouteImport,
 } as any)
-const CharactersRoute = CharactersRouteImport.update({
-  id: '/characters',
-  path: '/characters',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const CapabilitySetsRoute = CapabilitySetsRouteImport.update({
   id: '/capability-sets',
   path: '/capability-sets',
@@ -80,11 +73,6 @@ const IntegrationsIdRoute = IntegrationsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => IntegrationsRoute,
 } as any)
-const CharactersIdRoute = CharactersIdRouteImport.update({
-  id: '/$id',
-  path: '/$id',
-  getParentRoute: () => CharactersRoute,
-} as any)
 const AdminConversationsRoute = AdminConversationsRouteImport.update({
   id: '/admin/conversations',
   path: '/admin/conversations',
@@ -106,7 +94,6 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
   '/capability-sets': typeof CapabilitySetsRoute
-  '/characters': typeof CharactersRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -114,7 +101,6 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/actors/$id': typeof ActorsIdRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
-  '/characters/$id': typeof CharactersIdRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
@@ -123,7 +109,6 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
   '/capability-sets': typeof CapabilitySetsRoute
-  '/characters': typeof CharactersRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -131,7 +116,6 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/actors/$id': typeof ActorsIdRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
-  '/characters/$id': typeof CharactersIdRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
@@ -141,7 +125,6 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
   '/capability-sets': typeof CapabilitySetsRoute
-  '/characters': typeof CharactersRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -149,7 +132,6 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/actors/$id': typeof ActorsIdRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
-  '/characters/$id': typeof CharactersIdRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
@@ -160,7 +142,6 @@ export interface FileRouteTypes {
     | '/'
     | '/actors'
     | '/capability-sets'
-    | '/characters'
     | '/integrations'
     | '/monitor'
     | '/providers'
@@ -168,7 +149,6 @@ export interface FileRouteTypes {
     | '/settings'
     | '/actors/$id'
     | '/admin/conversations'
-    | '/characters/$id'
     | '/integrations/$id'
     | '/providers/$id'
     | '/admin/conversations/$conversationId'
@@ -177,7 +157,6 @@ export interface FileRouteTypes {
     | '/'
     | '/actors'
     | '/capability-sets'
-    | '/characters'
     | '/integrations'
     | '/monitor'
     | '/providers'
@@ -185,7 +164,6 @@ export interface FileRouteTypes {
     | '/settings'
     | '/actors/$id'
     | '/admin/conversations'
-    | '/characters/$id'
     | '/integrations/$id'
     | '/providers/$id'
     | '/admin/conversations/$conversationId'
@@ -194,7 +172,6 @@ export interface FileRouteTypes {
     | '/'
     | '/actors'
     | '/capability-sets'
-    | '/characters'
     | '/integrations'
     | '/monitor'
     | '/providers'
@@ -202,7 +179,6 @@ export interface FileRouteTypes {
     | '/settings'
     | '/actors/$id'
     | '/admin/conversations'
-    | '/characters/$id'
     | '/integrations/$id'
     | '/providers/$id'
     | '/admin/conversations/$conversationId'
@@ -212,7 +188,6 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActorsRoute: typeof ActorsRouteWithChildren
   CapabilitySetsRoute: typeof CapabilitySetsRoute
-  CharactersRoute: typeof CharactersRouteWithChildren
   IntegrationsRoute: typeof IntegrationsRouteWithChildren
   MonitorRoute: typeof MonitorRoute
   ProvidersRoute: typeof ProvidersRouteWithChildren
@@ -258,13 +233,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IntegrationsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/characters': {
-      id: '/characters'
-      path: '/characters'
-      fullPath: '/characters'
-      preLoaderRoute: typeof CharactersRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/capability-sets': {
       id: '/capability-sets'
       path: '/capability-sets'
@@ -300,13 +268,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IntegrationsIdRouteImport
       parentRoute: typeof IntegrationsRoute
     }
-    '/characters/$id': {
-      id: '/characters/$id'
-      path: '/$id'
-      fullPath: '/characters/$id'
-      preLoaderRoute: typeof CharactersIdRouteImport
-      parentRoute: typeof CharactersRoute
-    }
     '/admin/conversations': {
       id: '/admin/conversations'
       path: '/admin/conversations'
@@ -341,18 +302,6 @@ const ActorsRouteChildren: ActorsRouteChildren = {
 
 const ActorsRouteWithChildren =
   ActorsRoute._addFileChildren(ActorsRouteChildren)
-
-interface CharactersRouteChildren {
-  CharactersIdRoute: typeof CharactersIdRoute
-}
-
-const CharactersRouteChildren: CharactersRouteChildren = {
-  CharactersIdRoute: CharactersIdRoute,
-}
-
-const CharactersRouteWithChildren = CharactersRoute._addFileChildren(
-  CharactersRouteChildren,
-)
 
 interface IntegrationsRouteChildren {
   IntegrationsIdRoute: typeof IntegrationsIdRoute
@@ -393,7 +342,6 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActorsRoute: ActorsRouteWithChildren,
   CapabilitySetsRoute: CapabilitySetsRoute,
-  CharactersRoute: CharactersRouteWithChildren,
   IntegrationsRoute: IntegrationsRouteWithChildren,
   MonitorRoute: MonitorRoute,
   ProvidersRoute: ProvidersRouteWithChildren,

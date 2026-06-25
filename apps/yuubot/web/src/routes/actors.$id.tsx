@@ -7,7 +7,7 @@ import {
   useDeleteResource,
   useUpdateResource,
 } from "@/hooks/use-resources";
-import type { ActorResource, LLMBackendResource } from "@/types/api";
+import type { ActorResource, CharacterResource, LLMBackendResource } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,6 +20,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 export const Route = createFileRoute("/actors/$id")({
   component: ActorDetailPage,
@@ -29,12 +30,15 @@ function ActorDetailPage() {
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
+  const { data: characters = [] } = useResourceList<CharacterResource>("characters");
   const toggleMutation = useSetResourceEnabled("actors");
   const deleteMutation = useDeleteResource("actors");
   const updateMutation = useUpdateResource<ActorResource>("actors");
+  const updateCharacterMutation = useUpdateResource<CharacterResource>("characters");
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
 
   const actor = actors.find((a) => a.id === id);
+  const character = characters.find((c) => c.id === actor?.default_character?.id);
   const backend = backends.find((item) => item.id === actor?.default_llm_backend?.id);
   const modelOptions = uniqueModelNames([
     backend?.default_model,
@@ -44,6 +48,7 @@ function ActorDetailPage() {
 
   const [editName, setEditName] = useState(actor?.name ?? "");
   const [editModel, setEditModel] = useState(actor?.default_model ?? "");
+  const [editCharacterPrompt, setEditCharacterPrompt] = useState(character?.system_prompt ?? "");
   const [saveError, setSaveError] = useState("");
 
   useEffect(() => {
@@ -54,6 +59,12 @@ function ActorDetailPage() {
     setEditModel(actor.default_model);
     setSaveError("");
   }, [actor]);
+
+  useEffect(() => {
+    if (character) {
+      setEditCharacterPrompt(character.system_prompt);
+    }
+  }, [character]);
 
   if (!actor) {
     return (
@@ -84,6 +95,15 @@ function ActorDetailPage() {
       return;
     }
     setSaveError("");
+    // Fold character under Actor (ISSUE-0011): the persona prompt lives on the
+    // Actor's underlying Character record, edited inline here — no Character
+    // top-level page is involved from the researcher's view.
+    if (character && editCharacterPrompt !== character.system_prompt) {
+      await updateCharacterMutation.mutateAsync({
+        id: character.id,
+        data: { system_prompt: editCharacterPrompt },
+      });
+    }
     await updateMutation.mutateAsync({
       id: actor.id,
       data: { name: editName, default_model: editModel },
@@ -133,15 +153,7 @@ function ActorDetailPage() {
                 {actor.default_character && (
                   <TableRow>
                     <TableCell className="font-medium">Character</TableCell>
-                    <TableCell>
-                      <Link
-                        to="/characters/$id"
-                        params={{ id: actor.default_character.id }}
-                        className="hover:underline"
-                      >
-                        {actor.default_character.name}
-                      </Link>
-                    </TableCell>
+                    <TableCell>{actor.default_character.name}</TableCell>
                   </TableRow>
                 )}
                 {actor.capability_set && (
@@ -235,17 +247,33 @@ function ActorDetailPage() {
                 onValueChange={setEditModel}
               />
             </div>
-            {(saveError || updateMutation.error) && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium">Character Prompt</label>
+              <Textarea
+                value={editCharacterPrompt}
+                onChange={(e) => setEditCharacterPrompt(e.target.value)}
+                rows={8}
+                className="font-mono text-sm"
+                placeholder="System prompt first section — this Actor's persona."
+                disabled={!character}
+              />
+              {!character && (
+                <p className="text-xs text-muted-foreground">
+                  This Actor has no persona character attached.
+                </p>
+              )}
+            </div>
+            {(saveError || updateMutation.error || updateCharacterMutation.error) && (
               <p className="text-xs text-destructive">
-                {saveError || updateMutation.error?.message}
+                {saveError || updateMutation.error?.message || updateCharacterMutation.error?.message}
               </p>
             )}
             <Button
               onClick={handleSave}
               className="w-full"
-              disabled={updateMutation.isPending}
+              disabled={updateMutation.isPending || updateCharacterMutation.isPending}
             >
-              {updateMutation.isPending ? "Saving..." : "Save Changes"}
+              {(updateMutation.isPending || updateCharacterMutation.isPending) ? "Saving..." : "Save Changes"}
             </Button>
             <Button
               variant="outline"

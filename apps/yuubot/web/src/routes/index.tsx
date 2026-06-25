@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Activity, Plug, Route as RouteIcon, Zap } from "lucide-react";
 import { useHealth } from "@/hooks/use-resources";
 import { useResourceList } from "@/hooks/use-resources";
-import type { ActorResource, ActorIngressRuleResource, LLMBackendResource, CharacterResource } from "@/types/api";
+import type { ActorResource, ActorIngressRuleResource, LLMBackendResource } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,7 +18,6 @@ function DashboardPage() {
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: integrations = [] } = useResourceList("integrations");
   const { data: rules = [] } = useResourceList<ActorIngressRuleResource>("ingress-rules");
-  const { data: characters = [] } = useResourceList<CharacterResource>("characters");
 
   const runningActors = actors.filter((a) => a.enabled).length;
 
@@ -90,7 +89,6 @@ function DashboardPage() {
           <CardContent>
             <div className="space-y-3">
               <PathStep done={backends.length > 0} label="LLM backend" />
-              <PathStep done={characters.length > 0} label="Character" />
               <PathStep done={actors.length > 0} label="Actor" />
               <PathStep done={rules.length > 0} label="Ingress rule" />
             </div>
