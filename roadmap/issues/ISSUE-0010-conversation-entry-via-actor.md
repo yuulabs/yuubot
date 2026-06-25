@@ -1,10 +1,15 @@
 ---
 id: ISSUE-0010
 slug: conversation-entry-via-actor
-status: in-progress
+status: implemented
 milestone: M-02
 priority: P2
 estimated_work_hours: 4
+cycle_hours: 0.2
+net_effort_hours: 0.2
+efficiency: 1
+implemented_by: feature/conversation-entry-via-actor (ab96042)
+regression_test: apps/yuubot/web/src/routes/conversation-entry-via-actor.test.ts
 ---
 
 # ISSUE-0010: Conversation Entry via Actor
