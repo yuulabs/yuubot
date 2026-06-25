@@ -112,62 +112,9 @@ export const Route = createFileRoute("/providers")({
   component: ProvidersPage,
 });
 
-// demo `view--providers` styling, lifted verbatim from
-// ../../../../demo-playground/styles.css. S1's baseline.css did not lift the
-// providers-specific preset grid / connected-list / form-slot rules (they are
-// page-scoped, not generic baseline), so this route owns them in a scoped
-// <style> rendered once at the page root.
-const PROVIDERS_VIEW_CSS = `
-.prov-presets {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: var(--sp-3);
-  margin-top: var(--sp-2);
-}
-.preset {
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--r-lg);
-  padding: var(--sp-4);
-  display: flex; flex-direction: column; gap: var(--sp-3);
-  transition: border-color .12s, box-shadow .12s, transform .12s;
-  cursor: pointer;
-  position: relative;
-}
-.preset:hover { border-color: var(--border-hi); box-shadow: var(--shadow-hi); }
-.preset.is-connected { background: linear-gradient(180deg, #fff 0%, var(--surface-2) 100%); }
-.preset.is-connected::after {
-  content: ""; position: absolute; top: 10px; right: 10px;
-  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
-}
-.preset__head { display: flex; align-items: center; gap: var(--sp-3); }
-.preset__mark {
-  width: 32px; height: 32px; border-radius: var(--r-md);
-  display: grid; place-items: center; font-weight: 700; font-size: 13px;
-  background: var(--navy); box-shadow: inset 0 0 0 1.5px var(--cyan);
-  color: var(--yellow); flex-shrink: 0; font-family: var(--ff-mono);
-}
-.preset__meta { display: flex; flex-direction: column; line-height: 1.25; }
-.preset__name { font-weight: 600; font-size: 13.5px; }
-.preset__badge { font-size: 11px; color: var(--text-3); font-weight: 500; }
-.preset__note { font-size: 12.5px; color: var(--text-2); line-height: 1.45; flex: 1; }
-.preset__foot {
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 11.5px; color: var(--text-3);
-}
-.preset__cta {
-  border: 1px solid var(--border-hi); background: var(--surface);
-  padding: 4px 10px; border-radius: var(--r-sm);
-  font-size: 12px; font-weight: 500; color: var(--text); cursor: pointer;
-  transition: background .12s, border-color .12s;
-}
-.preset:hover .preset__cta { border-color: var(--navy); color: var(--navy); background: var(--surface-4); }
-
-.prov-form-slot { margin-top: var(--sp-5); }
-
-.prov-connected { margin-top: var(--sp-8); }
-.prov-connected__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--sp-3); }
-`;
+// demo `view--providers` styling lives in styles/baseline.css (comprehensive
+// structural port — single source of truth for all demo structural CSS),
+// consolidated there during the ISSUE-0007 CSS-gap direct fix.
 
 function ProvidersPage() {
   const pathname = useRouterState({
@@ -261,7 +208,6 @@ function ProvidersPage() {
       sub="选一个预设，填入 API key，系统会自动准备一个能聊的 Actor（默认 Character / CapabilitySet / Actor 串联就绪）。"
     >
       <div className="view">
-        <style>{PROVIDERS_VIEW_CSS}</style>
         {/* Presets grid */}
         <div className="prov-presets">
           {providerPresets.map((preset) => {
