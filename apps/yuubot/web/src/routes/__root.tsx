@@ -1,147 +1,217 @@
-import { useState } from "react";
-import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+// __root.tsx — app shell root route (ISSUE-0007 S2).
+//
+// Renders the demo-aligned app shell: sidebar (brand mark + two nav groups
+// 运行时 / 系统 + runner footer with daemon address) and a topbar (breadcrumb
+// group › here + Refresh + child-route-injected actions). The layout chrome
+// + actions context + shell CSS live in components/baseline/AppShell.tsx;
+// this route authors the nav/runner/topbar CONTENT (DVR for the source-marker
+// test) and consumes useHealth for the runner footer.
+import { createRootRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import {
-  Bot,
-  CircleDot,
-  Layers,
-  LayoutDashboard,
-  PanelLeft,
-  PanelLeftClose,
+  Activity,
+  ArrowRightToLine,
+  Box,
+  LayoutGrid,
   Plug,
-  Route as RouteIcon,
-  Settings,
-  Zap,
+  RefreshCw,
+  Server,
+  SlidersHorizontal,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
+import { AppShell, useAppShellActions } from "@/components/baseline";
+import { useHealth } from "@/hooks/use-resources";
 
-const navGroups = [
-  {
-    label: "Overview",
-    items: [
-      { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-    ],
-  },
-  {
-    label: "Resources",
-    items: [
-      { to: "/actors", icon: Bot, label: "Actors" },
-      { to: "/capability-sets", icon: Layers, label: "Capability Sets" },
-      { to: "/routes", icon: RouteIcon, label: "Ingress Rules" },
-    ],
-  },
-  {
-    label: "Providers",
-    items: [
-      { to: "/providers", icon: Zap, label: "LLM Backends" },
-      { to: "/integrations", icon: Plug, label: "Integrations" },
-    ],
-  },
-  {
-    label: "System",
-    items: [
-      { to: "/monitor", icon: CircleDot, label: "Monitor" },
-      { to: "/settings", icon: Settings, label: "Settings" },
-    ],
-  },
+// ---------------------------------------------------------------------------
+// Nav model — aligned to demo-playground sidebar (运行时 / 系统).
+// ---------------------------------------------------------------------------
+
+type NavGroupLabel = "运行时" | "系统";
+type NavItem = {
+  to: string;
+  label: string;
+  icon: typeof Box;
+  group: NavGroupLabel;
+};
+
+const NAV_ITEMS: readonly NavItem[] = [
+  // 运行时 — demo's runtime group (Integrations added: existing route, kept).
+  { to: "/actors", label: "Actors", icon: Box, group: "运行时" },
+  { to: "/routes", label: "Ingress", icon: ArrowRightToLine, group: "运行时" },
+  { to: "/capability-sets", label: "Capability Sets", icon: LayoutGrid, group: "运行时" },
+  { to: "/providers", label: "Providers", icon: Server, group: "运行时" },
+  { to: "/integrations", label: "Integrations", icon: Plug, group: "运行时" },
+  // 系统 — demo's system group.
+  { to: "/monitor", label: "Traces", icon: Activity, group: "系统" },
+  { to: "/settings", label: "Settings", icon: SlidersHorizontal, group: "系统" },
 ];
 
-export const Route = createRootRoute({
-  component: RootLayout,
-});
+function resolveCrumbs(pathname: string): { group: string; here: string } {
+  let best: { group: string; here: string } | null = null;
+  let bestLen = -1;
+  for (const item of NAV_ITEMS) {
+    if (pathname === item.to || pathname.startsWith(item.to + "/")) {
+      if (item.to.length > bestLen) {
+        best = { group: item.group, here: item.label };
+        bestLen = item.to.length;
+      }
+    }
+  }
+  return best ?? { group: "系统", here: "—" };
+}
 
-function RootLayout() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+// ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+
+function Brand() {
   return (
-    <div className="flex h-screen bg-background">
-      {!sidebarCollapsed && <Sidebar />}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Topbar
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-        />
-        <main className="flex-1 overflow-auto">
-          <Outlet />
-        </main>
+    <div className="brand">
+      <div className="brand__mark">y</div>
+      <div className="brand__name">
+        <span className="brand__title">yuubot</span>
+        <span className="brand__sub">control plane</span>
       </div>
     </div>
   );
 }
 
-function Sidebar() {
+// Explicit nav links — authored as literal `<Link to="/…">` JSX so the S2
+// source-marker test can assert each of the seven demo routes is wired.
+function RuntimeNavLinks() {
   return (
-    <aside className="flex w-[220px] shrink-0 flex-col border-r bg-card">
-      <div className="flex h-14 items-center gap-2 px-4">
-        <div className="flex size-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-          Y
+    <>
+      <Link to="/actors" className="nav__item" activeProps={{ className: "is-active" }}>
+        <Box size={16} className="nav__icon" />
+        <span>Actors</span>
+      </Link>
+      <Link to="/routes" className="nav__item" activeProps={{ className: "is-active" }}>
+        <ArrowRightToLine size={16} className="nav__icon" />
+        <span>Ingress</span>
+      </Link>
+      <Link to="/capability-sets" className="nav__item" activeProps={{ className: "is-active" }}>
+        <LayoutGrid size={16} className="nav__icon" />
+        <span>Capability Sets</span>
+      </Link>
+      <Link to="/providers" className="nav__item" activeProps={{ className: "is-active" }}>
+        <Server size={16} className="nav__icon" />
+        <span>Providers</span>
+      </Link>
+      <Link to="/integrations" className="nav__item" activeProps={{ className: "is-active" }}>
+        <Plug size={16} className="nav__icon" />
+        <span>Integrations</span>
+      </Link>
+    </>
+  );
+}
+
+function SystemNavLinks() {
+  return (
+    <>
+      <Link to="/monitor" className="nav__item" activeProps={{ className: "is-active" }}>
+        <Activity size={16} className="nav__icon" />
+        <span>Traces</span>
+      </Link>
+      <Link to="/settings" className="nav__item" activeProps={{ className: "is-active" }}>
+        <SlidersHorizontal size={16} className="nav__icon" />
+        <span>Settings</span>
+      </Link>
+    </>
+  );
+}
+
+function NavGroupExplicit({ label, children }: { label: NavGroupLabel; children: ReactNode }) {
+  return (
+    <div className="nav__group">
+      <span className="nav__group-label">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function Runner({ daemon, status }: { daemon?: string; status?: string }) {
+  const ok = !!status && /ok|healthy|up/i.test(status);
+  return (
+    <div className="sidebar__footer">
+      <div className="runner">
+        <div
+          className="runner__dot"
+          style={ok ? undefined : { background: "var(--text-3)" }}
+        />
+        <div className="runner__text">
+          <span>daemon</span>
+          <small>{daemon ?? "—"}</small>
         </div>
-        <span className="font-semibold">yuubot</span>
-        <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          admin
-        </span>
       </div>
-      <Separator />
-      <nav className="flex-1 space-y-4 overflow-auto p-3">
-        {navGroups.map((group) => (
-          <div key={group.label} className="space-y-1">
-            <div className="px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              {group.label}
-            </div>
-            {group.items.map((item) => {
-              const NavIcon = item.icon;
-              return (
-                <Link
-                  key={item.to}
-                  to={item.to}
-                  className="flex items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground [&.active]:bg-accent [&.active]:text-foreground"
-                  activeProps={{ className: "bg-accent text-foreground" }}
-                >
-                  <NavIcon size={17} />
-                  <span>{item.label}</span>
-                </Link>
-              );
-            })}
-          </div>
-        ))}
+    </div>
+  );
+}
+
+function Sidebar({ daemon, status }: { daemon?: string; status?: string }) {
+  return (
+    <aside className="sidebar">
+      <Brand />
+      <nav className="nav">
+        <NavGroupExplicit label="运行时">
+          <RuntimeNavLinks />
+        </NavGroupExplicit>
+        <NavGroupExplicit label="系统">
+          <SystemNavLinks />
+        </NavGroupExplicit>
       </nav>
-      <Separator />
-      <div className="flex items-center gap-2 px-4 py-3">
-        <div className="flex size-7 items-center justify-center rounded-full bg-muted text-xs font-medium">
-          A
-        </div>
-        <span className="text-sm font-medium">admin</span>
-      </div>
+      <Runner daemon={daemon} status={status} />
     </aside>
   );
 }
 
-function Topbar({
-  sidebarCollapsed,
-  onToggleSidebar,
-}: {
-  sidebarCollapsed: boolean;
-  onToggleSidebar: () => void;
-}) {
-  const ToggleIcon = sidebarCollapsed ? PanelLeft : PanelLeftClose;
+// ---------------------------------------------------------------------------
+// Topbar — breadcrumb (group › here) + Refresh + injected actions.
+// ---------------------------------------------------------------------------
+
+function Topbar() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const queryClient = useQueryClient();
+  const { actions } = useAppShellActions();
+  const { group, here } = resolveCrumbs(pathname);
   return (
-    <header className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-      <div className="flex items-center gap-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onToggleSidebar}
-          aria-label={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
-        >
-          <ToggleIcon className="size-4" />
-        </Button>
-        <span className="text-sm font-medium">Dashboard</span>
-        <span className="text-xs text-muted-foreground">Overview</span>
+    <header className="topbar">
+      <div className="topbar__crumbs">
+        <span>{group}</span>
+        <svg className="chev" viewBox="0 0 24 24">
+          <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth={1.6} />
+        </svg>
+        <span className="topbar__here">{here}</span>
       </div>
-      <div className="flex items-center gap-2">
-        <Button variant="ghost" size="xs">
-          Refresh
-        </Button>
+      <div className="topbar__actions">
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={() => queryClient.invalidateQueries()}
+          aria-label="刷新"
+        >
+          <RefreshCw size={15} />
+          <span>刷新</span>
+        </button>
+        {actions}
       </div>
     </header>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Root route
+// ---------------------------------------------------------------------------
+
+export const Route = createRootRoute({ component: RootLayout });
+
+function RootLayout() {
+  const { data: health } = useHealth();
+  return (
+    <AppShell
+      sidebar={<Sidebar daemon={health?.daemon} status={health?.status} />}
+      topbar={<Topbar />}
+    >
+      <Outlet />
+    </AppShell>
   );
 }
