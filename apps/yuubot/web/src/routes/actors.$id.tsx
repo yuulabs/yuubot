@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowLeft, Trash2, MessageSquare } from "lucide-react";
 import {
   useResourceList,
   useSetResourceEnabled,
   useDeleteResource,
   useUpdateResource,
 } from "@/hooks/use-resources";
-import type { ActorResource, CharacterResource, LLMBackendResource } from "@/types/api";
+import type { ActorResource, CharacterResource, ConversationListItem, LLMBackendResource } from "@/types/api";
+import { listConversations } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
 export const Route = createFileRoute("/actors/$id")({
@@ -50,6 +51,10 @@ function ActorDetailPage() {
   const [editModel, setEditModel] = useState(actor?.default_model ?? "");
   const [editCharacterPrompt, setEditCharacterPrompt] = useState(character?.system_prompt ?? "");
   const [saveError, setSaveError] = useState("");
+  // ISSUE-0010: per-Actor historical conversations. Pure client-side filter
+  // of listConversations() by actor_id — no new endpoint.
+  const [actorConversations, setActorConversations] = useState<ConversationListItem[]>([]);
+  const [conversationsLoading, setConversationsLoading] = useState(true);
 
   useEffect(() => {
     if (!actor) {
@@ -65,6 +70,31 @@ function ActorDetailPage() {
       setEditCharacterPrompt(character.system_prompt);
     }
   }, [character]);
+
+  useEffect(() => {
+    if (!actor) {
+      return;
+    }
+    let cancelled = false;
+    setConversationsLoading(true);
+    void (async () => {
+      try {
+        const all = await listConversations();
+        if (cancelled) return;
+        const mine = all
+          .filter((c) => c.actor_id === actor.id)
+          .sort((left, right) => conversationTime(right) - conversationTime(left));
+        setActorConversations(mine);
+      } catch {
+        if (!cancelled) setActorConversations([]);
+      } finally {
+        if (!cancelled) setConversationsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [actor]);
 
   if (!actor) {
     return (
@@ -295,6 +325,61 @@ function ActorDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ISSUE-0010: this Actor's historical conversations. The Actor is the
+          sole conversation entry point — creation happens via the
+          actor-bound draft route below, and prior conversations are listed
+          here (client-side filter of listConversations() by actor_id). */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <div>
+            <CardTitle>Conversations</CardTitle>
+            <CardDescription>
+              {conversationsLoading ? "Loading…" : `${actorConversations.length} conversation${actorConversations.length === 1 ? "" : "s"}`}
+            </CardDescription>
+          </div>
+          <Link to="/admin/conversations/$conversationId" params={{ conversationId: `actor-${actor.id}` }}>
+            <Button variant="outline" size="sm">
+              <MessageSquare className="mr-1.5 size-3.5" />
+              Start conversation
+            </Button>
+          </Link>
+        </CardHeader>
+        <CardContent>
+          {conversationsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading conversations…</p>
+          ) : actorConversations.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No conversations yet. Start one above.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Conversation</TableHead>
+                  <TableHead>Updated</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {actorConversations.map((c) => (
+                  <TableRow key={c.conversation_id}>
+                    <TableCell className="font-mono text-xs">
+                      <Link
+                        to="/admin/conversations/$conversationId"
+                        params={{ conversationId: c.conversation_id }}
+                        className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
+                      >
+                        {c.conversation_id}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {c.updated_at ? formatConversationTime(c.updated_at) : "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -332,4 +417,21 @@ function uniqueModelNames(models: Array<string | undefined>): string[] {
   return Array.from(
     new Set(models.map((model) => model?.trim()).filter(Boolean) as string[]),
   ).sort();
+}
+
+function conversationTime(conversation: ConversationListItem): number {
+  const value = conversation.updated_at ?? conversation.created_at;
+  if (!value) {
+    return 0;
+  }
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function formatConversationTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 }

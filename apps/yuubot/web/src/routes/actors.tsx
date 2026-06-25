@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Sparkles, Trash2 } from "lucide-react";
+import { Sparkles, Trash2, MessageSquare } from "lucide-react";
 import {
   useResourceList,
   useCreateResource,
@@ -184,6 +184,18 @@ function ActorsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
+                          {/* ISSUE-0010: conversations are created only from
+                              an Actor — this row action is the canonical
+                              entry to the actor-bound draft route. */}
+                          <Link
+                            to="/admin/conversations/$conversationId"
+                            params={{ conversationId: `actor-${actor.id}` }}
+                          >
+                            <Button variant="ghost" size="xs" title="对话">
+                              <MessageSquare size={14} className="mr-1" />
+                              对话
+                            </Button>
+                          </Link>
                           <Link to="/actors/$id" params={{ id: actor.id }}>
                             <Button variant="ghost" size="xs">Edit</Button>
                           </Link>

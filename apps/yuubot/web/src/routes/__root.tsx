@@ -5,7 +5,6 @@ import {
   CircleDot,
   Layers,
   LayoutDashboard,
-  MessageSquare,
   PanelLeft,
   PanelLeftClose,
   Plug,
@@ -21,7 +20,6 @@ const navGroups = [
     label: "Overview",
     items: [
       { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-      { to: "/admin/conversations", icon: MessageSquare, label: "Admin Conversation" },
     ],
   },
   {

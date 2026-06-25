@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, PanelLeftClose, SquareTerminal, BookOpen, FileEdit, FilePen, Play, Square } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
 import { sendConversationMessage, cancelConversationTurn, getConversation, getConversationMessages } from "@/lib/api";
@@ -446,10 +446,17 @@ function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStream
 function AdminConversationPage() {
   const { conversationId } = Route.useParams();
   const navigate = useNavigate();
-  const isDraft = conversationId === "new";
+  // ISSUE-0010: an `actor-`-prefixed conversationId is a draft bound to the
+  // Actor named by the suffix — the sole creation path now that the
+  // top-level list/New Conversation creator is gone. The bound Actor is
+  // preselected + LOCKED (rendered as a read-only Badge, never a Select).
+  const actorDraftPrefix = "actor-";
+  const isActorDraft = conversationId.startsWith(actorDraftPrefix);
+  const isDraft = conversationId === "new" || isActorDraft;
+  const draftActorId = isActorDraft ? conversationId.slice(actorDraftPrefix.length) : null;
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
   const runningActors = actors.filter((a) => a.enabled);
-  const [actorId, setActorId] = useState<string>(runningActors[0]?.id ?? "");
+  const [actorId, setActorId] = useState<string>(draftActorId ?? runningActors[0]?.id ?? "");
   const [displayItems, setDisplayItems] = useState<DisplayItem[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -616,7 +623,7 @@ function AdminConversationPage() {
     closeSse();
     setDisplayItems([]);
     setConversationMetadata(null);
-    setActorLocked(false);
+    setActorLocked(isActorDraft);
     setTotalCost(0);
     setLoadingHistory(true);
 
@@ -789,11 +796,23 @@ function AdminConversationPage() {
     <div className="flex h-full">
       <div className="flex flex-1 flex-col">
         <header className="flex items-center gap-3 border-b px-4 py-3">
-          <a href="/admin/conversations" onClick={(e) => { e.preventDefault(); window.history.back(); }}>
-            <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
-          </a>
+          {actor ? (
+            <Link
+              to="/actors/$id"
+              params={{ id: actor.id }}
+              aria-label="Back to Actor detail"
+            >
+              <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
+            </Link>
+          ) : (
+            <a href="/actors" onClick={(e) => { e.preventDefault(); window.history.back(); }}>
+              <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
+            </a>
+          )}
           <div className="flex-1">
-            <h2 className="text-sm font-semibold">{isDraft ? "New conversation" : conversationId}</h2>
+            <h2 className="text-sm font-semibold">
+              {isDraft ? (actor ? `New conversation with ${actor.name}` : "New conversation") : conversationId}
+            </h2>
           </div>
           {/* Running cumulative USD spend — fed by `cost_update` SSE frames.
               No quota (`/ $limit`) per Phase 5-3 spec: daily budget is global. */}
@@ -803,7 +822,9 @@ function AdminConversationPage() {
         <div className="flex-1 space-y-4 overflow-auto p-4">
           {loadingHistory && <p className="text-xs text-muted-foreground text-center">Loading history...</p>}
           {!loadingHistory && displayItems.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center">No messages yet. Select an actor and start the conversation!</p>
+            <p className="text-xs text-muted-foreground text-center">
+              {actor ? `Say hi to ${actor.name}!` : "No messages yet."}
+            </p>
           )}
           {displayItems.map((item) => {
             const itemIsStreaming = isSending
@@ -926,15 +947,33 @@ function BindingPanel({
       </div>
       <div className="flex-1 space-y-4 overflow-auto p-4">
         <section className="space-y-2">
-          <Select value={actorId} onValueChange={onActorChange} disabled={actorLocked || isSending}>
-            <SelectTrigger className="h-8 w-full text-xs"><SelectValue placeholder="Select actor" /></SelectTrigger>
-            <SelectContent>
-              {actors.map((a) => (
-                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {actor && (
+          {actorLocked ? (
+            // ISSUE-0010: actor-bound draft (and existing conversations with
+            // messages) render the Actor as a read-only Badge — the editable
+            // actor-select affordance is gone entirely.
+            <div className="flex items-center gap-2">
+              {actor ? (
+                <>
+                  <span className="text-xs font-medium">{actor.name}</span>
+                  <Badge variant={actor.enabled ? "default" : "secondary"} className="text-xs">
+                    {actor.enabled ? "running" : "stopped"}
+                  </Badge>
+                </>
+              ) : (
+                <Badge variant="secondary" className="text-xs">actor locked</Badge>
+              )}
+            </div>
+          ) : (
+            <Select value={actorId} onValueChange={onActorChange} disabled={isSending}>
+              <SelectTrigger className="h-8 w-full text-xs"><SelectValue placeholder="Select actor" /></SelectTrigger>
+              <SelectContent>
+                {actors.map((a) => (
+                  <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {actor && !actorLocked && (
             <Badge variant={actor.enabled ? "default" : "secondary"} className="text-xs">
               {actor.enabled ? "running" : "stopped"}
             </Badge>
