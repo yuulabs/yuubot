@@ -19,9 +19,11 @@ import { Route as ActorsRouteImport } from './routes/actors'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProvidersIdRouteImport } from './routes/providers.$id'
 import { Route as IntegrationsIdRouteImport } from './routes/integrations.$id'
+import { Route as CapabilitySetsNewRouteImport } from './routes/capability-sets.new'
 import { Route as AdminConversationsRouteImport } from './routes/admin.conversations'
 import { Route as ActorsNewRouteImport } from './routes/actors.new'
 import { Route as ActorsIdRouteImport } from './routes/actors.$id'
+import { Route as CapabilitySetsIdEditRouteImport } from './routes/capability-sets.$id.edit'
 import { Route as AdminConversationsConversationIdRouteImport } from './routes/admin.conversations.$conversationId'
 import { Route as ActorsIdEditRouteImport } from './routes/actors.$id.edit'
 
@@ -75,6 +77,11 @@ const IntegrationsIdRoute = IntegrationsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => IntegrationsRoute,
 } as any)
+const CapabilitySetsNewRoute = CapabilitySetsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => CapabilitySetsRoute,
+} as any)
 const AdminConversationsRoute = AdminConversationsRouteImport.update({
   id: '/admin/conversations',
   path: '/admin/conversations',
@@ -89,6 +96,11 @@ const ActorsIdRoute = ActorsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => ActorsRoute,
+} as any)
+const CapabilitySetsIdEditRoute = CapabilitySetsIdEditRouteImport.update({
+  id: '/$id/edit',
+  path: '/$id/edit',
+  getParentRoute: () => CapabilitySetsRoute,
 } as any)
 const AdminConversationsConversationIdRoute =
   AdminConversationsConversationIdRouteImport.update({
@@ -105,7 +117,7 @@ const ActorsIdEditRoute = ActorsIdEditRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
-  '/capability-sets': typeof CapabilitySetsRoute
+  '/capability-sets': typeof CapabilitySetsRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -114,15 +126,17 @@ export interface FileRoutesByFullPath {
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
+  '/capability-sets/new': typeof CapabilitySetsNewRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
+  '/capability-sets/$id/edit': typeof CapabilitySetsIdEditRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
-  '/capability-sets': typeof CapabilitySetsRoute
+  '/capability-sets': typeof CapabilitySetsRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -131,16 +145,18 @@ export interface FileRoutesByTo {
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
+  '/capability-sets/new': typeof CapabilitySetsNewRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
+  '/capability-sets/$id/edit': typeof CapabilitySetsIdEditRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
-  '/capability-sets': typeof CapabilitySetsRoute
+  '/capability-sets': typeof CapabilitySetsRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -149,10 +165,12 @@ export interface FileRoutesById {
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
+  '/capability-sets/new': typeof CapabilitySetsNewRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
+  '/capability-sets/$id/edit': typeof CapabilitySetsIdEditRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -168,10 +186,12 @@ export interface FileRouteTypes {
     | '/actors/$id'
     | '/actors/new'
     | '/admin/conversations'
+    | '/capability-sets/new'
     | '/integrations/$id'
     | '/providers/$id'
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
+    | '/capability-sets/$id/edit'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -185,10 +205,12 @@ export interface FileRouteTypes {
     | '/actors/$id'
     | '/actors/new'
     | '/admin/conversations'
+    | '/capability-sets/new'
     | '/integrations/$id'
     | '/providers/$id'
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
+    | '/capability-sets/$id/edit'
   id:
     | '__root__'
     | '/'
@@ -202,16 +224,18 @@ export interface FileRouteTypes {
     | '/actors/$id'
     | '/actors/new'
     | '/admin/conversations'
+    | '/capability-sets/new'
     | '/integrations/$id'
     | '/providers/$id'
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
+    | '/capability-sets/$id/edit'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActorsRoute: typeof ActorsRouteWithChildren
-  CapabilitySetsRoute: typeof CapabilitySetsRoute
+  CapabilitySetsRoute: typeof CapabilitySetsRouteWithChildren
   IntegrationsRoute: typeof IntegrationsRouteWithChildren
   MonitorRoute: typeof MonitorRoute
   ProvidersRoute: typeof ProvidersRouteWithChildren
@@ -292,6 +316,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IntegrationsIdRouteImport
       parentRoute: typeof IntegrationsRoute
     }
+    '/capability-sets/new': {
+      id: '/capability-sets/new'
+      path: '/new'
+      fullPath: '/capability-sets/new'
+      preLoaderRoute: typeof CapabilitySetsNewRouteImport
+      parentRoute: typeof CapabilitySetsRoute
+    }
     '/admin/conversations': {
       id: '/admin/conversations'
       path: '/admin/conversations'
@@ -312,6 +343,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/actors/$id'
       preLoaderRoute: typeof ActorsIdRouteImport
       parentRoute: typeof ActorsRoute
+    }
+    '/capability-sets/$id/edit': {
+      id: '/capability-sets/$id/edit'
+      path: '/$id/edit'
+      fullPath: '/capability-sets/$id/edit'
+      preLoaderRoute: typeof CapabilitySetsIdEditRouteImport
+      parentRoute: typeof CapabilitySetsRoute
     }
     '/admin/conversations/$conversationId': {
       id: '/admin/conversations/$conversationId'
@@ -355,6 +393,20 @@ const ActorsRouteChildren: ActorsRouteChildren = {
 const ActorsRouteWithChildren =
   ActorsRoute._addFileChildren(ActorsRouteChildren)
 
+interface CapabilitySetsRouteChildren {
+  CapabilitySetsNewRoute: typeof CapabilitySetsNewRoute
+  CapabilitySetsIdEditRoute: typeof CapabilitySetsIdEditRoute
+}
+
+const CapabilitySetsRouteChildren: CapabilitySetsRouteChildren = {
+  CapabilitySetsNewRoute: CapabilitySetsNewRoute,
+  CapabilitySetsIdEditRoute: CapabilitySetsIdEditRoute,
+}
+
+const CapabilitySetsRouteWithChildren = CapabilitySetsRoute._addFileChildren(
+  CapabilitySetsRouteChildren,
+)
+
 interface IntegrationsRouteChildren {
   IntegrationsIdRoute: typeof IntegrationsIdRoute
 }
@@ -393,7 +445,7 @@ const AdminConversationsRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActorsRoute: ActorsRouteWithChildren,
-  CapabilitySetsRoute: CapabilitySetsRoute,
+  CapabilitySetsRoute: CapabilitySetsRouteWithChildren,
   IntegrationsRoute: IntegrationsRouteWithChildren,
   MonitorRoute: MonitorRoute,
   ProvidersRoute: ProvidersRouteWithChildren,
