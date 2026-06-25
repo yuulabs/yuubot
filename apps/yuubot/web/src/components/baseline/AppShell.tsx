@@ -61,9 +61,10 @@ export interface AppShellProps {
   sidebar: ReactNode;
   topbar: ReactNode;
   children?: ReactNode;
+  focus?: boolean;
 }
 
-export function AppShell({ sidebar, topbar, children }: AppShellProps) {
+export function AppShell({ sidebar, topbar, children, focus = false }: AppShellProps) {
   const [actions, setActions] = useState<ReactNode | null>(null);
   const actionsValue = useMemo<AppShellActionsContextValue>(
     () => ({ actions, setActions }),
@@ -72,10 +73,10 @@ export function AppShell({ sidebar, topbar, children }: AppShellProps) {
 
   return (
     <AppShellActionsContext.Provider value={actionsValue}>
-      <div className="app">
-        {sidebar}
+      <div className={`app ${focus ? "app--focus" : ""}`}>
+        {!focus && sidebar}
         <main className="main">
-          {topbar}
+          {!focus && topbar}
           {children}
         </main>
       </div>

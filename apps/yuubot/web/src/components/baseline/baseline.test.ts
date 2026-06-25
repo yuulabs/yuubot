@@ -60,17 +60,17 @@ test("each baseline component module file exists", () => {
   }
 });
 
-test("index.css :root carries the demo core tokens", () => {
+test("baseline.css :root carries the demo core tokens", () => {
   for (const tok of ["--cyan", "--yellow", "--ink", "--bg", "--page-bg", "--ff-sans"]) {
-    assert.ok(indexCss.includes(tok), `index.css must define ${tok}`);
+    assert.ok(baselineCss.includes(tok), `baseline.css must define ${tok}`);
   }
 });
 
 test("demo hex palette is injected into the token layer", () => {
   // cyan / yellow / ink from the demo's foundational :root.
-  assert.ok(indexCss.includes("#1ec3e8"), "cyan #1ec3e8 must be present");
-  assert.ok(indexCss.includes("#e0d909"), "yellow #e0d909 must be present");
-  assert.ok(indexCss.includes("#0b1228"), "ink #0b1228 must be present");
+  assert.ok(baselineCss.includes("#1ec3e8"), "cyan #1ec3e8 must be present");
+  assert.ok(baselineCss.includes("#e0d909"), "yellow #e0d909 must be present");
+  assert.ok(baselineCss.includes("#0b1228"), "ink #0b1228 must be present");
 });
 
 test("index.css imports the structural baseline.css module", () => {

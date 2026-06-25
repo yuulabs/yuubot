@@ -80,7 +80,7 @@ test("integrations.tsx adopts baseline styling (PageShell or LegendCard)", () =>
 });
 
 // ---------------------------------------------------------------------------
-// /monitor / /settings / / — dashboard pages wrapped in PageShell
+// /monitor / /settings remain wrapped; / redirects to Actors.
 // ---------------------------------------------------------------------------
 
 test("monitor.tsx wraps in <PageShell>", () => {
@@ -97,20 +97,24 @@ test("settings.tsx wraps in <PageShell>", () => {
   );
 });
 
-test("index.tsx (dashboard) wraps in <PageShell>", () => {
+test("index.tsx redirects to Actors instead of rendering a dashboard", () => {
   assert.ok(
-    indexSrc.includes("<PageShell"),
-    "index.tsx must wrap its view in <PageShell>",
+    indexSrc.includes("redirect") && indexSrc.includes('to: "/actors"'),
+    "index.tsx must redirect / to /actors",
   );
 });
 
 // ---------------------------------------------------------------------------
-// /admin/conversations — ISSUE-0010 redirect contract preserved
+// /admin/conversations — history list restored, creator remains actor-scoped
 // ---------------------------------------------------------------------------
 
-test("admin.conversations.tsx preserves the ISSUE-0010 redirect contract", () => {
+test("admin.conversations.tsx preserves actor-scoped creation while showing history", () => {
   assert.ok(
-    adminConversationsSrc.includes("redirect"),
-    "admin.conversations.tsx must still call redirect for bare /admin/conversations",
+    adminConversationsSrc.includes("listConversations"),
+    "admin.conversations.tsx must list historical conversations",
+  );
+  assert.ok(
+    adminConversationsSrc.includes("/actors"),
+    "admin.conversations.tsx must direct new conversation creation through /actors",
   );
 });

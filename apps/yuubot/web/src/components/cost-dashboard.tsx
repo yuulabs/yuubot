@@ -1,21 +1,10 @@
 /** Cost analytics dashboard.
  *
- * Renders a 5-range time selector, stat cards (cost / requests / tokens /
- * cached / output), latency stats, and two recharts pie charts:
- *
- *   - Tool-call counts by `tool_name`
- *   - Per-turn phase breakdown (thinking / text / tool_call / tool_execution)
- *
- * The phase breakdown endpoint (`/monitor/trace/api/usage/phases`) returns
- * HTTP 400 for `range=year` / `range=total` because the per-turn pairing
- * query is too expensive at those scales. The hook swallows that 400 and
- * yields `null`, and this component renders "N/A for this range" in its place.
- *
- * All four endpoints are re-fetched when the range selector changes (TanStack
- * Query derives a unique queryKey per range).
+ * Renders usage range controls, cost/token stat tiles, latency stats, and
+ * two Recharts pie charts backed by `/monitor/trace/api/usage/*`.
  */
 
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import {
   Cell,
   Legend,
@@ -25,8 +14,6 @@ import {
   Tooltip,
 } from "recharts";
 import { Activity, Clock, DollarSign, Hash, Layers } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   type UsageRange,
   usePhaseBreakdown,
@@ -45,15 +32,21 @@ const RANGE_LABELS: Record<UsageRange, string> = {
 };
 
 const TOOL_COLORS = [
-  "#2563eb", "#16a34a", "#d97706", "#9333ea",
-  "#dc2626", "#0891b2", "#65a30d", "#db2777",
+  "var(--cyan)",
+  "var(--green)",
+  "var(--yellow-deep)",
+  "var(--rose)",
+  "var(--red)",
+  "var(--ink-2)",
+  "var(--amber)",
+  "var(--slate)",
 ];
 
 const PHASE_COLORS: Record<string, string> = {
-  Thinking: "#9333ea",
-  Text: "#2563eb",
-  "Tool Call (args)": "#d97706",
-  "Tool Execution": "#16a34a",
+  Thinking: "var(--rose)",
+  Text: "var(--cyan)",
+  "Tool Call (args)": "var(--yellow-deep)",
+  "Tool Execution": "var(--green)",
 };
 
 function formatMs(ms: number | undefined): string {
@@ -73,36 +66,34 @@ function formatCost(usd: number | undefined): string {
   return `$${usd.toFixed(3)}`;
 }
 
-function StatTile({
+function UsageTile({
   icon: Icon,
   label,
   value,
   sub,
 }: {
-  icon: React.ComponentType<{ className?: string; size?: number }>;
+  icon: ComponentType<{ className?: string; size?: number }>;
   label: string;
   value: string;
   sub?: string;
 }) {
   return (
-    <Card>
-      <CardContent className="flex items-center gap-4 pt-6">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-          <Icon className="size-5 text-primary" />
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-muted-foreground">{label}</p>
-          <p className="text-2xl font-bold tabular-nums">{value}</p>
-          {sub && <p className="text-xs text-muted-foreground">{sub}</p>}
-        </div>
-      </CardContent>
-    </Card>
+    <article className="monitor-stat">
+      <div className="monitor-stat__icon">
+        <Icon size={18} />
+      </div>
+      <div className="monitor-stat__body">
+        <p className="monitor-stat__label">{label}</p>
+        <p className="monitor-stat__value monitor-stat__value--mono">{value}</p>
+        {sub && <p className="monitor-stat__sub">{sub}</p>}
+      </div>
+    </article>
   );
 }
 
-function EmptyPieChart({ message }: { message: string }) {
+function ChartEmpty({ message }: { message: string }) {
   return (
-    <div className="flex h-64 items-center justify-center text-sm text-muted-foreground">
+    <div className="monitor-chart-empty">
       {message}
     </div>
   );
@@ -125,47 +116,54 @@ export function CostDashboard() {
     : [];
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <h2 className="text-lg font-semibold">Cost &amp; Usage Analytics</h2>
-        <Tabs value={range} onValueChange={(v) => setRange(v as UsageRange)}>
-          <TabsList>
-            {RANGES.map((r) => (
-              <TabsTrigger key={r} value={r}>
-                {RANGE_LABELS[r]}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+    <section className="monitor-panel monitor-panel--analytics">
+      <div className="monitor-panel__head">
+        <div>
+          <h2 className="monitor-panel__title">Cost &amp; Usage Analytics</h2>
+          <p className="monitor-panel__sub">Spend, token volume, latency and trace phase distribution.</p>
+        </div>
+        <div className="seg monitor-range" role="tablist" aria-label="Usage range">
+          {RANGES.map((item) => (
+            <button
+              key={item}
+              type="button"
+              role="tab"
+              aria-selected={range === item}
+              className={`seg__btn ${range === item ? "is-active" : ""}`}
+              onClick={() => setRange(item)}
+            >
+              {RANGE_LABELS[item]}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Primary stat row */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-        <StatTile
+      <div className="monitor-stats monitor-stats--five">
+        <UsageTile
           icon={DollarSign}
           label="Cost"
           value={summaryLoading ? "--" : formatCost(summary?.cost)}
           sub="USD spent"
         />
-        <StatTile
+        <UsageTile
           icon={Hash}
           label="Requests"
           value={summaryLoading ? "--" : formatNumber(summary?.requests)}
           sub="LLM calls"
         />
-        <StatTile
+        <UsageTile
           icon={Activity}
           label="Input Tokens"
           value={summaryLoading ? "--" : formatNumber(summary?.input_tokens_uncached)}
           sub="uncached"
         />
-        <StatTile
+        <UsageTile
           icon={Layers}
           label="Cached Input"
           value={summaryLoading ? "--" : formatNumber(summary?.cached_input_tokens)}
           sub="cache reads"
         />
-        <StatTile
+        <UsageTile
           icon={Activity}
           label="Output Tokens"
           value={summaryLoading ? "--" : formatNumber(summary?.output_tokens)}
@@ -173,15 +171,14 @@ export function CostDashboard() {
         />
       </div>
 
-      {/* Latency row */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <StatTile
+      <div className="monitor-stats monitor-stats--two">
+        <UsageTile
           icon={Clock}
           label="Avg First-Token Latency"
           value={latencyLoading ? "--" : formatMs(latency?.avg_first_token_latency_ms)}
           sub="time to first token"
         />
-        <StatTile
+        <UsageTile
           icon={Clock}
           label="Avg Turn Time"
           value={latencyLoading ? "--" : formatMs(latency?.avg_turn_time_ms)}
@@ -189,18 +186,17 @@ export function CostDashboard() {
         />
       </div>
 
-      {/* Charts row */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Tool Call Counts</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {toolsLoading ? (
-              <EmptyPieChart message="Loading…" />
-            ) : !tools || tools.length === 0 ? (
-              <EmptyPieChart message="No tool calls in this range." />
-            ) : (
+      <div className="monitor-chart-grid">
+        <section className="monitor-chart-card">
+          <div className="monitor-chart-card__head">
+            <h3>Tool Call Counts</h3>
+          </div>
+          {toolsLoading ? (
+            <ChartEmpty message="Loading..." />
+          ) : !tools || tools.length === 0 ? (
+            <ChartEmpty message="No tool calls in this range." />
+          ) : (
+            <div className="monitor-chart">
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart>
                   <Pie
@@ -219,26 +215,26 @@ export function CostDashboard() {
                       />
                     ))}
                   </Pie>
-                  <Tooltip />
+                  <Tooltip wrapperClassName="monitor-chart-tooltip" />
                   <Legend />
                 </PieChart>
               </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          )}
+        </section>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Phase Breakdown</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {phasesLoading ? (
-              <EmptyPieChart message="Loading…" />
-            ) : phases === null ? (
-              <EmptyPieChart message="N/A for this range" />
-            ) : phasePieData.length === 0 ? (
-              <EmptyPieChart message="No phase data in this range." />
-            ) : (
+        <section className="monitor-chart-card">
+          <div className="monitor-chart-card__head">
+            <h3>Phase Breakdown</h3>
+          </div>
+          {phasesLoading ? (
+            <ChartEmpty message="Loading..." />
+          ) : phases === null ? (
+            <ChartEmpty message="N/A for this range" />
+          ) : phasePieData.length === 0 ? (
+            <ChartEmpty message="No phase data in this range." />
+          ) : (
+            <div className="monitor-chart">
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart>
                   <Pie
@@ -253,20 +249,19 @@ export function CostDashboard() {
                     {phasePieData.map((entry) => (
                       <Cell
                         key={entry.name}
-                        fill={PHASE_COLORS[entry.name] ?? "#64748b"}
+                        fill={PHASE_COLORS[entry.name] ?? "var(--text-3)"}
                       />
                     ))}
                   </Pie>
-                  <Tooltip />
+                  <Tooltip wrapperClassName="monitor-chart-tooltip" />
                   <Legend />
                 </PieChart>
               </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
+            </div>
+          )}
+        </section>
       </div>
-
-    </div>
+    </section>
   );
 }
 

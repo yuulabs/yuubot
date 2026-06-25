@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
+import type { ComponentType } from "react";
 import { Activity, CircleDot, DollarSign, FileText } from "lucide-react";
 import { useHealth, useResourceList } from "@/hooks/use-resources";
-import type { ActorResource, LLMBackendResource, ActorIngressRuleResource } from "@/types/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import type { ActorIngressRuleResource, ActorResource, LLMBackendResource } from "@/types/api";
 import { CostDashboard } from "@/components/cost-dashboard";
 import { PageShell } from "@/components/baseline";
 
@@ -18,28 +18,27 @@ function MonitorPage() {
 
   return (
     <PageShell title="Traces" sub="运行时观测：Actor / Backend / 路由计数、系统健康与成本分析。">
-      <div className="view space-y-6">
-        {/* Stats */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
+      <div className="monitor-page">
+        <div className="monitor-stats monitor-stats--four">
+          <MonitorStat
             icon={Activity}
             label="Active Actors"
-            value={actors.filter((a) => a.enabled).length}
+            value={actors.filter((actor) => actor.enabled).length}
             sub={`of ${actors.length} total`}
           />
-          <StatCard
+          <MonitorStat
             icon={CircleDot}
             label="Backends"
             value={backends.length}
             sub="LLM providers"
           />
-          <StatCard
+          <MonitorStat
             icon={FileText}
             label="Ingress Rules"
             value={rules.length}
             sub="routing bindings"
           />
-          <StatCard
+          <MonitorStat
             icon={DollarSign}
             label="Health"
             value={health?.status === "ok" ? "OK" : "N/A"}
@@ -47,63 +46,60 @@ function MonitorPage() {
           />
         </div>
 
-        {/* System health */}
-        <Card>
-          <CardHeader>
-            <CardTitle>System Health</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <HealthItem label="Admin" value={health?.admin ?? "unknown"} />
-              <HealthItem label="Daemon" value={health?.daemon ?? "unknown"} />
-              <HealthItem label="Ingress Rules" value={String(health?.ingress_rules ?? 0)} />
-              <HealthItem label="Plugins" value={String(health?.plugins ?? 0)} />
+        <section className="monitor-panel">
+          <div className="monitor-panel__head">
+            <div>
+              <h2 className="monitor-panel__title">System Health</h2>
+              <p className="monitor-panel__sub">Admin process, daemon process, route bindings and plugin count.</p>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+          <div className="monitor-health-grid">
+            <HealthItem label="Admin" value={health?.admin ?? "unknown"} />
+            <HealthItem label="Daemon" value={health?.daemon ?? "unknown"} />
+            <HealthItem label="Ingress Rules" value={String(health?.ingress_rules ?? 0)} />
+            <HealthItem label="Plugins" value={String(health?.plugins ?? 0)} />
+          </div>
+        </section>
 
-        {/* Cost & usage analytics dashboard (replaces placeholder Cards).
-            All four /monitor/trace/api/usage/* endpoints are queried by the
-            CostDashboard hooks; switching the range selector re-fires every
-            query. Phase breakdown shows "N/A for this range" for year/total. */}
         <CostDashboard />
       </div>
     </PageShell>
   );
 }
 
-function StatCard({
+function MonitorStat({
   icon: Icon,
   label,
   value,
   sub,
 }: {
-  icon: React.ComponentType<{ className?: string; size?: number }>;
+  icon: ComponentType<{ className?: string; size?: number }>;
   label: string;
   value: string | number;
   sub: string;
 }) {
   return (
-    <Card>
-      <CardContent className="flex items-center gap-4 pt-6">
-        <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-          <Icon className="size-5 text-primary" />
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-muted-foreground">{label}</p>
-          <p className="text-2xl font-bold">{value}</p>
-          <p className="text-xs text-muted-foreground">{sub}</p>
-        </div>
-      </CardContent>
-    </Card>
+    <article className="monitor-stat">
+      <div className="monitor-stat__icon">
+        <Icon size={18} />
+      </div>
+      <div className="monitor-stat__body">
+        <p className="monitor-stat__label">{label}</p>
+        <p className="monitor-stat__value">{value}</p>
+        <p className="monitor-stat__sub">{sub}</p>
+      </div>
+    </article>
   );
 }
 
 function HealthItem({ label, value }: { label: string; value: string }) {
+  const normalized = value.toLowerCase();
+  const statusClass = normalized === "ok" ? "is-ok" : normalized === "unknown" ? "is-muted" : "is-info";
+
   return (
-    <div className="rounded-lg border p-4">
-      <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className="mt-1 text-lg font-semibold">{value}</p>
+    <div className="monitor-health">
+      <p className="monitor-health__label">{label}</p>
+      <p className={`monitor-health__status ${statusClass}`}>{value}</p>
     </div>
   );
 }

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, PanelLeftClose, SquareTerminal, BookOpen, FileEdit, FilePen, Play, Square } from "lucide-react";
+import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, X, UserRound, SquareTerminal, BookOpen, FileEdit, FilePen, Play, Square, Plus } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
-import { sendConversationMessage, cancelConversationTurn, getConversation, getConversationMessages } from "@/lib/api";
+import { sendConversationMessage, cancelConversationTurn, getConversation, getConversationMessages, listConversations } from "@/lib/api";
 import {
   appendRenderBlocks,
   historyItemsFromMessages,
@@ -13,7 +13,13 @@ import {
   type DisplayItem,
   type RenderBlock,
 } from "@/lib/conversation-transcript";
-import type { ActorResource, ConversationData, ConversationMessage, ConversationSSEEvent } from "@/types/api";
+import type {
+  ActorResource,
+  ConversationData,
+  ConversationListItem,
+  ConversationMessage,
+  ConversationSSEEvent,
+} from "@/types/api";
 import {
   extractBashCommand,
   parseEditArgs,
@@ -35,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CostBadge } from "@/components/conversation/cost-badge";
+import { StatusPill } from "@/components/baseline";
 
 function pythonHighlightedSegments(line: string): Array<{ text: string; kind: "plain" | "keyword" | "string" | "comment" | "number" }> {
   const commentIndex = line.indexOf("#");
@@ -464,8 +471,11 @@ function AdminConversationPage() {
   const [error, setError] = useState("");
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [conversationMetadata, setConversationMetadata] = useState<ConversationData | null>(null);
+  const [conversationItems, setConversationItems] = useState<ConversationListItem[]>([]);
+  const [conversationListLoading, setConversationListLoading] = useState(true);
   const [actorLocked, setActorLocked] = useState(false);
-  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [totalCost, setTotalCost] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
@@ -478,6 +488,10 @@ function AdminConversationPage() {
   const seenSseEventKeysRef = useRef<Set<string>>(new Set());
 
   const actor = actors.find((a) => a.id === actorId);
+  const actorById = useMemo(
+    () => new Map(actors.map((item) => [item.id, item])),
+    [actors],
+  );
 
   const connectSse = (): Promise<void> => {
     if (connectingSsePromiseRef.current) {
@@ -683,6 +697,25 @@ function AdminConversationPage() {
   }, [actorId, runningActors]);
 
   useEffect(() => {
+    let cancelled = false;
+    setConversationListLoading(true);
+    void (async () => {
+      try {
+        const rows = await listConversations();
+        if (cancelled) return;
+        setConversationItems(rows.sort((left, right) => conversationTime(right) - conversationTime(left)));
+      } catch {
+        if (!cancelled) setConversationItems([]);
+      } finally {
+        if (!cancelled) setConversationListLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [conversationId, conversationMetadata]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [displayItems]);
 
@@ -792,179 +825,293 @@ function AdminConversationPage() {
     ? hasLiveBlocksForTurn(displayItems, activeTurnKeyRef.current)
     : false;
 
+  const workspacePath = actor?.capability_set?.workspace_path;
+
   return (
-    <div className="flex h-full">
-      <div className="flex flex-1 flex-col">
-        <header className="flex items-center gap-3 border-b px-4 py-3">
-          {actor ? (
-            <Link
-              to="/actors/$id"
-              params={{ id: actor.id }}
-              aria-label="Back to Actor detail"
-            >
-              <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
-            </Link>
-          ) : (
-            <a href="/actors" onClick={(e) => { e.preventDefault(); window.history.back(); }}>
-              <Button variant="ghost" size="icon"><ArrowLeft className="size-4" /></Button>
-            </a>
-          )}
-          <div className="flex-1">
-            <h2 className="text-sm font-semibold">
-              {isDraft ? (actor ? `New conversation with ${actor.name}` : "New conversation") : conversationId}
-            </h2>
-          </div>
-          {/* Running cumulative USD spend — fed by `cost_update` SSE frames.
-              No quota (`/ $limit`) per Phase 5-3 spec: daily budget is global. */}
-          {!isDraft && <CostBadge totalCost={totalCost} />}
-        </header>
-
-        <div className="flex-1 space-y-4 overflow-auto p-4">
-          {loadingHistory && <p className="text-xs text-muted-foreground text-center">Loading history...</p>}
-          {!loadingHistory && displayItems.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center">
-              {actor ? `Say hi to ${actor.name}!` : "No messages yet."}
-            </p>
-          )}
-          {displayItems.map((item) => {
-            const itemIsStreaming = isSending
-              && !!item.turnKey
-              && item.turnKey === activeTurnKeyRef.current;
-            return (
-            <div key={item.key} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[80%] space-y-2 rounded-lg px-4 py-2 text-sm ${item.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
-                {item.blocks.map((block) => (
-                  <MessageBlockView key={block.key} block={block} isStreaming={itemIsStreaming} />
-                ))}
-              </div>
+    <div className="view view--conversations">
+      <div className="chat chat--focus">
+        <div className="chat__main">
+          <header className="chat__topbar chat__topbar--focus">
+            <div className="chat__topbar-left">
+              <Link to="/actors" aria-label="Back to Actors" className="chat__back">
+                <ArrowLeft />
+              </Link>
+              <span className="chat__topbar-crumb">Actors</span>
+              <span className="chev">›</span>
+              <span className="chat__topbar-here">
+                {actor ? actor.name : isDraft ? "新对话" : conversationId}
+              </span>
+              {actor && (
+                <StatusPill variant={actor.enabled ? "running" : "paused"}>
+                  {actor.enabled ? "运行中" : "已停止"}
+                </StatusPill>
+              )}
             </div>
-            );
-          })}
-          {/* Pending indicator */}
-          {isSending && !currentTurnHasLiveBlocks && (
-            <div className="flex justify-start">
-              <div className="flex items-center gap-2 rounded-lg bg-muted px-4 py-2 text-sm text-muted-foreground">
-                <Loader2 className="size-3 animate-spin" /> Waiting for response…
-              </div>
+            <div className="chat__topbar-right">
+              <button type="button" className="btn btn--ghost btn--sm" onClick={() => setHistoryOpen(true)}>
+                <PanelLeft size={14} />
+                <span>历史</span>
+              </button>
+              {workspacePath ? (
+                <a
+                  href={`/workspace/${workspacePath}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn--ghost btn--sm"
+                >
+                  <SquareTerminal size={14} />
+                  <span>Workspace</span>
+                </a>
+              ) : (
+                <button type="button" className="btn btn--ghost btn--sm" disabled>
+                  <SquareTerminal size={14} />
+                  <span>Workspace</span>
+                </button>
+              )}
+              <button type="button" className="btn btn--ghost btn--sm" onClick={() => setProfileOpen(true)}>
+                <UserRound size={14} />
+                <span>Profile</span>
+              </button>
+              {!isDraft && <CostBadge totalCost={totalCost} />}
             </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
+          </header>
 
-        {error && (
-          <div className="mx-4 mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
-        )}
-
-        <form onSubmit={(e) => { e.preventDefault(); void handleSend(); }} className="flex flex-col gap-2 border-t p-4">
-          <div className="flex items-center gap-2">
-            <Input value={input} onChange={(e) => setInput(e.target.value)}
-              placeholder={actor ? `Message ${actor.name}...` : "Select an actor..."}
-              className="flex-1"
-            />
-            {isStopping ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="icon"
-                disabled
-                aria-label="Stopping the turn"
-              >
-                <Loader2 className="size-4 animate-spin" />
-              </Button>
-            ) : isSending ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="icon"
-                onClick={() => { void handleStop(); }}
-                aria-label="Stop the running turn"
-                title="Stop"
-              >
-                <Square className="size-4" />
-              </Button>
-            ) : (
-              <Button
-                type="submit"
-                size="icon"
-                disabled={!input.trim() || !actorId}
-                aria-label="Send message"
-              >
-                <Send className="size-4" />
-              </Button>
+          <div className="chat__scroll">
+            {loadingHistory && <p className="chat__empty-mini">正在读取对话...</p>}
+            {!loadingHistory && displayItems.length === 0 && (
+              <div className="chat__empty">
+                <div className="chat__empty-inner">
+                  <div className="chat__empty-icon"><Send /></div>
+                  <div className="chat__empty-title">{actor ? `向 ${actor.name} 发送第一条消息` : "请选择 Actor"}</div>
+                  <div className="chat__empty-sub">专注对话模式已打开。历史、Workspace 与 Profile 都在右上角。</div>
+                </div>
+              </div>
             )}
+            {displayItems.map((item) => {
+              const itemIsStreaming = isSending
+                && !!item.turnKey
+                && item.turnKey === activeTurnKeyRef.current;
+              return (
+              <div key={item.key} className={`msg ${item.role === "user" ? "msg--user" : "msg--assistant"}`}>
+                <div className="msg__avatar">{item.role === "user" ? "U" : (actor?.name.trim()[0] ?? "A").toUpperCase()}</div>
+                <div className="msg__body">
+                  <div className="msg__meta">{item.role === "user" ? "You" : actor?.name ?? "Actor"}</div>
+                  <div className="msg__bubble">
+                  {item.blocks.map((block) => (
+                    <MessageBlockView key={block.key} block={block} isStreaming={itemIsStreaming} />
+                  ))}
+                  </div>
+                </div>
+              </div>
+              );
+            })}
+            {isSending && !currentTurnHasLiveBlocks && (
+              <div className="msg msg--assistant">
+                <div className="msg__avatar">{(actor?.name.trim()[0] ?? "A").toUpperCase()}</div>
+                <div className="msg__body">
+                  <div className="msg__bubble">
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <Loader2 className="size-3 animate-spin" /> 等待回复...
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={bottomRef} />
           </div>
-        </form>
+
+          {error && (
+            <div className="chat__error">{error}</div>
+          )}
+
+          <form onSubmit={(e) => { e.preventDefault(); void handleSend(); }} className="chat__composer">
+            <div className="composer">
+              <Input value={input} onChange={(e) => setInput(e.target.value)}
+                placeholder={actor ? `给 ${actor.name} 发消息...` : "请选择 Actor..."}
+                className="composer__input"
+              />
+              {isStopping ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="icon"
+                  disabled
+                  aria-label="Stopping the turn"
+                >
+                  <Loader2 className="size-4 animate-spin" />
+                </Button>
+              ) : isSending ? (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="icon"
+                  onClick={() => { void handleStop(); }}
+                  aria-label="Stop the running turn"
+                  title="Stop"
+                >
+                  <Square className="size-4" />
+                </Button>
+              ) : (
+                <Button
+                  type="submit"
+                  className="composer__send"
+                  disabled={!input.trim() || !actorId}
+                  aria-label="Send message"
+                >
+                  <Send className="size-4" />
+                </Button>
+              )}
+            </div>
+          </form>
+        </div>
       </div>
-      <BindingPanel
-        actorId={actorId}
-        actors={runningActors}
-        actor={actor}
-        actorLocked={actorLocked}
-        isSending={isSending}
-        onActorChange={setActorId}
-        collapsed={panelCollapsed}
-        onToggleCollapsed={() => setPanelCollapsed((v) => !v)}
-      />
+
+      {historyOpen && (
+        <div className="chat-drawer" role="dialog" aria-label="历史对话">
+          <button type="button" className="chat-drawer__backdrop" onClick={() => setHistoryOpen(false)} aria-label="关闭历史对话" />
+          <div className="chat-drawer__panel chat-drawer__panel--left">
+            <ConversationRail
+              conversations={conversationItems}
+              actorsById={actorById}
+              activeConversationId={conversationId}
+              actorId={actor?.id ?? actorId}
+              loading={conversationListLoading}
+              onClose={() => setHistoryOpen(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {profileOpen && (
+        <div className="chat-drawer" role="dialog" aria-label="Actor Profile">
+          <button type="button" className="chat-drawer__backdrop" onClick={() => setProfileOpen(false)} aria-label="关闭 Profile" />
+          <div className="chat-drawer__panel chat-drawer__panel--right">
+            <BindingPanel
+              actors={runningActors}
+              actor={actor}
+              actorLocked={actorLocked}
+              isSending={isSending}
+              onActorChange={setActorId}
+              onClose={() => setProfileOpen(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function BindingPanel({
+function ConversationRail({
+  conversations,
+  actorsById,
+  activeConversationId,
   actorId,
+  loading,
+  onClose,
+}: {
+  conversations: ConversationListItem[];
+  actorsById: Map<string, ActorResource>;
+  activeConversationId: string;
+  actorId: string;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const newConversationId = actorId ? `actor-${actorId}` : "new";
+  return (
+    <aside className="chat__rail">
+      <div className="chat__rail-head">
+        <span>历史对话</span>
+        <div className="chat__rail-actions">
+          <Link
+            to="/admin/conversations/$conversationId"
+            params={{ conversationId: newConversationId }}
+            className="chat__back"
+            aria-label="新对话"
+            onClick={onClose}
+          >
+            <Plus />
+          </Link>
+          <button type="button" className="chat__back" onClick={onClose} aria-label="关闭历史对话">
+            <X />
+          </button>
+        </div>
+      </div>
+      <div className="chat__list">
+        {loading ? (
+          <div className="chat__empty-mini">加载中…</div>
+        ) : conversations.length === 0 ? (
+          <div className="chat__empty-mini">暂无历史对话</div>
+        ) : (
+          conversations.map((item) => {
+            const actor = actorsById.get(item.actor_id);
+            const shortId = shortConversationId(item.conversation_id);
+            return (
+              <Link
+                key={item.conversation_id}
+                to="/admin/conversations/$conversationId"
+                params={{ conversationId: item.conversation_id }}
+                className={`conv-item ${item.conversation_id === activeConversationId ? "is-active" : ""}`}
+                title={item.conversation_id}
+                onClick={onClose}
+              >
+                <span className="conv-item__top">
+                  <span className="conv-item__name">{actor?.name ?? item.actor_id}</span>
+                  <span className="conv-item__time">{shortConversationTime(item.updated_at ?? item.created_at)}</span>
+                </span>
+                <span className="conv-item__preview">ID {shortId}</span>
+              </Link>
+            );
+          })
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function BindingPanel({
   actors,
   actor,
   actorLocked,
   isSending,
   onActorChange,
-  collapsed,
-  onToggleCollapsed,
+  onClose,
 }: {
-  actorId: string;
   actors: ActorResource[];
   actor: ActorResource | undefined;
   actorLocked: boolean;
   isSending: boolean;
   onActorChange: (id: string) => void;
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
+  onClose: () => void;
 }) {
-  if (collapsed) {
-    return (
-      <aside className="flex w-9 shrink-0 flex-col items-center border-l bg-card py-3">
-        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} aria-label="Expand binding panel">
-          <PanelLeft className="size-4" />
-        </Button>
-      </aside>
-    );
-  }
   return (
-    <aside className="flex w-[280px] shrink-0 flex-col border-l bg-card">
-      <div className="flex h-11 shrink-0 items-center justify-between border-b px-4">
-        <span className="text-sm font-semibold">Binding</span>
-        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} aria-label="Collapse binding panel">
-          <PanelLeftClose className="size-4" />
-        </Button>
+    <aside className="chat-bind">
+      <div className="chat-bind__head">
+        <span>Profile</span>
+        <button type="button" className="chat__back" onClick={onClose} aria-label="关闭 Profile">
+          <X />
+        </button>
       </div>
-      <div className="flex-1 space-y-4 overflow-auto p-4">
-        <section className="space-y-2">
+      <div className="chat-bind__body">
+        <section className="rail-card">
+          <h3 className="rail-card__title">Actor</h3>
           {actorLocked ? (
             // ISSUE-0010: actor-bound draft (and existing conversations with
-            // messages) render the Actor as a read-only Badge — the editable
-            // actor-select affordance is gone entirely.
-            <div className="flex items-center gap-2">
+            // messages) render the Actor as read-only; the editable actor
+            // select affordance is gone entirely.
+            <div className="chat-bind__line">
               {actor ? (
                 <>
-                  <span className="text-xs font-medium">{actor.name}</span>
-                  <Badge variant={actor.enabled ? "default" : "secondary"} className="text-xs">
-                    {actor.enabled ? "running" : "stopped"}
-                  </Badge>
+                  <span>{actor.name}</span>
+                  <StatusPill variant={actor.enabled ? "running" : "paused"}>
+                    {actor.enabled ? "运行中" : "已停止"}
+                  </StatusPill>
                 </>
               ) : (
-                <Badge variant="secondary" className="text-xs">actor locked</Badge>
+                <StatusPill variant="paused">已锁定</StatusPill>
               )}
             </div>
           ) : (
-            <Select value={actorId} onValueChange={onActorChange} disabled={isSending}>
+            <Select value={actor?.id ?? ""} onValueChange={onActorChange} disabled={isSending}>
               <SelectTrigger className="h-8 w-full text-xs"><SelectValue placeholder="Select actor" /></SelectTrigger>
               <SelectContent>
                 {actors.map((a) => (
@@ -974,9 +1121,9 @@ function BindingPanel({
             </Select>
           )}
           {actor && !actorLocked && (
-            <Badge variant={actor.enabled ? "default" : "secondary"} className="text-xs">
-              {actor.enabled ? "running" : "stopped"}
-            </Badge>
+            <StatusPill variant={actor.enabled ? "running" : "paused"}>
+              {actor.enabled ? "运行中" : "已停止"}
+            </StatusPill>
           )}
           {/* Uses the user-configured CapabilitySet.workspace_path —
               a relative path under <data_dir>/workspace. If empty,
@@ -1006,4 +1153,27 @@ function BindingPanel({
       </div>
     </aside>
   );
+}
+
+function conversationTime(conversation: ConversationListItem): number {
+  const value = conversation.updated_at ?? conversation.created_at;
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function shortConversationTime(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function shortConversationId(value: string): string {
+  return value.replace(/^conversation-/, "").slice(0, 8);
 }

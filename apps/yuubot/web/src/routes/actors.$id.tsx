@@ -273,16 +273,24 @@ function ActorDetailPage() {
               <Empty title="还没有对话" />
             ) : (
               <div className="detail-conv-list">
-                {actorConversations.slice(0, 5).map((c) => (
-                  <Link
-                    key={c.conversation_id}
-                    to="/admin/conversations/$conversationId"
-                    params={{ conversationId: c.conversation_id }}
-                    className="inline-link"
-                  >
-                    {c.conversation_id}
-                  </Link>
-                ))}
+                {actorConversations.slice(0, 5).map((c, index) => {
+                  const shortId = shortConversationId(c.conversation_id);
+                  return (
+                    <Link
+                      key={c.conversation_id}
+                      to="/admin/conversations/$conversationId"
+                      params={{ conversationId: c.conversation_id }}
+                      className="detail-conv-item"
+                      title={c.conversation_id}
+                    >
+                      <span className="detail-conv-item__name">对话 #{index + 1}</span>
+                      <span className="detail-conv-item__preview">ID {shortId}</span>
+                      <span className="detail-conv-item__time">
+                        {formatConvTime(c.updated_at ?? c.created_at)}
+                      </span>
+                    </Link>
+                  );
+                })}
               </div>
             )}
             {actorConversations.length > 0 && (
@@ -322,4 +330,20 @@ function convTime(c: ConversationListItem): number {
   if (!v) return 0;
   const t = new Date(v).getTime();
   return Number.isNaN(t) ? 0 : t;
+}
+
+function shortConversationId(value: string): string {
+  return value.replace(/^conversation-/, "").slice(0, 8);
+}
+
+function formatConvTime(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString(undefined, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

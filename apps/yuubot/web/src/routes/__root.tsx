@@ -20,7 +20,8 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { AppShell, useAppShellActions } from "@/components/baseline";
-import { useHealth } from "@/hooks/use-resources";
+import { useHealth, useResourceList } from "@/hooks/use-resources";
+import type { ActorResource } from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Nav model — aligned to demo-playground sidebar (运行时 / 系统).
@@ -32,6 +33,10 @@ type NavItem = {
   label: string;
   icon: typeof Box;
   group: NavGroupLabel;
+};
+type Crumb = {
+  label: string;
+  to?: "/actors";
 };
 
 const NAV_ITEMS: readonly NavItem[] = [
@@ -46,7 +51,31 @@ const NAV_ITEMS: readonly NavItem[] = [
   { to: "/settings", label: "Settings", icon: SlidersHorizontal, group: "系统" },
 ];
 
-function resolveCrumbs(pathname: string): { group: string; here: string } {
+function resolveCrumbs(
+  pathname: string,
+  actors: ActorResource[],
+): { group: string; trail: Crumb[] } {
+  const actorMatch = pathname.match(/^\/actors\/([^/]+)(?:\/(edit))?$/);
+  if (actorMatch) {
+    const actorId = actorMatch[1] ?? "";
+    const actor = actors.find((item) => item.id === actorId);
+    return {
+      group: "运行时",
+      trail: [
+        { label: "Actors", to: "/actors" },
+        { label: actor?.name ?? actorId },
+        ...(actorMatch[2] ? [{ label: "编辑" }] : []),
+      ],
+    };
+  }
+
+  if (pathname === "/actors/new") {
+    return {
+      group: "运行时",
+      trail: [{ label: "Actors", to: "/actors" }, { label: "新建" }],
+    };
+  }
+
   let best: { group: string; here: string } | null = null;
   let bestLen = -1;
   for (const item of NAV_ITEMS) {
@@ -57,7 +86,9 @@ function resolveCrumbs(pathname: string): { group: string; here: string } {
       }
     }
   }
-  return best ?? { group: "系统", here: "—" };
+  return best
+    ? { group: best.group, trail: [{ label: best.here }] }
+    : { group: "系统", trail: [{ label: "—" }] };
 }
 
 // ---------------------------------------------------------------------------
@@ -172,15 +203,42 @@ function Topbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const queryClient = useQueryClient();
   const { actions } = useAppShellActions();
-  const { group, here } = resolveCrumbs(pathname);
+  const { data: actors = [] } = useResourceList<ActorResource>("actors");
+  const { group, trail } = resolveCrumbs(pathname, actors);
+  if (pathname.startsWith("/admin/conversations/")) {
+    return null;
+  }
   return (
     <header className="topbar">
       <div className="topbar__crumbs">
         <span>{group}</span>
-        <svg className="chev" viewBox="0 0 24 24">
-          <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth={1.6} />
-        </svg>
-        <span className="topbar__here">{here}</span>
+        {trail.map((crumb, index) => {
+          const isCurrent = index === trail.length - 1;
+          const content = (
+            <>
+              <svg className="chev" viewBox="0 0 24 24">
+                <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" strokeWidth={1.6} />
+              </svg>
+              {crumb.label}
+            </>
+          );
+          return crumb.to && !isCurrent ? (
+            <Link
+              key={`${crumb.label}-${index}`}
+              to={crumb.to}
+              className="topbar__crumb-link"
+            >
+              {content}
+            </Link>
+          ) : (
+            <span
+              key={`${crumb.label}-${index}`}
+              className={isCurrent ? "topbar__here" : undefined}
+            >
+              {content}
+            </span>
+          );
+        })}
       </div>
       <div className="topbar__actions">
         <button
@@ -206,10 +264,13 @@ export const Route = createRootRoute({ component: RootLayout });
 
 function RootLayout() {
   const { data: health } = useHealth();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isConversationFocus = pathname.startsWith("/admin/conversations/");
   return (
     <AppShell
       sidebar={<Sidebar daemon={health?.daemon} status={health?.status} />}
       topbar={<Topbar />}
+      focus={isConversationFocus}
     >
       <Outlet />
     </AppShell>

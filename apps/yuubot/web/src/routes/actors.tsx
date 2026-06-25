@@ -11,8 +11,14 @@
 // 已停止(disabled) + 全部. The segment labels keep the demo three-segment shape
 // (全部/运行中/已停止) but draft folds into 已停止.
 import { useEffect, useMemo, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { MessageSquare, Pencil } from "lucide-react";
+import {
+  createFileRoute,
+  Link,
+  Outlet,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
+import { Edit3, Eye, MessageSquare, MoreVertical } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
 import type {
   ActorResource,
@@ -29,11 +35,19 @@ import {
 } from "@/components/baseline";
 
 export const Route = createFileRoute("/actors")({
-  component: ActorsBrowsePage,
+  component: ActorsRoute,
 });
 
 type StatusFilter = "all" | "running" | "stopped";
 type Layout = "grid" | "list";
+
+function ActorsRoute() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  if (pathname !== "/actors") {
+    return <Outlet />;
+  }
+  return <ActorsBrowsePage />;
+}
 
 function ActorsBrowsePage() {
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
@@ -157,71 +171,113 @@ function ActorCard({
   capsetName: string;
 }) {
   const avatar = (actor.name.trim()[0] ?? "A").toUpperCase();
+  const description =
+    actor.default_character?.description ||
+    actor.default_character?.name ||
+    "该 Actor 暂无描述。";
+  const conversationId = `actor-${actor.id}`;
+  const navigate = useNavigate();
+  const openActor = () => {
+    navigate({ to: "/admin/conversations/$conversationId", params: { conversationId } });
+  };
   // ISSUE-0010: actor-bound draft route is the sole conversation entry point.
   return (
-    <article className="actor-card">
+    <article
+      className={`actor-card ${actor.enabled ? "is-running" : "is-paused"}`}
+      role="link"
+      tabIndex={0}
+      onClick={openActor}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openActor();
+        }
+      }}
+      aria-label={`与 ${actor.name} 对话`}
+    >
       <header className="ac__top">
         <div className="ac__avatar">{avatar}</div>
-        <div className="ac__head">
-          <Link to="/actors/$id" params={{ id: actor.id }} className="ac__name">
+        <div className="ac__titlewrap">
+          <button type="button" className="ac__title" onClick={openActor}>
             {actor.name}
-          </Link>
-          <span className="ac__id"><code>{actor.id}</code></span>
+            <StatusPill variant={actor.enabled ? "running" : "paused"}>
+              {actor.enabled ? "运行中" : "已停止"}
+            </StatusPill>
+          </button>
+          <div className="ac__desc">{description}</div>
         </div>
-        <StatusPill variant={actor.enabled ? "running" : "paused"}>
-          {actor.enabled ? "运行中" : "已停止"}
-        </StatusPill>
+        <details className="ac__menu" onClick={(event) => event.stopPropagation()}>
+          <summary className="ac__menu-btn" aria-label={`${actor.name} 操作`}>
+            <MoreVertical size={16} />
+          </summary>
+          <div className="ac__menu-panel">
+            <Link to="/actors/$id" params={{ id: actor.id }} className="menu-item">
+              <Eye size={14} />
+              <span>查看</span>
+            </Link>
+            <Link to="/actors/$id/edit" params={{ id: actor.id }} className="menu-item">
+              <Edit3 size={14} />
+              <span>编辑</span>
+            </Link>
+            <Link
+              to="/admin/conversations/$conversationId"
+              params={{ conversationId }}
+              className="menu-item"
+            >
+              <MessageSquare size={14} />
+              <span>发起对话</span>
+            </Link>
+          </div>
+        </details>
       </header>
       <div className="ac__body">
-        <div className="ac__row"><span>模型</span><code>{actor.default_model}</code></div>
-        <div className="ac__row"><span>Backend</span>{backendName}</div>
+        <div className="ac__row"><span className="lbl">模型</span><code>{actor.default_model}</code></div>
+        <div className="ac__row"><span className="lbl">Backend</span><code>{backendName}</code></div>
         <div className="ac__row">
-          <span>Capability Set</span>
+          <span className="lbl">能力集</span>
           <Link
             to="/capability-sets"
-            className="inline-link"
+            className="chip"
+            onClick={(event) => event.stopPropagation()}
           >
             {capsetName}
           </Link>
         </div>
         {/* workspace column regression anchor (conversation-entry-via-actor test). */}
         <div className="ac__row">
-          <span>Workspace</span>
+          <span className="lbl">Workspace</span>
           {actor.capability_set?.workspace_path ? (
             <a
               href={`/workspace/${actor.capability_set.workspace_path}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-link"
+              className="chip"
+              onClick={(event) => event.stopPropagation()}
             >
               {actor.capability_set.workspace_path}
             </a>
           ) : (
-            <span className="text-muted-foreground">—</span>
+            <span className="chip chip--muted">—</span>
           )}
         </div>
-        <div className="ac__row"><span>步数上限</span>{actor.default_budget?.max_steps ?? "—"}</div>
+        <div className="ac__row">
+          <span className="lbl">预算</span>
+          <code>{actor.default_budget?.max_tokens ?? "—"} tok</code>
+          <span>·</span>
+          <span>步数×{actor.default_budget?.max_steps ?? "—"}</span>
+        </div>
       </div>
-      <footer className="ac__quick">
+      <div className="ac__quick" onClick={(event) => event.stopPropagation()}>
         <Link
           to="/admin/conversations/$conversationId"
-          params={{ conversationId: `actor-${actor.id}` }}
+          params={{ conversationId }}
         >
-          <button type="button" className="btn btn--ghost">
+          <button type="button" className="btn btn--primary btn--sm">
             <MessageSquare size={14} />
             <span>发起对话</span>
           </button>
         </Link>
-        <Link to="/actors/$id" params={{ id: actor.id }}>
-          <button type="button" className="btn btn--ghost">详情</button>
-        </Link>
-        <Link to="/actors/$id/edit" params={{ id: actor.id }}>
-          <button type="button" className="btn btn--ghost">
-            <Pencil size={14} />
-            <span>编辑</span>
-          </button>
-        </Link>
-      </footer>
+      </div>
     </article>
   );
 }

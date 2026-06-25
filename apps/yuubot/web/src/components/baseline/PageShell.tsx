@@ -14,7 +14,7 @@ export function PageShell({ crumbs, actions, title, sub, children }: PageShellPr
   const here = crumbs?.[crumbs.length - 1];
   const trail = crumbs?.slice(0, -1) ?? [];
   return (
-    <>
+    <div className="view">
       {crumbs && crumbs.length > 0 && (
         <header className="topbar">
           <div className="topbar__crumbs">
@@ -37,6 +37,6 @@ export function PageShell({ crumbs, actions, title, sub, children }: PageShellPr
         {!crumbs && actions && <div className="topbar__actions">{actions}</div>}
       </div>
       {children}
-    </>
+    </div>
   );
 }

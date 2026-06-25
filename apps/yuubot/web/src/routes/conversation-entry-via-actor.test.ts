@@ -3,7 +3,7 @@
 // Source-marker test for ISSUE-0010: "start a conversation with this Actor"
 // is the sole creation path. Asserts the four route files + actor-actions
 // reflect the per-Actor conversation entry, and that the top-level
-// Conversation list / [New Conversation] creator is gone.
+// [New Conversation] creator is gone while history remains visible.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync, existsSync } from "node:fs";
@@ -27,17 +27,17 @@ test("__root.tsx no longer exposes a top-level Conversation nav entry", () => {
     "no nav item should target /admin/conversations");
 });
 
-test("admin.conversations.tsx is reduced to a layout shell that redirects bare path to /actors", () => {
+test("admin.conversations.tsx shows history without restoring a top-level creator", () => {
   assert.ok(!listSrc.includes("handleNewConversation"),
     "handleNewConversation creator must be removed");
   assert.ok(!listSrc.includes("New Conversation"),
     "[New Conversation] button copy must be removed");
-  assert.ok(!/<button[\s>]/.test(listSrc),
-    "no conversations-list <button> rendering should remain");
+  assert.ok(listSrc.includes("listConversations"),
+    "bare /admin/conversations must render historical conversations");
   assert.ok(listSrc.includes("/actors"),
-    "bare /admin/conversations must redirect to /actors");
-  assert.ok(listSrc.includes("redirect") || listSrc.includes("Navigate"),
-    "redirect mechanism (redirect() or <Navigate>) must be present");
+    "the only creation affordance should send users to /actors");
+  assert.ok(!listSrc.includes("redirect"),
+    "bare /admin/conversations should no longer redirect away from history");
 });
 
 test("admin.conversations.$conversationId.tsx detects the actor-bound draft and locks the actor", () => {
