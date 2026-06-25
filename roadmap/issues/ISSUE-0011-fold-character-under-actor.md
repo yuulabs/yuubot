@@ -1,7 +1,7 @@
 ---
 id: ISSUE-0011
 slug: fold-character-under-actor
-status: approved
+status: in-progress
 milestone: M-02
 priority: P2
 estimated_work_hours: 1
