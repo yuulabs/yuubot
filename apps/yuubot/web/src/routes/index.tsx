@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { PageShell } from "@/components/baseline";
 
 export const Route = createFileRoute("/")({
   component: DashboardPage,
@@ -22,8 +23,9 @@ function DashboardPage() {
   const runningActors = actors.filter((a) => a.enabled).length;
 
   return (
-    <div className="space-y-6 p-6">
-      {/* Stats row */}
+    <PageShell title="Dashboard" sub="运行时总览：Actor / Backend / 集成 / 路由状态与上手清单。">
+      <div className="view space-y-6">
+        {/* Stats row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           icon={Activity}
@@ -111,7 +113,8 @@ function DashboardPage() {
           <IngressRulesTable rules={rules} actors={actors} />
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

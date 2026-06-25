@@ -4,6 +4,7 @@ import { useHealth, useResourceList } from "@/hooks/use-resources";
 import type { ActorResource, LLMBackendResource, ActorIngressRuleResource } from "@/types/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CostDashboard } from "@/components/cost-dashboard";
+import { PageShell } from "@/components/baseline";
 
 export const Route = createFileRoute("/monitor")({
   component: MonitorPage,
@@ -16,56 +17,58 @@ function MonitorPage() {
   const { data: rules = [] } = useResourceList<ActorIngressRuleResource>("ingress-rules");
 
   return (
-    <div className="space-y-6 p-6">
-      {/* Stats */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          icon={Activity}
-          label="Active Actors"
-          value={actors.filter((a) => a.enabled).length}
-          sub={`of ${actors.length} total`}
-        />
-        <StatCard
-          icon={CircleDot}
-          label="Backends"
-          value={backends.length}
-          sub="LLM providers"
-        />
-        <StatCard
-          icon={FileText}
-          label="Ingress Rules"
-          value={rules.length}
-          sub="routing bindings"
-        />
-        <StatCard
-          icon={DollarSign}
-          label="Health"
-          value={health?.status === "ok" ? "OK" : "N/A"}
-          sub="system status"
-        />
+    <PageShell title="Traces" sub="运行时观测：Actor / Backend / 路由计数、系统健康与成本分析。">
+      <div className="view space-y-6">
+        {/* Stats */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            icon={Activity}
+            label="Active Actors"
+            value={actors.filter((a) => a.enabled).length}
+            sub={`of ${actors.length} total`}
+          />
+          <StatCard
+            icon={CircleDot}
+            label="Backends"
+            value={backends.length}
+            sub="LLM providers"
+          />
+          <StatCard
+            icon={FileText}
+            label="Ingress Rules"
+            value={rules.length}
+            sub="routing bindings"
+          />
+          <StatCard
+            icon={DollarSign}
+            label="Health"
+            value={health?.status === "ok" ? "OK" : "N/A"}
+            sub="system status"
+          />
+        </div>
+
+        {/* System health */}
+        <Card>
+          <CardHeader>
+            <CardTitle>System Health</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <HealthItem label="Admin" value={health?.admin ?? "unknown"} />
+              <HealthItem label="Daemon" value={health?.daemon ?? "unknown"} />
+              <HealthItem label="Ingress Rules" value={String(health?.ingress_rules ?? 0)} />
+              <HealthItem label="Plugins" value={String(health?.plugins ?? 0)} />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Cost & usage analytics dashboard (replaces placeholder Cards).
+            All four /monitor/trace/api/usage/* endpoints are queried by the
+            CostDashboard hooks; switching the range selector re-fires every
+            query. Phase breakdown shows "N/A for this range" for year/total. */}
+        <CostDashboard />
       </div>
-
-      {/* System health */}
-      <Card>
-        <CardHeader>
-          <CardTitle>System Health</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <HealthItem label="Admin" value={health?.admin ?? "unknown"} />
-            <HealthItem label="Daemon" value={health?.daemon ?? "unknown"} />
-            <HealthItem label="Ingress Rules" value={String(health?.ingress_rules ?? 0)} />
-            <HealthItem label="Plugins" value={String(health?.plugins ?? 0)} />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Cost & usage analytics dashboard (replaces placeholder Cards).
-          All four /monitor/trace/api/usage/* endpoints are queried by the
-          CostDashboard hooks; switching the range selector re-fires every
-          query. Phase breakdown shows "N/A for this range" for year/total. */}
-      <CostDashboard />
-    </div>
+    </PageShell>
   );
 }
 

@@ -12,9 +12,13 @@ import {
   useResourceList,
 } from "@/hooks/use-resources";
 import type { IntegrationKind, IntegrationResource } from "@/types/api";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  PageShell,
+  LegendCard,
+  CrudHeader,
+  Empty,
+} from "@/components/baseline";
 
 export const Route = createFileRoute("/integrations")({
   component: IntegrationsPage,
@@ -37,7 +41,13 @@ function IntegrationsPage() {
     return <Outlet />;
   }
 
-  if (isLoading) return <PageShell>Loading integrations...</PageShell>;
+  if (isLoading) {
+    return (
+      <PageShell title="Integrations">
+        <Empty title="加载中…" description="正在读取集成记录。" />
+      </PageShell>
+    );
+  }
 
   const handleCreate = (kindName: string) => {
     createMutation.mutate(
@@ -59,15 +69,13 @@ function IntegrationsPage() {
   };
 
   return (
-    <PageShell>
-      <div className="space-y-6">
+    <PageShell
+      title="Integrations"
+      sub="已配置的集成记录与运行时状态。从可用模板创建新集成以接入外部能力。"
+    >
+      <div className="view space-y-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold">Integrations</h2>
-            <p className="text-sm text-muted-foreground">
-              Configured integration records and their runtime state
-            </p>
-          </div>
+          <CrudHeader title="Configured Integrations" count={integrations.length} />
           <AddIntegrationMenu
             kinds={kinds}
             isPending={createMutation.isPending}
@@ -92,42 +100,39 @@ function IntegrationsPage() {
             ))}
           </div>
         ) : (
-          <Empty text="No integration records configured" />
+          <Empty
+            title="No integration records configured"
+            description="从下方可用模板创建一个集成开始。"
+          />
         )}
 
-        <div>
-          <h2 className="text-lg font-semibold">Available Kinds</h2>
-          <p className="text-sm text-muted-foreground">
-            Supported integration templates for new records
-          </p>
-        </div>
+        <CrudHeader title="Available Kinds" count={kinds.length} />
 
         {kinds && kinds.length > 0 ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {kinds.map((kind) => {
               return (
-                <Card key={kind.name} className="flex flex-col">
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-base">{kind.name}</CardTitle>
-                      <Badge variant="secondary">
-                        {kind.capabilities.length} caps
-                      </Badge>
-                    </div>
-                    <CardDescription>{kind.description}</CardDescription>
-                  </CardHeader>
-                  <CardContent className="flex-1 space-y-3">
+                <LegendCard
+                  key={kind.name}
+                  as="div"
+                  dotColor="slate"
+                  legend={kind.name}
+                  lead={kind.description}
+                >
+                  <div className="flex flex-1 flex-col gap-3">
                     <div className="flex flex-wrap gap-1">
                       {kind.capabilities.map((cap) => (
-                        <Badge
+                        <span
                           key={cap.id}
-                          variant="outline"
-                          className="text-xs"
+                          className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border bg-muted/40"
                         >
                           {cap.id}
-                        </Badge>
+                        </span>
                       ))}
                     </div>
+                    <span className="text-xs text-muted-foreground">
+                      {kind.capabilities.length} capabilities
+                    </span>
                     <Button
                       variant="outline"
                       size="sm"
@@ -138,13 +143,13 @@ function IntegrationsPage() {
                       <Plus className="size-4" />
                       Add integration
                     </Button>
-                  </CardContent>
-                </Card>
+                  </div>
+                </LegendCard>
               );
             })}
           </div>
         ) : (
-          <Empty text="No integration kinds available" />
+          <Empty title="No integration kinds available" />
         )}
       </div>
     </PageShell>
@@ -185,26 +190,23 @@ function IntegrationCard({
   integration: IntegrationResource;
   kind?: IntegrationKind;
 }) {
+  const dotColor = integration.enabled ? "green" : "slate";
   return (
-    <Card className="flex flex-col">
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-3">
-          <CardTitle className="text-base">{integration.id}</CardTitle>
-          <Badge variant={integration.enabled ? "default" : "secondary"}>
-            {integration.enabled ? "enabled" : "disabled"}
-          </Badge>
-        </div>
-        <CardDescription>{kind?.description ?? integration.name}</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-3">
-        <div className="flex flex-wrap gap-1">
-          <Badge variant="outline" className="text-xs">
+    <LegendCard
+      as="div"
+      dotColor={dotColor}
+      legend={integration.id}
+      lead={kind?.description ?? integration.name}
+    >
+      <div className="flex flex-1 flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium border bg-muted/40">
             {integration.name}
-          </Badge>
+          </span>
           {kind ? (
-            <Badge variant="secondary" className="text-xs">
+            <span className="text-xs text-muted-foreground">
               {kind.capabilities.length} caps
-            </Badge>
+            </span>
           ) : null}
         </div>
         <Button variant="outline" size="sm" className="mt-auto w-full" asChild>
@@ -212,8 +214,8 @@ function IntegrationCard({
             Configure
           </Link>
         </Button>
-      </CardContent>
-    </Card>
+      </div>
+    </LegendCard>
   );
 }
 
@@ -229,20 +231,4 @@ function suggestedId(
     suffix += 1;
   }
   return `${kindName}-${suffix}`;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function PageShell({ children }: { children: React.ReactNode }) {
-  return <div className="p-6">{children}</div>;
-}
-
-function Empty({ text }: { text: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-      <p className="text-sm">{text}</p>
-    </div>
-  );
 }
