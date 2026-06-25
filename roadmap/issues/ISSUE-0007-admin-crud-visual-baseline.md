@@ -1,10 +1,13 @@
 ---
 id: ISSUE-0007
 slug: admin-crud-visual-baseline
-status: in-progress
+status: implemented
 milestone: M-02
 priority: P1
 estimated_work_hours: 8
+cycle_hours: 22.9
+implemented_by: 924956e
+regression_test: apps/yuubot/web/src/components/baseline/baseline.test.ts
 ---
 
 # ISSUE-0007: Admin CRUD Visual Baseline
