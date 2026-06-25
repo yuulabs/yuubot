@@ -20,8 +20,10 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProvidersIdRouteImport } from './routes/providers.$id'
 import { Route as IntegrationsIdRouteImport } from './routes/integrations.$id'
 import { Route as AdminConversationsRouteImport } from './routes/admin.conversations'
+import { Route as ActorsNewRouteImport } from './routes/actors.new'
 import { Route as ActorsIdRouteImport } from './routes/actors.$id'
 import { Route as AdminConversationsConversationIdRouteImport } from './routes/admin.conversations.$conversationId'
+import { Route as ActorsIdEditRouteImport } from './routes/actors.$id.edit'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -78,6 +80,11 @@ const AdminConversationsRoute = AdminConversationsRouteImport.update({
   path: '/admin/conversations',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ActorsNewRoute = ActorsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => ActorsRoute,
+} as any)
 const ActorsIdRoute = ActorsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -89,6 +96,11 @@ const AdminConversationsConversationIdRoute =
     path: '/$conversationId',
     getParentRoute: () => AdminConversationsRoute,
   } as any)
+const ActorsIdEditRoute = ActorsIdEditRouteImport.update({
+  id: '/edit',
+  path: '/edit',
+  getParentRoute: () => ActorsIdRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -99,10 +111,12 @@ export interface FileRoutesByFullPath {
   '/providers': typeof ProvidersRouteWithChildren
   '/routes': typeof RoutesRoute
   '/settings': typeof SettingsRoute
-  '/actors/$id': typeof ActorsIdRoute
+  '/actors/$id': typeof ActorsIdRouteWithChildren
+  '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
+  '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
 }
 export interface FileRoutesByTo {
@@ -114,10 +128,12 @@ export interface FileRoutesByTo {
   '/providers': typeof ProvidersRouteWithChildren
   '/routes': typeof RoutesRoute
   '/settings': typeof SettingsRoute
-  '/actors/$id': typeof ActorsIdRoute
+  '/actors/$id': typeof ActorsIdRouteWithChildren
+  '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
+  '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
 }
 export interface FileRoutesById {
@@ -130,10 +146,12 @@ export interface FileRoutesById {
   '/providers': typeof ProvidersRouteWithChildren
   '/routes': typeof RoutesRoute
   '/settings': typeof SettingsRoute
-  '/actors/$id': typeof ActorsIdRoute
+  '/actors/$id': typeof ActorsIdRouteWithChildren
+  '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
+  '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
 }
 export interface FileRouteTypes {
@@ -148,9 +166,11 @@ export interface FileRouteTypes {
     | '/routes'
     | '/settings'
     | '/actors/$id'
+    | '/actors/new'
     | '/admin/conversations'
     | '/integrations/$id'
     | '/providers/$id'
+    | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -163,9 +183,11 @@ export interface FileRouteTypes {
     | '/routes'
     | '/settings'
     | '/actors/$id'
+    | '/actors/new'
     | '/admin/conversations'
     | '/integrations/$id'
     | '/providers/$id'
+    | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
   id:
     | '__root__'
@@ -178,9 +200,11 @@ export interface FileRouteTypes {
     | '/routes'
     | '/settings'
     | '/actors/$id'
+    | '/actors/new'
     | '/admin/conversations'
     | '/integrations/$id'
     | '/providers/$id'
+    | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
   fileRoutesById: FileRoutesById
 }
@@ -275,6 +299,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminConversationsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/actors/new': {
+      id: '/actors/new'
+      path: '/new'
+      fullPath: '/actors/new'
+      preLoaderRoute: typeof ActorsNewRouteImport
+      parentRoute: typeof ActorsRoute
+    }
     '/actors/$id': {
       id: '/actors/$id'
       path: '/$id'
@@ -289,15 +320,36 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminConversationsConversationIdRouteImport
       parentRoute: typeof AdminConversationsRoute
     }
+    '/actors/$id/edit': {
+      id: '/actors/$id/edit'
+      path: '/edit'
+      fullPath: '/actors/$id/edit'
+      preLoaderRoute: typeof ActorsIdEditRouteImport
+      parentRoute: typeof ActorsIdRoute
+    }
   }
 }
 
+interface ActorsIdRouteChildren {
+  ActorsIdEditRoute: typeof ActorsIdEditRoute
+}
+
+const ActorsIdRouteChildren: ActorsIdRouteChildren = {
+  ActorsIdEditRoute: ActorsIdEditRoute,
+}
+
+const ActorsIdRouteWithChildren = ActorsIdRoute._addFileChildren(
+  ActorsIdRouteChildren,
+)
+
 interface ActorsRouteChildren {
-  ActorsIdRoute: typeof ActorsIdRoute
+  ActorsIdRoute: typeof ActorsIdRouteWithChildren
+  ActorsNewRoute: typeof ActorsNewRoute
 }
 
 const ActorsRouteChildren: ActorsRouteChildren = {
-  ActorsIdRoute: ActorsIdRoute,
+  ActorsIdRoute: ActorsIdRouteWithChildren,
+  ActorsNewRoute: ActorsNewRoute,
 }
 
 const ActorsRouteWithChildren =
