@@ -1,10 +1,13 @@
 ---
 id: ISSUE-0011
 slug: fold-character-under-actor
-status: in-progress
+status: implemented
 milestone: M-02
 priority: P2
 estimated_work_hours: 1
+cycle_hours: 0.7
+implemented_by: 1331d0d
+regression_test: manual: admin/actors — create Actor with inline character_prompt; edit Actor detail character_prompt saves
 ---
 
 # ISSUE-0011: Fold Character under Actor
