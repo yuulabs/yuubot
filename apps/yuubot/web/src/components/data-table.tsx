@@ -6,7 +6,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { EmptyState } from "./empty-state";
+import { Empty } from "./baseline/Empty";
 
 interface Column<T> {
   key: string;
@@ -29,11 +29,11 @@ export function DataTable<T extends { id: string }>({
   className,
 }: DataTableProps<T>) {
   if (rows.length === 0) {
-    return <EmptyState label={emptyLabel} />;
+    return <Empty title={emptyLabel} />;
   }
   return (
-    <div className={className}>
-      <Table>
+    <div className={className ? `table-wrap ${className}` : "table-wrap"}>
+      <Table className="data-table">
         <TableHeader>
           <TableRow>
             {columns.map((col) => (
