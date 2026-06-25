@@ -1,395 +1,227 @@
-import { useState } from "react";
+// actors.tsx — /actors browse view (ISSUE-0007 S3).
+//
+// Mirrors demo `view--browse`: page-head (title + sub) + toolbar (SearchBox +
+// SegFilter + LayoutToggle) + grid/list render + Empty. Creation lives in
+// /actors/new; the row/edit actions route there. The shell-level topbar
+// (crumbs + Refresh) is rendered by __root; this route only injects the
+// "新建 Actor" action via useAppShellActions.
+//
+// Schema deviation D-extra: ActorResource carries only `enabled: boolean`, so
+// the demo's draft/paused/running tri-state collapses to running(enabled) /
+// 已停止(disabled) + 全部. The segment labels keep the demo three-segment shape
+// (全部/运行中/已停止) but draft folds into 已停止.
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Sparkles, Trash2, MessageSquare } from "lucide-react";
-import {
-  useResourceList,
-  useCreateResource,
-  useDeleteResource,
-} from "@/hooks/use-resources";
+import { MessageSquare, Pencil } from "lucide-react";
+import { useResourceList } from "@/hooks/use-resources";
 import type {
   ActorResource,
   CapabilitySetResource,
-  CharacterResource,
   LLMBackendResource,
 } from "@/types/api";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
-
+  Empty,
+  LayoutToggle,
+  SearchBox,
+  SegFilter,
+  StatusPill,
+  useAppShellActions,
+} from "@/components/baseline";
 
 export const Route = createFileRoute("/actors")({
-  component: ActorsPage,
+  component: ActorsBrowsePage,
 });
 
-interface ActorFormData {
-  name: string;
-  characterPrompt: string;
-  backendId: string;
-  capabilitySetId: string;
-  model: string;
-  maxSteps: string;
-}
+type StatusFilter = "all" | "running" | "stopped";
+type Layout = "grid" | "list";
 
-const defaultForm: ActorFormData = {
-  name: "",
-  characterPrompt: "",
-  backendId: "",
-  capabilitySetId: "",
-  model: "",
-  maxSteps: "20",
-};
-
-function ActorsPage() {
-  const { data: actors = [], isLoading, error } = useResourceList<ActorResource>("actors");
+function ActorsBrowsePage() {
+  const { data: actors = [] } = useResourceList<ActorResource>("actors");
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: capabilitySets = [] } =
     useResourceList<CapabilitySetResource>("capability-sets");
-  const createActorMutation = useCreateResource<ActorResource>("actors");
-  const createCharacterMutation = useCreateResource<CharacterResource>("characters");
-  const deleteMutation = useDeleteResource("actors");
 
-  const [form, setForm] = useState<ActorFormData>(defaultForm);
-  const [formError, setFormError] = useState("");
-  const selectedBackend = backends.find((backend) => backend.id === form.backendId);
-  const modelOptions = uniqueModelNames([
-    selectedBackend?.default_model,
-    ...(selectedBackend?.models?.names ?? []),
-  ]);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [layout, setLayout] = useState<Layout>("grid");
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const backend = backends.find((b) => b.id === form.backendId);
-    if (!backend) return;
-    const model = form.model.trim();
-    if (!model) {
-      setFormError("Select a model.");
-      return;
-    }
-    if (!form.capabilitySetId) {
-      setFormError("Select a capability set.");
-      return;
-    }
-    if (!form.characterPrompt.trim()) {
-      setFormError("Enter a character prompt.");
-      return;
-    }
-    setFormError("");
+  // Push the "新建 Actor" primary action into the shell topbar.
+  const { setActions } = useAppShellActions();
+  useEffect(() => {
+    setActions(
+      <Link to="/actors/new">
+        <button type="button" className="btn btn--primary">
+          <span>新建 Actor</span>
+        </button>
+      </Link>,
+    );
+    return () => setActions(null);
+  }, [setActions]);
 
-    // Fold character under Actor (ISSUE-0011): front-end dual-call — create the
-    // persona Character first, then the Actor referencing it. The Character CRUD
-    // top-level page is removed; the persona is owned by the Actor from the
-    // researcher's mental model.
-    const character = await createCharacterMutation.mutateAsync({
-      name: form.name,
-      description: "",
-      system_prompt: form.characterPrompt,
-      facade_module: "yb",
-      default_hints: { language: "zh-CN", tone: "" },
-      is_builtin: false,
-      builtin_version: "",
-      cloned_from: "",
-    });
-    await createActorMutation.mutateAsync({
-      name: form.name,
-      type: "simple_loop",
-      enabled: true,
-      default_model: model,
-      default_character_id: character.id,
-      default_llm_backend_id: backend.id,
-      capability_set_id: form.capabilitySetId,
-      default_budget: { max_steps: Number(form.maxSteps) || 20 },
-    });
-    setForm(defaultForm);
-  };
+  const backendName = (id?: string) =>
+    backends.find((b) => b.id === id)?.name ?? "—";
+  const capsetName = (id?: string) =>
+    capabilitySets.find((c) => c.id === id)?.name ?? "—";
 
-  const handleDelete = (id: string) => {
-    if (confirm("Delete this actor?")) deleteMutation.mutate(id);
-  };
+  const counts = useMemo(
+    () => ({
+      all: actors.length,
+      running: actors.filter((a) => a.enabled).length,
+      stopped: actors.filter((a) => !a.enabled).length,
+    }),
+    [actors],
+  );
 
-  if (isLoading) return <PageShell>Loading actors...</PageShell>;
-  if (error) return <PageShell>Error: {error.message}</PageShell>;
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return actors
+      .filter((a) => {
+        if (status === "running") return a.enabled;
+        if (status === "stopped") return !a.enabled;
+        return true;
+      })
+      .filter((a) => {
+        if (!q) return true;
+        const hay = [
+          a.name,
+          a.default_model,
+          backendName(a.default_llm_backend?.id),
+          capsetName(a.capability_set?.id),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(q);
+      });
+  }, [actors, query, status, backends, capabilitySets]);
 
   return (
-    <PageShell>
-      <div className="flex flex-col gap-6 lg:flex-row">
-        {/* Table */}
-        <Card className="flex-1">
-          <CardHeader>
-            <CardTitle>Actors</CardTitle>
-            <CardDescription>{actors.length} actors configured</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {actors.length === 0 ? (
-              <Empty text="No actors yet" />
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Character</TableHead>
-                    <TableHead>Backend</TableHead>
-                    <TableHead>Model</TableHead>
-                    <TableHead>Capability Set</TableHead>
-                    <TableHead>Workspace</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {actors.map((actor) => (
-                    <TableRow key={actor.id}>
-                      <TableCell className="font-medium">
-                        <Link
-                          to="/actors/$id"
-                          params={{ id: actor.id }}
-                          className="hover:underline"
-                        >
-                          {actor.name}
-                        </Link>
-                      </TableCell>
-                      <TableCell className="text-sm">{actor.default_character?.name ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{actor.default_llm_backend?.name ?? "—"}</TableCell>
-                      <TableCell>
-                        <code className="text-xs">{actor.default_model}</code>
-                      </TableCell>
-                      <TableCell className="text-sm">{actor.capability_set?.name ?? "—"}</TableCell>
-                      <TableCell className="text-sm">
-                        {actor.capability_set?.workspace_path ? (
-                          <a
-                            href={`/workspace/${actor.capability_set.workspace_path}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-                          >
-                            Open
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={actor.enabled ? "default" : "secondary"}>
-                          {actor.enabled ? "running" : "stopped"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          {/* ISSUE-0010: conversations are created only from
-                              an Actor — this row action is the canonical
-                              entry to the actor-bound draft route. */}
-                          <Link
-                            to="/admin/conversations/$conversationId"
-                            params={{ conversationId: `actor-${actor.id}` }}
-                          >
-                            <Button variant="ghost" size="xs" title="对话">
-                              <MessageSquare size={14} className="mr-1" />
-                              对话
-                            </Button>
-                          </Link>
-                          <Link to="/actors/$id" params={{ id: actor.id }}>
-                            <Button variant="ghost" size="xs">Edit</Button>
-                          </Link>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleDelete(actor.id)}
-                            disabled={deleteMutation.isPending}
-                          >
-                            <Trash2 className="size-3.5 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Creation form */}
-        <Card className="w-full lg:w-80">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Sparkles className="size-4" />
-              Create Actor
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleCreate} className="space-y-4">
-              <FormField label="Name" required>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  required
-                />
-              </FormField>
-              <FormField label="Character Prompt" required>
-                <Textarea
-                  value={form.characterPrompt}
-                  onChange={(e) => setForm({ ...form, characterPrompt: e.target.value })}
-                  rows={6}
-                  placeholder="System prompt first section — this Actor's persona."
-                  required
-                />
-              </FormField>
-              <FormField label="LLM Backend" required>
-                <Select
-                  value={form.backendId}
-                  onValueChange={(v) => {
-                    const backend = backends.find((bk) => bk.id === v);
-                    const firstModel = backend?.models?.names?.[0] ?? "";
-                    const defaultModel = backend?.default_model ?? "";
-                    setForm({ ...form, backendId: v, model: defaultModel || firstModel });
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select backend" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {backends.map((b) => (
-                      <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FormField>
-              <FormField label="Model" required>
-                <ModelSelect
-                  value={form.model}
-                  models={modelOptions}
-                  onValueChange={(model) => setForm({ ...form, model })}
-                />
-              </FormField>
-              <FormField label="Max Steps">
-                <Input
-                  type="number"
-                  min="1"
-                  value={form.maxSteps}
-                  onChange={(e) => setForm({ ...form, maxSteps: e.target.value })}
-                />
-              </FormField>
-              <FormField label="Capability Set" required>
-                {capabilitySets.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No capability sets yet.{" "}
-                    <Link to="/capability-sets" className="underline">
-                      Create one first
-                    </Link>
-                    .
-                  </p>
-                ) : (
-                  <Select
-                    value={form.capabilitySetId}
-                    onValueChange={(v) => setForm({ ...form, capabilitySetId: v })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select capability set" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {capabilitySets.map((cs) => (
-                        <SelectItem key={cs.id} value={cs.id}>{cs.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-              </FormField>
-              {(formError || createActorMutation.error || createCharacterMutation.error) && (
-                <p className="text-xs text-destructive">
-                  {formError || createActorMutation.error?.message || createCharacterMutation.error?.message}
-                </p>
-              )}
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={createActorMutation.isPending || createCharacterMutation.isPending}
-              >
-                {(createActorMutation.isPending || createCharacterMutation.isPending) ? "Creating..." : "Create Actor"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+    <div className="view">
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">Actors</h1>
+          <p className="page-sub">
+            运行中的 Agent 实例。每个 Actor 绑定一个 Agent 规格与一个 Capability Set，通过 Ingress 规则接收事件并产出回合。点开 Actor 即可发起对话。
+          </p>
+        </div>
       </div>
-    </PageShell>
-  );
-}
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+      {/* toolbar: search + status seg + layout toggle */}
+      <div className="toolbar">
+        <SearchBox value={query} onChange={setQuery} placeholder="按名称、Agent、模型搜索…" />
+        <SegFilter<StatusFilter>
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: "all", label: "全部", count: counts.all },
+            { value: "running", label: "运行中", count: counts.running },
+            { value: "stopped", label: "已停止", count: counts.stopped },
+          ]}
+        />
+        <LayoutToggle value={layout} onChange={setLayout} />
+      </div>
 
-function PageShell({ children }: { children: React.ReactNode }) {
-  return <div className="p-6">{children}</div>;
-}
-
-function FormField({
-  label,
-  required,
-  children,
-}: {
-  label: string;
-  required?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1.5">
-      <label className="text-xs font-medium">
-        {label}
-        {required && <span className="ml-0.5 text-destructive">*</span>}
-      </label>
-      {children}
+      {filtered.length === 0 ? (
+        <Empty
+          illustration="No match"
+          title="没有匹配的 Actor"
+          description="试试调整筛选条件，或新建一个 Actor。"
+          action={
+            <Link to="/actors/new">
+              <button type="button" className="btn btn--primary">新建 Actor</button>
+            </Link>
+          }
+        />
+      ) : (
+        <div className="actors" data-layout={layout}>
+          {filtered.map((actor) => (
+            <ActorCard
+              key={actor.id}
+              actor={actor}
+              backendName={backendName(actor.default_llm_backend?.id)}
+              capsetName={capsetName(actor.capability_set?.id)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function Empty({ text }: { text: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-      <p className="text-sm">{text}</p>
-    </div>
-  );
-}
-
-function ModelSelect({
-  value,
-  models,
-  onValueChange,
+function ActorCard({
+  actor,
+  backendName,
+  capsetName,
 }: {
-  value: string;
-  models: string[];
-  onValueChange: (value: string) => void;
+  actor: ActorResource;
+  backendName: string;
+  capsetName: string;
 }) {
+  const avatar = (actor.name.trim()[0] ?? "A").toUpperCase();
+  // ISSUE-0010: actor-bound draft route is the sole conversation entry point.
   return (
-    <Select
-      value={value}
-      onValueChange={onValueChange}
-      disabled={models.length === 0}
-    >
-      <SelectTrigger>
-        <SelectValue placeholder="Select model" />
-      </SelectTrigger>
-      <SelectContent>
-        {models.map((model) => (
-          <SelectItem key={model} value={model}>
-            {model}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <article className="actor-card">
+      <header className="ac__top">
+        <div className="ac__avatar">{avatar}</div>
+        <div className="ac__head">
+          <Link to="/actors/$id" params={{ id: actor.id }} className="ac__name">
+            {actor.name}
+          </Link>
+          <span className="ac__id"><code>{actor.id}</code></span>
+        </div>
+        <StatusPill variant={actor.enabled ? "running" : "paused"}>
+          {actor.enabled ? "运行中" : "已停止"}
+        </StatusPill>
+      </header>
+      <div className="ac__body">
+        <div className="ac__row"><span>模型</span><code>{actor.default_model}</code></div>
+        <div className="ac__row"><span>Backend</span>{backendName}</div>
+        <div className="ac__row">
+          <span>Capability Set</span>
+          <Link
+            to="/capability-sets"
+            className="inline-link"
+          >
+            {capsetName}
+          </Link>
+        </div>
+        {/* workspace column regression anchor (conversation-entry-via-actor test). */}
+        <div className="ac__row">
+          <span>Workspace</span>
+          {actor.capability_set?.workspace_path ? (
+            <a
+              href={`/workspace/${actor.capability_set.workspace_path}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-link"
+            >
+              {actor.capability_set.workspace_path}
+            </a>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </div>
+        <div className="ac__row"><span>步数上限</span>{actor.default_budget?.max_steps ?? "—"}</div>
+      </div>
+      <footer className="ac__quick">
+        <Link
+          to="/admin/conversations/$conversationId"
+          params={{ conversationId: `actor-${actor.id}` }}
+        >
+          <button type="button" className="btn btn--ghost">
+            <MessageSquare size={14} />
+            <span>发起对话</span>
+          </button>
+        </Link>
+        <Link to="/actors/$id" params={{ id: actor.id }}>
+          <button type="button" className="btn btn--ghost">详情</button>
+        </Link>
+        <Link to="/actors/$id/edit" params={{ id: actor.id }}>
+          <button type="button" className="btn btn--ghost">
+            <Pencil size={14} />
+            <span>编辑</span>
+          </button>
+        </Link>
+      </footer>
+    </article>
   );
-}
-
-function uniqueModelNames(models: Array<string | undefined>): string[] {
-  return Array.from(
-    new Set(models.map((model) => model?.trim()).filter(Boolean) as string[]),
-  ).sort();
 }

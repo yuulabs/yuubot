@@ -1,27 +1,40 @@
+// actors.$id.tsx — /actors/$id pure detail view (ISSUE-0007 S3).
+//
+// Mirrors demo `view--actor-detail`: DetailHero (avatar + name + desc + meta)
+// + detail-grid(detail-main: 配置概览 / 事件路由-Ingress / 能力-Capabilities
+// three LegendCards + detail-rail: 历史对话 rail + 状态 rail + danger rail).
+// Editing no longer inlines here — the 编辑 action routes to /actors/$id/edit.
+//
+// ISSUE-0010 regression (conversation-entry-via-actor test): this page still
+// lists this Actor's historical conversations via listConversations() filtered
+// by actor_id, each row linking to the conversation view route.
 import { useEffect, useState } from "react";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Trash2, MessageSquare } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Trash2 } from "lucide-react";
 import {
-  useResourceList,
-  useSetResourceEnabled,
   useDeleteResource,
-  useUpdateResource,
+  useLiveCapabilities,
+  useResourceList,
 } from "@/hooks/use-resources";
-import type { ActorResource, CharacterResource, ConversationListItem, LLMBackendResource } from "@/types/api";
+import type {
+  ActorIngressRuleResource,
+  ActorResource,
+  CapabilitySetResource,
+  ConversationListItem,
+  LLMBackendResource,
+} from "@/types/api";
 import { listConversations } from "@/lib/api";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
+  DetailHero,
+  Dot,
+  Empty,
+  KvTable,
+  LegendCard,
+  RailCard,
+  StatusPill,
+  useAppShellActions,
+  type DotColor,
+} from "@/components/baseline";
 
 export const Route = createFileRoute("/actors/$id")({
   component: ActorDetailPage,
@@ -29,52 +42,47 @@ export const Route = createFileRoute("/actors/$id")({
 
 function ActorDetailPage() {
   const { id } = Route.useParams();
-  const navigate = useNavigate();
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
-  const { data: characters = [] } = useResourceList<CharacterResource>("characters");
-  const toggleMutation = useSetResourceEnabled("actors");
-  const deleteMutation = useDeleteResource("actors");
-  const updateMutation = useUpdateResource<ActorResource>("actors");
-  const updateCharacterMutation = useUpdateResource<CharacterResource>("characters");
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
+  const { data: capabilitySets = [] } =
+    useResourceList<CapabilitySetResource>("capability-sets");
+  const { data: ingressRules = [] } =
+    useResourceList<ActorIngressRuleResource>("ingress-rules");
+  const { data: liveCaps } = useLiveCapabilities();
+  const deleteMutation = useDeleteResource("actors");
 
   const actor = actors.find((a) => a.id === id);
-  const character = characters.find((c) => c.id === actor?.default_character?.id);
-  const backend = backends.find((item) => item.id === actor?.default_llm_backend?.id);
-  const modelOptions = uniqueModelNames([
-    backend?.default_model,
-    ...(backend?.models?.names ?? []),
-    actor?.default_model,
-  ]);
 
-  const [editName, setEditName] = useState(actor?.name ?? "");
-  const [editModel, setEditModel] = useState(actor?.default_model ?? "");
-  const [editCharacterPrompt, setEditCharacterPrompt] = useState(character?.system_prompt ?? "");
-  const [saveError, setSaveError] = useState("");
-  // ISSUE-0010: per-Actor historical conversations. Pure client-side filter
-  // of listConversations() by actor_id — no new endpoint.
+  // ISSUE-0010: per-Actor historical conversations. Pure client-side filter of
+  // listConversations() by actor_id — no new endpoint.
   const [actorConversations, setActorConversations] = useState<ConversationListItem[]>([]);
   const [conversationsLoading, setConversationsLoading] = useState(true);
 
+  // Inject 编辑 + 发起对话 actions into the shell topbar.
+  const { setActions } = useAppShellActions();
   useEffect(() => {
     if (!actor) {
+      setActions(null);
       return;
     }
-    setEditName(actor.name);
-    setEditModel(actor.default_model);
-    setSaveError("");
-  }, [actor]);
+    setActions(
+      <>
+        <Link to="/actors/$id/edit" params={{ id: actor.id }}>
+          <button type="button" className="btn btn--ghost">编辑</button>
+        </Link>
+        <Link
+          to="/admin/conversations/$conversationId"
+          params={{ conversationId: `actor-${actor.id}` }}
+        >
+          <button type="button" className="btn btn--primary">发起对话</button>
+        </Link>
+      </>,
+    );
+    return () => setActions(null);
+  }, [setActions, actor]);
 
   useEffect(() => {
-    if (character) {
-      setEditCharacterPrompt(character.system_prompt);
-    }
-  }, [character]);
-
-  useEffect(() => {
-    if (!actor) {
-      return;
-    }
+    if (!actor) return;
     let cancelled = false;
     setConversationsLoading(true);
     void (async () => {
@@ -83,7 +91,7 @@ function ActorDetailPage() {
         if (cancelled) return;
         const mine = all
           .filter((c) => c.actor_id === actor.id)
-          .sort((left, right) => conversationTime(right) - conversationTime(left));
+          .sort((a, b) => convTime(b) - convTime(a));
         setActorConversations(mine);
       } catch {
         if (!cancelled) setActorConversations([]);
@@ -98,340 +106,220 @@ function ActorDetailPage() {
 
   if (!actor) {
     return (
-      <div className="p-6">
-        <Link to="/actors" className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="size-4" /> Back to actors
-        </Link>
-        <p className="text-muted-foreground">Actor not found.</p>
+      <div className="view">
+        <Link to="/actors" className="inline-link">← 返回 Actors</Link>
+        <p className="page-sub">未找到该 Actor。</p>
       </div>
     );
   }
 
-  const handleToggle = () => {
-    toggleMutation.mutate({ id: actor.id, enabled: !actor.enabled });
-  };
+  const backend = backends.find((b) => b.id === actor.default_llm_backend?.id);
+  const capset = capabilitySets.find((c) => c.id === actor.capability_set?.id);
+  // Ingress rules routing to this actor (client-side filter of ingress-rules).
+  const rulesForActor = ingressRules.filter((r) => r.actor_id === actor.id);
+  // Capabilities exposed via this actor's capability set (names resolved via
+  // live-capabilities lookup).
+  const capIds = actor.capability_set?.integration_capability_ids ?? [];
+  const capName = (capId: string) =>
+    liveCaps?.find((c) => c.capability_id === capId)?.capability_name ?? capId;
 
   const handleDelete = () => {
-    if (confirm(`Delete actor "${actor.name}"?`)) {
-      deleteMutation.mutate(actor.id, {
-        onSuccess: () => navigate({ to: "/actors" }),
-      });
+    if (confirm(`删除 Actor “${actor.name}”？`)) {
+      deleteMutation.mutate(actor.id);
     }
   };
 
-  const handleSave = async () => {
-    if (!editModel.trim()) {
-      setSaveError("Select a model.");
-      return;
-    }
-    setSaveError("");
-    // Fold character under Actor (ISSUE-0011): the persona prompt lives on the
-    // Actor's underlying Character record, edited inline here — no Character
-    // top-level page is involved from the researcher's view.
-    if (character && editCharacterPrompt !== character.system_prompt) {
-      await updateCharacterMutation.mutateAsync({
-        id: character.id,
-        data: { system_prompt: editCharacterPrompt },
-      });
-    }
-    await updateMutation.mutateAsync({
-      id: actor.id,
-      data: { name: editName, default_model: editModel },
-    });
-  };
+  const dotIndigo: DotColor = "indigo";
+  const dotAmber: DotColor = "amber";
+  const dotGreen: DotColor = "green";
+  const dotSlate: DotColor = "slate";
 
   return (
-    <div className="space-y-6 p-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Link to="/actors">
-            <Button variant="ghost" size="icon">
-              <ArrowLeft className="size-4" />
-            </Button>
-          </Link>
-          <div>
-            <h1 className="text-xl font-bold">{actor.name}</h1>
-            <p className="text-sm text-muted-foreground">Actor ID: {actor.id}</p>
-          </div>
-        </div>
-        <Badge variant={actor.enabled ? "default" : "secondary"}>
-          {actor.enabled ? "running" : "stopped"}
-        </Badge>
+    <div className="view">
+      <div className="page-head">
+        <DetailHero
+          avatar={(actor.name.trim()[0] ?? "A").toUpperCase()}
+          title={actor.name}
+          sub={actor.default_character?.description || actor.default_character?.name || "该 Actor 暂无描述。"}
+          meta={
+            <>
+              <StatusPill variant={actor.enabled ? "running" : "paused"}>
+                {actor.enabled ? "运行中" : "已停止"}
+              </StatusPill>
+              <span className="kv"><b>ID</b> <code>{actor.id}</code></span>
+              <span className="kv"><b>Backend</b> {actor.default_llm_backend?.name ?? "—"}</span>
+              <span className="kv"><b>模型</b> <code>{actor.default_model}</code></span>
+              <span className="kv"><b>Capability Set</b> {actor.capability_set?.name ?? "—"}</span>
+            </>
+          }
+        />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Detail card */}
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Details</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableBody>
-                <TableRow>
-                  <TableCell className="font-medium">Name</TableCell>
-                  <TableCell>{actor.name}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Type</TableCell>
-                  <TableCell>{actor.type}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Model</TableCell>
-                  <TableCell><code>{actor.default_model}</code></TableCell>
-                </TableRow>
-                {actor.default_character && (
-                  <TableRow>
-                    <TableCell className="font-medium">Character</TableCell>
-                    <TableCell>{actor.default_character.name}</TableCell>
-                  </TableRow>
-                )}
-                {actor.capability_set && (
-                  <TableRow>
-                    <TableCell className="font-medium">Capability Set</TableCell>
-                    <TableCell>
-                      <Link
-                        to="/capability-sets"
-                        className="hover:underline"
-                      >
-                        {actor.capability_set.name}
-                      </Link>
-                    </TableCell>
-                  </TableRow>
-                )}
-                {actor.default_llm_backend && (
-                  <TableRow>
-                    <TableCell className="font-medium">LLM Backend</TableCell>
-                    <TableCell>
-                      <Link
-                        to="/providers/$id"
-                        params={{ id: actor.default_llm_backend.id }}
-                        className="hover:underline"
-                      >
-                        {actor.default_llm_backend.name}
-                      </Link>
-                      <span className="ml-2 text-xs text-muted-foreground">
-                        ({actor.default_llm_backend.yuuagents_provider})
-                      </span>
-                    </TableCell>
-                  </TableRow>
-                )}
-                <TableRow>
-                  <TableCell className="font-medium">Max Steps</TableCell>
-                  <TableCell>{actor.default_budget?.max_steps ?? "unlimited"}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Workspace</TableCell>
-                  <TableCell>{actor.capability_set?.workspace_path || "none"}</TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Memory</TableCell>
-                  <TableCell>
-                    {actor.capability_set?.runtime_policy?.memory_enabled
-                      ? "enabled"
-                      : "disabled"}
-                  </TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Capabilities</TableCell>
-                  <TableCell>
-                    {(actor.capability_set?.integration_capability_ids ?? []).length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {(actor.capability_set?.integration_capability_ids ?? []).map(
-                          (capabilityId) => (
-                            <Badge key={capabilityId} variant="secondary">
-                              {capabilityId}
-                            </Badge>
-                          ),
-                        )}
-                      </div>
-                    ) : (
-                      "none"
-                    )}
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+      <div className="detail-grid">
+        <div className="detail-main">
+          {/* 配置概览 */}
+          <LegendCard legend="配置概览" dotColor={dotIndigo} as="div">
+            <KvTable
+              rows={[
+                { key: "Name", value: actor.name },
+                { key: "Type", value: actor.type },
+                { key: "Model", value: <code>{actor.default_model}</code> },
+                { key: "Character", value: actor.default_character?.name ?? "—" },
+                {
+                  key: "Capability Set",
+                  value: capset
+                    ? <Link to="/capability-sets" className="inline-link">{capset.name}</Link>
+                    : "—",
+                },
+                {
+                  key: "Backend",
+                  value: backend
+                    ? <Link to="/providers/$id" params={{ id: backend.id }} className="inline-link">{backend.name}</Link>
+                    : "—",
+                },
+                { key: "MaxSteps", value: actor.default_budget?.max_steps ?? "—" },
+                { key: "Workspace", value: capset?.workspace_path ?? "—" },
+                {
+                  key: "Memory",
+                  value: capset?.runtime_policy?.memory_enabled ? "enabled" : "disabled",
+                },
+              ]}
+            />
+          </LegendCard>
 
-        {/* Actions card */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Actions</CardTitle>
-            <CardDescription>Manage this actor</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Name</label>
-              <Input
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
+          {/* 事件路由（Ingress） */}
+          <LegendCard
+            legend="事件路由（Ingress）"
+            dotColor={dotAmber}
+            lead="以下 Ingress 规则把集成事件路由到这个 Actor。没有规则时 Actor 不接收任何外部事件。"
+            as="div"
+          >
+            {rulesForActor.length === 0 ? (
+              <Empty
+                illustration="Route"
+                title="此 Actor 暂无 Ingress 规则"
+                description="没有规则时 Actor 不接收任何外部事件。"
+                action={
+                  <Link to="/routes">
+                    <button type="button" className="btn btn--ghost" data-jump="ingress">配置 Ingress</button>
+                  </Link>
+                }
               />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Model</label>
-              <ModelSelect
-                value={editModel}
-                models={modelOptions}
-                onValueChange={setEditModel}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Character Prompt</label>
-              <Textarea
-                value={editCharacterPrompt}
-                onChange={(e) => setEditCharacterPrompt(e.target.value)}
-                rows={8}
-                className="font-mono text-sm"
-                placeholder="System prompt first section — this Actor's persona."
-                disabled={!character}
-              />
-              {!character && (
-                <p className="text-xs text-muted-foreground">
-                  This Actor has no persona character attached.
-                </p>
-              )}
-            </div>
-            {(saveError || updateMutation.error || updateCharacterMutation.error) && (
-              <p className="text-xs text-destructive">
-                {saveError || updateMutation.error?.message || updateCharacterMutation.error?.message}
-              </p>
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Source ID</th><th>Path</th><th>Kinds</th><th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rulesForActor.map((r) => (
+                    <tr key={r.id}>
+                      <td><code>{r.source_id_pattern}</code></td>
+                      <td><code>{r.source_path_pattern}</code></td>
+                      <td>{r.kind_patterns.join(", ")}</td>
+                      <td>
+                        <StatusPill variant={r.enabled === false ? "paused" : "running"}>
+                          {r.enabled === false ? "已禁用" : "运行中"}
+                        </StatusPill>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             )}
-            <Button
-              onClick={handleSave}
-              className="w-full"
-              disabled={updateMutation.isPending || updateCharacterMutation.isPending}
-            >
-              {(updateMutation.isPending || updateCharacterMutation.isPending) ? "Saving..." : "Save Changes"}
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={handleToggle}
-              disabled={toggleMutation.isPending}
-            >
-              {actor.enabled ? "Disable" : "Enable"} Actor
-            </Button>
-            <Button
-              variant="destructive"
-              className="w-full"
+          </LegendCard>
+
+          {/* 能力（Capabilities） */}
+          <LegendCard
+            legend="能力（Capabilities）"
+            dotColor={dotGreen}
+            lead="Actor 通过其 Capability Set 获得可调用的能力。"
+            as="div"
+          >
+            {capIds.length === 0 ? (
+              <Empty
+                illustration="Cap"
+                title="无能力绑定"
+                description="为该 Actor 的 Capability Set 选择能力。"
+                action={
+                  <Link to="/actors/$id/edit" params={{ id: actor.id }}>
+                    <button type="button" className="btn btn--ghost">去编辑</button>
+                  </Link>
+                }
+              />
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {capIds.map((capId) => (
+                  <StatusPill key={capId} variant="default" dot={false}>
+                    {capName(capId)}
+                  </StatusPill>
+                ))}
+              </div>
+            )}
+          </LegendCard>
+        </div>
+
+        <aside className="detail-rail">
+          {/* 历史对话 */}
+          <RailCard
+            title="历史对话"
+            hint={conversationsLoading ? undefined : `${actorConversations.length} 条对话`}
+          >
+            <span style={{ marginBottom: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <Dot color={dotSlate} />
+            </span>
+            {conversationsLoading ? null : actorConversations.length === 0 ? (
+              <Empty title="还没有对话" />
+            ) : (
+              <div className="detail-conv-list">
+                {actorConversations.slice(0, 5).map((c) => (
+                  <Link
+                    key={c.conversation_id}
+                    to="/admin/conversations/$conversationId"
+                    params={{ conversationId: c.conversation_id }}
+                    className="inline-link"
+                  >
+                    {c.conversation_id}
+                  </Link>
+                ))}
+              </div>
+            )}
+            {actorConversations.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <Link to="/admin/conversations">更多</Link>
+              </div>
+            )}
+          </RailCard>
+
+          {/* 状态 */}
+          <RailCard title="状态">
+            <StatusPill variant={actor.enabled ? "running" : "paused"}>
+              {actor.enabled ? "运行中" : "已停止"}
+            </StatusPill>
+          </RailCard>
+
+          {/* 危险操作 */}
+          <RailCard danger title="危险操作">
+            <button
+              type="button"
+              className="btn btn--danger"
               onClick={handleDelete}
               disabled={deleteMutation.isPending}
             >
-              <Trash2 className="size-4" />
-              Delete Actor
-            </Button>
-          </CardContent>
-        </Card>
+              <Trash2 size={14} />
+              <span>删除此 Actor</span>
+            </button>
+          </RailCard>
+        </aside>
       </div>
-
-      {/* ISSUE-0010: this Actor's historical conversations. The Actor is the
-          sole conversation entry point — creation happens via the
-          actor-bound draft route below, and prior conversations are listed
-          here (client-side filter of listConversations() by actor_id). */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <div>
-            <CardTitle>Conversations</CardTitle>
-            <CardDescription>
-              {conversationsLoading ? "Loading…" : `${actorConversations.length} conversation${actorConversations.length === 1 ? "" : "s"}`}
-            </CardDescription>
-          </div>
-          <Link to="/admin/conversations/$conversationId" params={{ conversationId: `actor-${actor.id}` }}>
-            <Button variant="outline" size="sm">
-              <MessageSquare className="mr-1.5 size-3.5" />
-              Start conversation
-            </Button>
-          </Link>
-        </CardHeader>
-        <CardContent>
-          {conversationsLoading ? (
-            <p className="text-xs text-muted-foreground">Loading conversations…</p>
-          ) : actorConversations.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No conversations yet. Start one above.</p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Conversation</TableHead>
-                  <TableHead>Updated</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {actorConversations.map((c) => (
-                  <TableRow key={c.conversation_id}>
-                    <TableCell className="font-mono text-xs">
-                      <Link
-                        to="/admin/conversations/$conversationId"
-                        params={{ conversationId: c.conversation_id }}
-                        className="text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
-                      >
-                        {c.conversation_id}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {c.updated_at ? formatConversationTime(c.updated_at) : "—"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
 }
 
-function ModelSelect({
-  value,
-  models,
-  onValueChange,
-}: {
-  value: string;
-  models: string[];
-  onValueChange: (value: string) => void;
-}) {
-  return (
-    <Select
-      value={value}
-      onValueChange={onValueChange}
-      disabled={models.length === 0}
-    >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select model" />
-      </SelectTrigger>
-      <SelectContent>
-        {models.map((model) => (
-          <SelectItem key={model} value={model}>
-            {model}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
-
-function uniqueModelNames(models: Array<string | undefined>): string[] {
-  return Array.from(
-    new Set(models.map((model) => model?.trim()).filter(Boolean) as string[]),
-  ).sort();
-}
-
-function conversationTime(conversation: ConversationListItem): number {
-  const value = conversation.updated_at ?? conversation.created_at;
-  if (!value) {
-    return 0;
-  }
-  const time = new Date(value).getTime();
-  return Number.isNaN(time) ? 0 : time;
-}
-
-function formatConversationTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString();
+function convTime(c: ConversationListItem): number {
+  const v = c.updated_at ?? c.created_at;
+  if (!v) return 0;
+  const t = new Date(v).getTime();
+  return Number.isNaN(t) ? 0 : t;
 }

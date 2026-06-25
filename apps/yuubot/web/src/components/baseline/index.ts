@@ -16,3 +16,4 @@ export * from "./LayoutToggle";
 export * from "./KvTable";
 export * from "./CapTree";
 export * from "./IngressFlow";
+export * from "./ActorEditor";
