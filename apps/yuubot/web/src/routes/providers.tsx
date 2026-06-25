@@ -1,24 +1,24 @@
 import { useState } from "react";
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { AlertTriangle, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Trash2 } from "lucide-react";
 import { useResourceList, useCreateResource, useDeleteResource } from "@/hooks/use-resources";
 import type { LLMBackendResource } from "@/types/api";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { providerBaseUrlWarning } from "@/provider-models";
+import {
+  PageShell,
+  LegendCard,
+  CrudHeader,
+  Empty,
+  Field,
+  StatusPill,
+  type DotColor,
+} from "@/components/baseline";
 
 // ---------------------------------------------------------------------------
 // Provider presets — maps a human-readable API type to yuuagents provider key
-// + default base URL.
+// + default base URL. Local to this route (single source of the preset list).
 // ---------------------------------------------------------------------------
 
 interface ProviderPreset {
@@ -27,6 +27,10 @@ interface ProviderPreset {
   baseUrl: string;
   runtimeProviderKey: string;
   providerName: string;
+  /** Demo mark glyph shown in the preset card head. */
+  mark: string;
+  /** Short note under the preset name. */
+  note: string;
 }
 
 const providerPresets: ProviderPreset[] = [
@@ -36,6 +40,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "https://api.openai.com/v1",
     runtimeProviderKey: "openai",
     providerName: "openai",
+    mark: "OA",
+    note: "GPT-4o / GPT-4o-mini 等官方接口。",
   },
   {
     key: "anthropic",
@@ -43,6 +49,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "https://api.anthropic.com/v1",
     runtimeProviderKey: "anthropic",
     providerName: "anthropic",
+    mark: "AN",
+    note: "Claude 3.5 / Sonnet 系列官方接口。",
   },
   {
     key: "deepseek",
@@ -50,6 +58,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "https://api.deepseek.com",
     runtimeProviderKey: "openai",
     providerName: "deepseek",
+    mark: "DS",
+    note: "DeepSeek-V3 / R1，OpenAI 兼容。",
   },
   {
     key: "groq",
@@ -57,6 +67,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "https://api.groq.com/openai/v1",
     runtimeProviderKey: "openai",
     providerName: "groq",
+    mark: "GQ",
+    note: "超低延迟推理，Llama 系列模型。",
   },
   {
     key: "openrouter",
@@ -64,6 +76,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "https://openrouter.ai/api/v1",
     runtimeProviderKey: "openrouter",
     providerName: "openrouter",
+    mark: "OR",
+    note: "聚合多模型，统一计费入口。",
   },
   {
     key: "google",
@@ -71,6 +85,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
     runtimeProviderKey: "openai",
     providerName: "google",
+    mark: "GG",
+    note: "Gemini 2.5 系列，OpenAI 兼容端点。",
   },
   {
     key: "xai",
@@ -78,6 +94,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "https://api.x.ai/v1",
     runtimeProviderKey: "openai",
     providerName: "xai",
+    mark: "XA",
+    note: "Grok 系列模型，OpenAI 兼容。",
   },
   {
     key: "custom",
@@ -85,6 +103,8 @@ const providerPresets: ProviderPreset[] = [
     baseUrl: "http://localhost:11434/v1",
     runtimeProviderKey: "openai",
     providerName: "custom",
+    mark: "CU",
+    note: "任意 OpenAI 兼容端点（Ollama / vLLM 等）。",
   },
 ];
 
@@ -92,19 +112,62 @@ export const Route = createFileRoute("/providers")({
   component: ProvidersPage,
 });
 
-interface BackendFormData {
-  name: string;
-  providerKey: string; // selected preset key
-  baseUrl: string;
-  apiKey: string;
+// demo `view--providers` styling, lifted verbatim from
+// ../../../../demo-playground/styles.css. S1's baseline.css did not lift the
+// providers-specific preset grid / connected-list / form-slot rules (they are
+// page-scoped, not generic baseline), so this route owns them in a scoped
+// <style> rendered once at the page root.
+const PROVIDERS_VIEW_CSS = `
+.prov-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
 }
+.preset {
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4);
+  display: flex; flex-direction: column; gap: var(--sp-3);
+  transition: border-color .12s, box-shadow .12s, transform .12s;
+  cursor: pointer;
+  position: relative;
+}
+.preset:hover { border-color: var(--border-hi); box-shadow: var(--shadow-hi); }
+.preset.is-connected { background: linear-gradient(180deg, #fff 0%, var(--surface-2) 100%); }
+.preset.is-connected::after {
+  content: ""; position: absolute; top: 10px; right: 10px;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+}
+.preset__head { display: flex; align-items: center; gap: var(--sp-3); }
+.preset__mark {
+  width: 32px; height: 32px; border-radius: var(--r-md);
+  display: grid; place-items: center; font-weight: 700; font-size: 13px;
+  background: var(--navy); box-shadow: inset 0 0 0 1.5px var(--cyan);
+  color: var(--yellow); flex-shrink: 0; font-family: var(--ff-mono);
+}
+.preset__meta { display: flex; flex-direction: column; line-height: 1.25; }
+.preset__name { font-weight: 600; font-size: 13.5px; }
+.preset__badge { font-size: 11px; color: var(--text-3); font-weight: 500; }
+.preset__note { font-size: 12.5px; color: var(--text-2); line-height: 1.45; flex: 1; }
+.preset__foot {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 11.5px; color: var(--text-3);
+}
+.preset__cta {
+  border: 1px solid var(--border-hi); background: var(--surface);
+  padding: 4px 10px; border-radius: var(--r-sm);
+  font-size: 12px; font-weight: 500; color: var(--text); cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.preset:hover .preset__cta { border-color: var(--navy); color: var(--navy); background: var(--surface-4); }
 
-const defaultForm: BackendFormData = {
-  name: "",
-  providerKey: "openai",
-  baseUrl: "https://api.openai.com/v1",
-  apiKey: "",
-};
+.prov-form-slot { margin-top: var(--sp-5); }
+
+.prov-connected { margin-top: var(--sp-8); }
+.prov-connected__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--sp-3); }
+`;
 
 function ProvidersPage() {
   const pathname = useRouterState({
@@ -114,13 +177,45 @@ function ProvidersPage() {
   const createMutation = useCreateResource<LLMBackendResource>("llm-backends");
   const deleteMutation = useDeleteResource("llm-backends");
 
-  const [form, setForm] = useState<BackendFormData>(defaultForm);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: "", baseUrl: "", apiKey: "" });
   const [formError, setFormError] = useState("");
-  const baseUrlWarning = providerBaseUrlWarning(form.providerKey, form.baseUrl);
+
+  const selectedPreset = selectedKey
+    ? (providerPresets.find((p) => p.key === selectedKey) ?? null)
+    : null;
+  const baseUrlWarning = providerBaseUrlWarning(selectedKey ?? "", form.baseUrl);
+
+  if (pathname !== "/providers") {
+    return <Outlet />;
+  }
+
+  if (isLoading) {
+    return (
+      <PageShell title="Providers">
+        <Empty title="加载中…" description="正在读取已连接的后端。" />
+      </PageShell>
+    );
+  }
+  if (error) {
+    return (
+      <PageShell title="Providers">
+        <Empty title="读取失败" description={error.message} />
+      </PageShell>
+    );
+  }
+
+  const selectPreset = (key: string) => {
+    const preset = providerPresets.find((p) => p.key === key);
+    if (!preset) return;
+    setSelectedKey(key);
+    setForm({ name: `${key}-main`, baseUrl: preset.baseUrl, apiKey: "" });
+    setFormError("");
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    const preset = providerPresets.find((p) => p.key === form.providerKey);
+    if (!selectedPreset) return;
     setFormError("");
     if (baseUrlWarning) {
       setFormError(baseUrlWarning);
@@ -128,7 +223,7 @@ function ProvidersPage() {
     }
     await createMutation.mutateAsync({
       name: form.name,
-      yuuagents_provider: preset?.runtimeProviderKey ?? form.providerKey,
+      yuuagents_provider: selectedPreset.runtimeProviderKey,
       model_capabilities: {
         chat: true,
         vision: false,
@@ -141,8 +236,8 @@ function ProvidersPage() {
       pricing: { entries: [] },
       budget: {},
       provider_options: {
-        base_url: form.baseUrl || (preset?.baseUrl ?? ""),
-        provider_name: preset?.providerName ?? form.providerKey,
+        base_url: form.baseUrl || selectedPreset.baseUrl,
+        provider_name: selectedPreset.providerName,
         api_key: form.apiKey,
         timeout: 60,
         max_retries: 2,
@@ -153,41 +248,93 @@ function ProvidersPage() {
         temperature: 0.7,
       },
     });
-    setForm(defaultForm);
-  };
-
-  const handleProviderChange = (key: string) => {
-    const preset = providerPresets.find((p) => p.key === key);
-    if (!preset) return;
-    setForm({
-      ...form,
-      providerKey: key,
-      baseUrl: preset.baseUrl,
-      // auto-generate name if user hasn't typed one yet, or reset on preset switch
-      name: form.name && form.providerKey === key ? form.name : `${key}-main`,
-    });
+    setSelectedKey(null);
   };
 
   const handleDelete = (id: string) => {
     if (confirm("Delete this backend?")) deleteMutation.mutate(id);
   };
 
-  if (pathname !== "/providers") {
-    return <Outlet />;
-  }
-
-  if (isLoading) return <PageShell>Loading backends...</PageShell>;
-  if (error) return <PageShell>Error: {error.message}</PageShell>;
-
   return (
-    <PageShell>
-      <div className="flex flex-col gap-6 lg:flex-row">
-        {/* Backend cards */}
-        <div className="flex-1 space-y-4">
-          {backends.length === 0 ? (
-            <Empty text="No LLM backends configured" />
-          ) : (
-            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+    <PageShell
+      title="Providers"
+      sub="选一个预设，填入 API key，系统会自动准备一个能聊的 Actor（默认 Character / CapabilitySet / Actor 串联就绪）。"
+    >
+      <div className="view">
+        <style>{PROVIDERS_VIEW_CSS}</style>
+        {/* Presets grid */}
+        <div className="prov-presets">
+          {providerPresets.map((preset) => {
+            const connected = backends.find((b) => backendProviderKey(b) === preset.key);
+            return (
+              <PresetCard
+                key={preset.key}
+                preset={preset}
+                connected={!!connected}
+                connectedModel={connected?.default_model}
+                onUse={() => selectPreset(preset.key)}
+              />
+            );
+          })}
+        </div>
+
+        {/* Inline API key form (slot; not a floating popover — D-extra) */}
+        {selectedPreset && (
+          <div className="prov-form-slot">
+            <LegendCard dotColor="indigo" legend={`${selectedPreset.label} 接入`} as="div">
+              <form onSubmit={handleCreate} className="space-y-4">
+                <Field label="显示名称">
+                  <Input
+                    value={form.name}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    required
+                  />
+                </Field>
+                <Field label="Base URL">
+                  <Input
+                    value={form.baseUrl}
+                    onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
+                  />
+                </Field>
+                <Field label="API Key">
+                  <Input
+                    type="password"
+                    value={form.apiKey}
+                    onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
+                    placeholder="sk-..."
+                  />
+                </Field>
+                {baseUrlWarning && (
+                  <p className="flex items-center gap-1.5 text-xs text-destructive">
+                    <AlertTriangle className="size-3.5" /> {baseUrlWarning}
+                  </p>
+                )}
+                {formError && <p className="text-xs text-destructive">{formError}</p>}
+                {createMutation.error && (
+                  <p className="text-xs text-destructive">{createMutation.error.message}</p>
+                )}
+                <div className="flex gap-2">
+                  <Button type="submit" disabled={createMutation.isPending}>
+                    {createMutation.isPending ? "连接中…" : "连接"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setSelectedKey(null)}
+                  >
+                    取消
+                  </Button>
+                </div>
+              </form>
+            </LegendCard>
+          </div>
+        )}
+
+        {/* Connected backends list */}
+        {backends.length > 0 && (
+          <div className="prov-connected">
+            <CrudHeader title="已连接的后端" count={backends.length} />
+            <div className="prov-connected__list">
               {backends.map((backend) => (
                 <BackendCard
                   key={backend.id}
@@ -197,90 +344,52 @@ function ProvidersPage() {
                 />
               ))}
             </div>
-          )}
-        </div>
-
-        {/* Creation form */}
-        <Card className="w-full lg:w-80">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Plus className="size-4" />
-              New Backend
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleCreate} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  Name<span className="ml-0.5 text-destructive">*</span>
-                </label>
-                <Input
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  required
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">
-                  API Type<span className="ml-0.5 text-destructive">*</span>
-                </label>
-                <Select
-                  value={form.providerKey}
-                  onValueChange={handleProviderChange}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select API type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {providerPresets.map((preset) => (
-                      <SelectItem key={preset.key} value={preset.key}>
-                        {preset.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">Base URL</label>
-                <Input
-                  value={form.baseUrl}
-                  onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-                />
-                {baseUrlWarning && (
-                  <p className="text-xs text-destructive">{baseUrlWarning}</p>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium">API Key</label>
-                <Input
-                  type="password"
-                  value={form.apiKey}
-                  onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-                  placeholder="sk-..."
-                />
-              </div>
-              {formError && (
-                <p className="text-xs text-destructive">{formError}</p>
-              )}
-              {createMutation.error && (
-                <p className="text-xs text-destructive">
-                  {createMutation.error.message}
-                </p>
-              )}
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={createMutation.isPending}
-              >
-                {createMutation.isPending ? "Saving..." : "Create Backend"}
-              </Button>
-            </form>
-          </CardContent>
-        </Card>
+          </div>
+        )}
       </div>
     </PageShell>
   );
 }
+
+// ---------------------------------------------------------------------------
+// PresetCard — a preset tile (demo .preset). "使用/管理" CTA selects it.
+// ---------------------------------------------------------------------------
+
+function PresetCard({
+  preset,
+  connected,
+  connectedModel,
+  onUse,
+}: {
+  preset: ProviderPreset;
+  connected: boolean;
+  connectedModel?: string;
+  onUse: () => void;
+}) {
+  return (
+    <div className={`preset${connected ? " is-connected" : ""}`}>
+      <div className="preset__head">
+        <div className="preset__mark">{preset.mark}</div>
+        <div className="preset__meta">
+          <div className="preset__name">{preset.label}</div>
+          <div className="preset__badge">
+            {connected ? `已连接 / ${connectedModel || "—"}` : "预设"}
+          </div>
+        </div>
+      </div>
+      <p className="preset__note">{preset.note}</p>
+      <div className="preset__foot">
+        <button type="button" className="btn btn--ghost preset__cta" onClick={onUse}>
+          {connected ? "管理" : "连接"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BackendCard — a connected backend rendered in LegendCard style.
+// ---------------------------------------------------------------------------
 
 function BackendCard({
   backend,
@@ -295,34 +404,31 @@ function BackendCard({
   const providerLabel = preset?.label ?? backend.yuuagents_provider;
   const missingPricing =
     budgetRequiresPricing(backend) && !hasPricingForDefaultModel(backend);
-  const baseUrlWarning = providerBaseUrlWarning(
+  const warning = providerBaseUrlWarning(
     backendProviderKey(backend),
     backend.provider_options?.base_url ?? "",
   );
-  const statusLabel = baseUrlWarning
-    ? "url invalid"
-    : missingPricing
-      ? "pricing missing"
-      : "active";
+  const dotColor: DotColor = warning || missingPricing ? "amber" : "green";
+  const variant = warning || missingPricing ? "draft" : "connected";
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
+    <LegendCard
+      as="div"
+      dotColor={dotColor}
+      legend={backend.name}
+      lead={providerLabel}
+    >
+      <div className="space-y-2 text-sm">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">{backend.name}</CardTitle>
-          <Badge variant={baseUrlWarning || missingPricing ? "destructive" : "default"}>
-            {statusLabel}
-          </Badge>
+          <span className="text-muted-foreground">状态</span>
+          <StatusPill variant={variant}>{variant === "connected" ? "active" : "需处理"}</StatusPill>
         </div>
-        <CardDescription>{providerLabel}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2 text-sm">
         {backend.provider_options?.base_url && (
-          <div className="flex justify-between">
+          <div className="flex justify-between gap-2">
             <span className="text-muted-foreground">Base URL</span>
-            <span className="font-mono text-xs truncate max-w-[180px]">
+            <code className="font-mono text-xs truncate max-w-[220px]">
               {backend.provider_options.base_url}
-            </span>
+            </code>
           </div>
         )}
         <div className="flex justify-between">
@@ -333,24 +439,15 @@ function BackendCard({
           <span className="text-muted-foreground">Daily Budget</span>
           <span>{formatUsd(backend.budget?.daily_usd)}</span>
         </div>
-        {missingPricing && (
+        {(missingPricing || warning) && (
           <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-            <span>Set input/output pricing before using USD budgets.</span>
-          </div>
-        )}
-        {baseUrlWarning && (
-          <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-            <span>{baseUrlWarning}</span>
+            <span>{warning || "Set input/output pricing before using USD budgets."}</span>
           </div>
         )}
         <div className="flex justify-between pt-2">
-          <Button variant="outline" size="xs" onClick={() => {}}>
-            Test Connection
-          </Button>
           <Link to="/providers/$id" params={{ id: backend.id }}>
-            <Button variant="ghost" size="xs">Edit</Button>
+            <Button variant="outline" size="xs">Edit</Button>
           </Link>
           <Button
             variant="ghost"
@@ -361,26 +458,14 @@ function BackendCard({
             <Trash2 className="size-3.5 text-destructive" />
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </LegendCard>
   );
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function PageShell({ children }: { children: React.ReactNode }) {
-  return <div className="p-6">{children}</div>;
-}
-
-function Empty({ text }: { text: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
-      <p className="text-sm">{text}</p>
-    </div>
-  );
-}
 
 function budgetRequiresPricing(backend: LLMBackendResource): boolean {
   return (backend.budget?.daily_usd ?? 0) > 0 || (backend.budget?.monthly_usd ?? 0) > 0;

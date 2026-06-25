@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
+import { PageShell } from "@/components/baseline";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -14,8 +15,9 @@ function SettingsPage() {
   const { data: health } = useHealth();
 
   return (
-    <div className="space-y-6 p-6">
-      {/* Runtime info */}
+    <PageShell title="Settings" sub="运行时信息、数据导入导出与插件管理。">
+      <div className="view space-y-6">
+        {/* Runtime info */}
       <Card>
         <CardHeader>
           <CardTitle>Runtime</CardTitle>
@@ -130,6 +132,7 @@ function SettingsPage() {
           </div>
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </PageShell>
   );
 }
