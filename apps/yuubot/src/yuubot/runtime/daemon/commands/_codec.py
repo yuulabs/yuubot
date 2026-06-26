@@ -19,14 +19,18 @@ from yuubot.core.tools import ToolRegistry
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
+    BudgetPolicy,
     CapabilitySetRecord,
     CharacterRecord,
     IntegrationRecord,
     LLMBackendRecord,
+    ModelCatalog,
+    PricingTable,
     ToolConfig,
     YuuAgentBudget,
     YuuAgentLLMOptions,
 )
+from yuubot.resources.builtin_catalogues import builtin_catalogue_for
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.service import ResourceService
 from yuubot.resources.store.models import (
@@ -118,6 +122,8 @@ class ResourceCodec:
             error = self._validate_agent_tools(record.agent_tools)
             if error is not None:
                 return error
+        if isinstance(record, LLMBackendRecord):
+            return _enrich_builtin_llm_backend(record)
         return record
 
     async def decode_update_payload(
@@ -370,3 +376,30 @@ class ResourceCodec:
                     400,
                 )
         return None
+
+
+def _enrich_builtin_llm_backend(record: LLMBackendRecord) -> LLMBackendRecord:
+    catalogue = builtin_catalogue_for(record.provider_options, record.yuuagents_provider)
+    if catalogue is None:
+        return record
+    return LLMBackendRecord(
+        id=record.id,
+        name=record.name,
+        yuuagents_provider=record.yuuagents_provider,
+        model_capabilities=record.model_capabilities,
+        models=record.models
+        if record.models.names
+        else ModelCatalog(names=catalogue.models),
+        pricing=record.pricing
+        if record.pricing.entries
+        else PricingTable(entries=catalogue.pricing_entries),
+        budget=record.budget
+        if record.budget != BudgetPolicy()
+        else BudgetPolicy(daily_usd=None, monthly_usd=None),
+        provider_options=record.provider_options,
+        default_model=record.default_model or catalogue.default_model,
+        default_stream_options=record.default_stream_options,
+        version=record.version,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )

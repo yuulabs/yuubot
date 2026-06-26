@@ -191,6 +191,145 @@ async def test_create_llm_backend(resources: Resources, tmp_path: Path) -> None:
         await runtime.services.stop()
 
 
+async def test_create_openai_llm_backend_fills_builtin_catalogue(
+    resources: Resources, tmp_path: Path
+) -> None:
+    runtime = _build_runtime(resources, tmp_path)
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.post(
+                "/api/resources/llm-backends",
+                headers=HEADERS,
+                json={
+                    "name": "openai-backend",
+                    "yuuagents_provider": "openai",
+                    "provider_options": {"provider_name": "openai"},
+                    "model_capabilities": {"chat": True},
+                    "models": {"names": []},
+                    "pricing": {"entries": []},
+                    "budget": {},
+                    "default_model": "",
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        data = resp.json()["data"]
+        assert data["default_model"] == "gpt-5.4-mini"
+        assert data["models"]["names"] == [
+            "gpt-5.5",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+        ]
+        default_pricing = [
+            entry
+            for entry in data["pricing"]["entries"]
+            if entry["model"] == "gpt-5.4-mini"
+        ]
+        assert default_pricing == [
+            {
+                "model": "gpt-5.4-mini",
+                "input_per_million": 0.75,
+                "cached_input_per_million": 0.075,
+                "output_per_million": 4.5,
+            }
+        ]
+    finally:
+        await runtime.services.stop()
+
+
+async def test_create_deepseek_llm_backend_fills_builtin_catalogue(
+    resources: Resources, tmp_path: Path
+) -> None:
+    runtime = _build_runtime(resources, tmp_path)
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.post(
+                "/api/resources/llm-backends",
+                headers=HEADERS,
+                json={
+                    "name": "deepseek-backend",
+                    "yuuagents_provider": "openai",
+                    "provider_options": {"base_url": "https://api.deepseek.com"},
+                    "model_capabilities": {"chat": True},
+                    "models": {"names": []},
+                    "pricing": {"entries": []},
+                    "budget": {},
+                    "default_model": "",
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        data = resp.json()["data"]
+        assert data["default_model"] == "deepseek-v4-flash"
+        assert data["models"]["names"] == [
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        ]
+        assert data["pricing"]["entries"] == [
+            {
+                "model": "deepseek-v4-flash",
+                "input_per_million": 0.14,
+                "cached_input_per_million": 0.0028,
+                "output_per_million": 0.28,
+            },
+            {
+                "model": "deepseek-v4-pro",
+                "input_per_million": 0.435,
+                "cached_input_per_million": 0.003625,
+                "output_per_million": 0.87,
+            },
+        ]
+    finally:
+        await runtime.services.stop()
+
+
+async def test_create_custom_llm_backend_preserves_supplied_catalogue(
+    resources: Resources, tmp_path: Path
+) -> None:
+    runtime = _build_runtime(resources, tmp_path)
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.post(
+                "/api/resources/llm-backends",
+                headers=HEADERS,
+                json={
+                    "name": "custom-backend",
+                    "yuuagents_provider": "custom",
+                    "provider_options": {"base_url": "https://llm.example.test/v1"},
+                    "model_capabilities": {"chat": True},
+                    "models": {"names": ["custom-model"]},
+                    "pricing": {
+                        "entries": [
+                            {
+                                "model": "custom-model",
+                                "input_per_million": 1.25,
+                                "cached_input_per_million": 0.25,
+                                "output_per_million": 2.5,
+                            }
+                        ]
+                    },
+                    "budget": {"daily_usd": 1.0},
+                    "default_model": "custom-model",
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        data = resp.json()["data"]
+        assert data["default_model"] == "custom-model"
+        assert data["models"]["names"] == ["custom-model"]
+        assert data["pricing"]["entries"] == [
+            {
+                "model": "custom-model",
+                "input_per_million": 1.25,
+                "cached_input_per_million": 0.25,
+                "output_per_million": 2.5,
+            }
+        ]
+        assert data["budget"] == {"daily_usd": 1.0, "monthly_usd": None}
+    finally:
+        await runtime.services.stop()
+
+
 async def test_create_rejects_missing_secret(
     resources: Resources, tmp_path: Path
 ) -> None:
@@ -569,6 +708,4 @@ async def test_unknown_resource_type_returns_404(
         assert resp.status_code == 404
     finally:
         await runtime.services.stop()
-
-
 

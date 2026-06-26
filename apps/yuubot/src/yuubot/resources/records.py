@@ -31,6 +31,7 @@ class ModelCatalog(msgspec.Struct):
 class PricingEntry(msgspec.Struct):
     model: str
     input_per_million: float = 0.0
+    cached_input_per_million: float = 0.0
     output_per_million: float = 0.0
 
 

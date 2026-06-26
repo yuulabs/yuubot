@@ -46,11 +46,18 @@ def _pricing_entry(
 
 def _calculate_cost(usage: yuullm.Usage, entry: PricingEntry) -> yuullm.Cost:
     """Pure arithmetic: compute cost from token counts and per-million rates."""
-    input_cost = usage.input_tokens * entry.input_per_million / 1_000_000
+    input_tokens = max(usage.input_tokens, 0)
+    cache_read_tokens = min(max(usage.cache_read_tokens, 0), input_tokens)
+    regular_input_tokens = input_tokens - cache_read_tokens
+    input_cost = regular_input_tokens * entry.input_per_million / 1_000_000
+    cache_read_cost = (
+        cache_read_tokens * entry.cached_input_per_million / 1_000_000
+    )
     output_cost = usage.output_tokens * entry.output_per_million / 1_000_000
     return yuullm.Cost(
         input_cost=input_cost,
+        cache_read_cost=cache_read_cost,
         output_cost=output_cost,
-        total_cost=input_cost + output_cost,
+        total_cost=input_cost + cache_read_cost + output_cost,
         source="yuubot-pricing",
     )

@@ -128,6 +128,7 @@ export interface ModelCatalog {
 export interface PricingEntry {
   model: string;
   input_per_million?: number;
+  cached_input_per_million?: number;
   output_per_million?: number;
 }
 
