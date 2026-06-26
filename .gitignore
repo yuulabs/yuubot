@@ -50,3 +50,7 @@ vendor/
 !apps/yuubot/web/src/lib/
 .agents/
 .timetracking/
+
+# Local tooling artifacts
+.codex/
+skills-lock.json
