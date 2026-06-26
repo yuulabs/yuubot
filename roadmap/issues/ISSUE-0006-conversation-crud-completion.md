@@ -1,10 +1,11 @@
 ---
 id: ISSUE-0006
 slug: conversation-crud-completion
-status: approved
+status: deprecated
 milestone: M-02
 priority: P1
 estimated_work_hours: 2
+deprecated_reason: 部分实现已落地于 main（DELETE /api/admin/conversations/{id} 竧联删 messages+history_items；首轮 user/assistant 文本生成 title 并写入空 title；前端单删按钮 + actor 过滤的对话 rail + ActorEditor 三态化）。剩余范围放弃：批量删除（DataTable）与 llm_roles.summarizer LLM 摘要生成——因前端整体重构，原契约已无落地位置。未走 →in-progress，直接 approved→deprecated。
 ---
 
 # ISSUE-0006: Conversation CRUD Completion
