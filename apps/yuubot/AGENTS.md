@@ -15,7 +15,7 @@ are all shipped as importable top-level packages from the same wheel.
 
 | Path | Responsibility |
 |---|---|
-| `cli.py` | `ybot` entrypoint (`check`, `daemon`, `admin`, `dev`, `trace ui`, `export`, `import`). Owns `ybot dev`: builds the Admin UI, spawns daemon+admin children, health probes. Also owns worktree-shared dev caches (`_find_monorepo_root`, `_git_common_dir_parent`). |
+| `cli.py` | `ybot` entrypoint (`check`, `daemon`, `admin`, `dev`, `export`, `import`). Owns `ybot dev`: builds the Admin UI, spawns daemon+admin children, health probes. Also owns worktree-shared dev caches (`_find_monorepo_root`, `_git_common_dir_parent`). |
 | `bootstrap/` | `config.py` — v2 `BootstrapConfig` (msgspec), loads `config.yaml` + `.env`. `layout.py` — `DataLayout`, the single source of truth for every on-disk path derived from `paths.data_dir`. |
 | `core/gateway.py` | Event ingress → routes accepted events into conversations. First hop after the recorder. |
 | `core/routing.py` | `RouteTable` matching: event → `ConversationRoute` (integration/character/actor). |
@@ -30,12 +30,12 @@ are all shipped as importable top-level packages from the same wheel.
 | `core/tools/` | `contracts.py`, `registry.py`; `impls/` (`bash.py`, `execute_python.py`, `file_tools.py`). |
 | `core/observability.py` | `YuubotTraceContextProvider` — augments yuuagents OTEL spans with `yuubot.*` attrs (conversation_id, character, model, actor, integration, capability, task). |
 | `core/` (rest) | `bindings.py`, `capabilities.py`, `cache.py`, `costing.py`, `events.py`, `llm.py`, `messages.py`, `message_rendering.py`, `secrets.py`, `validation.py`, `builtin_tools.py`. |
-| `resources/` | V1 resource layer: `root.py` (`Resources` aggregate), `store/`, `repository.py`, `records.py`, `orm.py`, `registry.py`, `service.py`, `codec.py`, `events.py`, `errors.py`, `secrets.py`. Loaded from `config.yaml` into DB tables at startup. |
+| `resources/` | Runtime resource layer: `root.py` (`Resources` aggregate), `store/`, `repository.py`, `records.py`, `orm.py`, `registry.py`, `service.py`, `codec.py`, `events.py`, `errors.py`, `secrets.py`. Runtime resources are DB/API owned, not loaded from `config.yaml`. |
 | `runtime/daemon/` | `app.py` (`build_daemon`, ASGI wiring, `logger`), `handlers.py` (HTTP + SSE producer, `logger`), `middleware.py`, `validators.py`, `commands/` (`_app.py`, `_handlers.py` [has `logger`], `_codec.py`, `_middleware.py`, `_schemas.py`, `_helpers.py`). |
 | `runtime/admin/` | `app.py` (`build_admin`), `handlers/` (`_proxy.py` — daemon proxy + SSE relay; `_daemon.py` — `_stream_daemon_sse`; `_provider_admin.py`, `_plugin_admin.py`, `_meta.py`, `_helpers.py`, `_types.py`). |
 | `runtime/plugin/` | External plugin subprocess host: `_manager.py` (`logger`), `_process.py` (`logger`), `_facade.py`, `_lifecycle.py`, `_manifest.py`. |
 | `runtime/archive.py` | `export_data` / `import_data` for `ybot export|import`. |
-| `runtime/process.py` | `configure_file_logging` (rotating 10 MB×5), `ASGIServer`/`UvicornServer`, `ServiceHost`, `TraceService` (yuutrace collector+UI threads), `open_store`, `open_resources`. |
+| `runtime/process.py` | `configure_file_logging` (rotating 10 MB×5), `ASGIServer`/`UvicornServer`, `ServiceHost`, `TraceService` (yuutrace collector thread), `open_store`, `open_resources`. |
 | `events.py`, `process.py` (top) | Cross-cutting event types and small process helpers. |
 
 ### `src/yb/` — handwritten system facade (runtime, in agents)
@@ -108,15 +108,18 @@ sits at the yuubot↔yuuagents or daemon↔agent boundary.
 | Artifact | Path | How |
 |---|---|---|
 | Platform DB | `<data_dir>/yuubot/yuubot.db` (default `~/.yuubot/yuubot/yuubot.db`) | `sqlite3 -readonly <path>` — `conversations`, resources, routes |
-| Trace DB | `<data_dir>/yuubot/traces.db` | `uv run ybot --config config.yaml trace ui`, or `sqlite3 -readonly` |
+| Trace DB | `<data_dir>/yuubot/traces.db` | Admin Monitor, or `sqlite3 -readonly` |
 | Logs | `<data_dir>/yuubot/logs/{daemon,admin}.log` | tail / grep for tracebacks |
 
 ## Commands
 
+If the repository root has no `config.yaml`, copy
+`apps/yuubot/config.example.yaml` to `config.yaml` and fill the required
+environment variables before running process commands.
+
 ```bash
 uv run ybot --config config.yaml check         # validate bootstrap config
 uv run ybot --config config.yaml dev           # daemon + admin + web build
-uv run ybot --config config.yaml trace ui      # browse traces
 uv run pytest                                   # package-local tests
 uv run pytest tests/test_<x>.py -v
 cd web && pnpm install && pnpm run build        # frontend (also done by dev)

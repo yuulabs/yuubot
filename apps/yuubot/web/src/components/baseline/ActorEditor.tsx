@@ -8,8 +8,8 @@
 // new/edit while the route files retain the create/update contract evidence.
 //
 // Schema deviations vs the demo (design.md D1 + D-extra):
-//  • default_budget.max_tokens  ← demo "单回合上限 (tokens)"
-//  • default_budget.max_steps   ← demo "步数上限" (demo said max_tool_calls)
+//  • per_run_budget.max_tokens  ← demo "单回合上限 (tokens)"
+//  • per_run_budget.max_steps   ← demo "步数上限" (demo said max_tool_calls)
 import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import type {
@@ -75,7 +75,7 @@ export function ActorEditor({
   const actorTypeOptions = actorTypeChoices(state.actorType);
   const selectedBackend = backends.find((b) => b.id === state.backendId);
   const selectedCapabilitySet = capabilitySets.find((cs) => cs.id === state.capabilitySetId);
-  const backendName = selectedBackend?.name ?? actor?.default_llm_backend?.name ?? state.backendId;
+  const backendName = selectedBackend?.name ?? state.backendId;
   const capabilitySetName = selectedCapabilitySet?.name ?? actor?.capability_set?.name ?? state.capabilitySetId;
 
   return (
@@ -175,7 +175,7 @@ export function ActorEditor({
                       const id = e.target.value;
                       const b = backends.find((bk) => bk.id === id);
                       setState("backendId", id);
-                      setState("model", b?.default_model ?? b?.models?.names?.[0] ?? "");
+                      setState("model", b?.recommended_model ?? Object.keys(b?.model_configs ?? {})[0] ?? "");
                     }}
                   >
                     <option value="">选择 LLM 供应商</option>
@@ -235,7 +235,7 @@ export function ActorEditor({
           {/* 预算与节流 */}
           <LegendCard legend="预算与节流" dotColor={dotAmber}>
             <div className="grid-2">
-              {/* D1: default_budget.max_tokens ← demo 单回合上限 (tokens) */}
+              {/* D1: per_run_budget.max_tokens ← demo 单回合上限 (tokens) */}
               <Field label="单回合上限 (tokens)">
                 {readOnly ? (
                   <ReadOnlyValue>{state.maxTokens}</ReadOnlyValue>
@@ -250,7 +250,7 @@ export function ActorEditor({
                   />
                 )}
               </Field>
-              {/* D: default_budget.max_steps ← demo 步数上限 (命 max_tool_calls) */}
+              {/* D: per_run_budget.max_steps ← demo 步数上限 (命 max_tool_calls) */}
               <Field label="步数上限">
                 {readOnly ? (
                   <ReadOnlyValue>{state.maxSteps}</ReadOnlyValue>
@@ -365,7 +365,7 @@ export function modelOptionsFor(backend?: LLMBackendResource): string[] {
   if (!backend) return [];
   return Array.from(
     new Set(
-      [backend.default_model, ...(backend.models?.names ?? [])]
+      [backend.recommended_model, ...Object.keys(backend.model_configs ?? {})]
         .map((m) => m?.trim())
         .filter(Boolean) as string[],
     ),

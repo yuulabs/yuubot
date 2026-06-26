@@ -7,7 +7,6 @@ from yuubot.bootstrap.config import (
     PathsConfig,
     SecretConfig,
     TraceConfig,
-    YuuAgentsConfig,
     load_bootstrap_config,
 )
 from yuubot.bootstrap.layout import DataLayout
@@ -22,6 +21,5 @@ __all__ = [
     "PathsConfig",
     "SecretConfig",
     "TraceConfig",
-    "YuuAgentsConfig",
     "load_bootstrap_config",
 ]

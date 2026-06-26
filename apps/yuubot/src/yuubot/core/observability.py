@@ -14,13 +14,12 @@ from yuuagents import RuntimeEvent
 @dataclass
 class YuubotTraceContext:
     conversation_id: UUID | str | None = None
-    character_name: str = ""
     model: str = ""
 
 
 @dataclass
 class YuubotTraceContextProvider:
-    """Adds yuubot actor/character/integration attributes to yuuagents traces."""
+    """Adds yuubot actor/integration attributes to yuuagents traces."""
 
     _contexts: dict[str, YuubotTraceContext] = field(default_factory=dict, init=False)
     _agent_contexts: dict[str, YuubotTraceContext] = field(
@@ -32,13 +31,10 @@ class YuubotTraceContextProvider:
         self,
         agent_name: str,
         *,
-        character_name: str = "",
         model: str = "",
         conversation_id: str | UUID | None = None,
     ) -> None:
         ctx = self._contexts.setdefault(agent_name, YuubotTraceContext())
-        if character_name:
-            ctx.character_name = character_name
         if model:
             ctx.model = model
         if conversation_id is not None:
@@ -49,8 +45,6 @@ class YuubotTraceContextProvider:
             agent_ctx = self._agent_contexts.get(agent_id)
             if agent_ctx is None:
                 continue
-            if character_name:
-                agent_ctx.character_name = character_name
             if model:
                 agent_ctx.model = model
 
@@ -79,7 +73,6 @@ class YuubotTraceContextProvider:
     def event_attributes(self, event: RuntimeEvent) -> dict[str, AttributeValue]:
         ctx = self._context_for(event)
         attrs: dict[str, AttributeValue] = {
-            "yuubot.character_name": ctx.character_name,
             "yuubot.model": self.model(event),
         }
         if ctx.conversation_id is not None:
@@ -101,7 +94,6 @@ class YuubotTraceContextProvider:
                 base = self._contexts.setdefault(event.agent_name, YuubotTraceContext())
                 ctx = YuubotTraceContext(
                     conversation_id=base.conversation_id,
-                    character_name=base.character_name,
                     model=base.model,
                 )
                 self._agent_contexts[event.agent_id] = ctx

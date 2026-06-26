@@ -3,29 +3,38 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TypeVar
 
 import msgspec
 
 from yuubot.core.llm import BoundLLM
-from yuubot.core.validation import validate_stream_options
+from yuubot.core.validation import GenerationParams, validate_generation_params
 from yuubot.resources.records import (
     ActorRecord,
     CapabilitySetRecord,
-    CharacterRecord,
     ConversationRecord,
     LLMBackendRecord,
+    ResolvedActor,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 from yuubot.resources.repository import ResourceRepository
-from yuubot.resources.store.models import ActorORM, ConversationORM
+from yuubot.resources.store.models import (
+    ActorORM,
+    CapabilitySetORM,
+    ConversationORM,
+    LLMBackendORM,
+)
 
 
 class ActorBinding(msgspec.Struct):
     """Always-on actor identity and defaults."""
 
-    actor: ActorRecord
+    resolved: ResolvedActor
     workspace_path: Path | None = None
+
+    @property
+    def actor(self) -> ActorRecord:
+        return self.resolved.actor
 
     @property
     def actor_id(self) -> str:
@@ -45,16 +54,15 @@ class ActorBinding(msgspec.Struct):
         return AgentBinding(
             owner_id=self.actor.id,
             agent_name=self.actor.name,
-            character=self.actor.default_character,
-            capability_set=self.actor.capability_set,
+            actor=self.actor,
+            capability_set=self.resolved.capability_set,
             llm=_bound_llm(
                 self.actor.name,
-                self.actor.default_llm_options,
-                self.actor.default_llm_backend,
-                self.actor.default_model,
+                self.actor.generation_override,
+                self.resolved.llm_backend,
+                self.actor.model,
             ),
-            llm_options=self.actor.default_llm_options,
-            budget=self.actor.default_budget,
+            budget=self.actor.per_run_budget,
             workspace_path=workspace_path or self.workspace_path,
         )
 
@@ -64,10 +72,9 @@ class AgentBinding(msgspec.Struct):
 
     owner_id: str
     agent_name: str
-    character: CharacterRecord
+    actor: ActorRecord
     capability_set: CapabilitySetRecord
     llm: BoundLLM
-    llm_options: YuuAgentLLMOptions
     budget: YuuAgentBudget
     workspace_path: Path | None = None
 
@@ -83,41 +90,62 @@ async def load_actor_binding(
     *,
     workspace_path: Path | None = None,
 ) -> ActorBinding:
-    actor = await _active_actor(repository, actor_id)
+    resolved = await resolve_actor(repository, actor_id)
     return ActorBinding(
-        actor=actor,
+        resolved=resolved,
         workspace_path=workspace_path,
+    )
+
+
+async def resolve_actor(
+    repository: ResourceRepository,
+    actor_id: str,
+) -> ResolvedActor:
+    actor = await _active_actor(repository, actor_id)
+    capability_set = await _require_capability_set(repository, actor.capability_set_id)
+    llm_backend = await _require_llm_backend(repository, actor.llm_backend_id)
+    return ResolvedActor(
+        actor=actor,
+        capability_set=capability_set,
+        llm_backend=llm_backend,
     )
 
 
 async def load_conversation_agent_binding(
     repository: ResourceRepository,
     conversation_id: str,
+    *,
+    workspace_path: Path | None = None,
 ) -> AgentBinding:
     conversation = await repository.get(ConversationORM, conversation_id)
     if conversation is None:
         raise LookupError(f"conversation {conversation_id!r} does not exist")
-    return conversation_agent_binding(conversation)
+    return await conversation_agent_binding(
+        repository,
+        conversation,
+        workspace_path=workspace_path,
+    )
 
 
-def conversation_agent_binding(
+async def conversation_agent_binding(
+    repository: ResourceRepository,
     conversation: ConversationRecord,
     *,
     workspace_path: Path | None = None,
 ) -> AgentBinding:
+    resolved = await resolve_actor(repository, conversation.actor_id)
     return AgentBinding(
         owner_id=conversation.conversation_id,
         agent_name=f"conversation:{conversation.conversation_id}",
-        character=conversation.character,
-        capability_set=conversation.capability_set,
+        actor=resolved.actor,
+        capability_set=resolved.capability_set,
         llm=_bound_llm(
             conversation.conversation_id,
-            conversation.llm_options,
-            conversation.llm_backend,
-            conversation.model,
+            resolved.actor.generation_override,
+            resolved.llm_backend,
+            resolved.actor.model,
         ),
-        llm_options=conversation.llm_options,
-        budget=conversation.budget,
+        budget=resolved.actor.per_run_budget,
         workspace_path=workspace_path,
     )
 
@@ -132,22 +160,61 @@ async def _active_actor(
     return actor
 
 
+async def _require_capability_set(
+    repository: ResourceRepository,
+    capability_set_id: str,
+) -> CapabilitySetRecord:
+    capability_set = await repository.get(CapabilitySetORM, capability_set_id)
+    if capability_set is None:
+        raise KeyError(f"capability set {capability_set_id!r} does not exist")
+    return capability_set
+
+
+async def _require_llm_backend(
+    repository: ResourceRepository,
+    llm_backend_id: str,
+) -> LLMBackendRecord:
+    llm_backend = await repository.get(LLMBackendORM, llm_backend_id)
+    if llm_backend is None:
+        raise KeyError(f"llm backend {llm_backend_id!r} does not exist")
+    return llm_backend
+
+
 def _bound_llm(
     context_name: str,
-    llm_options,
+    generation_override: GenerationParams,
     backend: LLMBackendRecord,
     model: str,
 ) -> BoundLLM:
-    merged = {
-        **msgspec.to_builtins(backend.default_stream_options),
-        **msgspec.to_builtins(llm_options.stream_options),
-    }
-    validate_stream_options(
-        merged,
-        context=f"agent[{context_name}].stream_options",
+    generation_params = _merge_generation_params(
+        backend.default_generation_params,
+        generation_override,
+    )
+    validate_generation_params(
+        msgspec.to_builtins(generation_params),
+        context=f"agent[{context_name}].generation_params",
     )
     return BoundLLM(
         backend=backend,
-        model=model or backend.default_model,
-        stream_options=merged,
+        model=model or backend.recommended_model,
+        generation_params=generation_params,
     )
+
+
+def _merge_generation_params(
+    base: GenerationParams,
+    override: GenerationParams,
+) -> GenerationParams:
+    return GenerationParams(
+        max_tokens=_coalesce(override.max_tokens, base.max_tokens),
+        temperature=_coalesce(override.temperature, base.temperature),
+        top_p=_coalesce(override.top_p, base.top_p),
+        stop=_coalesce(override.stop, base.stop),
+    )
+
+
+ValueT = TypeVar("ValueT")
+
+
+def _coalesce(first: ValueT | None, second: ValueT | None) -> ValueT | None:
+    return first if first is not None else second

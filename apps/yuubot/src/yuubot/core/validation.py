@@ -11,7 +11,7 @@ import logging
 
 import msgspec
 
-from yuubot.core.secrets import secret_decode_hook
+from yuubot.core.secrets import Secret, secret_decode_hook
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,9 @@ class ConfigurationError(ValueError):
     """Raised when a config dict fails boundary validation."""
 
 
-class StreamOptions(msgspec.Struct, forbid_unknown_fields=False):
-    """Known stream/completion options passed to LLM providers."""
+class GenerationParams(msgspec.Struct, forbid_unknown_fields=False):
+    """Known generation parameters passed to LLM providers."""
 
-    model: str = ""
     max_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
@@ -34,16 +33,16 @@ class LLMProviderOptions(msgspec.Struct, forbid_unknown_fields=False):
     """Known provider-level options for LLM backends."""
 
     base_url: str = ""
-    provider_name: str = ""
-    api_key: str = ""
+    api_key: Secret = msgspec.field(default_factory=lambda: Secret(""))
     timeout: float = 60.0
     max_retries: int = 2
 
 
-def validate_stream_options(
+def validate_generation_params(
     raw: dict[str, object], *, context: str = ""
-) -> dict[str, object]:
-    return _validate(raw, StreamOptions, context or "stream_options")
+) -> GenerationParams:
+    _validate(raw, GenerationParams, context or "generation_params")
+    return msgspec.convert(raw, type=GenerationParams, strict=False)
 
 
 def validate_provider_options(

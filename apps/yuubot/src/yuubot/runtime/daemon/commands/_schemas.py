@@ -11,18 +11,14 @@ from typing import Literal, TypeVar
 
 import msgspec
 
-from yuubot.core.validation import LLMProviderOptions, StreamOptions
+from yuubot.core.validation import GenerationParams, LLMProviderOptions
 from yuubot.resources.records import (
     BudgetPolicy,
-    CharacterHints,
-    ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
     ResourcePolicy,
     RuntimePolicy,
     ToolConfig,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 
 in_command_context: ContextVar[bool] = ContextVar("in_command_context", default=False)
@@ -36,17 +32,17 @@ WorkspaceAccess = Literal["none", "read_only", "read_write"]
 
 class ActorCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
     name: str
-    default_character_id: str
     capability_set_id: str
-    default_llm_backend_id: str
+    llm_backend_id: str
     id: str = ""
     type: str = "simple_loop"
-    default_model: str = ""
+    persona_prompt: str = ""
+    model: str = ""
     config: dict[str, object] = msgspec.field(default_factory=dict)
     enabled: bool = True
     version: int = 1
-    default_llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
-    default_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
+    generation_override: GenerationParams | msgspec.UnsetType = msgspec.UNSET
+    per_run_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
     created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
     updated_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
 
@@ -55,14 +51,14 @@ class ActorPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     id: str | msgspec.UnsetType = msgspec.UNSET
     name: str | msgspec.UnsetType = msgspec.UNSET
     type: str | msgspec.UnsetType = msgspec.UNSET
-    default_character_id: str | msgspec.UnsetType = msgspec.UNSET
+    persona_prompt: str | msgspec.UnsetType = msgspec.UNSET
     capability_set_id: str | msgspec.UnsetType = msgspec.UNSET
-    default_llm_backend_id: str | msgspec.UnsetType = msgspec.UNSET
-    default_model: str | msgspec.UnsetType = msgspec.UNSET
+    llm_backend_id: str | msgspec.UnsetType = msgspec.UNSET
+    model: str | msgspec.UnsetType = msgspec.UNSET
     config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
     enabled: bool | msgspec.UnsetType = msgspec.UNSET
-    default_llm_options: YuuAgentLLMOptions | msgspec.UnsetType = msgspec.UNSET
-    default_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
+    generation_override: GenerationParams | msgspec.UnsetType = msgspec.UNSET
+    per_run_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
 
 
 class CapabilitySetPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
@@ -105,27 +101,12 @@ class IntegrationPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
 class LLMBackendPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     id: str | msgspec.UnsetType = msgspec.UNSET
     name: str | msgspec.UnsetType = msgspec.UNSET
-    yuuagents_provider: str | msgspec.UnsetType = msgspec.UNSET
-    model_capabilities: ModelCapabilities | msgspec.UnsetType = msgspec.UNSET
-    models: ModelCatalog | msgspec.UnsetType = msgspec.UNSET
-    pricing: PricingTable | msgspec.UnsetType = msgspec.UNSET
+    provider_identity: str | msgspec.UnsetType = msgspec.UNSET
+    model_configs: dict[str, ModelConfig] | msgspec.UnsetType = msgspec.UNSET
     budget: BudgetPolicy | msgspec.UnsetType = msgspec.UNSET
     provider_options: LLMProviderOptions | msgspec.UnsetType = msgspec.UNSET
-    default_model: str | msgspec.UnsetType = msgspec.UNSET
-    default_stream_options: StreamOptions | msgspec.UnsetType = msgspec.UNSET
-    version: int | msgspec.UnsetType = msgspec.UNSET
-
-
-class CharacterPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
-    id: str | msgspec.UnsetType = msgspec.UNSET
-    name: str | msgspec.UnsetType = msgspec.UNSET
-    description: str | msgspec.UnsetType = msgspec.UNSET
-    system_prompt: str | msgspec.UnsetType = msgspec.UNSET
-    facade_module: str | msgspec.UnsetType = msgspec.UNSET
-    default_hints: CharacterHints | msgspec.UnsetType = msgspec.UNSET
-    is_builtin: bool | msgspec.UnsetType = msgspec.UNSET
-    builtin_version: str | msgspec.UnsetType = msgspec.UNSET
-    cloned_from: str | msgspec.UnsetType = msgspec.UNSET
+    recommended_model: str | msgspec.UnsetType = msgspec.UNSET
+    default_generation_params: GenerationParams | msgspec.UnsetType = msgspec.UNSET
     version: int | msgspec.UnsetType = msgspec.UNSET
 
 

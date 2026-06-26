@@ -69,7 +69,6 @@ async def test_handle_tool_result_persists_canonical_tool_message() -> None:
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -122,7 +121,6 @@ async def test_handle_tool_result_failed_status_persists_canonical_message() -> 
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -223,7 +221,6 @@ async def test_send_message_returns_before_turn_completes() -> None:
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -293,7 +290,6 @@ async def test_first_send_persists_prefix_and_user_message() -> None:
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -352,7 +348,6 @@ async def test_subsequent_send_with_conflicting_actor_returns_conflict() -> None
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -403,7 +398,6 @@ async def test_delete_conversation_stops_turn_drops_cache_and_deletes_rows() -> 
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -433,7 +427,6 @@ def manager_with_store() -> ConversationManager:
     return ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -470,7 +463,6 @@ async def test_cancel_turn_awaits_task_and_returns_receipt() -> None:
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -601,7 +593,6 @@ async def test_send_during_inflight_awaits_existing_task() -> None:
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -731,7 +722,6 @@ async def test_cancel_turn_persists_partial_assistant_to_db() -> None:
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -893,7 +883,6 @@ async def test_cancel_during_tool_execution_does_not_double_persist_assistant() 
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )

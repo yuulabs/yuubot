@@ -6,8 +6,12 @@ From the repository root:
 
 ```bash
 uv sync
+cp apps/yuubot/config.example.yaml config.yaml
 uv run ybot --config config.yaml dev
 ```
+
+`config.yaml` contains only bootstrap settings. Runtime resources are stored in
+the resource DB and managed through Admin/API surfaces.
 
 From this package directory, run app-local checks such as:
 

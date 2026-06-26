@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from yuubot.core.bindings import load_actor_binding
 from yuubot.core.gateway import Gateway
 from yuubot.core.messages import IncomingMessage, MessageSource, system_source_for_actor
 from yuubot.core.routing import (
@@ -21,16 +22,13 @@ from yuubot.resources.records import (
     ActorRecord,
     BudgetPolicy,
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     LLMBackendRecord,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
+    Pricing,
     ResourcePolicy,
     RuntimePolicy,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
@@ -38,7 +36,6 @@ from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
     CapabilitySetORM,
-    CharacterORM,
     LLMBackendORM,
 )
 
@@ -153,10 +150,9 @@ class TestRouteBindings:
         self, resources: Resources
     ):
         repository = resources.repository
-        char = await _create_character(repository, "test-char")
         backend = await _create_llm_backend(repository, "test-backend")
-        actor1 = await _create_actor(repository, "actor-1", char, backend)
-        actor2 = await _create_actor(repository, "actor-2", char, backend)
+        actor1 = await _create_actor(repository, "actor-1", backend)
+        actor2 = await _create_actor(repository, "actor-2", backend)
         rule1 = await _create_rule(repository, "slack-main", "channels/dev", actor1.id)
         gateway = Gateway(routes=await load_route_bindings(repository))
         mb1 = gateway.get_mailbox(actor1.id)
@@ -178,20 +174,18 @@ class TestRouteBindings:
 
     async def test_actor_reads_latest_llm_backend_details(self, resources: Resources):
         repository = resources.repository
-        char = await _create_character(repository, "test-char")
         backend = await _create_llm_backend(repository, "test-backend")
-        actor = await _create_actor(repository, "actor-1", char, backend)
+        actor = await _create_actor(repository, "actor-1", backend)
 
         await repository.update(
             LLMBackendORM,
             backend.id,
-            default_model="gpt-4.1",
+            recommended_model="gpt-4.1",
         )
 
-        refreshed = await repository.get(ActorORM, actor.id)
+        refreshed = await load_actor_binding(repository, actor.id)
 
-        assert refreshed is not None
-        assert refreshed.default_llm_backend.default_model == "gpt-4.1"
+        assert refreshed.resolved.llm_backend.recommended_model == "gpt-4.1"
 
     async def test_gateway_no_mailbox_for_unknown_actor(self):
         gateway = Gateway(
@@ -253,31 +247,27 @@ class TestRouteBindings:
 
         resources.event_bus.subscribe([ResourceChanged], on_changed)
 
-        char = await _create_character(resources.repository, "event-char")
+        backend = await _create_llm_backend(resources.repository, "event-backend")
+        actor = await _create_actor(resources.repository, "event-actor", backend)
         await resources.event_bus.drain()
 
         assert events == [
             ResourceChanged(
-                table="characters",
+                table="llm_backends",
                 action="inserted",
-                row_ids=(char.id,),
-            )
+                row_ids=(backend.id,),
+            ),
+            ResourceChanged(
+                table="capability_sets",
+                action="inserted",
+                row_ids=(f"{actor.id}-capabilities",),
+            ),
+            ResourceChanged(
+                table="actors",
+                action="inserted",
+                row_ids=(actor.id,),
+            ),
         ]
-
-
-async def _create_character(
-    repository: ResourceRepository,
-    name: str,
-) -> CharacterRecord:
-    record = CharacterRecord(
-        id=name,
-        name=name,
-        description="",
-        system_prompt=f"You are {name}",
-        facade_module="yuubot.core.facade",
-        default_hints=CharacterHints(),
-    )
-    return await repository.insert(CharacterORM, record)
 
 
 async def _create_llm_backend(
@@ -287,11 +277,14 @@ async def _create_llm_backend(
     record = LLMBackendRecord(
         id=name,
         name=name,
-        yuuagents_provider="openai",
-        default_model="gpt-4",
-        model_capabilities=ModelCapabilities(),
-        models=ModelCatalog(),
-        pricing=PricingTable(),
+        provider_identity="openai",
+        recommended_model="gpt-4",
+        model_configs={
+            "gpt-4": ModelConfig(
+                pricing=Pricing(),
+                capabilities=ModelCapabilities(),
+            )
+        },
         budget=BudgetPolicy(),
     )
     return await repository.insert(LLMBackendORM, record)
@@ -300,7 +293,6 @@ async def _create_llm_backend(
 async def _create_actor(
     repository: ResourceRepository,
     name: str,
-    character: CharacterRecord,
     backend: LLMBackendRecord,
 ) -> ActorRecord:
     capability_set = await repository.insert(
@@ -315,12 +307,11 @@ async def _create_actor(
     record = ActorRecord(
         id=name,
         name=name,
-        default_character=character,
-        capability_set=capability_set,
-        default_llm_backend=backend,
-        default_model="",
-        default_llm_options=YuuAgentLLMOptions(),
-        default_budget=YuuAgentBudget(),
+        persona_prompt=f"You are {name}",
+        capability_set_id=capability_set.id,
+        llm_backend_id=backend.id,
+        model="",
+        per_run_budget=YuuAgentBudget(),
     )
     return await repository.insert(ActorORM, record)
 
@@ -347,9 +338,8 @@ async def _create_actor_bundle(
     repository: ResourceRepository,
     name: str,
 ) -> ActorRecord:
-    char = await _create_character(repository, f"{name}-char")
     backend = await _create_llm_backend(repository, f"{name}-backend")
-    return await _create_actor(repository, name, char, backend)
+    return await _create_actor(repository, name, backend)
 
 
 def _rules_for_actor(

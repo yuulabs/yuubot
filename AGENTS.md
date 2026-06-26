@@ -42,8 +42,11 @@ uv run ruff check                           # lint
 uv run ty check                             # type check
 uv run ybot --config config.yaml check       # validate bootstrap config
 uv run ybot --config config.yaml dev         # daemon + admin + web build
-uv run ybot --config config.yaml trace ui    # browse agent traces (ruutrace UI)
 ```
+
+If the root `config.yaml` is absent, copy
+`apps/yuubot/config.example.yaml` to `config.yaml` first and fill the required
+environment variables referenced by the file.
 
 Run package-local tests from the package directory when validating one member:
 
@@ -69,15 +72,10 @@ cd apps/yuubot/web && pnpm install && pnpm run build   # also done by `ybot dev`
 
 ### Artifact Map (where the truth lives)
 
-`config.yaml` is split into two layers consumed at startup:
-
-- v1 resource config (`bot`, `provider_priorities`, `provider_affinity`,
-  `llm_roles`, `agent_llm_refs`, `yuuagents.providers`, `recorder`, `session`,
-  `memory`, `web`, …) — loaded by the daemon into DB tables via
-  `yuubot.resources`.
-- v2 bootstrap config (`admin`, `server`, `database`, `secrets`, `trace`,
-  `paths`, `yuuagents.strict/tool_backends`) — loaded by
-  `yuubot.bootstrap.config.load_bootstrap_config`, typed via msgspec.
+`config.yaml` is the strict bootstrap contract consumed at startup. Runtime
+resources such as LLM providers, models, pricing, actors, characters,
+capability sets, routes, integrations, plugins, and runtime policies are stored
+in the resource DB and managed through Admin/API surfaces.
 
 Resolved at runtime through `DataLayout` (`apps/yuubot/src/yuubot/bootstrap/layout.py`):
 
@@ -91,8 +89,9 @@ Resolved at runtime through `DataLayout` (`apps/yuubot/src/yuubot/bootstrap/layo
 | Generated facades (yext) | `~/.yuubot/yuubot/runtime/facades/` | derived |
 | External plugins | `~/.yuubot/yuubot/plugins/` | derived |
 
-All four are inspectable without stopping the daemon — open the SQLite file
-with `sqlite3` read-only, or browse traces via `uv run ybot trace ui`.
+All artifact stores are inspectable without stopping the daemon. Open SQLite
+files with `sqlite3` read-only, or use the Admin Monitor for trace-derived
+runtime visibility.
 
 ### Triage Flow
 
@@ -101,8 +100,7 @@ Use scenarios to localize the failure before editing code.
 ```text
 Reported symptom (e.g. "bot didn't reply" / "admin showed no new message")
   → 1. Check the source of the event:
-       QQ event → NapCat WS → yuubot recorder (recorder.relay_ws in config.yaml
-                  127.0.0.1:8766) → core/gateway.py core/routing.py
+       Plugin event → plugin HTTP ingest → /ingest → core/gateway.py core/routing.py
        Admin action → browser → admin:8781 → runtime/admin/handlers/_proxy.py
   → 2. Follow it through the boundary you suspect (see Instrumentation Points):
        front/back boundary: admin proxy SSE stream (runtime/admin/handlers/_proxy.py

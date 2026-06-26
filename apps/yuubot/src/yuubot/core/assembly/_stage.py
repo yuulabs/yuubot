@@ -7,6 +7,7 @@ YuuAgentsActorRuntime that owns the actor lifecycle.
 from __future__ import annotations
 
 import msgspec
+import yuullm
 from yuuagents import AgentDefinition
 from yuuagents import (
     EventBus,
@@ -17,16 +18,11 @@ from yuuagents import (
 )
 from yuuagents.tool.primitives import resolve_tool_type
 
-from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.bindings import AgentBinding
 from yuubot.core.facade import ActorFacadeBinding
 from yuubot.core.observability import YuubotTraceContextProvider
-from yuubot.core.validation import (
-    ConfigurationError,
-    validate_stream_options,
-)
+from yuubot.core.validation import ConfigurationError
 
-from ._constants import _resolve_yuuagents_provider
 from ._definition import build_agent_definition
 from ._runtime import YuuAgentsActorRuntime
 
@@ -34,14 +30,13 @@ from ._runtime import YuuAgentsActorRuntime
 def start_yuuagents_actor(
     binding: AgentBinding,
     *,
-    yuuagents_config: YuuAgentsConfig,
     facade: ActorFacadeBinding | None = None,
     mailbox: MailBox | None = None,
     eventbus: EventBus | None = None,
     llm_session_factory: ProviderPoolSessionFactory | None = None,
     trace_context: YuubotTraceContextProvider | None = None,
 ) -> YuuAgentsActorRuntime:
-    llm_provider = _resolve_yuuagents_provider(binding.llm.backend.yuuagents_provider)
+    llm_provider = yuullm.resolve_provider(binding.llm.backend.provider_identity).api_type
     if llm_session_factory is None:
         raise ConfigurationError(
             f"agent {binding.agent_name!r}: no LLM session factory configured "
@@ -52,7 +47,7 @@ def start_yuuagents_actor(
         mailbox=mailbox,
         eventbus=eventbus,
         llm_session_factories={llm_provider: llm_session_factory},
-        llm_options={llm_provider: _stage_llm_options(binding)},
+        llm_options={llm_provider: msgspec.to_builtins(binding.llm.generation_params)},
     )
 
     workspace_path = _get_workspace_path(binding, facade)
@@ -78,21 +73,9 @@ def start_yuuagents_actor(
         rollover_enabled=binding.capability_set.runtime_policy.rollover_enabled,
         idle_timeout_s=binding.capability_set.runtime_policy.idle_timeout_s,
         summarize_steps_span=binding.capability_set.runtime_policy.summarize_steps_span,
-        agent_pricings={definition.name: binding.llm.backend.pricing},
+        agent_model_configs={definition.name: binding.llm.backend.model_configs},
     )
     return runtime
-
-
-def _stage_llm_options(binding: AgentBinding) -> dict[str, object]:
-    backend = binding.llm.backend
-    opts = validate_stream_options(
-        msgspec.to_builtins(backend.default_stream_options),
-        context=f"llm_backend[{backend.name}].default_stream_options",
-    )
-    # The model is NOT a stream option — it is the session selector.
-    # Passing it as a stream kwarg causes YuuSession to reject it.
-    opts.pop("model", None)
-    return opts
 
 
 def _get_workspace_path(
@@ -125,11 +108,10 @@ def _check_pricing_for_budget(binding: AgentBinding) -> None:
     if not _requires_pricing(binding):
         return
     model = binding.llm.model
-    for entry in binding.llm.backend.pricing.entries:
-        if entry.model == model:
-            return
+    if model in binding.llm.backend.model_configs:
+        return
     raise ConfigurationError(
-        f"agent {binding.agent_name!r}: USD budget requires pricing for "
+        f"agent {binding.agent_name!r}: USD budget requires configured model "
         f"model {model!r} in backend {binding.llm.backend.name!r}"
     )
 

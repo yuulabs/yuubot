@@ -35,7 +35,7 @@ from yuuagents.core.task import Task as YuuTask
 from yuuagents.tool.primitives import ToolResult
 
 from yuubot.core.costing import calculate_cost
-from yuubot.resources.records import PricingTable
+from yuubot.resources.records import ModelConfig
 
 from ._rollover import (
     _agent_needs_rollover,
@@ -78,7 +78,9 @@ class YuuAgentsActorRuntime:
     agents: dict[str, Agent] = field(default_factory=dict)
     agents_by_name: dict[str, Agent] = field(default_factory=dict)
     conversation_agents: dict[str, Agent] = field(default_factory=dict)
-    agent_pricings: dict[str, PricingTable] = field(default_factory=dict)
+    agent_model_configs: dict[str, dict[str, ModelConfig]] = field(
+        default_factory=dict
+    )
     _agent_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     _agent_last_used: dict[str, float] = field(default_factory=dict)
     _idle_expiry_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
@@ -98,9 +100,13 @@ class YuuAgentsActorRuntime:
                 await emit_actor_message_unhandled(self.stage.eventbus, message)
                 return None
 
-    def store_pricing(self, agent_id: str, pricing: PricingTable) -> None:
-        """Store pricing table for an agent (used by the orchestrator loop)."""
-        self.agent_pricings[agent_id] = pricing
+    def store_model_configs(
+        self,
+        agent_id: str,
+        model_configs: dict[str, ModelConfig],
+    ) -> None:
+        """Store model configs for an agent (used by the orchestrator loop)."""
+        self.agent_model_configs[agent_id] = model_configs
 
     async def close(self) -> None:
         for task in self._idle_expiry_tasks.values():
@@ -125,7 +131,7 @@ class YuuAgentsActorRuntime:
             # built in-memory agent history with the persisted prefix.
             # create_agent() seeds [system_message] from
             # definition.prompt.system — that snapshot is the LIVE one
-            # (mutated AGENTS.md / Character) and must not leak into the
+            # (mutated AGENTS.md / actor persona) and must not leak into the
             # resumed conversation. Restoration here only replays rows
             # already written to conversation_history_items at first send.
             self._init_agent_budget(agent, definition)
@@ -334,7 +340,7 @@ class YuuAgentsActorRuntime:
                 },
             ):
                 budget = self._agent_budgets.get(agent.id)
-                pricing = self.agent_pricings.get(agent.id)
+                model_configs = self.agent_model_configs.get(agent.id)
 
                 while not agent.done:
                     # Single-point safety net: ``task.cancel()`` schedules
@@ -382,9 +388,9 @@ class YuuAgentsActorRuntime:
                                     total_cost=store.provider_cost,
                                     source="provider",
                                 )
-                            elif pricing is not None:
+                            elif model_configs is not None:
                                 cost_value = calculate_cost(
-                                    store.usage, pricing, agent.llm.model
+                                    store.usage, model_configs, agent.llm.model
                                 )
                             if cost_value is not None and budget is not None:
                                 budget.charge("usd", cost_value.total_cost)
@@ -658,22 +664,25 @@ class YuuAgentsActorRuntime:
         agent: Agent,
         definition: AgentDefinition,
     ) -> None:
-        """Materialize the budget for ``agent`` and link its pricing table.
+        """Materialize the budget for ``agent`` and link its model configs.
 
-        ``agent_pricings`` is staged at construction time keyed by
+        ``agent_model_configs`` is staged at construction time keyed by
         ``self.conversation_definition.name`` (the IM-mode definition name).
         ``definition`` here is a *derived* definition (per-conversation or
         per-delegate) whose ``.name`` carries an identifying suffix
         (``:conversation:{id}`` / ``:delegate:{name}``) — using that key
         would miss the staged entry. Pop from the base definition name
-        instead so the pricing table is rehomed to ``agent.id`` for the
+        instead so the model config map is rehomed to ``agent.id`` for the
         run-time budget lookup.
         """
         budget = definition.budget.to_budget()
         self._agent_budgets[agent.id] = budget
-        pricing = self.agent_pricings.pop(self.conversation_definition.name, None)
-        if pricing is not None:
-            self.agent_pricings[agent.id] = pricing
+        model_configs = self.agent_model_configs.pop(
+            self.conversation_definition.name,
+            None,
+        )
+        if model_configs is not None:
+            self.agent_model_configs[agent.id] = model_configs
 
     def _init_agent_prompt_prefix(
         self,
@@ -714,7 +723,7 @@ class YuuAgentsActorRuntime:
     async def _untrack_agent(self, agent: Agent) -> None:
         self.agents.pop(agent.id, None)
         self._agent_budgets.pop(agent.id, None)
-        self.agent_pricings.pop(agent.id, None)
+        self.agent_model_configs.pop(agent.id, None)
         self._agent_locks.pop(agent.id, None)
         self._agent_last_used.pop(agent.id, None)
         self._idle_expiry_tasks.pop(agent.id, None)

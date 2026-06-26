@@ -16,7 +16,6 @@ from yuuagents.core.mailbox import (
     ScheduleTriggerMessage,
 )
 
-from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.actors.contracts import Actor
 from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
 from yuubot.core.assembly import YuuAgentsActorRuntime, start_yuuagents_actor
@@ -43,7 +42,6 @@ class SimpleLoopActor(Actor):
 
     binding: ActorBinding
     repository: ResourceRepository
-    yuuagents_config: YuuAgentsConfig
     python_sessions: ActorPythonSessionFactory
     mailbox: Mailbox
     integrations: IntegrationCore | None = None
@@ -70,7 +68,6 @@ class SimpleLoopActor(Actor):
         if self.trace_context is not None:
             self.trace_context.register(
                 self.binding.actor_name,
-                character_name=agent_binding.character.name,
                 model=agent_binding.llm.model,
             )
         facade = await self.python_sessions.bind_facade(
@@ -79,7 +76,6 @@ class SimpleLoopActor(Actor):
         )
         self._runtime = start_yuuagents_actor(
             agent_binding,
-            yuuagents_config=self.yuuagents_config,
             facade=facade,
             mailbox=self.mailbox,
             llm_session_factory=self.llm_session_factory,
@@ -99,9 +95,7 @@ class SimpleLoopActor(Actor):
         agent_binding = self._agent_binding
         if agent_binding is None:
             return
-        if event.is_table("characters") and agent_binding.character.id in event.row_ids:
-            self.restart_required = True
-        elif (
+        if (
             event.is_table("capability_sets")
             and agent_binding.capability_set.id in event.row_ids
         ):
@@ -231,7 +225,6 @@ class SimpleLoopActor(Actor):
         if self.trace_context is not None:
             self.trace_context.register(
                 self.binding.actor_name,
-                character_name=agent_binding.character.name,
                 model=agent_binding.llm.model,
             )
         facade = await self.python_sessions.bind_facade(
@@ -240,7 +233,6 @@ class SimpleLoopActor(Actor):
         )
         self._runtime = start_yuuagents_actor(
             agent_binding,
-            yuuagents_config=self.yuuagents_config,
             facade=facade,
             mailbox=self.mailbox,
             llm_session_factory=self.llm_session_factory,
@@ -272,7 +264,6 @@ def _delegate_completion_text(
 @dataclass
 class SimpleLoopActorFactory:
     repository: ResourceRepository
-    yuuagents_config: YuuAgentsConfig
     python_sessions: ActorPythonSessionFactory
     integrations: IntegrationCore | None = None
     llm_session_factory_factory: (
@@ -287,7 +278,6 @@ class SimpleLoopActorFactory:
         actor = SimpleLoopActor(
             binding=binding,
             repository=self.repository,
-            yuuagents_config=self.yuuagents_config,
             python_sessions=self.python_sessions,
             mailbox=mailbox,
             integrations=self.integrations,

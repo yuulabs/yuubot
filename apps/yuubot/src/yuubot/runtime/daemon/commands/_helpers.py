@@ -9,18 +9,16 @@ import msgspec
 from starlette.responses import JSONResponse
 from tortoise import Model
 
-from yuubot.core.secrets import redact_secret_for_json
+from yuubot.core.secrets import redact_secret_for_json, secret_decode_hook
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     CapabilitySetORM,
-    CharacterORM,
     LLMBackendORM,
     PromptTemplateORM,
 )
 from yuubot.runtime.daemon.commands._schemas import (
     ActorIngressRulePatchRequest,
     CapabilitySetPatchRequest,
-    CharacterPatchRequest,
     LLMBackendPatchRequest,
     PromptTemplatePatchRequest,
     StructT,
@@ -58,7 +56,12 @@ def _error(code: str, detail: str, status_code: int) -> JSONResponse:
 
 def _convert_request(raw: object, schema_type: type[StructT]) -> StructT | JSONResponse:
     try:
-        return msgspec.convert(raw, type=schema_type, strict=False)
+        return msgspec.convert(
+            raw,
+            type=schema_type,
+            strict=False,
+            dec_hook=secret_decode_hook,
+        )
     except (msgspec.ValidationError, msgspec.DecodeError) as exc:
         return _error("validation_error", str(exc), 400)
 
@@ -70,22 +73,13 @@ def _ensure_record_id(record: msgspec.Struct) -> None:
 
 
 def _struct_fields(record: msgspec.Struct) -> dict[str, Any]:
-    """Convert a request Struct to a dict for further processing.
-
-    ``msgspec.to_builtins`` is the legitimate serialisation boundary
-    here — request Structs are converted to plain dicts for ORM update
-    kwargs or nested field processing.  This is NOT a roundtrip: data
-    flows Struct → dict one way only.
-    """
-    raw_fields = msgspec.to_builtins(record)
-    if not isinstance(raw_fields, dict):
-        raise TypeError(f"{type(record).__name__} did not encode to a field object")
+    """Extract populated request Struct fields without serializing secrets."""
 
     fields: dict[str, Any] = {}
-    for name, value in raw_fields.items():
-        if not isinstance(name, str):
-            raise TypeError(f"{type(record).__name__} encoded a non-string field name")
-        fields[name] = value
+    for field in msgspec.structs.fields(record):
+        value = getattr(record, field.name)
+        if value is not msgspec.UNSET:
+            fields[field.name] = value
     return fields
 
 
@@ -109,7 +103,6 @@ def _value_or(value: ValueT | msgspec.UnsetType, default: ValueT) -> ValueT:
 
 _PATCH_TYPES: dict[type[Model], type[msgspec.Struct]] = {
     LLMBackendORM: LLMBackendPatchRequest,
-    CharacterORM: CharacterPatchRequest,
     CapabilitySetORM: CapabilitySetPatchRequest,
     PromptTemplateORM: PromptTemplatePatchRequest,
     ActorIngressRuleORM: ActorIngressRulePatchRequest,

@@ -9,11 +9,14 @@ integration capability system.
 git clone git@github.com:yuulabs/yuubot.git
 cd yuubot
 uv sync
+cp apps/yuubot/config.example.yaml config.yaml
 uv run ybot --config config.yaml dev
 ```
 
 The development server uses the monorepo workspace so the yuubot app and local
 YuuLabs packages resolve together without `../` path dependencies.
+`config.yaml` is bootstrap-only; runtime resources are managed through the
+resource DB and Admin/API surfaces.
 
 ## Scenario: First Local Run
 

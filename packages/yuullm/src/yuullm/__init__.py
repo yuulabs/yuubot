@@ -17,6 +17,7 @@ from .client import YLLMClient
 from .pricing import PriceCalculator
 from .pool import ProviderPool
 from .provider import Provider
+from .providers.presets import ProviderPreset, resolve_provider
 from .session import YuuSession
 from .types import (
     AttemptRecovery,
@@ -93,6 +94,8 @@ __all__ = [
     "YLLMClient",
     # Provider protocol
     "Provider",
+    "ProviderPreset",
+    "resolve_provider",
     # Pricing
     "PriceCalculator",
     # Cache config

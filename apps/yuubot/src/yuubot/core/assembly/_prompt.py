@@ -2,8 +2,8 @@
 
 Renders a five-section system prompt contract:
 
-    # Character
-    <Character.system_prompt verbatim>
+    # Persona
+    <Actor.persona_prompt verbatim>
 
     # System Instructions
     <tool-surface prose + workspace conventions + optional IM-mode guidance>
@@ -37,7 +37,7 @@ from ._constants import IM_MODE_SYSTEM_GUIDANCE
 
 # Public contract: section header markers in render order.
 SECTION_HEADERS: tuple[str, ...] = (
-    "Character",
+    "Persona",
     "System Instructions",
     "Integration Prompt Sections",
     "AGENTS.md Context",
@@ -94,7 +94,7 @@ def _system_prompt(
     # carry an empty header: the body is ``""`` today and the extension zone
     # MUST NOT produce a visible ``"# Extension Section"`` header.
     sections: list[tuple[str, str]] = [
-        ("Character", _render_character(binding)),
+        ("Persona", _render_persona(binding)),
         ("System Instructions", _render_system_instructions(binding, mode)),
         ("Integration Prompt Sections", _render_integration_sections(binding)),
         ("", _render_extension_fragments()),
@@ -111,8 +111,8 @@ def _system_prompt(
     return "\n\n".join(rendered)
 
 
-def _render_character(binding: AgentBinding) -> str:
-    return binding.character.system_prompt.strip()
+def _render_persona(binding: AgentBinding) -> str:
+    return binding.actor.persona_prompt.strip()
 
 
 def _render_system_instructions(

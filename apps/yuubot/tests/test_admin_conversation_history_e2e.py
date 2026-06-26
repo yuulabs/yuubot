@@ -67,12 +67,10 @@ async def _provision_actor(
     suffix: str = "default",
 ) -> dict[str, Any]:
     backend = await _create_llm_backend(client, config, suffix=suffix)
-    character = await _create_character(client, config, suffix=suffix)
     capability_set = await _create_capability_set(client, config, suffix=suffix)
     return await _create_actor(
         client,
         config,
-        character["id"],
         capability_set["id"],
         backend["id"],
         suffix=suffix,
@@ -89,33 +87,16 @@ async def _create_llm_backend(
         "/api/resources/llm-backends",
         json={
             "name": f"conversation-openai-{suffix}",
-            "yuuagents_provider": "openai",
-            "model_capabilities": {"chat": True, "tool_calling": False},
-            "models": {"names": ["gpt-4o"]},
-            "pricing": {"entries": []},
+            "provider_identity": "openai",
+            "model_configs": {
+                "gpt-4o": {
+                    "capabilities": {"chat": True, "tool_calling": False},
+                    "pricing": {},
+                }
+            },
             "budget": {"daily_usd": 0},
             "provider_options": {"base_url": "http://llm.test/v1"},
-            "default_model": "gpt-4o",
-        },
-        headers=_headers(config),
-    )
-    return _created(response)
-
-
-async def _create_character(
-    client: httpx.AsyncClient,
-    config: BootstrapConfig,
-    *,
-    suffix: str,
-) -> dict[str, Any]:
-    response = await client.post(
-        "/api/resources/characters",
-        json={
-            "name": f"conversation-helper-{suffix}",
-            "description": "E2E conversation helper",
-            "system_prompt": "You are an E2E admin conversation agent.",
-            "facade_module": "yb",
-            "default_hints": {"language": "zh-CN", "tone": "friendly"},
+            "recommended_model": "gpt-4o",
         },
         headers=_headers(config),
     )
@@ -143,7 +124,6 @@ async def _create_capability_set(
 async def _create_actor(
     client: httpx.AsyncClient,
     config: BootstrapConfig,
-    character_id: str,
     capability_set_id: str,
     backend_id: str,
     *,
@@ -154,11 +134,11 @@ async def _create_actor(
         json={
             "name": f"conversation-actor-{suffix}",
             "type": "simple_loop",
-            "default_model": "gpt-4o",
-            "default_character_id": character_id,
+            "model": "gpt-4o",
+            "persona_prompt": "You are an E2E admin conversation agent.",
             "capability_set_id": capability_set_id,
-            "default_llm_backend_id": backend_id,
-            "default_budget": {"max_steps": 4},
+            "llm_backend_id": backend_id,
+            "per_run_budget": {"max_steps": 4},
             "enabled": True,
         },
         headers=_headers(config),
@@ -307,7 +287,7 @@ async def _insert_echo_actor_with_workspace(
     )
     await repository.update(
         CapabilitySetORM,
-        resources.actor.capability_set.id,
+        resources.actor.capability_set_id,
         workspace_path=workspace_path,
     )
 
@@ -593,10 +573,6 @@ async def test_subsequent_send_with_conflicting_actor_returns_409(
         assert conflict.status_code == 409, body
         assert body["code"] == "conversation_binding_conflict"
         assert body["data"]["actor_id"] == first_actor["id"]
-        assert (
-            body["data"]["capability_set_id"]
-            == first_actor["capability_set"]["id"]
-        )
     finally:
         await daemon.stop()
 

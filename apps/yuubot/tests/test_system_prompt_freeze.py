@@ -62,7 +62,7 @@ async def test_system_prompt_freezes_within_runtime_lifetime(
             headers={"X-Daemon-Secret": yuubot_config.server.daemon_secret},
         ) as client:
             # First send creates the conversation row + persisted prefix
-            # atomically; the persisted binding locks actor / character /
+            # atomically; the persisted binding locks actor / persona /
             # capability_set / llm_backend / model for all subsequent turns.
             created = await client.post(
                 f"/api/admin/conversations/{CONVERSATION_ID}/messages",
@@ -132,7 +132,7 @@ async def _insert_actor_with_workspace(daemon: YuubotDaemon, *, workspace_path: 
     )
     await repository.update(
         CapabilitySetORM,
-        resources.actor.capability_set.id,
+        resources.actor.capability_set_id,
         workspace_path=workspace_path,
     )
 

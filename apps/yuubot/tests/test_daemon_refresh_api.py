@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 from starlette.types import ASGIApp
 
-from yuubot.bootstrap.config import ServerConfig, TraceConfig, YuuAgentsConfig
+from yuubot.bootstrap.config import ServerConfig, TraceConfig
 from yuubot.core.actors import Actor, ActorFactoryRegistry, ActorManager
 from yuubot.core.actors.workspace import ActorWorkspaceResolver
 from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
@@ -28,17 +28,14 @@ from yuubot.resources.records import (
     ActorIngressRuleRecord,
     BudgetPolicy,
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     IntegrationRecord,
     LLMBackendRecord,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
+    Pricing,
     ResourcePolicy,
     RuntimePolicy,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
@@ -46,7 +43,6 @@ from yuubot.resources.store.models import (
     ActorORM,
     ActorIngressRuleORM,
     CapabilitySetORM,
-    CharacterORM,
     IntegrationORM,
     LLMBackendORM,
 )
@@ -361,11 +357,19 @@ def _build_runtime(
     )
     type_registry = build_default_resource_type_registry()
     trace_service = TraceService(
-        config=TraceConfig(enabled=trace_enabled),
+        config=TraceConfig(
+            enabled=trace_enabled,
+            collector_host="127.0.0.1",
+            collector_port=4318,
+        ),
         db_path=":memory:",
     )
     app = build_daemon_asgi_app(
-        config=ServerConfig(daemon_secret="secret"),
+        config=ServerConfig(
+            daemon_host="127.0.0.1",
+            daemon_port=8780,
+            daemon_secret="secret",
+        ),
         resources=resources,
         services=services,
         actors=actors,
@@ -374,7 +378,6 @@ def _build_runtime(
         refresh=refresh,
         trace_service=trace_service,
         type_registry=type_registry,
-        yuuagents_config=YuuAgentsConfig(),
         python_sessions=ActorPythonSessionFactory(
             integrations=integrations,
             workspace=FacadeWorkspace(workspace_root / "facades"),
@@ -417,27 +420,19 @@ async def _create_actor_bundle(
     repository: ResourceRepository,
     actor_id: str,
 ) -> ActorRecord:
-    character = await repository.insert(
-        CharacterORM,
-        CharacterRecord(
-            id=f"{actor_id}-char",
-            name=f"{actor_id}-char",
-            description="",
-            system_prompt="You are test.",
-            facade_module="yuubot.core.facade",
-            default_hints=CharacterHints(),
-        ),
-    )
     backend = await repository.insert(
         LLMBackendORM,
         LLMBackendRecord(
             id=f"{actor_id}-backend",
             name=f"{actor_id}-backend",
-            yuuagents_provider="openai",
-            default_model="gpt-4",
-            model_capabilities=ModelCapabilities(),
-            models=ModelCatalog(),
-            pricing=PricingTable(),
+            provider_identity="openai",
+            recommended_model="gpt-4",
+            model_configs={
+                "gpt-4": ModelConfig(
+                    pricing=Pricing(),
+                    capabilities=ModelCapabilities(),
+                )
+            },
             budget=BudgetPolicy(),
         ),
     )
@@ -456,12 +451,11 @@ async def _create_actor_bundle(
             id=actor_id,
             name=actor_id,
             type="fake",
-            default_character=character,
-            capability_set=capability_set,
-            default_llm_backend=backend,
-            default_model="",
-            default_llm_options=YuuAgentLLMOptions(),
-            default_budget=YuuAgentBudget(),
+            persona_prompt="You are test.",
+            capability_set_id=capability_set.id,
+            llm_backend_id=backend.id,
+            model="",
+            per_run_budget=YuuAgentBudget(),
         ),
     )
 

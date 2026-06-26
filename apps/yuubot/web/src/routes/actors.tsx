@@ -126,9 +126,9 @@ function ActorsBrowsePage() {
         if (!q) return true;
         const hay = [
           a.name,
-          a.default_model,
-          backendName(a.default_llm_backend?.id),
-          capsetName(a.capability_set?.id),
+          a.model,
+          backendName(a.llm_backend_id),
+          capsetName(a.capability_set_id),
         ]
           .join(" ")
           .toLowerCase();
@@ -228,14 +228,15 @@ function ActorsBrowsePage() {
             <ActorCard
               key={actor.id}
               actor={actor}
-              backendName={backendName(actor.default_llm_backend?.id)}
-              capsetName={capsetName(actor.capability_set?.id)}
+              backendName={backendName(actor.llm_backend_id)}
+              capsetName={capsetName(actor.capability_set_id)}
+              capset={capabilitySets.find((c) => c.id === actor.capability_set_id)}
             />
           ))}
         </div>
       )}
 
-      {/* 更新预设 Actor — binds the seeded preset Characters/CapabilitySets to
+      {/* 更新预设 Actor — binds preset persona prompts/CapabilitySets to
           a chosen backend. Disabled-button path shown when no backend exists. */}
       <Dialog open={syncOpen} onOpenChange={setSyncOpen}>
         <DialogContent>
@@ -280,16 +281,15 @@ function ActorCard({
   actor,
   backendName,
   capsetName,
+  capset,
 }: {
   actor: ActorResource;
   backendName: string;
   capsetName: string;
+  capset?: CapabilitySetResource;
 }) {
   const avatar = (actor.name.trim()[0] ?? "A").toUpperCase();
-  const description =
-    actor.default_character?.description ||
-    actor.default_character?.name ||
-    "该 Actor 暂无描述。";
+  const description = actor.persona_prompt || "该 Actor 暂无 Persona。";
   const conversationId = `actor-${actor.id}`;
   const deleteMutation = useDeleteResource("actors");
   const handleDelete = () => {
@@ -347,7 +347,7 @@ function ActorCard({
         </details>
       </header>
       <div className="ac__body">
-        <div className="ac__row"><span className="lbl">模型</span><code>{actor.default_model}</code></div>
+        <div className="ac__row"><span className="lbl">模型</span><code>{actor.model}</code></div>
         <div className="ac__row"><span className="lbl">LLM 供应商</span><code>{backendName}</code></div>
         <div className="ac__row">
           <span className="lbl">能力集</span>
@@ -361,14 +361,14 @@ function ActorCard({
         {/* workspace column regression anchor (conversation-entry-via-actor test). */}
         <div className="ac__row">
           <span className="lbl">Workspace</span>
-          {actor.capability_set?.workspace_path ? (
+          {capset?.workspace_path ? (
             <a
-              href={`/workspace/${actor.capability_set.workspace_path}`}
+              href={`/workspace/${capset.workspace_path}`}
               target="_blank"
               rel="noopener noreferrer"
               className="chip"
             >
-              {actor.capability_set.workspace_path}
+              {capset.workspace_path}
             </a>
           ) : (
             <span className="chip chip--muted">—</span>
@@ -376,9 +376,9 @@ function ActorCard({
         </div>
         <div className="ac__row">
           <span className="lbl">预算</span>
-          <code>{actor.default_budget?.max_tokens ?? "—"} tok</code>
+          <code>{actor.per_run_budget?.max_tokens ?? "—"} tok</code>
           <span>·</span>
-          <span>步数×{actor.default_budget?.max_steps ?? "—"}</span>
+          <span>步数×{actor.per_run_budget?.max_steps ?? "—"}</span>
         </div>
       </div>
       <div className="ac__quick">

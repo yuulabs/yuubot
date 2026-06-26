@@ -31,8 +31,9 @@ def _create_provider_model_client(
     base_url: str = "",
 ) -> yuullm.Provider:
     provider_key = _provider_key(backend)
-    provider_api_key = api_key or backend.provider_options.api_key
-    provider_base_url = base_url or backend.provider_options.base_url
+    preset = yuullm.resolve_provider(backend.provider_identity)
+    provider_api_key = api_key or backend.provider_options.api_key.reveal()
+    provider_base_url = base_url or backend.provider_options.base_url or preset.default_base_url
 
     if provider_key == "anthropic":
         return yuullm.providers.AnthropicProvider(
@@ -62,7 +63,18 @@ def _provider_model_payload(model: yuullm.ProviderModel) -> dict[str, object]:
 
 
 def _provider_capabilities_payload(backend: LLMBackendRecord) -> dict[str, bool]:
-    capabilities = backend.model_capabilities
+    selected_model = _selected_model(backend)
+    config = backend.model_configs.get(selected_model) if selected_model else None
+    if config is None:
+        return {
+            "chat": False,
+            "vision": False,
+            "tool_calling": False,
+            "reasoning": False,
+            "embedding": False,
+            "structured_output": False,
+        }
+    capabilities = config.capabilities
     return {
         "chat": capabilities.chat,
         "vision": capabilities.vision,
@@ -71,6 +83,12 @@ def _provider_capabilities_payload(backend: LLMBackendRecord) -> dict[str, bool]
         "embedding": capabilities.embedding,
         "structured_output": capabilities.structured_output,
     }
+
+
+def _selected_model(backend: LLMBackendRecord) -> str:
+    if backend.recommended_model:
+        return backend.recommended_model
+    return next(iter(backend.model_configs), "")
 
 
 # -- Handler factories --
@@ -156,7 +174,7 @@ def make_validate_provider_handler(
                     "data": {
                         "valid": False,
                         "detail": str(exc),
-                        "default_model_valid": False,
+                        "recommended_model_valid": False,
                         "models": [],
                         "capabilities": _provider_capabilities_payload(backend),
                     },
@@ -164,16 +182,14 @@ def make_validate_provider_handler(
             )
 
         model_ids = [model.id for model in models]
-        selected_model = backend.default_model
-        if not selected_model and backend.models.names:
-            selected_model = backend.models.names[0]
+        selected_model = _selected_model(backend)
         return JSONResponse(
             {
                 "status": "ok",
                 "data": {
                     "valid": True,
                     "detail": "",
-                    "default_model_valid": (
+                    "recommended_model_valid": (
                         not selected_model or selected_model in set(model_ids)
                     ),
                     "models": [_provider_model_payload(model) for model in models],

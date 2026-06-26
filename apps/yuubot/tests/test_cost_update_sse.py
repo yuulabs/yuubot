@@ -185,7 +185,6 @@ def manager_with_store() -> tuple[ConversationManager, MagicMock]:
     manager = ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )

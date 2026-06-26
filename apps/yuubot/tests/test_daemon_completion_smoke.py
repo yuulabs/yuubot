@@ -14,6 +14,7 @@ import msgspec
 import pytest
 import yuullm
 
+from yuubot.core.secrets import redact_secret_for_json, secret_decode_hook
 from tests.helpers import register_test_llm_provider, make_test_daemon_infrastructure
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, PathsConfig
 from yuubot.core.integrations.impls.echo import (
@@ -27,13 +28,11 @@ from yuubot.resources.records import (
     ActorRecord,
     BudgetPolicy,
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     IntegrationRecord,
     LLMBackendRecord,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
+    Pricing,
     ResourcePolicy,
     RuntimePolicy,
     YuuAgentBudget,
@@ -173,7 +172,6 @@ async def _provision_smoke_resources(
     actor_id: str,
     source_path: str,
 ) -> tuple[IntegrationRecord, ActorRecord]:
-    await _post_character(client, actor_id)
     await _post_llm_backend(client, actor_id)
     await _post_capability_set(client, actor_id)
     integration = await _post_integration(client, source_path)
@@ -188,7 +186,6 @@ async def _assert_refresh_cases(
     actor_id: str,
 ) -> None:
     async with _client(daemon) as client:
-        await _post_character(client, "actor-secondary")
         await _post_llm_backend(client, "actor-secondary")
         await _post_capability_set(client, "actor-secondary")
         second_actor = await _post_actor(client, "actor-secondary")
@@ -264,15 +261,6 @@ async def _assert_refresh_cases(
     )
 
 
-async def _post_character(client: httpx.AsyncClient, actor_id: str) -> CharacterRecord:
-    response = await client.post(
-        "/api/resources/characters",
-        headers=DAEMON_HEADERS,
-        json=_record_payload(_character_record(actor_id)),
-    )
-    return _created(response, CharacterRecord)
-
-
 async def _post_llm_backend(
     client: httpx.AsyncClient, actor_id: str
 ) -> LLMBackendRecord:
@@ -338,17 +326,11 @@ def _created(response: httpx.Response, record_type: type[Any]) -> Any:
     body = response.json()
     assert response.status_code == 201, body
     assert body["status"] == "ok", body
-    return msgspec.convert(body["data"], type=record_type, strict=False)
-
-
-def _character_record(actor_id: str) -> CharacterRecord:
-    return CharacterRecord(
-        id=f"{actor_id}-char",
-        name=f"{actor_id}-char",
-        description="",
-        system_prompt="You are a smoke-test actor.",
-        facade_module="yuubot.core.facade",
-        default_hints=CharacterHints(),
+    return msgspec.convert(
+        body["data"],
+        type=record_type,
+        strict=False,
+        dec_hook=secret_decode_hook,
     )
 
 
@@ -356,11 +338,14 @@ def _llm_backend_record(actor_id: str) -> LLMBackendRecord:
     return LLMBackendRecord(
         id=f"{actor_id}-backend",
         name=f"{actor_id}-backend",
-        yuuagents_provider="openai",
-        default_model="gpt-4",
-        model_capabilities=ModelCapabilities(tool_calling=True),
-        models=ModelCatalog(),
-        pricing=PricingTable(),
+        provider_identity="openai",
+        recommended_model="gpt-4",
+        model_configs={
+            "gpt-4": ModelConfig(
+                pricing=Pricing(),
+                capabilities=ModelCapabilities(tool_calling=True),
+            )
+        },
         budget=BudgetPolicy(),
     )
 
@@ -388,17 +373,19 @@ def _actor_payload(actor_id: str) -> dict[str, object]:
     return {
         "id": actor_id,
         "name": actor_id,
-        "default_character_id": f"{actor_id}-char",
+        "persona_prompt": "You are a smoke-test actor.",
         "capability_set_id": f"{actor_id}-capabilities",
-        "default_llm_backend_id": f"{actor_id}-backend",
-        "default_model": "",
-        "default_llm_options": {},
-        "default_budget": _record_payload(YuuAgentBudget(max_steps=4)),
+        "llm_backend_id": f"{actor_id}-backend",
+        "model": "",
+        "generation_override": {},
+        "per_run_budget": _record_payload(YuuAgentBudget(max_steps=4)),
     }
 
 
 def _record_payload(record: object) -> dict[str, object]:
-    return msgspec.json.decode(msgspec.json.encode(record))
+    return msgspec.json.decode(
+        msgspec.json.encode(record, enc_hook=redact_secret_for_json)
+    )
 
 
 def _simple_loop_turns() -> list[list[yuullm.StreamItem]]:

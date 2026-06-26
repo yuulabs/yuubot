@@ -1,9 +1,9 @@
-# yuubot architecture-v2 bootstrap config example.
+# yuubot bootstrap config example.
 #
 # Only startup-level settings belong here. Runtime resources such as LLM
-# providers, service providers, characters, actors, channels, routes, and
-# context pins are stored in the runtime resource DB and managed through the
-# ResourceService/Admin UI path.
+# providers, models, pricing, characters, actors, routes, integrations, plugins,
+# runtime policies, and future quota rules live in the resource DB and are
+# managed through Admin/API surfaces.
 
 admin:
   host: 127.0.0.1
@@ -18,9 +18,7 @@ server:
   daemon_secret: ${YUU_DAEMON_SECRET}
 
 database:
-  # When empty, the daemon resolves <data_dir>/yuubot/yuubot.db.
-  # Tests can pass ":memory:" or a tmp_path through BootstrapConfig.for_tests().
-  path: ""
+  path: ${YUU_DATA_DIR}/yuubot/yuubot.db
 
 secrets:
   # Stable 32-byte base64 key used to encrypt config fields declared as Secret.
@@ -31,8 +29,6 @@ trace:
   enabled: true
   collector_host: 127.0.0.1
   collector_port: 4318
-  ui_host: 127.0.0.1
-  ui_port: 8782
 
 # yuubot owns the entire data directory. Subpaths derived by DataLayout:
 #   <data_dir>/yuubot/yuubot.db        — main database
@@ -46,24 +42,3 @@ trace:
 # Docker deployments mount this single directory.
 paths:
   data_dir: ${YUU_DATA_DIR}
-
-# yuuagents is daemon infrastructure, not a hot-reload runtime resource.
-# Edit this manually and restart the daemon (Admin UI may offer a restart
-# button). Actor resources reference these backend keys in their
-# AgentDefinition.tools fields.
-yuuagents:
-  strict: false
-  tool_backends:
-    background: {}
-    schedule:
-      db_path: ${YUU_DATA_DIR}/schedule.sqlite3
-
-# Global daily spend ceiling. Summed across every conversation from the
-# trace DB's yuu.cost events for the trailing UTC day. When exceeded, the
-# daemon's send handler returns HTTP 402 Payment Required and refuses to
-# start a new turn; the in-flight turn drains to its next budget checkpoint
-# (budget.is_exceeded in _run_agent_turn) and exits naturally — no
-# hard actor_manager.stop() is issued.
-# 0 (the default) disables the guard: no send is blocked, no DB query runs.
-budget:
-  daily_limit_usd: 0

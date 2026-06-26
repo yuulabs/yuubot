@@ -50,7 +50,6 @@ def test_context_for_propagates_conversation_id() -> None:
     provider.register(
         "test-agent",
         conversation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-        character_name="Test Char",
         model="test-model",
     )
 
@@ -64,7 +63,6 @@ def test_context_for_propagates_conversation_id() -> None:
 
     ctx = provider._context_for(event)
     assert ctx.conversation_id == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    assert ctx.character_name == "Test Char"
     assert ctx.model == "test-model"
 
     event2 = RuntimeEvent(

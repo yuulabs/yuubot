@@ -13,19 +13,16 @@ from yuubot.resources.records import (
     ActorRecord,
     BudgetPolicy,
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     LLMBackendRecord,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
+    Pricing,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
 from yuubot.resources.store.models import (
     ActorORM,
     CapabilitySetORM,
-    CharacterORM,
     LLMBackendORM,
 )
 
@@ -92,27 +89,19 @@ async def _create_actor_bundle(
     repository: ResourceRepository,
     actor_id: str,
 ) -> ActorRecord:
-    character = await repository.insert(
-        CharacterORM,
-        CharacterRecord(
-            id=f"{actor_id}-char",
-            name=f"{actor_id}-char",
-            description="",
-            system_prompt="You are test",
-            facade_module="yuubot.core.facade",
-            default_hints=CharacterHints(),
-        ),
-    )
     backend = await repository.insert(
         LLMBackendORM,
         LLMBackendRecord(
             id=f"{actor_id}-backend",
             name=f"{actor_id}-backend",
-            yuuagents_provider="openai",
-            default_model="gpt-4",
-            model_capabilities=ModelCapabilities(),
-            models=ModelCatalog(),
-            pricing=PricingTable(),
+            provider_identity="openai",
+            recommended_model="gpt-4",
+            model_configs={
+                "gpt-4": ModelConfig(
+                    pricing=Pricing(),
+                    capabilities=ModelCapabilities(),
+                )
+            },
             budget=BudgetPolicy(),
         ),
     )
@@ -128,9 +117,9 @@ async def _create_actor_bundle(
         ActorRecord(
             id=actor_id,
             name=actor_id,
-            default_character=character,
-            capability_set=capability_set,
-            default_llm_backend=backend,
-            default_model="",
+            persona_prompt="You are test",
+            capability_set_id=capability_set.id,
+            llm_backend_id=backend.id,
+            model="",
         ),
     )

@@ -6,7 +6,7 @@ import {
   useDeleteResource,
   useUpdateResource,
 } from "@/hooks/use-resources";
-import type { LLMBackendResource, PricingEntry } from "@/types/api";
+import type { LLMBackendResource, ModelConfig, Pricing } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,12 +49,12 @@ function ProviderDetailPage() {
 
   const [name, setName] = useState(backend?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(backend?.provider_options?.base_url ?? "");
-  const [model, setModel] = useState(backend?.default_model ?? "");
+  const [model, setModel] = useState(backend?.recommended_model ?? "");
   const [dailyBudget, setDailyBudget] = useState(
     backend?.budget?.daily_usd?.toString() ?? "",
   );
   const [pricingEntries, setPricingEntries] = useState<PricingEntryForm[]>(
-    pricingEntriesToForm(backend?.pricing?.entries ?? []),
+    modelConfigsToForm(backend?.model_configs ?? {}),
   );
   const [modelApiKey, setModelApiKey] = useState("");
   const [providerModels, setProviderModels] = useState<ProviderModelOption[]>([]);
@@ -70,9 +70,9 @@ function ProviderDetailPage() {
     if (backend) {
       setName(backend.name);
       setBaseUrl(backend.provider_options?.base_url ?? "");
-      setModel(backend.default_model ?? "");
+      setModel(backend.recommended_model ?? "");
       setDailyBudget(backend.budget?.daily_usd?.toString() ?? "");
-      setPricingEntries(pricingEntriesToForm(backend.pricing?.entries ?? []));
+      setPricingEntries(modelConfigsToForm(backend.model_configs ?? {}));
       setProviderModels([]);
       setProviderValidation(null);
       setModelFetchError("");

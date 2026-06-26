@@ -1,7 +1,7 @@
 // actors.new.tsx — /actors/new editor (new mode) (ISSUE-0007 S3).
 //
-// Route owns the <form>, editor state, and the create dual-call (create
-// Character then Actor, ISSUE-0011); the shared presentational <ActorEditor>
+// Route owns the <form>, editor state, and the Actor create call; the shared
+// presentational <ActorEditor>
 // renders the demo-aligned hero + cols + rails bound to that state. The shell
 // topbar Save (form="actor-editor-form") submits this form from outside the
 // subtree.
@@ -14,7 +14,6 @@ import {
 import type {
   ActorResource,
   CapabilitySetResource,
-  CharacterResource,
   LLMBackendResource,
 } from "@/types/api";
 import {
@@ -46,8 +45,6 @@ function ActorsNewPage() {
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: capabilitySets = [] } =
     useResourceList<CapabilitySetResource>("capability-sets");
-  // createCharacter + createActor dual-call (folded character, ISSUE-0011).
-  const createCharacterMutation = useCreateResource<CharacterResource>("characters");
   const createActorMutation = useCreateResource<ActorResource>("actors");
 
   const [state, setStateRaw] = useState<ActorEditorState>(DRAFT);
@@ -55,7 +52,7 @@ function ActorsNewPage() {
   const setState = <K extends keyof ActorEditorState>(key: K, value: ActorEditorState[K]) =>
     setStateRaw((s) => ({ ...s, [key]: value }));
 
-  const isPending = createActorMutation.isPending || createCharacterMutation.isPending;
+  const isPending = createActorMutation.isPending;
   const selectedBackend = backends.find((b) => b.id === state.backendId);
   const modelOptions = useMemo(() => modelOptionsFor(selectedBackend), [selectedBackend]);
 
@@ -87,25 +84,15 @@ function ActorsNewPage() {
       max_usd: 0,
     };
     try {
-      const character = await createCharacterMutation.mutateAsync({
-        name: state.name,
-        description: state.description,
-        system_prompt: state.systemPrompt,
-        facade_module: "yb",
-        default_hints: { language: "zh-CN", tone: "" },
-        is_builtin: false,
-        builtin_version: "",
-        cloned_from: "",
-      });
       const created = await createActorMutation.mutateAsync({
         name: state.name,
         type: state.actorType,
         enabled: state.enabled,
-        default_model: state.model,
-        default_character_id: character.id,
-        default_llm_backend_id: state.backendId,
+        persona_prompt: state.systemPrompt,
+        model: state.model,
+        llm_backend_id: state.backendId,
         capability_set_id: state.capabilitySetId,
-        default_budget: budget,
+        per_run_budget: budget,
       });
       navigate({ to: "/actors/$id", params: { id: created.id } });
     } catch {
@@ -118,7 +105,7 @@ function ActorsNewPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">新建 Actor</h1>
-          <p className="page-sub">配置 LLM 供应商、模型、Capability Set、预算与 Character Persona，创建一个新的 Actor 实例。</p>
+          <p className="page-sub">配置 LLM 供应商、模型、Capability Set、预算与 Persona，创建一个新的 Actor 实例。</p>
         </div>
       </div>
       <form className="editor" id="actor-editor-form" onSubmit={handleSave} autoComplete="off">
@@ -130,7 +117,7 @@ function ActorsNewPage() {
           capabilitySets={capabilitySets}
           modelOptions={modelOptions}
           isPending={isPending}
-          error={error || createActorMutation.error?.message || createCharacterMutation.error?.message}
+          error={error || createActorMutation.error?.message}
         />
       </form>
     </div>

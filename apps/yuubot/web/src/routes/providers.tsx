@@ -34,8 +34,6 @@ interface ProviderPreset {
   key: string;
   label: string;
   baseUrl: string;
-  runtimeProviderKey: string;
-  providerName: string;
   /** Demo mark glyph shown in the preset card head. */
   mark: string;
   /** Short note under the preset name. */
@@ -47,8 +45,6 @@ const providerPresets: ProviderPreset[] = [
     key: "openai",
     label: "OpenAI API",
     baseUrl: "https://api.openai.com/v1",
-    runtimeProviderKey: "openai",
-    providerName: "openai",
     mark: "OA",
     note: "GPT-4o / GPT-4o-mini 等官方接口。",
   },
@@ -56,8 +52,6 @@ const providerPresets: ProviderPreset[] = [
     key: "anthropic",
     label: "Anthropic API",
     baseUrl: "https://api.anthropic.com/v1",
-    runtimeProviderKey: "anthropic",
-    providerName: "anthropic",
     mark: "AN",
     note: "Claude 3.5 / Sonnet 系列官方接口。",
   },
@@ -65,55 +59,14 @@ const providerPresets: ProviderPreset[] = [
     key: "deepseek",
     label: "DeepSeek API",
     baseUrl: "https://api.deepseek.com",
-    runtimeProviderKey: "openai",
-    providerName: "deepseek",
     mark: "DS",
     note: "DeepSeek-V3 / R1，OpenAI 兼容。",
   },
-  {
-    key: "groq",
-    label: "Groq API",
-    baseUrl: "https://api.groq.com/openai/v1",
-    runtimeProviderKey: "openai",
-    providerName: "groq",
-    mark: "GQ",
-    note: "超低延迟推理，Llama 系列模型。",
-  },
-  {
     key: "openrouter",
     label: "OpenRouter API",
     baseUrl: "https://openrouter.ai/api/v1",
-    runtimeProviderKey: "openrouter",
-    providerName: "openrouter",
     mark: "OR",
     note: "聚合多模型，统一计费入口。",
-  },
-  {
-    key: "google",
-    label: "Google Gemini API",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
-    runtimeProviderKey: "openai",
-    providerName: "google",
-    mark: "GG",
-    note: "Gemini 2.5 系列，OpenAI 兼容端点。",
-  },
-  {
-    key: "xai",
-    label: "xAI Grok API",
-    baseUrl: "https://api.x.ai/v1",
-    runtimeProviderKey: "openai",
-    providerName: "xai",
-    mark: "XA",
-    note: "Grok 系列模型，OpenAI 兼容。",
-  },
-  {
-    key: "custom",
-    label: "Custom (OpenAI-compatible)",
-    baseUrl: "http://localhost:11434/v1",
-    runtimeProviderKey: "openai",
-    providerName: "custom",
-    mark: "CU",
-    note: "任意 OpenAI 兼容端点（Ollama / vLLM 等）。",
   },
 ];
 
@@ -162,7 +115,7 @@ function ProvidersPage() {
   });
   const [formError, setFormError] = useState("");
   // Onboarding dialog state: holds the freshly-created backend whose
-  // default_model / id the preset Actors should bind to.
+  // recommended_model / id the preset Actors should bind to.
   const [onboardingBackend, setOnboardingBackend] = useState<LLMBackendResource | null>(null);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingError, setOnboardingError] = useState("");
@@ -216,30 +169,20 @@ function ProvidersPage() {
     const wasFirstBackend = backends.length === 0;
     const createdBackend = await createMutation.mutateAsync({
       name: form.name,
-      yuuagents_provider: selectedPreset.runtimeProviderKey,
-      model_capabilities: {
-        chat: true,
-        vision: false,
-        tool_calling: true,
-        reasoning: false,
-        embedding: false,
-        structured_output: false,
-      },
-      models: { names: [] },
-      pricing: { entries: [] },
+      provider_identity: selectedPreset.key,
+      model_configs: {},
       budget: {
         daily_usd: parseOptionalUsd(form.dailyUsd),
         monthly_usd: parseOptionalUsd(form.monthlyUsd),
       },
       provider_options: {
         base_url: form.baseUrl || selectedPreset.baseUrl,
-        provider_name: selectedPreset.providerName,
         api_key: form.apiKey,
         timeout: 60,
         max_retries: 2,
       },
-      default_model: "",
-      default_stream_options: {
+      recommended_model: "",
+      default_generation_params: {
         max_tokens: 4096,
         temperature: 0.7,
       },
@@ -252,7 +195,7 @@ function ProvidersPage() {
   };
 
   // Create the preset Actors bound to the freshly-created backend. Uses the
-  // normal Actor resource hook; references the stable seeded Character /
+  // normal Actor resource hook; references stable preset persona prompts and
   // CapabilitySet ids. Skips presets whose Actor name already exists.
   const handleCreatePresetActors = async () => {
     if (!onboardingBackend) return;
@@ -289,7 +232,7 @@ function ProvidersPage() {
   return (
     <PageShell
       title="Providers"
-      sub="选一个预设，填入 API key，系统会自动准备一个能聊的 Actor（默认 Character / CapabilitySet / Actor 串联就绪）。"
+      sub="选一个预设，填入 API key，系统会自动准备一个能聊的 Actor（Persona / CapabilitySet / Actor 串联就绪）。"
     >
       <div className="view">
         {/* Presets grid */}
@@ -301,7 +244,7 @@ function ProvidersPage() {
                 key={preset.key}
                 preset={preset}
                 connected={!!connected}
-                connectedModel={connected?.default_model}
+                connectedModel={connected?.recommended_model}
                 onUse={() => selectPreset(preset.key)}
               />
             );
@@ -362,12 +305,17 @@ function ProvidersPage() {
                   <p className="text-xs text-destructive">{createMutation.error.message}</p>
                 )}
                 <div className="flex gap-2">
-                  <Button type="submit" disabled={createMutation.isPending}>
+                  <Button
+                    type="submit"
+                    className="btn btn--primary"
+                    disabled={createMutation.isPending}
+                  >
                     {createMutation.isPending ? "连接中…" : "连接"}
                   </Button>
                   <Button
                     type="button"
                     variant="ghost"
+                    className="btn btn--ghost"
                     onClick={() => setSelectedKey(null)}
                   >
                     取消
@@ -410,10 +358,19 @@ function ProvidersPage() {
               <p className="text-xs text-destructive">{onboardingError}</p>
             )}
             <DialogFooter>
-              <Button variant="ghost" onClick={handleSkipOnboarding} disabled={onboardingBusy}>
+              <Button
+                variant="ghost"
+                className="btn btn--ghost"
+                onClick={handleSkipOnboarding}
+                disabled={onboardingBusy}
+              >
                 跳过
               </Button>
-              <Button onClick={handleCreatePresetActors} disabled={onboardingBusy}>
+              <Button
+                className="btn btn--primary"
+                onClick={handleCreatePresetActors}
+                disabled={onboardingBusy}
+              >
                 {onboardingBusy ? "创建中…" : "创建"}
               </Button>
             </DialogFooter>
@@ -474,7 +431,7 @@ function BackendCard({
   disabled: boolean;
 }) {
   const preset = providerPresets.find((p) => p.key === backendProviderKey(backend));
-  const providerLabel = preset?.label ?? backend.yuuagents_provider;
+  const providerLabel = preset?.label ?? backend.provider_identity;
   const missingPricing =
     budgetRequiresPricing(backend) && !hasPricingForDefaultModel(backend);
   const warning = providerBaseUrlWarning(
@@ -505,8 +462,8 @@ function BackendCard({
           </div>
         )}
         <div className="flex justify-between">
-          <span className="text-muted-foreground">Default Model</span>
-          <code className="text-xs">{backend.default_model || "unset"}</code>
+          <span className="text-muted-foreground">Recommended Model</span>
+          <code className="text-xs">{backend.recommended_model || "unset"}</code>
         </div>
         <div className="flex justify-between">
           <span className="text-muted-foreground">Daily Budget</span>
@@ -545,16 +502,14 @@ function budgetRequiresPricing(backend: LLMBackendResource): boolean {
 }
 
 function hasPricingForDefaultModel(backend: LLMBackendResource): boolean {
-  if (!backend.default_model) {
+  if (!backend.recommended_model) {
     return true;
   }
-  return backend.pricing.entries.some(
-    (entry) => entry.model === backend.default_model,
-  );
+  return backend.recommended_model in backend.model_configs;
 }
 
 function backendProviderKey(backend: LLMBackendResource): string {
-  return backend.provider_options?.provider_name || backend.yuuagents_provider;
+  return backend.provider_identity;
 }
 
 function formatUsd(value: number | null | undefined): string {

@@ -4,7 +4,6 @@ from collections.abc import Callable
 
 from yuuagents import ProviderPoolSessionFactory
 
-from yuubot.bootstrap.config import YuuAgentsConfig
 from yuubot.core.actors.contracts import Actor, ActorFactory
 from yuubot.core.actors.events import ActorLifecycleCommand, StartActor, StopActor
 from yuubot.core.actors.manager import ActorManager
@@ -39,7 +38,6 @@ __all__ = [
 
 
 def default_actor_factories(
-    config: YuuAgentsConfig,
     python_sessions: ActorPythonSessionFactory,
     repository: ResourceRepository,
     trace_context: YuubotTraceContextProvider | None = None,
@@ -52,7 +50,6 @@ def default_actor_factories(
     registry.register(
         SimpleLoopActorFactory(
             repository=repository,
-            yuuagents_config=config,
             python_sessions=python_sessions,
             integrations=integrations,
             trace_context=trace_context,

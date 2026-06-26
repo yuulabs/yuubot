@@ -139,7 +139,7 @@ class ServiceHost:
 
 @dataclass
 class TraceService:
-    """Trace collector/UI wiring owned by bootstrap config."""
+    """Trace collector wiring owned by bootstrap config."""
 
     config: TraceConfig
     db_path: str
@@ -147,7 +147,6 @@ class TraceService:
     _collector_thread: threading.Thread | None = field(
         default=None, init=False, repr=False
     )
-    _ui_thread: threading.Thread | None = field(default=None, init=False, repr=False)
 
     async def start(self) -> None:
         if not self.config.enabled:
@@ -158,7 +157,6 @@ class TraceService:
         yuutrace.init(endpoint=endpoint, service_name="yuubot")
 
         from yuutrace.cli.server import run_server
-        from yuutrace.cli.ui import run_ui
 
         self._collector_thread = threading.Thread(
             target=run_server,
@@ -170,27 +168,14 @@ class TraceService:
             daemon=True,
         )
         self._collector_thread.start()
-        self._ui_thread = threading.Thread(
-            target=run_ui,
-            kwargs={
-                "db_path": self.db_path,
-                "host": self.config.ui_host,
-                "port": self.config.ui_port,
-            },
-            daemon=True,
-        )
-        self._ui_thread.start()
 
     async def stop(self) -> None:
         from yuutrace.cli.server import shutdown_server
-        from yuutrace.cli.ui import shutdown_ui
 
         shutdown_server()
-        shutdown_ui()
 
-        for t in (self._collector_thread, self._ui_thread):
-            if t is not None and t.is_alive():
-                t.join(timeout=5.0)
+        if self._collector_thread is not None and self._collector_thread.is_alive():
+            self._collector_thread.join(timeout=5.0)
 
     @property
     def status(self) -> str:

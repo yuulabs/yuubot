@@ -19,7 +19,6 @@ import type {
   ActorIngressRuleResource,
   ActorResource,
   CapabilitySetResource,
-  CharacterResource,
   ConversationListItem,
   LLMBackendResource,
 } from "@/types/api";
@@ -45,7 +44,6 @@ function ActorDetailPage() {
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: capabilitySets = [] } =
     useResourceList<CapabilitySetResource>("capability-sets");
-  const { data: characters = [] } = useResourceList<CharacterResource>("characters");
   const { data: ingressRules = [] } =
     useResourceList<ActorIngressRuleResource>("ingress-rules");
   const { data: liveCaps } = useLiveCapabilities();
@@ -113,28 +111,25 @@ function ActorDetailPage() {
     );
   }
 
-  const backend = backends.find((b) => b.id === actor.default_llm_backend?.id);
-  const capset = capabilitySets.find((c) => c.id === actor.capability_set?.id);
-  const character = actor.default_character
-    ? characters.find((c) => c.id === actor.default_character!.id)
-    : undefined;
+  const backend = backends.find((b) => b.id === actor.llm_backend_id);
+  const capset = capabilitySets.find((c) => c.id === actor.capability_set_id);
   // Ingress rules routing to this actor (client-side filter of ingress-rules).
   const rulesForActor = ingressRules.filter((r) => r.actor_id === actor.id);
   // Capabilities exposed via this actor's capability set (names resolved via
   // live-capabilities lookup).
-  const capIds = actor.capability_set?.integration_capability_ids ?? [];
+  const capIds = capset?.integration_capability_ids ?? [];
   const capName = (capId: string) =>
     liveCaps?.find((c) => c.capability_id === capId)?.capability_name ?? capId;
   const editorState: ActorEditorState = {
     name: actor.name ?? "",
-    description: actor.default_character?.description ?? character?.description ?? "",
-    systemPrompt: character?.system_prompt ?? "",
+    description: "",
+    systemPrompt: actor.persona_prompt ?? "",
     actorType: actor.type ?? "simple_loop",
-    backendId: actor.default_llm_backend?.id ?? "",
-    model: actor.default_model ?? "",
-    capabilitySetId: actor.capability_set?.id ?? "",
-    maxTokens: String(actor.default_budget?.max_tokens ?? ""),
-    maxSteps: String(actor.default_budget?.max_steps ?? ""),
+    backendId: actor.llm_backend_id ?? "",
+    model: actor.model ?? "",
+    capabilitySetId: actor.capability_set_id ?? "",
+    maxTokens: String(actor.per_run_budget?.max_tokens ?? ""),
+    maxSteps: String(actor.per_run_budget?.max_steps ?? ""),
     enabled: actor.enabled ?? true,
   };
   const selectedBackend = backends.find((b) => b.id === editorState.backendId);

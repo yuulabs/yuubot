@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import msgspec
 
+from yuubot.core.validation import GenerationParams
 from yuubot.resources.records import LLMBackendRecord
 
 
 class BoundLLM(msgspec.Struct):
     backend: LLMBackendRecord
     model: str
-    stream_options: dict[str, object] = msgspec.field(default_factory=dict)
+    generation_params: GenerationParams = msgspec.field(default_factory=GenerationParams)

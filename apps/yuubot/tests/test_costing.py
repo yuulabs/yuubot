@@ -7,7 +7,7 @@ import pytest
 import yuullm
 
 from yuubot.core.costing import calculate_cost
-from yuubot.resources.records import PricingEntry, PricingTable
+from yuubot.resources.records import ModelConfig, Pricing
 
 
 def test_calculate_cost_splits_cached_input_tokens() -> None:
@@ -18,18 +18,17 @@ def test_calculate_cost_splits_cached_input_tokens() -> None:
         cache_read_tokens=400,
         output_tokens=200,
     )
-    pricing = PricingTable(
-        entries=(
-            PricingEntry(
-                model="gpt-5.4-mini",
+    model_configs = {
+        "gpt-5.4-mini": ModelConfig(
+            pricing=Pricing(
                 input_per_million=0.75,
                 cached_input_per_million=0.075,
                 output_per_million=4.50,
             ),
         )
-    )
+    }
 
-    cost = calculate_cost(usage, pricing, configured_model="gpt-5.4-mini")
+    cost = calculate_cost(usage, model_configs, configured_model="gpt-5.4-mini")
 
     assert cost is not None
     assert cost.input_cost == pytest.approx(0.00045)
@@ -38,7 +37,7 @@ def test_calculate_cost_splits_cached_input_tokens() -> None:
     assert cost.total_cost == pytest.approx(0.00138)
 
 
-def test_pricing_entry_serializes_cached_input_default() -> None:
-    encoded = msgspec.json.decode(msgspec.json.encode(PricingEntry("model")))
+def test_pricing_serializes_cached_input_default() -> None:
+    encoded = msgspec.json.decode(msgspec.json.encode(Pricing()))
 
     assert encoded["cached_input_per_million"] == 0.0

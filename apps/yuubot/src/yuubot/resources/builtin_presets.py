@@ -1,10 +1,4 @@
-"""Built-in preset Character and CapabilitySet record definitions.
-
-These records are seeded at install time (``open_resources``) so that the
-Admin UI shows stable, onboarding-ready presets before the user creates any
-backend of their own. They are normal persisted records after seeding: users
-may edit or delete them, and reseeding is idempotent and non-destructive.
-"""
+"""Built-in persona prompt templates and CapabilitySet presets."""
 
 from __future__ import annotations
 
@@ -15,32 +9,14 @@ from tortoise import Model
 
 from yuubot.resources.records import (
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     ResourcePolicy,
     RuntimePolicy,
 )
 from yuubot.resources.repository import ResourceRepository
-from yuubot.resources.store.models import CapabilitySetORM, CharacterORM
+from yuubot.resources.store.models import CapabilitySetORM
 
-# Preset content versions are decoupled from Issue numbers: when ISSUE-0008
-# (or any later maintainer) advances a preset's source content, they bump the
-# version here and the next daemon restart re-applies it to existing installs.
-GENERAL_PRESET_VERSION = "general-v1"
-SHIORI_PRESET_VERSION = "shiori-v1"
-
-_OrmT = TypeVar("_OrmT", bound=Model)
-
-
-class _HasId(Protocol):
-    id: str
-
-
-def _record_id(record: _HasId) -> str:
-    return record.id
-
-
-_SHIORI_SYSTEM_PROMPT = """\
+GENERAL_PERSONA_PROMPT = "You are a helpful assistant."
+SHIORI_PERSONA_PROMPT = """\
 你是 Shiori（汐织），用户的女仆，也是工作区的长期同行者。
 
 你坚韧纯真、察言观色，并且真诚地把“能为 Master 派上用场”视为喜悦。你不是懒散、卖弄或只会撒娇的女仆；你有判断力，会把工作区的秩序和 Master 的长期目标放在台前表现之前。
@@ -88,10 +64,16 @@ Master 请求 reinstall 某依赖
 这种格式让 Master 后退一步就能审视整条路径，而不必逐条追问“然后做了什么”。
 """
 
+BUILTIN_PERSONA_PROMPTS: dict[str, str] = {
+    "general": GENERAL_PERSONA_PROMPT,
+    "shiori": SHIORI_PERSONA_PROMPT,
+}
 
-@dataclass(frozen=True)
-class CharacterPreset:
-    record: CharacterRecord
+_OrmT = TypeVar("_OrmT", bound=Model)
+
+
+class _HasId(Protocol):
+    id: str
 
 
 @dataclass(frozen=True)
@@ -99,25 +81,13 @@ class CapabilitySetPreset:
     record: CapabilitySetRecord
 
 
-@dataclass(frozen=True)
-class PresetPair:
-    character: CharacterRecord
-    capability_set: CapabilitySetRecord
+def _record_id(record: _HasId) -> str:
+    return record.id
 
 
-def _general_pair() -> PresetPair:
-    return PresetPair(
-        character=CharacterRecord(
-            id="builtin-character-general",
-            name="general",
-            description="Preset general assistant",
-            system_prompt="You are a helpful assistant.",
-            facade_module="yb",
-            default_hints=CharacterHints(language="zh-CN", tone=""),
-            is_builtin=True,
-            builtin_version=GENERAL_PRESET_VERSION,
-        ),
-        capability_set=CapabilitySetRecord(
+BUILTIN_CAPABILITY_PRESETS: tuple[CapabilitySetPreset, ...] = (
+    CapabilitySetPreset(
+        CapabilitySetRecord(
             id="builtin-capability-general",
             name="general",
             description="Preset general capability set",
@@ -127,23 +97,10 @@ def _general_pair() -> PresetPair:
                 workspace_access="read_write",
                 concurrency_limit=1,
             ),
-        ),
-    )
-
-
-def _shiori_pair() -> PresetPair:
-    return PresetPair(
-        character=CharacterRecord(
-            id="builtin-character-shiori",
-            name="shiori",
-            description="Preset long-term workspace companion",
-            system_prompt=_SHIORI_SYSTEM_PROMPT,
-            facade_module="yb",
-            default_hints=CharacterHints(language="zh-CN", tone=""),
-            is_builtin=True,
-            builtin_version=SHIORI_PRESET_VERSION,
-        ),
-        capability_set=CapabilitySetRecord(
+        )
+    ),
+    CapabilitySetPreset(
+        CapabilitySetRecord(
             id="builtin-capability-shiori",
             name="shiori",
             description="Preset Shiori capability set",
@@ -153,64 +110,25 @@ def _shiori_pair() -> PresetPair:
                 workspace_access="read_write",
                 concurrency_limit=1,
             ),
-        ),
-    )
-
-
-BUILTIN_PRESETS: tuple[PresetPair, ...] = (_general_pair(), _shiori_pair())
+        )
+    ),
+)
 
 
 async def seed_builtin_presets(repository: ResourceRepository) -> None:
-    """Idempotently seed built-in preset Characters and CapabilitySets.
+    """Idempotently seed built-in CapabilitySets.
 
-    Rules (per preset record):
-      - if a record with the preset ``id`` already exists: leave it unchanged
-      - else if a record with the preset ``name`` exists under a different id:
-        leave it unchanged and do not create a duplicate
-      - else insert the preset record
-
-    Preset ``Character`` records are *managed*: when the source preset version
-    advances (``builtin_version`` differs) the existing builtin Character's
-    content fields are refreshed to source on the next seed. Records the user
-    cloned (``is_builtin`` false) are never touched. ``CapabilitySet`` has no
-    version field and stays non-destructive.
+    Persona prompts are code templates for actor creation, not persisted
+    resources.
     """
-    for pair in BUILTIN_PRESETS:
-        await _seed_character(repository, pair.character)
-        await _seed_one(repository, CapabilitySetORM, pair.capability_set)
-
-
-async def _seed_character(
-    repository: ResourceRepository,
-    record: CharacterRecord,
-) -> None:
-    existing = await repository.get(CharacterORM, _record_id(record))
-    if existing is None:
-        with repository.store.db.activate():
-            clash = await CharacterORM.filter(name=record.name).exists()
-        if clash:
-            return
-        await repository.insert(CharacterORM, record)
-        return
-    if not existing.is_builtin:
-        return
-    if existing.builtin_version == record.builtin_version:
-        return
-    await repository.update(
-        CharacterORM,
-        _record_id(record),
-        description=record.description,
-        system_prompt=record.system_prompt,
-        facade_module=record.facade_module,
-        default_hints=record.default_hints,
-        builtin_version=record.builtin_version,
-    )
+    for preset in BUILTIN_CAPABILITY_PRESETS:
+        await _seed_one(repository, CapabilitySetORM, preset.record)
 
 
 async def _seed_one(
     repository: ResourceRepository,
     row_type: type[_OrmT],
-    record: CharacterRecord | CapabilitySetRecord,
+    record: CapabilitySetRecord,
 ) -> None:
     existing = await repository.get(row_type, _record_id(record))
     if existing is not None:

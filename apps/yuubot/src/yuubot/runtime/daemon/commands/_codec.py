@@ -11,33 +11,28 @@ import uuid
 from typing import Any
 
 import msgspec
+import yuullm
 from starlette.responses import JSONResponse
 from tortoise import Model
 
+from yuubot.core.validation import GenerationParams
 from yuubot.core.secrets import wrap_config_secrets
 from yuubot.core.tools import ToolRegistry
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
-    BudgetPolicy,
     CapabilitySetRecord,
-    CharacterRecord,
     IntegrationRecord,
     LLMBackendRecord,
-    ModelCatalog,
-    PricingTable,
     ToolConfig,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
-from yuubot.resources.builtin_catalogues import builtin_catalogue_for
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.service import ResourceService
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
     CapabilitySetORM,
-    CharacterORM,
     IntegrationORM,
     LLMBackendORM,
 )
@@ -123,7 +118,7 @@ class ResourceCodec:
             if error is not None:
                 return error
         if isinstance(record, LLMBackendRecord):
-            return _enrich_builtin_llm_backend(record)
+            return _validate_llm_backend_record(record)
         return record
 
     async def decode_update_payload(
@@ -161,6 +156,10 @@ class ResourceCodec:
                 error = self._validate_agent_tools(tools)
                 if error is not None:
                     return error
+        if "provider_identity" in fields:
+            error = _validate_provider_identity(str(fields["provider_identity"]))
+            if error is not None:
+                return error
         return fields
 
     # -- agent tools validation --
@@ -169,15 +168,11 @@ class ResourceCodec:
         self,
         request: ActorCreateRequest,
     ) -> ActorRecord | JSONResponse:
-        character = await self._existing_character(request.default_character_id)
-        if isinstance(character, JSONResponse):
-            return character
-
         capability_set = await self._existing_capability_set(request.capability_set_id)
         if isinstance(capability_set, JSONResponse):
             return capability_set
 
-        llm_backend = await self._existing_llm_backend(request.default_llm_backend_id)
+        llm_backend = await self._existing_llm_backend(request.llm_backend_id)
         if isinstance(llm_backend, JSONResponse):
             return llm_backend
 
@@ -189,17 +184,17 @@ class ResourceCodec:
             id=request.id or str(uuid.uuid4()),
             name=request.name,
             type=request.type,
-            default_character=character,
-            capability_set=capability_set,
-            default_llm_backend=llm_backend,
-            default_model=request.default_model,
+            persona_prompt=request.persona_prompt,
+            capability_set_id=capability_set.id,
+            llm_backend_id=llm_backend.id,
+            model=request.model,
             config=request.config,
             enabled=request.enabled,
             version=request.version,
-            default_llm_options=_value_or(
-                request.default_llm_options, YuuAgentLLMOptions()
+            generation_override=_value_or(
+                request.generation_override, GenerationParams()
             ),
-            default_budget=_value_or(request.default_budget, YuuAgentBudget()),
+            per_run_budget=_value_or(request.per_run_budget, YuuAgentBudget()),
         )
 
     async def _actor_fields_from_patch(
@@ -209,30 +204,24 @@ class ResourceCodec:
         convenience_fields = frozenset(
             {
                 "id",
-                "default_character_id",
                 "capability_set_id",
-                "default_llm_backend_id",
+                "llm_backend_id",
             }
         )
         fields = _patch_fields(request, exclude=convenience_fields)
 
-        if request.default_character_id is not msgspec.UNSET:
-            character = await self._existing_character(request.default_character_id)
-            if isinstance(character, JSONResponse):
-                return character
-            fields["default_character"] = character
         if request.capability_set_id is not msgspec.UNSET:
             capability_set = await self._existing_capability_set(request.capability_set_id)
             if isinstance(capability_set, JSONResponse):
                 return capability_set
-            fields["capability_set"] = capability_set
-        if request.default_llm_backend_id is not msgspec.UNSET:
+            fields["capability_set_id"] = capability_set.id
+        if request.llm_backend_id is not msgspec.UNSET:
             llm_backend = await self._existing_llm_backend(
-                request.default_llm_backend_id
+                request.llm_backend_id
             )
             if isinstance(llm_backend, JSONResponse):
                 return llm_backend
-            fields["default_llm_backend"] = llm_backend
+            fields["llm_backend_id"] = llm_backend.id
         return fields
 
     # -- integration helpers --
@@ -311,8 +300,8 @@ class ResourceCodec:
         request: ActorCreateRequest,
         llm_backend: LLMBackendRecord,
     ) -> JSONResponse | None:
-        """Reject actors with budgets that have no pricing entry for their model."""
-        budget = _value_or(request.default_budget, YuuAgentBudget())
+        """Reject actors with budgets that have no configured model."""
+        budget = _value_or(request.per_run_budget, YuuAgentBudget())
         requires_pricing = (
             budget.max_usd > 0
             or (llm_backend.budget.daily_usd is not None and llm_backend.budget.daily_usd > 0)
@@ -320,23 +309,16 @@ class ResourceCodec:
         )
         if not requires_pricing:
             return None
-        model = request.default_model
-        if model and not any(e.model == model for e in llm_backend.pricing.entries):
+        model = request.model
+        if model and model not in llm_backend.model_configs:
             return _error(
                 "configuration_error",
-                f"actor {request.name!r}: USD budget requires pricing for "
+                f"actor {request.name!r}: USD budget requires configured model "
                 f"model {model!r} in backend {llm_backend.name!r}",
                 400,
             )
         return None
-
     # -- reference resolution --
-
-    async def _existing_character(self, character_id: str) -> CharacterRecord | JSONResponse:
-        character = await self._repository.get(CharacterORM, character_id)
-        if character is None:
-            return _error("validation_error", f"character '{character_id}' not found", 400)
-        return character
 
     async def _existing_capability_set(
         self, capability_set_id: str
@@ -378,28 +360,18 @@ class ResourceCodec:
         return None
 
 
-def _enrich_builtin_llm_backend(record: LLMBackendRecord) -> LLMBackendRecord:
-    catalogue = builtin_catalogue_for(record.provider_options, record.yuuagents_provider)
-    if catalogue is None:
-        return record
-    return LLMBackendRecord(
-        id=record.id,
-        name=record.name,
-        yuuagents_provider=record.yuuagents_provider,
-        model_capabilities=record.model_capabilities,
-        models=record.models
-        if record.models.names
-        else ModelCatalog(names=catalogue.models),
-        pricing=record.pricing
-        if record.pricing.entries
-        else PricingTable(entries=catalogue.pricing_entries),
-        budget=record.budget
-        if record.budget != BudgetPolicy()
-        else BudgetPolicy(daily_usd=None, monthly_usd=None),
-        provider_options=record.provider_options,
-        default_model=record.default_model or catalogue.default_model,
-        default_stream_options=record.default_stream_options,
-        version=record.version,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-    )
+def _validate_llm_backend_record(
+    record: LLMBackendRecord,
+) -> LLMBackendRecord | JSONResponse:
+    error = _validate_provider_identity(record.provider_identity)
+    if error is not None:
+        return error
+    return record
+
+
+def _validate_provider_identity(provider_identity: str) -> JSONResponse | None:
+    try:
+        yuullm.resolve_provider(provider_identity)
+    except ValueError as exc:
+        return _error("validation_error", str(exc), 400)
+    return None

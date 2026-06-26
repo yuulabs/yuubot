@@ -15,7 +15,6 @@ from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
     CapabilitySetORM,
-    CharacterORM,
     IntegrationORM,
     LLMBackendORM,
     PromptTemplateORM,
@@ -39,7 +38,6 @@ def build_default_resource_type_registry(
         has_lifecycle=True,
         lifecycle_handler=integration_lifecycle_handler,
     )
-    registry.register("characters", CharacterORM)
     registry.register("capability-sets", CapabilitySetORM)
     registry.register(
         "actors",

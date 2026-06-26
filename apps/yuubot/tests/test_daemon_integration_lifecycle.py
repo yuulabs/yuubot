@@ -9,7 +9,7 @@ import httpx
 import msgspec
 from starlette.types import ASGIApp
 
-from yuubot.bootstrap.config import ServerConfig, TraceConfig, YuuAgentsConfig
+from yuubot.bootstrap.config import ServerConfig, TraceConfig
 from yuubot.core.actors import Actor, ActorFactoryRegistry, ActorManager
 from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
 from yuubot.core.actors.workspace import ActorWorkspaceResolver
@@ -180,14 +180,25 @@ def _build_runtime(
         integration_lifecycle_handler=_integration_lifecycle_handler(integrations),
         actor_lifecycle_handler=_actor_lifecycle_handler(actors),
     )
-    trace_service = TraceService(config=TraceConfig(enabled=False), db_path=":memory:")
+    trace_service = TraceService(
+        config=TraceConfig(
+            enabled=False,
+            collector_host="127.0.0.1",
+            collector_port=4318,
+        ),
+        db_path=":memory:",
+    )
     python_sessions = ActorPythonSessionFactory(
         integrations=integrations,
         workspace=FacadeWorkspace(workspace_root / "facades"),
         bridge=IntegrationInvokeBridge(integrations),
     )
     app = build_daemon_asgi_app(
-        config=ServerConfig(daemon_secret=SECRET),
+        config=ServerConfig(
+            daemon_host="127.0.0.1",
+            daemon_port=8780,
+            daemon_secret=SECRET,
+        ),
         resources=resources,
         services=services,
         actors=actors,
@@ -196,7 +207,6 @@ def _build_runtime(
         refresh=refresh,
         trace_service=trace_service,
         type_registry=type_registry,
-        yuuagents_config=YuuAgentsConfig(),
         python_sessions=python_sessions,
         llm_session_factory_factory=llm_session_factory_for_binding,
     )

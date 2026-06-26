@@ -165,12 +165,12 @@ def _find_tool_function(
 # --- Tests ---
 
 
-async def test_system_prompt_includes_character_and_runtime_guidance(
+async def test_system_prompt_includes_persona_and_runtime_guidance(
     yuubot_config: BootstrapConfig,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The LLM sees a system prompt containing the character's instructions,
+    """The LLM sees a system prompt containing the actor persona,
     mode-specific guidance, and tool usage patterns."""
     capture = PromptCapture()
     register_test_llm_provider("openai", capture)
@@ -205,7 +205,7 @@ async def test_system_prompt_includes_character_and_runtime_guidance(
         await _wait_for_llm_calls(capture, 1)
         system = _system_text(capture.calls)
         assert SYSTEM_PROMPT in system, (
-            f"System prompt should contain character instructions.\n"
+            f"System prompt should contain actor persona instructions.\n"
             f"Expected: {SYSTEM_PROMPT!r}\nGot: {system}"
         )
         assert "tim.Channel" in system, (

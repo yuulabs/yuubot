@@ -483,6 +483,18 @@ code, .mono { font-family: var(--ff-mono); }
   color: var(--text); font: inherit;
   transition: border-color .12s, box-shadow .12s;
 }
+select.input {
+  color-scheme: light;
+}
+select.input option,
+select.input optgroup {
+  background: var(--surface);
+  color: var(--text);
+}
+select.input option:checked {
+  background: var(--navy);
+  color: #fff;
+}
 .input:focus { outline: none; border-color: var(--cyan-deep); box-shadow: var(--focus-ring); }
 .input--xl { padding: 10px 12px; font-size: 14px; font-weight: 600; }
 .input--mono { font-family: var(--ff-mono); font-size: 12px; }
@@ -1124,7 +1136,7 @@ textarea.input { resize: vertical; min-height: 56px; }
 .data-table tbody tr:hover { background: var(--surface-4); }
 .mono-cell { font-family: var(--ff-mono); font-size: 11.5px; color: var(--text-2); }
 .text-sub { color: var(--text-3); font-size: 12px; }
-.font-medium { font-weight: 500; color: var(--text); }
+.font-medium { font-weight: 500; }
 .num-badge { font-size: 11px; font-weight: 600; color: var(--navy); background: var(--surface-4); border: 1px solid var(--yellow-deep); padding: 1px 7px; border-radius: var(--r-full); }
 .used-badge { font-size: 10px; color: var(--navy); background: var(--surface-4); padding: 1px 6px; border-radius: var(--r-sm); margin-left: 6px; vertical-align: middle; border: 1px solid var(--yellow-deep); }
 .row-actions { text-align: right; white-space: nowrap; }
@@ -2257,8 +2269,7 @@ body::before {
 .ac__title,
 .preset__name,
 .rail-card__title,
-.crud-head__title,
-.font-medium {
+.crud-head__title {
   color: var(--navy);
   font-weight: 800;
 }

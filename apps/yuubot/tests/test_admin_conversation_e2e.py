@@ -47,10 +47,9 @@ async def test_user_can_create_actor_and_work_through_admin_conversation(
             base_url="http://admin.test",
         ) as client:
             backend = await _create_llm_backend(client)
-            character = await _create_character(client)
             capability_set = await _create_capability_set(client)
             actor = await _create_actor(
-                client, character["id"], capability_set["id"], backend["id"]
+                client, capability_set["id"], backend["id"]
             )
 
             conversation_page = await client.get("/admin/conversations")
@@ -131,12 +130,11 @@ async def test_admin_conversation_reports_missing_model_pricing_as_configuration
             backend = await _create_llm_backend(
                 client,
                 name="deepseek-main",
-                provider="custom",
+                provider="deepseek",
                 model="deepseek-v4-flash",
                 daily_budget=1,
                 pricing_entries=[],
             )
-            character = await _create_character(client)
             capability_set = await _create_capability_set(client)
 
             response = await client.post(
@@ -144,11 +142,11 @@ async def test_admin_conversation_reports_missing_model_pricing_as_configuration
                 json={
                     "name": "admin-conversation-actor",
                     "type": "simple_loop",
-                    "default_model": "deepseek-v4-flash",
-                    "default_character_id": character["id"],
+                    "model": "deepseek-v4-flash",
+                    "persona_prompt": "You are an E2E admin conversation agent.",
                     "capability_set_id": capability_set["id"],
-                    "default_llm_backend_id": backend["id"],
-                    "default_budget": {"max_usd": 1},
+                    "llm_backend_id": backend["id"],
+                    "per_run_budget": {"max_usd": 1},
                     "enabled": True,
                 },
             )
@@ -334,30 +332,29 @@ async def _create_llm_backend(
         "/api/resources/llm-backends",
         json={
             "name": name,
-            "yuuagents_provider": provider,
-            "model_capabilities": {"chat": True, "tool_calling": False},
-            "models": {"names": [model]},
-            "pricing": {"entries": pricing_entries or []},
+            "provider_identity": provider,
+            "model_configs": _model_configs_payload(model, pricing_entries),
             "budget": {"daily_usd": daily_budget},
             "provider_options": {"base_url": "http://llm.test/v1"},
-            "default_model": model,
+            "recommended_model": model,
         },
     )
     return _created(response)
 
 
-async def _create_character(client: httpx.AsyncClient) -> dict[str, Any]:
-    response = await client.post(
-        "/api/resources/characters",
-        json={
-            "name": "admin-conversation-helper",
-            "description": "E2E admin conversation helper",
-            "system_prompt": "You are an E2E admin conversation agent.",
-            "facade_module": "yb",
-            "default_hints": {"language": "zh-CN", "tone": "friendly"},
-        },
-    )
-    return _created(response)
+def _model_configs_payload(
+    model: str,
+    pricing_entries: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    if pricing_entries == []:
+        return {}
+    pricing = pricing_entries[0] if pricing_entries else {}
+    return {
+        model: {
+            "capabilities": {"chat": True, "tool_calling": False},
+            "pricing": pricing,
+        }
+    }
 
 
 async def _create_capability_set(
@@ -375,7 +372,6 @@ async def _create_capability_set(
 
 async def _create_actor(
     client: httpx.AsyncClient,
-    character_id: str,
     capability_set_id: str,
     backend_id: str,
     *,
@@ -388,11 +384,11 @@ async def _create_actor(
         json={
             "name": "admin-conversation-actor",
             "type": "simple_loop",
-            "default_model": model,
-            "default_character_id": character_id,
+            "model": model,
+            "persona_prompt": "You are an E2E admin conversation agent.",
             "capability_set_id": capability_set_id,
-            "default_llm_backend_id": backend_id,
-            "default_budget": {"max_steps": 4},
+            "llm_backend_id": backend_id,
+            "per_run_budget": {"max_steps": 4},
             "enabled": enabled,
         },
     )

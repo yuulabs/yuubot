@@ -19,7 +19,6 @@ import yuullm
 from yuubot.bootstrap.config import ServerConfig
 from yuubot.core.actors import ActorManager
 from yuubot.core.assembly._history_codec import decode_prompt_item
-from yuubot.core.cost_guard import DailyBudgetGuard
 from yuubot.core.conversation_events import ConversationSSEHeartbeat
 from yuubot.core.conversations import (
     ConversationBindingConflict,
@@ -57,7 +56,6 @@ class ConversationMessageRequest(msgspec.Struct, forbid_unknown_fields=False):
     text: str = ""
     message_id: str = ""
     actor_id: str = ""
-    character_id: str = ""
     capability_set_id: str = ""
     llm_backend_id: str = ""
     model: str = ""
@@ -98,10 +96,6 @@ def _conversation_metadata(conversation: ConversationRecord) -> dict[str, object
         "conversation_id": conversation.conversation_id,
         "title": conversation.title,
         "actor_id": conversation.actor_id,
-        "character_id": conversation.character.id,
-        "capability_set_id": conversation.capability_set.id,
-        "llm_backend_id": conversation.llm_backend.id,
-        "model": conversation.model,
         "created_at": _iso_or_none(conversation.created_at),
         "updated_at": _iso_or_none(conversation.updated_at),
     }
@@ -511,25 +505,8 @@ def make_model_history_handler(
 
 def make_send_conversation_message_handler(
     conversation_manager: ConversationManager,
-    daily_guard: DailyBudgetGuard | None = None,
 ):
     async def send_conversation_message(request: Request) -> JSONResponse:
-        # Send-time daily budget gate. Evaluated *before* the request body
-        # is parsed so that an exceeded ceiling short-circuits without
-        # touching the conversation store. ``limit <= 0`` disables the
-        # guard (the default config), so the fast path is a single boolean.
-        if daily_guard is not None and daily_guard.is_exceeded():
-            return JSONResponse(
-                {
-                    "status": "error",
-                    "code": "budget_exceeded",
-                    "reason": "Daily budget exceeded",
-                    "detail": "Daily budget exceeded",
-                    "limit": daily_guard.limit,
-                    "spent": daily_guard.current_cost,
-                },
-                status_code=402,
-            )
         req_or_response = await _conversation_message_request_from_request(request)
         if isinstance(req_or_response, JSONResponse):
             return req_or_response
@@ -539,7 +516,6 @@ def make_send_conversation_message_handler(
         binding = ConversationSendBinding(
             conversation_id=conversation_id,
             actor_id=req.actor_id,
-            character_id=req.character_id,
             capability_set_id=req.capability_set_id,
             llm_backend_id=req.llm_backend_id,
             model=req.model,

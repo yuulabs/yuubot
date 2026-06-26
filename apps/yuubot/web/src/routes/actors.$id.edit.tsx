@@ -1,8 +1,7 @@
 // actors.$id.edit.tsx — /actors/$id/edit editor (edit mode) (ISSUE-0007 S3).
 //
-// Route owns the <form>, editor state, and the update path: updateCharacter
-// (when prompt/description changed) then updateActor — folded character per
-// ISSUE-0011. The shared presentational <ActorEditor> renders the bound body;
+// Route owns the <form> and Actor update path. The shared presentational
+// <ActorEditor> renders the bound body;
 // the danger zone is visible in edit mode.
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
@@ -14,7 +13,6 @@ import {
 import type {
   ActorResource,
   CapabilitySetResource,
-  CharacterResource,
   LLMBackendResource,
 } from "@/types/api";
 import {
@@ -35,20 +33,11 @@ function ActorsEditPage() {
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: capabilitySets = [] } =
     useResourceList<CapabilitySetResource>("capability-sets");
-  const { data: characters = [] } = useResourceList<CharacterResource>("characters");
 
   const updateActorMutation = useUpdateResource<ActorResource>("actors");
-  const updateCharacterMutation = useUpdateResource<CharacterResource>("characters");
   const deleteMutation = useDeleteResource("actors");
 
   const actor = actors.find((a) => a.id === id);
-  // Resolve the folded Character (ISSUE-0011) for prompt/description prefill.
-  const character = useMemo(
-    () => (actor?.default_character
-      ? characters.find((c) => c.id === actor.default_character!.id)
-      : undefined),
-    [actor, characters],
-  );
 
   const [state, setStateRaw] = useState<ActorEditorState>({
     name: "",
@@ -69,24 +58,23 @@ function ActorsEditPage() {
   // Prefill once the actor + character resolve.
   useEffect(() => {
     if (!actor) return;
-    const backend = backends.find((b) => b.id === actor.default_llm_backend?.id);
+    const backend = backends.find((b) => b.id === actor.llm_backend_id);
     setStateRaw({
       name: actor.name ?? "",
-      description: actor.default_character?.description ?? character?.description ?? "",
-      systemPrompt: character?.system_prompt ?? "",
+      description: "",
+      systemPrompt: actor.persona_prompt ?? "",
       actorType: actor.type ?? "simple_loop",
-      backendId: actor.default_llm_backend?.id ?? backend?.id ?? "",
-      model: actor.default_model ?? "",
-      capabilitySetId: actor.capability_set?.id ?? "",
-      maxTokens: String(actor.default_budget?.max_tokens ?? 8192),
-      maxSteps: String(actor.default_budget?.max_steps ?? 6),
+      backendId: actor.llm_backend_id ?? backend?.id ?? "",
+      model: actor.model ?? "",
+      capabilitySetId: actor.capability_set_id ?? "",
+      maxTokens: String(actor.per_run_budget?.max_tokens ?? 8192),
+      maxSteps: String(actor.per_run_budget?.max_steps ?? 6),
       enabled: actor.enabled ?? true,
     });
     setError("");
-  }, [actor, character, backends]);
+  }, [actor, backends]);
 
-  const isPending =
-    updateActorMutation.isPending || updateCharacterMutation.isPending;
+  const isPending = updateActorMutation.isPending;
   const selectedBackend = backends.find((b) => b.id === state.backendId);
   const modelOptions = useMemo(() => modelOptionsFor(selectedBackend), [selectedBackend]);
 
@@ -127,22 +115,16 @@ function ActorsEditPage() {
       max_usd: 0,
     };
     try {
-      if (character && (state.systemPrompt !== character.system_prompt ||
-        state.description !== character.description)) {
-        await updateCharacterMutation.mutateAsync({
-          id: character.id,
-          data: { system_prompt: state.systemPrompt, description: state.description },
-        });
-      }
       await updateActorMutation.mutateAsync({
         id: actor.id,
         data: {
           name: state.name,
           type: state.actorType,
-          default_model: state.model,
-          default_llm_backend_id: state.backendId,
+          persona_prompt: state.systemPrompt,
+          model: state.model,
+          llm_backend_id: state.backendId,
           capability_set_id: state.capabilitySetId,
-          default_budget: budget,
+          per_run_budget: budget,
           enabled: state.enabled,
         },
       });
@@ -165,7 +147,7 @@ function ActorsEditPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">编辑 {actor.name}</h1>
-          <p className="page-sub">修改 LLM 供应商、模型、Capability Set、预算与 Character Persona。</p>
+          <p className="page-sub">修改 LLM 供应商、模型、Capability Set、预算与 Persona。</p>
         </div>
       </div>
       <form className="editor" id="actor-editor-form" onSubmit={handleSave} autoComplete="off">
@@ -178,7 +160,7 @@ function ActorsEditPage() {
           capabilitySets={capabilitySets}
           modelOptions={modelOptions}
           isPending={isPending || deleteMutation.isPending}
-          error={error || updateActorMutation.error?.message || updateCharacterMutation.error?.message}
+          error={error || updateActorMutation.error?.message}
           onDelete={handleDelete}
         />
       </form>

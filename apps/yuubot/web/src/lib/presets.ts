@@ -1,35 +1,31 @@
 /**
  * Built-in preset Actor definitions shared by the Providers onboarding flow
  * and the Actors page "update preset Actors" action.
- *
- * References the stable seeded Character / CapabilitySet ids (seeded by the
- * daemon's `builtin_presets.py`). The frontend never mints replacement
- * Character / CapabilitySet records — if a referenced id is absent the Actor
- * create call surfaces the backend's mutation error to the caller.
  */
 
 export interface PresetActor {
   actorName: string;
-  characterId: string;
+  personaPrompt: string;
   capabilitySetId: string;
 }
 
 export const PRESET_ACTORS: readonly PresetActor[] = [
   {
     actorName: "general",
-    characterId: "builtin-character-general",
+    personaPrompt: "You are a helpful assistant.",
     capabilitySetId: "builtin-capability-general",
   },
   {
     actorName: "shiori",
-    characterId: "builtin-character-shiori",
+    personaPrompt:
+      "你是汐织，一个可靠、温和、直接的协作助手。\n\nScenario Communication: 主动澄清不确定信息，给出可执行建议，保持简洁。",
     capabilitySetId: "builtin-capability-shiori",
   },
 ] as const;
 
 export interface LLMBackendLike {
   id: string;
-  default_model?: string | null;
+  recommended_model?: string | null;
 }
 
 /**
@@ -45,10 +41,10 @@ export function presetActorCreatePayload(
     name: preset.actorName,
     type: "simple_loop",
     enabled: true,
-    default_model: backend.default_model ?? "",
-    default_character_id: preset.characterId,
+    persona_prompt: preset.personaPrompt,
+    model: backend.recommended_model ?? "",
     capability_set_id: preset.capabilitySetId,
-    default_llm_backend_id: backend.id,
-    default_budget: { max_steps: 6, max_tokens: 8192, max_usd: 2.0 },
+    llm_backend_id: backend.id,
+    per_run_budget: { max_steps: 6, max_tokens: 8192, max_usd: 2.0 },
   };
 }

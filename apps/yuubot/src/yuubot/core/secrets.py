@@ -138,6 +138,8 @@ def secret_decode_hook(target_type: type, value: object) -> object:
         if isinstance(value, str):
             return Secret(value)
         raise TypeError("secret fields must be strings")
+    if target_type is object:
+        return value
     raise TypeError(f"unsupported target type {target_type!r}")
 
 

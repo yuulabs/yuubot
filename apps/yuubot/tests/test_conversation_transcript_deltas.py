@@ -207,7 +207,6 @@ def manager_with_store() -> ConversationManager:
     return ConversationManager(
         store=store,
         repository=MagicMock(),
-        yuuagents_config=MagicMock(),
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )

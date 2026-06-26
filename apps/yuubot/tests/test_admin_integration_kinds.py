@@ -31,8 +31,8 @@ from yuubot.resources.records import (
     IntegrationRecord,
     LLMBackendRecord,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
+    Pricing,
 )
 from yuubot.resources.root import Resources
 from yuubot.resources.store.models import IntegrationORM, LLMBackendORM
@@ -236,7 +236,7 @@ async def test_admin_resource_proxy_preserves_daemon_errors(
     async with _client(app) as client:
         response = await client.put(
             "/api/resources/actors/actor-1",
-            json={"character": {"id": "missing"}},
+            json={"persona_prompt": "missing"},
         )
 
     assert response.status_code == 400
@@ -257,14 +257,16 @@ async def test_provider_models_endpoint_fetches_models_server_side(
         LLMBackendRecord(
             id="deepseek-main",
             name="deepseek-main",
-            yuuagents_provider="openai",
-            model_capabilities=ModelCapabilities(chat=True),
-            models=ModelCatalog(),
-            pricing=PricingTable(),
+            provider_identity="deepseek",
+            model_configs={
+                "deepseek-chat": ModelConfig(
+                    pricing=Pricing(),
+                    capabilities=ModelCapabilities(chat=True),
+                )
+            },
             budget=BudgetPolicy(),
             provider_options=LLMProviderOptions(
                 base_url="https://api.deepseek.com",
-                provider_name="deepseek",
             ),
         ),
     )
@@ -327,7 +329,7 @@ async def test_provider_models_endpoint_reports_missing_backend(
     assert response.json()["detail"] == "llm backend not found"
 
 
-async def test_provider_validate_reports_default_model_and_capabilities(
+async def test_provider_validate_reports_recommended_model_and_capabilities(
     resources: Resources,
     yuubot_config: BootstrapConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -337,11 +339,14 @@ async def test_provider_validate_reports_default_model_and_capabilities(
         LLMBackendRecord(
             id="provider-main",
             name="provider-main",
-            yuuagents_provider="openai",
-            default_model="deepseek-chat",
-            model_capabilities=ModelCapabilities(chat=True, tool_calling=True),
-            models=ModelCatalog(),
-            pricing=PricingTable(),
+            provider_identity="deepseek",
+            recommended_model="deepseek-chat",
+            model_configs={
+                "deepseek-chat": ModelConfig(
+                    pricing=Pricing(),
+                    capabilities=ModelCapabilities(chat=True, tool_calling=True),
+                )
+            },
             budget=BudgetPolicy(),
         ),
     )
@@ -367,7 +372,7 @@ async def test_provider_validate_reports_default_model_and_capabilities(
         "data": {
             "valid": True,
             "detail": "",
-            "default_model_valid": True,
+            "recommended_model_valid": True,
             "models": [
                 {"id": "deepseek-chat", "displayName": "DeepSeek Chat"},
                 {"id": "deepseek-reasoner"},
@@ -412,21 +417,22 @@ async def test_monitor_spa_route_is_not_shadowed_by_trace_ui(
     assert "yuubot monitor" in monitor.text
 
 
-def test_provider_model_client_uses_provider_name_from_backend() -> None:
-    """_create_provider_model_client derives provider_name from
-    backend.provider_options.provider_name."""
+def test_provider_model_client_uses_backend_provider_identity() -> None:
+    """_create_provider_model_client derives its vendor key from provider_identity."""
     backend = LLMBackendRecord(
         id="deepseek-main",
         name="deepseek-main",
-        yuuagents_provider="openai",
-        model_capabilities=ModelCapabilities(chat=True),
-        models=ModelCatalog(),
-        pricing=PricingTable(),
+        provider_identity="deepseek",
+        model_configs={
+            "deepseek-chat": ModelConfig(
+                pricing=Pricing(),
+                capabilities=ModelCapabilities(chat=True),
+            )
+        },
         budget=BudgetPolicy(),
         provider_options=LLMProviderOptions(
             base_url="https://api.deepseek.com",
-            provider_name="deepseek",
-            api_key="sk-example",
+            api_key=Secret("sk-example"),
         ),
     )
 

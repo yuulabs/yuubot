@@ -8,20 +8,24 @@ from __future__ import annotations
 
 import yuullm
 
-from yuubot.resources.records import PricingEntry, PricingTable
+from yuubot.resources.records import ModelConfig, Pricing
 
 
-def calculate_cost(usage: yuullm.Usage | None, pricing: PricingTable, configured_model: str) -> yuullm.Cost | None:
-    """Calculate cost from usage and pricing table.
+def calculate_cost(
+    usage: yuullm.Usage | None,
+    model_configs: dict[str, ModelConfig],
+    configured_model: str,
+) -> yuullm.Cost | None:
+    """Calculate cost from usage and configured model pricing.
 
     Pure function — no side effects. Returns None if no matching pricing entry.
     """
     if usage is None:
         return None
-    entry = _pricing_entry(usage.model, configured_model, pricing)
-    if entry is None:
+    pricing = _pricing_for_model(usage.model, configured_model, model_configs)
+    if pricing is None:
         return None
-    return _calculate_cost(usage, entry)
+    return _calculate_cost(usage, pricing)
 
 
 def _candidate_models(usage_model: str, configured_model: str) -> tuple[str, ...]:
@@ -31,29 +35,29 @@ def _candidate_models(usage_model: str, configured_model: str) -> tuple[str, ...
     return (usage_model, configured_model)
 
 
-def _pricing_entry(
+def _pricing_for_model(
     usage_model: str,
     configured_model: str,
-    pricing: PricingTable,
-) -> PricingEntry | None:
-    """Find the best matching pricing entry."""
+    model_configs: dict[str, ModelConfig],
+) -> Pricing | None:
+    """Find the best matching model pricing."""
     for model in _candidate_models(usage_model, configured_model):
-        for entry in pricing.entries:
-            if entry.model == model:
-                return entry
+        config = model_configs.get(model)
+        if config is not None:
+            return config.pricing
     return None
 
 
-def _calculate_cost(usage: yuullm.Usage, entry: PricingEntry) -> yuullm.Cost:
+def _calculate_cost(usage: yuullm.Usage, pricing: Pricing) -> yuullm.Cost:
     """Pure arithmetic: compute cost from token counts and per-million rates."""
     input_tokens = max(usage.input_tokens, 0)
     cache_read_tokens = min(max(usage.cache_read_tokens, 0), input_tokens)
     regular_input_tokens = input_tokens - cache_read_tokens
-    input_cost = regular_input_tokens * entry.input_per_million / 1_000_000
+    input_cost = regular_input_tokens * pricing.input_per_million / 1_000_000
     cache_read_cost = (
-        cache_read_tokens * entry.cached_input_per_million / 1_000_000
+        cache_read_tokens * pricing.cached_input_per_million / 1_000_000
     )
-    output_cost = usage.output_tokens * entry.output_per_million / 1_000_000
+    output_cost = usage.output_tokens * pricing.output_per_million / 1_000_000
     return yuullm.Cost(
         input_cost=input_cost,
         cache_read_cost=cache_read_cost,

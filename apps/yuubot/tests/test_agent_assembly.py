@@ -12,26 +12,28 @@ from yuuagents.python.runtime import PythonRuntime
 from yuuagents.python.session import PythonExecResult, PythonSession
 from yuuagents.tool.primitives import ToolCallParams, ToolCallTask, ToolContext
 from tests.helpers import (
+    make_actor_binding,
     make_actor_record,
     make_capability_set_record,
-    make_character_record,
     make_llm_backend_record,
 )
 from yuubot.core.assembly._python_tool import ExecutePythonParams, ExecutePythonTool
 from yuubot.core.assembly import build_agent_definition
-from yuubot.core.bindings import ActorBinding
 from yuubot.core.facade import ActorFacadeBinding
 
 
 def test_python_tool_facade_imports_include_supported_surfaces(tmp_path: Path) -> None:
-    character = make_character_record("actor-1")
     backend = make_llm_backend_record("actor-1")
     actor = make_actor_record(
         "actor-1",
-        character=character,
         llm_backend=backend,
     )
-    binding = ActorBinding(actor=actor, workspace_path=tmp_path).default_agent_binding()
+    binding = make_actor_binding(
+        actor,
+        capability_set=make_capability_set_record("actor-1"),
+        llm_backend=backend,
+        workspace_path=tmp_path,
+    ).default_agent_binding()
 
     no_capability_tool = build_agent_definition(
         binding,
@@ -75,14 +77,17 @@ def test_agent_prompt_guidance_is_mode_specific(tmp_path: Path) -> None:
     ``mode == "im"``), not a separate extension section and not inside the
     integration capability section.
     """
-    character = make_character_record("actor-1", system_prompt="Base prompt.")
     llm_backend = make_llm_backend_record("actor-1")
     actor = make_actor_record(
         "actor-1",
-        character=character,
         llm_backend=llm_backend,
     )
-    binding = ActorBinding(actor=actor, workspace_path=tmp_path).default_agent_binding()
+    binding = make_actor_binding(
+        actor,
+        capability_set=make_capability_set_record("actor-1"),
+        llm_backend=llm_backend,
+        workspace_path=tmp_path,
+    ).default_agent_binding()
     _write_agents_md(tmp_path, "__MARKER_AGENTS_V1__")
 
     im_prompt = build_agent_definition(binding, mode="im").prompt.system
@@ -160,7 +165,6 @@ async def test_execute_python_tool_reports_crash_and_resets_session() -> None:
 
 
 def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
-    character = make_character_record("char-1")
     llm_backend = make_llm_backend_record("llm-1")
     capability_set = make_capability_set_record(
         "actor-1",
@@ -173,11 +177,15 @@ def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
     )
     actor = make_actor_record(
         "actor-1",
-        character=character,
+        persona_prompt="Base prompt.",
         llm_backend=llm_backend,
         capability_set=capability_set,
     )
-    binding = ActorBinding(actor=actor).default_agent_binding(
+    binding = make_actor_binding(
+        actor,
+        capability_set=capability_set,
+        llm_backend=llm_backend,
+    ).default_agent_binding(
         workspace_path=tmp_path / "workspace",
     )
 
@@ -194,14 +202,16 @@ def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
 
 
 def test_execute_python_description_can_import_github_facade(tmp_path: Path) -> None:
-    character = make_character_record("char-1")
     llm_backend = make_llm_backend_record("llm-1")
     actor = make_actor_record(
         "actor-1",
-        character=character,
         llm_backend=llm_backend,
     )
-    binding = ActorBinding(actor=actor).default_agent_binding(
+    binding = make_actor_binding(
+        actor,
+        capability_set=make_capability_set_record("actor-1"),
+        llm_backend=llm_backend,
+    ).default_agent_binding(
         workspace_path=tmp_path / "workspace",
     )
     definition = build_agent_definition(
@@ -231,7 +241,7 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     mechanical ``yext.github.issue.list`` mapping example). Under the new
     contract:
 
-    - Character leads the prompt; ``# Character\nBase prompt.`` is the prefix.
+    - Persona leads the prompt; ``# Persona\nBase prompt.`` is the prefix.
     - The five visible section headers appear in the canonical order.
     - No ``# Extension Section`` header is rendered (extension zone is
       code-only).
@@ -247,7 +257,6 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     - Section 5 carries platform / datetime / timezone tokens.
     - No sentinel/default object representations leak into the prompt.
     """
-    character = make_character_record("char-1", system_prompt="Base prompt.")
     llm_backend = make_llm_backend_record("llm-1")
     capability_set = make_capability_set_record(
         "actor-1",
@@ -255,24 +264,31 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     )
     actor = make_actor_record(
         "actor-1",
-        character=character,
+        persona_prompt="Base prompt.",
         llm_backend=llm_backend,
         capability_set=capability_set,
     )
-    binding = ActorBinding(actor=actor, workspace_path=tmp_path).default_agent_binding()
+    binding = make_actor_binding(
+        actor,
+        capability_set=capability_set,
+        llm_backend=llm_backend,
+        workspace_path=tmp_path,
+    ).default_agent_binding()
     _write_agents_md(tmp_path, "__MARKER_AGENTS_V1__")
 
     system = build_agent_definition(binding, mode="conversation").prompt.system
 
     _assert_section_order(system)
 
-    # Section 1 (Character) leads the prompt.
-    assert system.startswith("# Character\nBase prompt.")
+    # Section 1 (Persona) leads the prompt.
+    assert system.startswith("# Persona\nBase prompt.")
 
     # The extension zone is code-only; never a visible header.
     assert "# Extension Section" not in system
 
-    section2 = _section_body(system, "# System Instructions", "# Integration Prompt Sections")
+    section2 = _section_body(
+        system, "# System Instructions", "# Integration Prompt Sections"
+    )
     section3 = _section_body(
         system,
         "# Integration Prompt Sections",
@@ -283,10 +299,16 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
         "# AGENTS.md Context",
         "# Real-Time Data",
     )
-    section5 = system.split("# Real-Time Data\n", 1)[1] if "# Real-Time Data\n" in system else ""
+    section5 = (
+        system.split("# Real-Time Data\n", 1)[1]
+        if "# Real-Time Data\n" in system
+        else ""
+    )
 
     # Section 2 — hand-written tool-surface prose + workspace conventions.
-    assert str(tmp_path.resolve()) in section2, "workspace absolute path missing from Section 2"
+    assert str(tmp_path.resolve()) in section2, (
+        "workspace absolute path missing from Section 2"
+    )
     assert "do not bypass" in section2, "'do not bypass' prose missing from Section 2"
     # Section 2 must NOT duplicate the execute_python tool-spec description.
     tool_spec_phrases = (
@@ -363,7 +385,7 @@ def _section_body(system: str, start_header: str, next_header: str) -> str:
 
 def _assert_section_order(system: str) -> None:
     expected = (
-        "# Character",
+        "# Persona",
         "# System Instructions",
         "# Integration Prompt Sections",
         "# AGENTS.md Context",
@@ -375,8 +397,7 @@ def _assert_section_order(system: str) -> None:
         pos = system.find(header)
         assert pos != -1, f"header {header!r} not present in system prompt"
         assert pos > last, (
-            f"header {header!r} at {pos} violates expected order "
-            f"(previous at {last})"
+            f"header {header!r} at {pos} violates expected order (previous at {last})"
         )
         positions.append(pos)
         last = pos

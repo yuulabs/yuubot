@@ -1,4 +1,4 @@
-"""Daemon CRUD tests for additional resource types: characters, capability sets."""
+"""Daemon CRUD tests for additional resource types."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 from starlette.types import ASGIApp
 
-from yuubot.bootstrap.config import ServerConfig, TraceConfig, YuuAgentsConfig
+from yuubot.bootstrap.config import ServerConfig, TraceConfig
 from yuubot.core.actors import Actor, ActorFactoryRegistry, ActorManager
 from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
 from yuubot.core.actors.workspace import ActorWorkspaceResolver
@@ -98,7 +98,12 @@ def _build_runtime(
     )
     type_registry = build_default_resource_type_registry()
     trace_service = TraceService(
-        config=TraceConfig(enabled=False), db_path=":memory:"
+        config=TraceConfig(
+            enabled=False,
+            collector_host="127.0.0.1",
+            collector_port=4318,
+        ),
+        db_path=":memory:",
     )
     python_sessions = ActorPythonSessionFactory(
         integrations=integrations,
@@ -106,7 +111,11 @@ def _build_runtime(
         bridge=IntegrationInvokeBridge(integrations),
     )
     app = build_daemon_asgi_app(
-        config=ServerConfig(daemon_secret=SECRET),
+        config=ServerConfig(
+            daemon_host="127.0.0.1",
+            daemon_port=8780,
+            daemon_secret=SECRET,
+        ),
         resources=resources,
         services=services,
         actors=actors,
@@ -115,7 +124,6 @@ def _build_runtime(
         refresh=refresh,
         trace_service=trace_service,
         type_registry=type_registry,
-        yuuagents_config=YuuAgentsConfig(),
         python_sessions=python_sessions,
         llm_session_factory_factory=llm_session_factory_for_binding,
     )
@@ -129,49 +137,72 @@ def _client(runtime: RuntimeHarness) -> httpx.AsyncClient:
     )
 
 
-async def test_create_character(resources: Resources, tmp_path: Path) -> None:
+async def test_actor_persona_prompt_crud(resources: Resources, tmp_path: Path) -> None:
     runtime = _build_runtime(resources, tmp_path)
     await runtime.services.start()
     try:
         async with _client(runtime) as client:
-            resp = await client.post(
-                "/api/resources/characters",
+            backend_resp = await client.post(
+                "/api/resources/llm-backends",
                 headers=HEADERS,
                 json={
-                    "id": "char-e2e",
-                    "name": "char-e2e",
-                    "description": "E2E test character",
-                    "system_prompt": "You are an E2E test character.",
-                    "facade_module": "yuubot.core.facade",
-                    "default_hints": {},
+                    "id": "backend-e2e",
+                    "name": "backend-e2e",
+                    "provider_identity": "openai",
+                    "model_configs": {
+                        "gpt-4": {"pricing": {}, "capabilities": {}},
+                    },
+                    "budget": {},
+                    "recommended_model": "gpt-4",
+                },
+            )
+            assert backend_resp.status_code == 201, backend_resp.text
+            cap_resp = await client.post(
+                "/api/resources/capability-sets",
+                headers=HEADERS,
+                json={"id": "cap-persona-e2e", "name": "cap-persona-e2e"},
+            )
+            assert cap_resp.status_code == 201, cap_resp.text
+
+            resp = await client.post(
+                "/api/resources/actors",
+                headers=HEADERS,
+                json={
+                    "id": "actor-persona-e2e",
+                    "name": "actor-persona-e2e",
+                    "type": "null",
+                    "persona_prompt": "You are an E2E test actor.",
+                    "capability_set_id": "cap-persona-e2e",
+                    "llm_backend_id": "backend-e2e",
+                    "model": "gpt-4",
                 },
             )
             assert resp.status_code == 201, resp.text
-            assert resp.json()["data"]["system_prompt"] == "You are an E2E test character."
+            assert resp.json()["data"]["persona_prompt"] == "You are an E2E test actor."
 
             get_resp = await client.get(
-                "/api/resources/characters/char-e2e",
+                "/api/resources/actors/actor-persona-e2e",
                 headers=HEADERS,
             )
             assert get_resp.status_code == 200
-            assert get_resp.json()["data"]["system_prompt"] == "You are an E2E test character."
+            assert get_resp.json()["data"]["persona_prompt"] == "You are an E2E test actor."
 
             update_resp = await client.put(
-                "/api/resources/characters/char-e2e",
+                "/api/resources/actors/actor-persona-e2e",
                 headers=HEADERS,
-                json={"system_prompt": "Updated prompt.", "name": "char-e2e"},
+                json={"persona_prompt": "Updated prompt.", "name": "actor-persona-e2e"},
             )
             assert update_resp.status_code == 200
-            assert update_resp.json()["data"]["system_prompt"] == "Updated prompt."
+            assert update_resp.json()["data"]["persona_prompt"] == "Updated prompt."
 
             delete_resp = await client.delete(
-                "/api/resources/characters/char-e2e",
+                "/api/resources/actors/actor-persona-e2e",
                 headers=HEADERS,
             )
             assert delete_resp.status_code == 200
 
             get_after = await client.get(
-                "/api/resources/characters/char-e2e",
+                "/api/resources/actors/actor-persona-e2e",
                 headers=HEADERS,
             )
             assert get_after.status_code == 404

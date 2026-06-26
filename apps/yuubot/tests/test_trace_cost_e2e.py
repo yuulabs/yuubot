@@ -32,8 +32,8 @@ from yuubot.core.observability import YuubotTraceContextProvider
 from yuubot.core.validation import ConfigurationError
 from yuubot.resources.records import (
     BudgetPolicy,
-    PricingEntry,
-    PricingTable,
+    ModelConfig,
+    Pricing,
     YuuAgentBudget,
 )
 from yuubot.resources.store.models import ActorORM, LLMBackendORM
@@ -66,19 +66,18 @@ async def test_llm_usage_and_priced_cost_recorded_in_trace(
             integration_id=INTEGRATION_ID,
             source_path=SOURCE_PATH,
         )
-        pricing = PricingTable(
-            entries=(
-                PricingEntry(
-                    model="gpt-4",
+        model_configs = {
+            "gpt-4": ModelConfig(
+                pricing=Pricing(
                     input_per_million=1.0,
                     output_per_million=2.0,
                 ),
             )
-        )
+        }
         await daemon.resources.repository.update(
             LLMBackendORM,
             resources.llm_backend.id,
-            pricing=msgspec.to_builtins(pricing),
+            model_configs=msgspec.to_builtins(model_configs),
         )
         await daemon.resources.event_bus.drain()
 
@@ -139,11 +138,16 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
             integration_id=INTEGRATION_ID,
             source_path=SOURCE_PATH,
         )
-        # Patch actor to have max_usd budget but no pricing
+        # Patch actor to have max_usd budget but no configured model.
+        await daemon.resources.repository.update(
+            LLMBackendORM,
+            resources.llm_backend.id,
+            model_configs={},
+        )
         await daemon.resources.repository.update(
             ActorORM,
             resources.actor.id,
-            default_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
+            per_run_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
         )
         await daemon.resources.event_bus.drain()
 
@@ -152,7 +156,10 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
             resources.actor.id,
             workspace_path=tmp_path / "ws",
         )
-        with pytest.raises(ConfigurationError, match="USD budget requires pricing"):
+        with pytest.raises(
+            ConfigurationError,
+            match="USD budget requires configured model",
+        ):
             _check_pricing_for_budget(binding.default_agent_binding())
     finally:
         await daemon.stop()
@@ -179,6 +186,7 @@ async def test_pricing_check_raises_when_backend_budget_set_without_pricing(
             LLMBackendORM,
             resources.llm_backend.id,
             budget=msgspec.to_builtins(BudgetPolicy(daily_usd=1.0)),
+            model_configs={},
         )
         await daemon.resources.event_bus.drain()
 
@@ -187,7 +195,10 @@ async def test_pricing_check_raises_when_backend_budget_set_without_pricing(
             resources.actor.id,
             workspace_path=tmp_path / "ws",
         )
-        with pytest.raises(ConfigurationError, match="USD budget requires pricing"):
+        with pytest.raises(
+            ConfigurationError,
+            match="USD budget requires configured model",
+        ):
             _check_pricing_for_budget(binding.default_agent_binding())
     finally:
         await daemon.stop()
@@ -210,23 +221,24 @@ async def test_pricing_check_passes_when_pricing_entry_exists(
             integration_id=INTEGRATION_ID,
             source_path=SOURCE_PATH,
         )
-        # Patch backend to have pricing for gpt-4, and actor to have max_usd
-        pricing = PricingTable(
-            entries=(
-                PricingEntry(
-                    model="gpt-4", input_per_million=1.0, output_per_million=2.0
+        # Patch backend to configure gpt-4, and actor to have max_usd.
+        model_configs = {
+            "gpt-4": ModelConfig(
+                pricing=Pricing(
+                    input_per_million=1.0,
+                    output_per_million=2.0,
                 ),
             )
-        )
+        }
         await daemon.resources.repository.update(
             LLMBackendORM,
             resources.llm_backend.id,
-            pricing=msgspec.to_builtins(pricing),
+            model_configs=msgspec.to_builtins(model_configs),
         )
         await daemon.resources.repository.update(
             ActorORM,
             resources.actor.id,
-            default_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
+            per_run_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
         )
         await daemon.resources.event_bus.drain()
 
@@ -259,13 +271,13 @@ async def test_provider_cost_takes_precedence_over_pricing(
             integration_id=INTEGRATION_ID,
             source_path=SOURCE_PATH,
         )
-        pricing = PricingTable(
-            entries=(PricingEntry(model="gpt-4", input_per_million=1.0),)
-        )
+        model_configs = {
+            "gpt-4": ModelConfig(pricing=Pricing(input_per_million=1.0))
+        }
         await daemon.resources.repository.update(
             LLMBackendORM,
             resources.llm_backend.id,
-            pricing=msgspec.to_builtins(pricing),
+            model_configs=msgspec.to_builtins(model_configs),
         )
         await daemon.resources.event_bus.drain()
 
@@ -306,7 +318,6 @@ async def test_integration_charge_usage_recorded_in_trace() -> None:
     eventbus.subscribe(observer)
     trace_context.register(
         "trace-agent",
-        character_name="trace-character",
         model="gpt-4",
     )
     task_id = UUID("00000000-0000-0000-0000-000000000002")

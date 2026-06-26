@@ -28,7 +28,12 @@ from yuubot.resources.events import ResourceChanged
 from yuubot.resources.orm import from_orm
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.records import ConversationRecord
-from yuubot.resources.store.models import ActorORM, ConversationORM, IntegrationORM
+from yuubot.resources.store.models import (
+    ActorORM,
+    CapabilitySetORM,
+    ConversationORM,
+    IntegrationORM,
+)
 
 if TYPE_CHECKING:
     from yuubot.core.gateway import Gateway
@@ -258,11 +263,17 @@ class IntegrationCore:
     async def _load_owner_allowed(self, owner_id: str) -> set[str]:
         actor = await self.repository.get(ActorORM, owner_id)
         if actor is not None and actor.enabled:
-            return set(actor.capability_set.integration_capability_ids)
+            capability_set = await self.repository.get(
+                CapabilitySetORM,
+                actor.capability_set_id,
+            )
+            if capability_set is None:
+                return set()
+            return set(capability_set.integration_capability_ids)
         with self.repository.store.db.activate():
             row = await ConversationORM.get_or_none(
                 conversation_id=owner_id
-            ).select_related("capability_set")
+            )
             if row is None:
                 return set()
             conversation = await from_orm(
@@ -270,7 +281,16 @@ class IntegrationCore:
                 ConversationRecord,
                 secret_codec=self.repository.secret_codec,
             )
-        return set(conversation.capability_set.integration_capability_ids)
+        actor = await self.repository.get(ActorORM, conversation.actor_id)
+        if actor is None or not actor.enabled:
+            return set()
+        capability_set = await self.repository.get(
+            CapabilitySetORM,
+            actor.capability_set_id,
+        )
+        if capability_set is None:
+            return set()
+        return set(capability_set.integration_capability_ids)
 
     async def _disable_removed_or_disabled_locked(
         self,

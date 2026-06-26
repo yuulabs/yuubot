@@ -13,7 +13,7 @@ export interface ProviderModelRequest {
 export interface ProviderValidationResult {
   valid: boolean;
   detail: string;
-  default_model_valid: boolean;
+  recommended_model_valid: boolean;
   models: ProviderModelOption[];
   capabilities: Record<string, boolean>;
 }
@@ -27,7 +27,7 @@ interface ProviderValidationResponse {
   data?: {
     valid?: unknown;
     detail?: unknown;
-    default_model_valid?: unknown;
+    recommended_model_valid?: unknown;
     models?: unknown;
     capabilities?: unknown;
   };
@@ -156,7 +156,7 @@ function parseProviderValidation(
   return {
     valid: data.valid === true,
     detail: typeof data.detail === "string" ? data.detail : "",
-    default_model_valid: data.default_model_valid === true,
+    recommended_model_valid: data.recommended_model_valid === true,
     models: parseProviderModels({ data: data.models }),
     capabilities:
       data.capabilities && typeof data.capabilities === "object"

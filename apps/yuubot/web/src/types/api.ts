@@ -71,7 +71,6 @@ export interface IntegrationKind {
 
 export type ResourceType =
   | "llm-backends"
-  | "characters"
   | "capability-sets"
   | "actors"
   | "ingress-rules"
@@ -82,31 +81,13 @@ export type ResourceType =
 // Resource records (mirror msgspec struct shapes returned by the API)
 // ---------------------------------------------------------------------------
 
-/** Base fields shared by resource records.
- *
- * `enabled` is optional because CharacterRecord and LLMBackendRecord do not
- * carry an `enabled` field in the backend schema.
- */
+/** Base fields shared by resource records. */
 export interface Resource {
   id: string;
   enabled?: boolean;
   version?: number;
   created_at?: string;
   updated_at?: string;
-}
-
-export interface CharacterResource extends Resource {
-  name: string;
-  description: string;
-  system_prompt: string;
-  facade_module: string;
-  default_hints: {
-    language: string;
-    tone: string;
-  };
-  is_builtin: boolean;
-  builtin_version: string;
-  cloned_from: string;
 }
 
 /** Mirrors backend `ModelCapabilities` struct. */
@@ -119,17 +100,17 @@ export interface ModelCapabilities {
   structured_output?: boolean;
 }
 
-/** Mirrors backend `ModelCatalog` struct. */
-export interface ModelCatalog {
-  names: string[];
-}
-
-/** Mirrors backend `PricingTable` / `PricingEntry`. */
-export interface PricingEntry {
-  model: string;
+/** Mirrors backend `Pricing` struct. */
+export interface Pricing {
   input_per_million?: number;
   cached_input_per_million?: number;
   output_per_million?: number;
+}
+
+/** Mirrors backend `ModelConfig` struct. */
+export interface ModelConfig {
+  pricing?: Pricing;
+  capabilities?: ModelCapabilities;
 }
 
 /** Mirrors backend `BudgetPolicy`. */
@@ -141,45 +122,34 @@ export interface BudgetPolicy {
 /** Mirrors backend `LLMProviderOptions`. */
 export interface LLMProviderOptions {
   base_url?: string;
-  provider_name?: string;
   api_key?: string;
   timeout?: number;
   max_retries?: number;
 }
 
-/** Mirrors backend `StreamOptions`. */
-export interface StreamOptions {
-  model?: string;
+/** Mirrors backend `GenerationParams`. */
+export interface GenerationParams {
   max_tokens?: number | null;
   temperature?: number | null;
   top_p?: number | null;
+  stop?: string[] | null;
 }
 
 export interface LLMBackendResource extends Resource {
   name: string;
-  /** yuuagents provider key (e.g. "openai", "anthropic", "deepseek"). */
-  yuuagents_provider: string;
-  /** Capability flags for default model. REQUIRED by backend. */
-  model_capabilities: ModelCapabilities;
-  /** Available model names. REQUIRED by backend. */
-  models: ModelCatalog;
-  /** Per-model pricing. REQUIRED by backend. */
-  pricing: { entries: PricingEntry[] };
-  /** Budget limits. REQUIRED by backend. */
+  provider_identity: string;
+  model_configs: Record<string, ModelConfig>;
   budget: BudgetPolicy;
-  /** Provider-level options (base URL, timeout, retries, api_key). */
   provider_options?: LLMProviderOptions;
-  /** Default model for agent runs. */
-  default_model?: string;
-  /** Default completion parameters. */
-  default_stream_options?: StreamOptions;
+  recommended_model?: string;
+  default_generation_params?: GenerationParams;
 }
 
 /** Mirrors backend `CapabilitySetRecord` — reusable execution + prompt bundle.
  *
  * The backend splits Actor into Actor + CapabilitySet so that the same
  * capability/workspace/policy bundle can be shared across actors with
- * different characters. Only MVP fields are typed here; advanced fields
+ * different personas. Only MVP fields are typed here; advanced fields
  * (agent_tools, tool_ids, skills, prompt_fragments, permission_limits,
  * bootstrap_path) use backend defaults and are omitted from the UI.
  */
@@ -200,33 +170,16 @@ export interface CapabilitySetResource extends Resource {
 export interface ActorResource extends Resource {
   name: string;
   type: string;
-  /** Default model name (e.g. "gpt-4o"). Renamed from `model`. */
-  default_model: string;
-  /** Resolved character reference (eagerly loaded by the daemon). */
-  default_character?: {
-    id: string;
-    name: string;
-    description: string;
-  };
-  /** Resolved capability set reference (eagerly loaded by the daemon). */
-  capability_set?: CapabilitySetResource;
-  /** Resolved LLM backend reference. */
-  default_llm_backend?: {
-    id: string;
-    name: string;
-    yuuagents_provider: string;
-  };
-  /** Agent budget guardrails (nested; was flat `max_steps` / `daily_budget`). */
-  default_budget?: {
+  persona_prompt: string;
+  capability_set_id: string;
+  llm_backend_id: string;
+  model: string;
+  per_run_budget?: {
     max_steps: number;
     max_tokens: number;
     max_usd: number;
   };
-  /** Actor-level LLM overrides. */
-  default_llm_options?: {
-    max_tokens: number | null;
-    stream_options: StreamOptions;
-  };
+  generation_override?: GenerationParams;
   config?: Record<string, unknown>;
 }
 

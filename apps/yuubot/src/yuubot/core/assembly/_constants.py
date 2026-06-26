@@ -34,17 +34,3 @@ FACADE_EXPAND_FUNCTIONS = (
     "yb.tasks.*",
     "tim.*",
 )
-
-_YUUAGENTS_KNOWN_FACTORIES: frozenset[str] = frozenset({"openai", "anthropic", "openrouter"})
-
-
-def _resolve_yuuagents_provider(yuuagents_provider: str) -> str:
-    """Map a provider name to the yuuagents LLM factory name.
-
-    Known yuuagents factory names pass through directly.  Any other value
-    (vendor names like ``"deepseek"``, ``"groq"``, etc.) resolves to
-    ``"openai"`` since those vendors use the OpenAI-compatible wire protocol.
-    """
-    if yuuagents_provider in _YUUAGENTS_KNOWN_FACTORIES:
-        return yuuagents_provider
-    return "openai"

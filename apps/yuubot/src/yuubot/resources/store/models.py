@@ -6,7 +6,6 @@ from yuubot.resources.records import (
     ActorRecord,
     ActorIngressRuleRecord,
     CapabilitySetRecord,
-    CharacterRecord,
     ConversationHistoryItemRecord,
     ConversationMessageRecord,
     ConversationRecord,
@@ -17,7 +16,6 @@ from yuubot.resources.records import (
 from yuubot.resources.store.model_factory import (
     FieldSpec,
     char,
-    reference,
     resource_model,
     text,
 )
@@ -58,20 +56,6 @@ PromptTemplateORM = resource_model(
     },
 )
 
-CharacterORM = resource_model(
-    "CharacterORM",
-    CharacterRecord,
-    table="characters",
-    module=__name__,
-    field_specs={
-        "id": char(primary_key=True),
-        "name": char(unique=True),
-        "description": text(),
-        "system_prompt": text(),
-        "builtin_version": char(max_length=64),
-    },
-)
-
 CapabilitySetORM = resource_model(
     "CapabilitySetORM",
     CapabilitySetRecord,
@@ -95,13 +79,9 @@ ActorORM = resource_model(
     field_specs={
         "id": char(primary_key=True),
         "name": char(unique=True),
-    },
-    # Tortoise adds raw FK columns with an _id suffix:
-    # default_character_id, capability_set_id, default_llm_backend_id.
-    references={
-        "default_character": reference(CharacterORM),
-        "capability_set": reference(CapabilitySetORM),
-        "default_llm_backend": reference(LLMBackendORM),
+        "persona_prompt": text(),
+        "capability_set_id": char(),
+        "llm_backend_id": char(),
     },
 )
 
@@ -129,11 +109,6 @@ ConversationORM = resource_model(
         "reply_address": text(),
         "created_at": FieldSpec(kind="datetime"),
         "updated_at": FieldSpec(kind="datetime"),
-    },
-    references={
-        "character": reference(CharacterORM),
-        "capability_set": reference(CapabilitySetORM),
-        "llm_backend": reference(LLMBackendORM),
     },
 )
 

@@ -26,13 +26,11 @@ from yuubot.resources.records import (
     ActorRecord,
     BudgetPolicy,
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     IntegrationRecord,
     LLMBackendRecord,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
+    Pricing,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
@@ -40,7 +38,6 @@ from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
     CapabilitySetORM,
-    CharacterORM,
     IntegrationORM,
     LLMBackendORM,
 )
@@ -146,7 +143,6 @@ async def _create_actor_bundle(
     repository: ResourceRepository,
     actor_id: str,
 ) -> ActorRecord:
-    character = await _create_character(repository, f"{actor_id}-char")
     backend = await _create_llm_backend(repository, f"{actor_id}-backend")
     capability_set = await repository.insert(
         CapabilitySetORM,
@@ -162,27 +158,10 @@ async def _create_actor_bundle(
             id=actor_id,
             name=actor_id,
             type=ECHO_ACTOR_TYPE,
-            default_character=character,
-            capability_set=capability_set,
-            default_llm_backend=backend,
-            default_model="",
-        ),
-    )
-
-
-async def _create_character(
-    repository: ResourceRepository,
-    character_id: str,
-) -> CharacterRecord:
-    return await repository.insert(
-        CharacterORM,
-        CharacterRecord(
-            id=character_id,
-            name=character_id,
-            description="",
-            system_prompt="You echo messages.",
-            facade_module="yuubot.core.facade",
-            default_hints=CharacterHints(),
+            persona_prompt="You echo messages.",
+            capability_set_id=capability_set.id,
+            llm_backend_id=backend.id,
+            model="",
         ),
     )
 
@@ -196,11 +175,14 @@ async def _create_llm_backend(
         LLMBackendRecord(
             id=backend_id,
             name=backend_id,
-            yuuagents_provider="openai",
-            default_model="gpt-4",
-            model_capabilities=ModelCapabilities(),
-            models=ModelCatalog(),
-            pricing=PricingTable(),
+            provider_identity="openai",
+            recommended_model="gpt-4",
+            model_configs={
+                "gpt-4": ModelConfig(
+                    pricing=Pricing(),
+                    capabilities=ModelCapabilities(),
+                )
+            },
             budget=BudgetPolicy(),
         ),
     )

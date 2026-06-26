@@ -1,8 +1,8 @@
 """Bootstrap configuration for architecture v2.
 
 Only startup-level settings live here. User-managed resources such as providers,
-characters, actors, ingress rules, and service credentials are persisted in
-DB tables and loaded through the Resources root.
+actors, ingress rules, and service credentials are persisted in DB tables and
+loaded through the Resources root.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Self
+from typing import Self
 
 import msgspec
 import yaml
@@ -25,48 +25,41 @@ class BootstrapConfigError(ValueError):
     """Raised when bootstrap config cannot safely start the process."""
 
 
-class HostPort(msgspec.Struct, frozen=True):
-    host: str = "127.0.0.1"
-    port: int = 0
+class HostPort(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    host: str
+    port: int
 
 
-class AdminConfig(msgspec.Struct, frozen=True):
-    host: str = "127.0.0.1"
-    port: int = 8781
-    secret: str = ""
+class AdminConfig(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    host: str
+    port: int
+    secret: str
     web_dist_dir: str = ""  # empty = auto-detect from package root
 
 
-class ServerConfig(msgspec.Struct, frozen=True):
-    daemon_host: str = "127.0.0.1"
-    daemon_port: int = 8780
-    daemon_secret: str = ""
+class ServerConfig(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    daemon_host: str
+    daemon_port: int
+    daemon_secret: str
 
 
-class DatabaseConfig(msgspec.Struct, frozen=True):
-    """Optional override for the platform DB.
+class DatabaseConfig(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    """Concrete platform DB path for file-loaded bootstrap config."""
 
-    When ``path`` is empty, the daemon resolves it as
-    ``DataLayout(paths.data_dir).db_path``. Tests may override with
-    ``":memory:"`` or a temp file.
-    """
-
-    path: str = ""
+    path: str
 
 
-class SecretConfig(msgspec.Struct, frozen=True):
-    master_key: str = ""
+class SecretConfig(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    master_key: str
 
 
-class TraceConfig(msgspec.Struct, frozen=True):
-    enabled: bool = True
-    collector_host: str = "127.0.0.1"
-    collector_port: int = 4318
-    ui_host: str = "127.0.0.1"
-    ui_port: int = 8782
+class TraceConfig(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    enabled: bool
+    collector_host: str
+    collector_port: int
 
 
-class PathsConfig(msgspec.Struct, frozen=True):
+class PathsConfig(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     """Single root for every yuubot on-disk artifact.
 
     See ``yuubot.bootstrap.layout.DataLayout`` for derived subpaths
@@ -75,41 +68,22 @@ class PathsConfig(msgspec.Struct, frozen=True):
     only ``data_dir``.
     """
 
-    data_dir: str = "~/.yuubot"
+    data_dir: str
 
 
-class YuuAgentsConfig(msgspec.Struct, frozen=True):
-    """Static yuuagents infrastructure config; daemon restart required."""
-
-    strict: bool = False
-    tool_backends: dict[str, dict[str, object]] = msgspec.field(default_factory=dict)
-
-
-class BudgetConfig(msgspec.Struct, frozen=True):
-    """Global spend ceiling for the daemon.
-
-    ``daily_limit_usd`` is the ceiling on the trailing-day cost summed across
-    every conversation, derived from the trace DB's ``yuu.cost`` events. A
-    value of ``0`` (the default) disables the guard entirely — no send is
-    blocked and the per-step checkpoint reuses the in-memory ``Budget.is_exceeded``
-    check only. Quota display in the conversation panel is the frontend's
-    responsibility (Phase 5-3), not the guard's.
-    """
-
-    daily_limit_usd: float = 0.0
-
-
-class BootstrapConfig(msgspec.Struct, frozen=True):
-    admin: AdminConfig = msgspec.field(default_factory=AdminConfig)
-    server: ServerConfig = msgspec.field(default_factory=ServerConfig)
-    database: DatabaseConfig = msgspec.field(default_factory=DatabaseConfig)
-    secrets: SecretConfig = msgspec.field(default_factory=SecretConfig)
-    trace: TraceConfig = msgspec.field(default_factory=TraceConfig)
-    paths: PathsConfig = msgspec.field(default_factory=PathsConfig)
-    yuuagents: YuuAgentsConfig = msgspec.field(default_factory=YuuAgentsConfig)
-    budget: BudgetConfig = msgspec.field(default_factory=BudgetConfig)
+class BootstrapConfig(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    admin: AdminConfig
+    server: ServerConfig
+    database: DatabaseConfig
+    secrets: SecretConfig
+    trace: TraceConfig
+    paths: PathsConfig
 
     def validate(self) -> Self:
+        _require_non_empty("admin.host", self.admin.host)
+        _require_non_empty("server.daemon_host", self.server.daemon_host)
+        _require_non_empty("database.path", self.database.path)
+        _require_non_empty("paths.data_dir", self.paths.data_dir)
         if not _is_loopback_host(self.admin.host) and not self.admin.secret:
             msg = "admin.secret is required when admin.host is not loopback"
             raise BootstrapConfigError(msg)
@@ -135,11 +109,24 @@ class BootstrapConfig(msgspec.Struct, frozen=True):
         data_dir: str = "~/.yuubot-test",
     ) -> Self:
         return cls(
-            admin=AdminConfig(web_dist_dir="."),
-            server=ServerConfig(daemon_secret=daemon_secret),
+            admin=AdminConfig(
+                host="127.0.0.1",
+                port=8781,
+                secret="",
+                web_dist_dir=".",
+            ),
+            server=ServerConfig(
+                daemon_host="127.0.0.1",
+                daemon_port=8780,
+                daemon_secret=daemon_secret,
+            ),
             database=DatabaseConfig(path=database_path),
             secrets=SecretConfig(master_key=master_key),
-            trace=TraceConfig(enabled=False),
+            trace=TraceConfig(
+                enabled=False,
+                collector_host="127.0.0.1",
+                collector_port=4318,
+            ),
             paths=PathsConfig(data_dir=data_dir),
         )
 
@@ -163,16 +150,21 @@ def load_bootstrap_config(config_path: str | Path | None = None) -> BootstrapCon
     """Load `.env` and a v2 `config.yaml` into typed bootstrap settings."""
 
     load_dotenv()
-    raw: dict[str, Any] = {}
-    if config_path:
-        path = Path(config_path).expanduser()
-        if path.exists():
-            loaded = yaml.safe_load(path.read_text()) or {}
-            if not isinstance(loaded, dict):
-                raise BootstrapConfigError("config.yaml root must be a mapping")
-            raw = loaded
-    resolved = _walk_expand_paths(_walk_resolve_env(raw))
-    return msgspec.convert(resolved, type=BootstrapConfig, strict=False).validate()
+    if config_path is None:
+        msg = "--config is required for bootstrap config loading"
+        raise BootstrapConfigError(msg)
+    path = Path(config_path).expanduser()
+    if not path.exists():
+        raise BootstrapConfigError(f"config file does not exist: {path}")
+    loaded = yaml.safe_load(path.read_text()) or {}
+    if not isinstance(loaded, dict):
+        raise BootstrapConfigError("config.yaml root must be a mapping")
+    resolved = _walk_expand_paths(_walk_resolve_env(loaded))
+    try:
+        config = msgspec.convert(resolved, type=BootstrapConfig, strict=True)
+    except msgspec.ValidationError as exc:
+        raise BootstrapConfigError(f"invalid bootstrap config: {exc}") from exc
+    return config.validate()
 
 
 def _resolve_env(value: str) -> str:
@@ -183,7 +175,12 @@ def _is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1"}
 
 
-def _walk_resolve_env(value: Any) -> Any:
+def _require_non_empty(name: str, value: str) -> None:
+    if not value.strip():
+        raise BootstrapConfigError(f"{name} must be set")
+
+
+def _walk_resolve_env(value: object) -> object:
     if isinstance(value, str):
         return _resolve_env(value)
     if isinstance(value, list):
@@ -193,14 +190,14 @@ def _walk_resolve_env(value: Any) -> Any:
     return value
 
 
-def _walk_expand_paths(value: Any) -> Any:
+def _walk_expand_paths(value: object) -> object:
     path_keys = {"path", "data_dir"}
     if isinstance(value, str):
         return value
     if isinstance(value, list):
         return [_walk_expand_paths(item) for item in value]
     if isinstance(value, dict):
-        expanded: dict[str, Any] = {}
+        expanded: dict[object, object] = {}
         for key, item in value.items():
             if (
                 key in path_keys

@@ -7,10 +7,12 @@ from typing import Literal, TypeVar
 
 import msgspec
 
-from yuubot.core.validation import LLMProviderOptions, StreamOptions
+from yuubot.core.validation import GenerationParams, LLMProviderOptions
+
 
 class ToolSpecConfig(msgspec.Struct):
     level: str = "summary"
+
 
 ConfigT = TypeVar("ConfigT", bound=msgspec.Struct)
 
@@ -24,19 +26,19 @@ class ModelCapabilities(msgspec.Struct):
     structured_output: bool = False
 
 
-class ModelCatalog(msgspec.Struct):
-    names: tuple[str, ...] = ()
+class Pricing(msgspec.Struct, frozen=True):
+    """Pricing for one configured model."""
 
-
-class PricingEntry(msgspec.Struct):
-    model: str
     input_per_million: float = 0.0
     cached_input_per_million: float = 0.0
     output_per_million: float = 0.0
 
 
-class PricingTable(msgspec.Struct):
-    entries: tuple[PricingEntry, ...] = ()
+class ModelConfig(msgspec.Struct, frozen=True):
+    """User-maintained configuration for one model name."""
+
+    pricing: Pricing = msgspec.field(default_factory=Pricing)
+    capabilities: ModelCapabilities = msgspec.field(default_factory=ModelCapabilities)
 
 
 class BudgetPolicy(msgspec.Struct):
@@ -48,17 +50,17 @@ class LLMBackendRecord(msgspec.Struct):
     """Infra backend config for yuuagents StageConfig.llm."""
 
     name: str
-    yuuagents_provider: str
-    model_capabilities: ModelCapabilities
-    models: ModelCatalog
-    pricing: PricingTable
+    provider_identity: str
+    model_configs: dict[str, ModelConfig]
     budget: BudgetPolicy
     id: str = ""
     provider_options: LLMProviderOptions = msgspec.field(
         default_factory=LLMProviderOptions
     )
-    default_model: str = ""
-    default_stream_options: StreamOptions = msgspec.field(default_factory=StreamOptions)
+    recommended_model: str = ""
+    default_generation_params: GenerationParams = msgspec.field(
+        default_factory=GenerationParams
+    )
     version: int = 1
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -106,13 +108,6 @@ class YuuAgentBudget(msgspec.Struct):
         )
 
 
-class YuuAgentLLMOptions(msgspec.Struct):
-    """Actor-level LLM overrides for AgentDefinition.llm/StageConfig.llm."""
-
-    max_tokens: int | None = None
-    stream_options: StreamOptions = msgspec.field(default_factory=StreamOptions)
-
-
 class ToolConfig(msgspec.Struct):
     """One yuuagents AgentDefinition.tools entry."""
 
@@ -133,11 +128,6 @@ class PromptTemplateRecord(msgspec.Struct):
     updated_at: datetime | None = None
 
 
-class CharacterHints(msgspec.Struct):
-    language: str = "zh-CN"
-    tone: str = ""
-
-
 class RuntimePolicy(msgspec.Struct):
     """yuubot product policy; execution wiring lives in yuuagents-native fields."""
 
@@ -154,21 +144,6 @@ class ResourcePolicy(msgspec.Struct):
     concurrency_limit: int = 1
     bridge_nodes: tuple[str, ...] = ()
     workspace_access: Literal["none", "read_only", "read_write"] = "none"
-
-
-class CharacterRecord(msgspec.Struct):
-    name: str
-    description: str
-    system_prompt: str
-    facade_module: str
-    default_hints: CharacterHints
-    id: str = ""
-    is_builtin: bool = False
-    builtin_version: str = ""
-    cloned_from: str = ""
-    version: int = 1
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
 
 
 class CapabilitySetRecord(msgspec.Struct):
@@ -199,14 +174,14 @@ class ActorRecord(msgspec.Struct):
     """Always-on service identity that routes ingress into conversations."""
 
     name: str
-    default_character: CharacterRecord
-    capability_set: CapabilitySetRecord
-    default_llm_backend: LLMBackendRecord
-    default_model: str
-    default_llm_options: YuuAgentLLMOptions = msgspec.field(
-        default_factory=YuuAgentLLMOptions
+    persona_prompt: str
+    capability_set_id: str
+    llm_backend_id: str
+    model: str
+    generation_override: GenerationParams = msgspec.field(
+        default_factory=GenerationParams
     )
-    default_budget: YuuAgentBudget = msgspec.field(default_factory=YuuAgentBudget)
+    per_run_budget: YuuAgentBudget = msgspec.field(default_factory=YuuAgentBudget)
     id: str = ""
     type: str = "simple_loop"
     config: dict[str, object] = msgspec.field(default_factory=dict)
@@ -218,6 +193,14 @@ class ActorRecord(msgspec.Struct):
     def typed_config(self, schema: type[ConfigT]) -> ConfigT:
         """Convert raw config dict to a typed Struct at the consumption boundary."""
         return msgspec.convert(self.config, type=schema, strict=False)
+
+
+class ResolvedActor(msgspec.Struct, frozen=True):
+    """Turn-time actor read model hydrated from actor-owned ids."""
+
+    actor: ActorRecord
+    capability_set: CapabilitySetRecord
+    llm_backend: LLMBackendRecord
 
 
 class ActorIngressRuleRecord(msgspec.Struct):
@@ -234,13 +217,7 @@ class ActorIngressRuleRecord(msgspec.Struct):
 
 class ConversationRecord(msgspec.Struct):
     conversation_id: str
-    character: CharacterRecord
-    capability_set: CapabilitySetRecord
-    llm_backend: LLMBackendRecord
-    model: str
-    llm_options: YuuAgentLLMOptions = msgspec.field(default_factory=YuuAgentLLMOptions)
-    budget: YuuAgentBudget = msgspec.field(default_factory=YuuAgentBudget)
-    actor_id: str = ""
+    actor_id: str
     title: str = ""
     reply_address: str = ""
     metadata: dict[str, object] = msgspec.field(default_factory=dict)

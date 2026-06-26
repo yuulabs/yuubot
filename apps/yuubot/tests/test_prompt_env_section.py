@@ -14,17 +14,16 @@ from pathlib import Path
 
 from yuubot.core.assembly._prompt import _render_system_instructions
 from yuubot.core.bindings import AgentBinding
+from yuubot.core.validation import GenerationParams
 from yuubot.resources.records import (
+    ActorRecord,
     BudgetPolicy,
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     LLMBackendRecord,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    ModelConfig,
+    Pricing,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 
 
@@ -168,22 +167,21 @@ def _make_binding(
     return AgentBinding(
         owner_id="test-owner",
         agent_name="test-agent",
-        character=_dummy_character(),
+        actor=_dummy_actor(),
         capability_set=cap_set,
         llm=_dummy_llm(),
-        llm_options=_dummy_llm_options(),
         budget=_dummy_budget(),
         workspace_path=workspace_path,
     )
 
 
-def _dummy_character() -> CharacterRecord:
-    return CharacterRecord(
-        name="test-char",
-        description="Test character",
-        system_prompt="",
-        facade_module="",
-        default_hints=CharacterHints(),
+def _dummy_actor() -> ActorRecord:
+    return ActorRecord(
+        name="test-actor",
+        persona_prompt="",
+        capability_set_id="test-cap",
+        llm_backend_id="test-backend",
+        model="gpt-4",
     )
 
 
@@ -192,22 +190,21 @@ def _dummy_llm():
 
     backend = LLMBackendRecord(
         name="test-backend",
-        yuuagents_provider="openai",
-        default_model="gpt-4",
-        model_capabilities=ModelCapabilities(),
-        models=ModelCatalog(),
-        pricing=PricingTable(),
+        provider_identity="openai",
+        recommended_model="gpt-4",
+        model_configs={
+            "gpt-4": ModelConfig(
+                pricing=Pricing(),
+                capabilities=ModelCapabilities(),
+            )
+        },
         budget=BudgetPolicy(),
     )
     return BoundLLM(
         backend=backend,
         model="gpt-4",
-        stream_options={},
+        generation_params=GenerationParams(),
     )
-
-
-def _dummy_llm_options() -> YuuAgentLLMOptions:
-    return YuuAgentLLMOptions()
 
 
 def _dummy_budget() -> YuuAgentBudget:

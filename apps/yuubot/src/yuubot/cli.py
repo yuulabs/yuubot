@@ -17,7 +17,11 @@ from typing import Protocol
 
 import click
 
-from yuubot.bootstrap.config import BootstrapConfig, load_bootstrap_config
+from yuubot.bootstrap.config import (
+    BootstrapConfig,
+    BootstrapConfigError,
+    load_bootstrap_config,
+)
 from yuubot.bootstrap.layout import DataLayout
 from yuubot.runtime.admin import build_admin
 from yuubot.runtime.archive import ArchiveError, export_data, import_data
@@ -50,18 +54,17 @@ def cli(ctx: click.Context, config_path: str | None) -> None:
 @click.pass_context
 def check(ctx: click.Context) -> None:
     """Validate bootstrap config only."""
-    config = load_bootstrap_config(ctx.obj["config_path"])
+    config = _load_config_or_raise_click(ctx.obj["config_path"])
     click.echo("bootstrap: ok")
     click.echo(f"database: {config.database.path}")
     click.echo(f"admin: {config.admin.host}:{config.admin.port}")
-    click.echo(f"trace-ui: {config.trace.ui_host}:{config.trace.ui_port}")
 
 
 @cli.command("daemon")
 @click.pass_context
 def daemon(ctx: click.Context) -> None:
     """Start the Yuubot daemon process."""
-    config = load_bootstrap_config(ctx.obj["config_path"])
+    config = _load_config_or_raise_click(ctx.obj["config_path"])
     layout = DataLayout.from_path(config.paths.data_dir)
     configure_file_logging(logs_dir=layout.logs_dir, process_name="daemon")
 
@@ -76,7 +79,7 @@ def daemon(ctx: click.Context) -> None:
 @click.pass_context
 def admin(ctx: click.Context) -> None:
     """Start the Admin process."""
-    config = load_bootstrap_config(ctx.obj["config_path"])
+    config = _load_config_or_raise_click(ctx.obj["config_path"])
     layout = DataLayout.from_path(config.paths.data_dir)
     configure_file_logging(logs_dir=layout.logs_dir, process_name="admin")
 
@@ -127,6 +130,13 @@ WEB_BUILD_INPUT_FILES = (
 WEB_BUILD_INPUT_DIRS = ("src",)
 
 
+def _load_config_or_raise_click(config_path: str | None) -> BootstrapConfig:
+    try:
+        return load_bootstrap_config(config_path)
+    except BootstrapConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 def _run_dev(
     config_path: str | None,
     *,
@@ -137,7 +147,7 @@ def _run_dev(
     poll_interval_s: float = 0.1,
 ) -> int:
     """Run daemon/admin children and fail fast when startup health fails."""
-    config = load_bootstrap_config(config_path)
+    config = _load_config_or_raise_click(config_path)
     popen = popen or _popen_dev_child
     health_probe = health_probe or _health_probe
 
@@ -410,41 +420,6 @@ def _latest_mtime(paths: Iterable[Path]) -> float:
     return latest
 
 
-@cli.group("trace")
-@click.pass_context
-def trace(ctx: click.Context) -> None:
-    """Trace inspection commands."""
-
-
-@trace.command("ui")
-@click.option(
-    "--host", "host", default=None, help="Override trace UI host (default: from config)"
-)
-@click.option(
-    "--port",
-    "port",
-    default=None,
-    type=int,
-    help="Override trace UI port (default: from config)",
-)
-@click.pass_context
-def trace_ui(ctx: click.Context, host: str | None, port: int | None) -> None:
-    """Launch the yuutrace Web UI to browse agent traces."""
-    from yuutrace.cli.ui import run_ui
-
-    config = load_bootstrap_config(ctx.obj["config_path"])
-    layout = DataLayout.from_path(config.paths.data_dir)
-    db_path = str(layout.traces_db_path)
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-
-    ui_host = host or config.trace.ui_host
-    ui_port = port or config.trace.ui_port
-
-    click.echo(f"starting trace UI on http://{ui_host}:{ui_port}")
-    click.echo(f"database: {db_path}")
-    run_ui(db_path=db_path, host=ui_host, port=ui_port)
-
-
 @cli.command("export")
 @click.argument("out_path", type=click.Path(dir_okay=False))
 @click.pass_context
@@ -453,7 +428,7 @@ def export_command(ctx: click.Context, out_path: str) -> None:
 
     The daemon and admin processes should be stopped before running this.
     """
-    config = load_bootstrap_config(ctx.obj["config_path"])
+    config = _load_config_or_raise_click(ctx.obj["config_path"])
     layout = DataLayout.from_path(config.paths.data_dir)
     if not layout.data_dir.is_dir():
         raise click.ClickException(f"data_dir {layout.data_dir} does not exist")
@@ -474,7 +449,7 @@ def import_command(ctx: click.Context, in_path: str, replace: bool) -> None:
 
     The daemon and admin processes must be stopped before running this.
     """
-    config = load_bootstrap_config(ctx.obj["config_path"])
+    config = _load_config_or_raise_click(ctx.obj["config_path"])
     layout = DataLayout.from_path(config.paths.data_dir)
     layout.data_dir.mkdir(parents=True, exist_ok=True)
     try:

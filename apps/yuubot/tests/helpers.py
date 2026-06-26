@@ -16,7 +16,6 @@ from starlette.types import ASGIApp
 from yuuagents import ProviderPoolSessionFactory
 
 from yuubot.core.actors import Actor
-from yuubot.core.assembly._constants import _resolve_yuuagents_provider
 from yuubot.core.bindings import ActorBinding, AgentBinding
 from yuubot.core.gateway import Mailbox
 from yuubot.core.integrations.impls.echo import (
@@ -33,25 +32,22 @@ from yuubot.resources.records import (
     ActorRecord,
     BudgetPolicy,
     CapabilitySetRecord,
-    CharacterHints,
-    CharacterRecord,
     IntegrationRecord,
     LLMBackendRecord,
+    ModelConfig,
     ModelCapabilities,
-    ModelCatalog,
-    PricingTable,
+    Pricing,
     ResourcePolicy,
     RuntimePolicy,
+    ResolvedActor,
     ToolConfig,
     YuuAgentBudget,
-    YuuAgentLLMOptions,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     ActorORM,
     CapabilitySetORM,
-    CharacterORM,
     IntegrationORM,
     LLMBackendORM,
 )
@@ -136,7 +132,11 @@ _TEST_LLM_FACTORIES: dict[str, ProviderPoolSessionFactory] = {}
 
 
 def register_test_llm_provider(name: str, llm: ScriptedLlmProvider) -> None:
-    _TEST_LLM_FACTORIES[name] = ScriptedProviderSessionFactory(provider=llm)
+    try:
+        provider_key = yuullm.resolve_provider(name).api_type
+    except ValueError:
+        provider_key = name
+    _TEST_LLM_FACTORIES[provider_key] = ScriptedProviderSessionFactory(provider=llm)
 
 
 def make_test_daemon_infrastructure() -> DaemonInfrastructure:
@@ -145,8 +145,10 @@ def make_test_daemon_infrastructure() -> DaemonInfrastructure:
     )
 
 
-def test_llm_session_factory(binding: AgentBinding) -> ProviderPoolSessionFactory | None:
-    provider = _resolve_yuuagents_provider(binding.llm.backend.yuuagents_provider)
+def test_llm_session_factory(
+    binding: AgentBinding,
+) -> ProviderPoolSessionFactory | None:
+    provider = yuullm.resolve_provider(binding.llm.backend.provider_identity).api_type
     return _TEST_LLM_FACTORIES.get(provider)
 
 
@@ -235,7 +237,6 @@ async def wait_worker(dispatcher, key: str, timeout: float = 5.0) -> None:
 @dataclass
 class EchoActorResources:
     integration: IntegrationRecord
-    character: CharacterRecord
     llm_backend: LLMBackendRecord
     actor: ActorRecord
     ingress_rule: ActorIngressRuleRecord
@@ -253,10 +254,6 @@ async def insert_echo_actor_resources(
 ) -> EchoActorResources:
     """Insert a routable actor wired to an Echo integration."""
 
-    character = await repository.insert(
-        CharacterORM,
-        make_character_record(actor_id, system_prompt=system_prompt),
-    )
     llm_backend = await repository.insert(
         LLMBackendORM, make_llm_backend_record(actor_id)
     )
@@ -272,7 +269,7 @@ async def insert_echo_actor_resources(
         ActorORM,
         make_actor_record(
             actor_id,
-            character=character,
+            persona_prompt=system_prompt,
             llm_backend=llm_backend,
             capability_set=capability_set,
             actor_type=actor_type,
@@ -289,7 +286,6 @@ async def insert_echo_actor_resources(
     )
     return EchoActorResources(
         integration=integration,
-        character=character,
         llm_backend=llm_backend,
         actor=actor,
         ingress_rule=ingress_rule,
@@ -321,22 +317,6 @@ def make_actor_ingress_rule_record(
     )
 
 
-def make_character_record(
-    actor_id: str,
-    *,
-    system_prompt: str = "You are a test actor.",
-) -> CharacterRecord:
-    character_id = f"{actor_id}-char"
-    return CharacterRecord(
-        id=character_id,
-        name=character_id,
-        description="",
-        system_prompt=system_prompt,
-        facade_module="yuubot.core.facade",
-        default_hints=CharacterHints(),
-    )
-
-
 def make_llm_backend_record(
     actor_id: str,
     *,
@@ -347,11 +327,14 @@ def make_llm_backend_record(
     return LLMBackendRecord(
         id=backend_id,
         name=backend_id,
-        yuuagents_provider=provider,
-        default_model=model,
-        model_capabilities=ModelCapabilities(tool_calling=True),
-        models=ModelCatalog(),
-        pricing=PricingTable(),
+        provider_identity=provider,
+        recommended_model=model,
+        model_configs={
+            model: ModelConfig(
+                pricing=Pricing(),
+                capabilities=ModelCapabilities(tool_calling=True),
+            )
+        },
         budget=BudgetPolicy(),
     )
 
@@ -381,7 +364,7 @@ def make_capability_set_record(
 def make_actor_record(
     actor_id: str,
     *,
-    character: CharacterRecord,
+    persona_prompt: str = "You are a test actor.",
     llm_backend: LLMBackendRecord,
     capability_set: CapabilitySetRecord | None = None,
     actor_type: str = "simple_loop",
@@ -392,12 +375,28 @@ def make_actor_record(
         id=actor_id,
         name=actor_id,
         type=actor_type,
-        default_character=character,
-        capability_set=cap_set,
-        default_llm_backend=llm_backend,
-        default_model="",
-        default_llm_options=YuuAgentLLMOptions(),
-        default_budget=YuuAgentBudget(max_steps=max_steps),
+        persona_prompt=persona_prompt,
+        capability_set_id=cap_set.id,
+        llm_backend_id=llm_backend.id,
+        model="",
+        per_run_budget=YuuAgentBudget(max_steps=max_steps),
+    )
+
+
+def make_actor_binding(
+    actor: ActorRecord,
+    *,
+    capability_set: CapabilitySetRecord,
+    llm_backend: LLMBackendRecord,
+    workspace_path: Path | None = None,
+) -> ActorBinding:
+    return ActorBinding(
+        resolved=ResolvedActor(
+            actor=actor,
+            capability_set=capability_set,
+            llm_backend=llm_backend,
+        ),
+        workspace_path=workspace_path,
     )
 
 
@@ -653,7 +652,7 @@ def build_resource_daemon_runtime(
     services (caller must ``start``/``stop`` it). Mirrors the production
     wiring used by the Admin UI without spawning real child processes.
     """
-    from yuubot.bootstrap.config import ServerConfig, TraceConfig, YuuAgentsConfig
+    from yuubot.bootstrap.config import ServerConfig, TraceConfig
     from yuubot.core.actors import ActorFactoryRegistry, ActorManager
     from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
     from yuubot.core.actors.workspace import ActorWorkspaceResolver
@@ -705,14 +704,25 @@ def build_resource_daemon_runtime(
         integration_lifecycle_handler=_integration_lifecycle_handler(integrations),
         actor_lifecycle_handler=_actor_lifecycle_handler(actors),
     )
-    trace_service = TraceService(config=TraceConfig(enabled=False), db_path=":memory:")
+    trace_service = TraceService(
+        config=TraceConfig(
+            enabled=False,
+            collector_host="127.0.0.1",
+            collector_port=4318,
+        ),
+        db_path=":memory:",
+    )
     python_sessions = ActorPythonSessionFactory(
         integrations=integrations,
         workspace=FacadeWorkspace(workspace_root / "facades"),
         bridge=IntegrationInvokeBridge(integrations),
     )
     app = build_daemon_asgi_app(
-        config=ServerConfig(daemon_secret=secret),
+        config=ServerConfig(
+            daemon_host="127.0.0.1",
+            daemon_port=8780,
+            daemon_secret=secret,
+        ),
         resources=resources,
         services=services,
         actors=actors,
@@ -721,14 +731,15 @@ def build_resource_daemon_runtime(
         refresh=refresh,
         trace_service=trace_service,
         type_registry=type_registry,
-        yuuagents_config=YuuAgentsConfig(),
         python_sessions=python_sessions,
         llm_session_factory_factory=llm_session_factory_for_binding,
     )
     return app, services
 
 
-def daemon_http_client(app: ASGIApp, *, secret: str = "test-secret") -> httpx.AsyncClient:
+def daemon_http_client(
+    app: ASGIApp, *, secret: str = "test-secret"
+) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
