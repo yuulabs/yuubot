@@ -48,6 +48,7 @@ from yuubot.resources.store.models import (
     CapabilitySetORM,
     CharacterORM,
     ConversationHistoryItemORM,
+    ConversationMessageORM,
     ConversationORM,
     LLMBackendORM,
 )
@@ -244,6 +245,21 @@ def _tool_calls(value: object) -> tuple[dict[str, object], ...]:
     return tuple(result)
 
 
+def _conversation_title_from_first_turn(
+    user_message: yuullm.Message,
+    assistant_message: yuullm.Message,
+) -> str:
+    user_text = yuullm.render_message_text(user_message).strip()
+    assistant_text = yuullm.render_message_text(assistant_message).strip()
+    text = user_text or assistant_text
+    if not text:
+        return ""
+    title = " ".join(text.split())
+    if len(title) <= 80:
+        return title
+    return title[:77].rstrip() + "..."
+
+
 @dataclass
 class ConversationStore:
     store: Store
@@ -321,6 +337,39 @@ class ConversationStore:
             )
             records = [await from_orm(r, ConversationRecord) for r in rows]
         return sorted(records, key=_conversation_sort_key, reverse=True)
+
+    async def update_title_if_empty(
+        self,
+        conversation_id: str,
+        title: str,
+    ) -> bool:
+        if not title:
+            return False
+        with self.store.db.activate():
+            updated = await ConversationORM.filter(
+                conversation_id=conversation_id,
+                title="",
+            ).update(title=title)
+        return updated > 0
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        async with self.store.transaction():
+            with self.store.db.activate():
+                exists = await ConversationORM.filter(
+                    conversation_id=conversation_id,
+                ).exists()
+                if not exists:
+                    return False
+                await ConversationMessageORM.filter(
+                    conversation_id=conversation_id,
+                ).delete()
+                await ConversationHistoryItemORM.filter(
+                    conversation_id=conversation_id,
+                ).delete()
+                await ConversationORM.filter(
+                    conversation_id=conversation_id,
+                ).delete()
+        return True
 
     # ── Ordered history items (canonical conversation state) ──────────
 
@@ -701,6 +750,21 @@ class ConversationManager:
 
         return {"cancelled": True}
 
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        exists = await self.store.conversation_exists(conversation_id)
+        if not exists:
+            return False
+        await self.cancel_turn(conversation_id)
+        self.drop_cached_conversation_agent(conversation_id)
+        deleted = await self.store.delete_conversation(conversation_id)
+        if deleted:
+            for agent_id, stored_id in list(self._agent_to_conversation.items()):
+                if stored_id == conversation_id:
+                    self._agent_to_conversation.pop(agent_id, None)
+            self._observed_runtimes.pop(conversation_id, None)
+            self._cancel_events.pop(conversation_id, None)
+        return deleted
+
     async def subscribe_events(
         self,
         conversation_id: str,
@@ -963,6 +1027,31 @@ class ConversationManager:
         message = finished.message
         if isinstance(message, yuullm.Message):
             await self.store.append_history_item(conversation_id, message)
+            await self._set_title_from_first_turn(conversation_id)
+
+    async def _set_title_from_first_turn(self, conversation_id: str) -> None:
+        rows = await self.store.list_history_items(conversation_id)
+        user_message: yuullm.Message | None = None
+        assistant_message: yuullm.Message | None = None
+        for row in rows:
+            try:
+                decoded = decode_prompt_item(row.item_kind, row.item_json)
+            except ValueError:
+                continue
+            if not isinstance(decoded, yuullm.Message):
+                continue
+            if decoded.role == "user" and user_message is None:
+                user_message = decoded
+                continue
+            if decoded.role == "assistant" and assistant_message is None:
+                assistant_message = decoded
+        if user_message is None or assistant_message is None:
+            return
+        title = _conversation_title_from_first_turn(
+            user_message,
+            assistant_message,
+        )
+        await self.store.update_title_if_empty(conversation_id, title)
 
     async def _handle_tool_result(
         self,

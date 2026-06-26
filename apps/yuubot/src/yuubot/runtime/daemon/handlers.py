@@ -96,6 +96,7 @@ def _configuration_error_response(exc: ConfigurationError) -> JSONResponse:
 def _conversation_metadata(conversation: ConversationRecord) -> dict[str, object]:
     return {
         "conversation_id": conversation.conversation_id,
+        "title": conversation.title,
         "actor_id": conversation.actor_id,
         "character_id": conversation.character.id,
         "capability_set_id": conversation.capability_set.id,
@@ -380,6 +381,7 @@ def make_list_conversations_handler(
                 "data": [
                     {
                         "conversation_id": item.conversation_id,
+                        "title": item.title,
                         "actor_id": item.actor_id,
                         "created_at": _iso_or_none(item.created_at),
                         "updated_at": _iso_or_none(item.updated_at),
@@ -390,6 +392,35 @@ def make_list_conversations_handler(
         )
 
     return list_conversations
+
+
+def make_delete_conversation_handler(
+    conversation_manager: ConversationManager,
+):
+    async def delete_conversation(request: Request) -> JSONResponse:
+        conversation_id = request.path_params["conversation_id"]
+        try:
+            deleted = await conversation_manager.delete_conversation(conversation_id)
+        except LookupError as exc:
+            return error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        if not deleted:
+            return error_response(
+                f"conversation {conversation_id!r} does not exist",
+                status_code=404,
+            )
+        return JSONResponse(
+            {
+                "status": "ok",
+                "data": {
+                    "conversation_id": conversation_id,
+                    "deleted": True,
+                },
+            }
+        )
+
+    return delete_conversation
 
 
 def make_conversation_messages_handler(

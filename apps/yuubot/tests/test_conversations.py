@@ -16,6 +16,7 @@ from yuubot.core.conversations import (
     ConversationBindingConflict,
     ConversationManager,
     ConversationSendBinding,
+    _conversation_title_from_first_turn,
 )
 
 
@@ -374,6 +375,53 @@ async def test_subsequent_send_with_conflicting_actor_returns_conflict() -> None
         assert exc.conversation is existing
     assert raised
     store.append_history_item.assert_not_called()
+
+
+def test_conversation_title_uses_first_user_message() -> None:
+    title = _conversation_title_from_first_turn(
+        yuullm.user("  hello   title\nfrom user  "),
+        yuullm.assistant("assistant fallback"),
+    )
+
+    assert title == "hello title from user"
+
+
+def test_conversation_title_truncates_long_text() -> None:
+    title = _conversation_title_from_first_turn(
+        yuullm.user("x" * 120),
+        yuullm.assistant("assistant fallback"),
+    )
+
+    assert title == ("x" * 77) + "..."
+
+
+async def test_delete_conversation_stops_turn_drops_cache_and_deletes_rows() -> None:
+    store = MagicMock()
+    store.conversation_exists = AsyncMock(return_value=True)
+    store.delete_conversation = AsyncMock(return_value=True)
+
+    manager = ConversationManager(
+        store=store,
+        repository=MagicMock(),
+        yuuagents_config=MagicMock(),
+        python_sessions=MagicMock(),
+        llm_session_factory_factory=MagicMock(),
+    )
+    manager._agent_to_conversation["agent-1"] = "conv-1"
+    manager._observed_runtimes["conv-1"] = 123
+
+    with (
+        patch.object(manager, "cancel_turn", new=AsyncMock(return_value={"cancelled": False})) as cancel,
+        patch.object(manager, "drop_cached_conversation_agent", return_value=True) as drop,
+    ):
+        deleted = await manager.delete_conversation("conv-1")
+
+    assert deleted is True
+    cancel.assert_awaited_once_with("conv-1")
+    drop.assert_called_once_with("conv-1")
+    store.delete_conversation.assert_awaited_once_with("conv-1")
+    assert "agent-1" not in manager._agent_to_conversation
+    assert "conv-1" not in manager._observed_runtimes
 
 
 def manager_with_store() -> ConversationManager:

@@ -177,7 +177,7 @@ def build_admin_asgi_app(
                 daemon=daemon,
                 _request_daemon_fn=_request_daemon,
             ),
-            methods=("GET", "POST"),
+            methods=("GET", "POST", "DELETE"),
         ),
         Route(
             "/api/integration-kinds",

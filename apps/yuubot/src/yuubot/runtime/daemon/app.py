@@ -64,6 +64,7 @@ from yuubot.runtime.daemon.handlers import (
     make_cancel_conversation_turn_handler,
     make_conversation_events_handler,
     make_conversation_messages_handler,
+    make_delete_conversation_handler,
     make_get_conversation_handler,
     make_health_handler,
     make_list_conversations_handler,
@@ -419,6 +420,11 @@ def build_daemon_asgi_app(
             "/api/admin/conversations/{conversation_id}",
             make_get_conversation_handler(conversation_manager),
             methods=("GET",),
+        ),
+        Route(
+            "/api/admin/conversations/{conversation_id}",
+            make_delete_conversation_handler(conversation_manager),
+            methods=("DELETE",),
         ),
         Route(
             "/api/admin/conversations/{conversation_id}/events",
