@@ -2,9 +2,17 @@ import { useState } from "react";
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { AlertTriangle, Trash2 } from "lucide-react";
 import { useResourceList, useCreateResource, useDeleteResource } from "@/hooks/use-resources";
-import type { LLMBackendResource } from "@/types/api";
+import type { ActorResource, LLMBackendResource } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { providerBaseUrlWarning } from "@/provider-models";
 import {
   PageShell,
@@ -108,6 +116,45 @@ const providerPresets: ProviderPreset[] = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Preset Actors offered after the FIRST backend create for OpenAI/DeepSeek.
+// References the stable seeded Character / CapabilitySet ids (seeded by the
+// backend in Phase 2) — the frontend never mints replacement Character /
+// CapabilitySet records. If a referenced id is absent the actor create call
+// surfaces the backend's mutation error in the dialog and the already-created
+// backend is left intact.
+// ---------------------------------------------------------------------------
+
+interface PresetActor {
+  actorName: string;
+  characterId: string;
+  capabilitySetId: string;
+}
+
+const presetActors: PresetActor[] = [
+  {
+    actorName: "general",
+    characterId: "builtin-character-general",
+    capabilitySetId: "builtin-capability-general",
+  },
+  {
+    actorName: "shiori",
+    characterId: "builtin-character-shiori",
+    capabilitySetId: "builtin-capability-shiori",
+  },
+];
+
+/** Preset keys that trigger the onboarding dialog after the first backend. */
+const onboardingPresetKeys = new Set(["openai", "deepseek"]);
+
+/** Parse a free-form USD string into a number, or undefined when blank. */
+function parseOptionalUsd(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 export const Route = createFileRoute("/providers")({
   component: ProvidersPage,
 });
@@ -121,12 +168,26 @@ function ProvidersPage() {
     select: (state) => state.location.pathname,
   });
   const { data: backends = [], isLoading, error } = useResourceList<LLMBackendResource>("llm-backends");
+  const { data: existingActors = [] } = useResourceList<ActorResource>("actors");
   const createMutation = useCreateResource<LLMBackendResource>("llm-backends");
+  const createActorMutation = useCreateResource<ActorResource>("actors");
   const deleteMutation = useDeleteResource("llm-backends");
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", baseUrl: "", apiKey: "" });
+  const [form, setForm] = useState({
+    name: "",
+    baseUrl: "",
+    apiKey: "",
+    dailyUsd: "2.00",
+    monthlyUsd: "",
+  });
   const [formError, setFormError] = useState("");
+  // Onboarding dialog state: holds the freshly-created backend whose
+  // default_model / id the preset Actors should bind to.
+  const [onboardingBackend, setOnboardingBackend] = useState<LLMBackendResource | null>(null);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const [onboardingError, setOnboardingError] = useState("");
+
 
   const selectedPreset = selectedKey
     ? (providerPresets.find((p) => p.key === selectedKey) ?? null)
@@ -156,7 +217,10 @@ function ProvidersPage() {
     const preset = providerPresets.find((p) => p.key === key);
     if (!preset) return;
     setSelectedKey(key);
-    setForm({ name: `${key}-main`, baseUrl: preset.baseUrl, apiKey: "" });
+    // OpenAI and DeepSeek get theseeded onboarding budget default; other
+    // presets keep editable budget fields but start blank (unlimited).
+    const seededBudget = onboardingPresetKeys.has(preset.key) ? "2.00" : "";
+    setForm({ name: `${key}-main`, baseUrl: preset.baseUrl, apiKey: "", dailyUsd: seededBudget, monthlyUsd: "" });
     setFormError("");
   };
 
@@ -168,7 +232,10 @@ function ProvidersPage() {
       setFormError(baseUrlWarning);
       return;
     }
-    await createMutation.mutateAsync({
+    // First-backend detection is frontend-side: capture the count BEFORE the
+    // create call mutates the cache.
+    const wasFirstBackend = backends.length === 0;
+    const createdBackend = await createMutation.mutateAsync({
       name: form.name,
       yuuagents_provider: selectedPreset.runtimeProviderKey,
       model_capabilities: {
@@ -181,7 +248,10 @@ function ProvidersPage() {
       },
       models: { names: [] },
       pricing: { entries: [] },
-      budget: {},
+      budget: {
+        daily_usd: parseOptionalUsd(form.dailyUsd),
+        monthly_usd: parseOptionalUsd(form.monthlyUsd),
+      },
       provider_options: {
         base_url: form.baseUrl || selectedPreset.baseUrl,
         provider_name: selectedPreset.providerName,
@@ -196,6 +266,48 @@ function ProvidersPage() {
       },
     });
     setSelectedKey(null);
+    if (wasFirstBackend && onboardingPresetKeys.has(selectedPreset.key)) {
+      setOnboardingError("");
+      setOnboardingBackend(createdBackend);
+    }
+  };
+
+  // Create the preset Actors bound to the freshly-created backend. Uses the
+  // normal Actor resource hook; references the stable seeded Character /
+  // CapabilitySet ids. Skips presets whose Actor name already exists.
+  const handleCreatePresetActors = async () => {
+    if (!onboardingBackend) return;
+    setOnboardingBusy(true);
+    setOnboardingError("");
+    try {
+      for (const preset of presetActors) {
+        const exists = existingActors.some((a) => a.name === preset.actorName);
+        if (exists) continue;
+        await createActorMutation.mutateAsync({
+          name: preset.actorName,
+          type: "simple_loop",
+          enabled: true,
+          default_model: onboardingBackend.default_model ?? "",
+          default_character_id: preset.characterId,
+          capability_set_id: preset.capabilitySetId,
+          default_llm_backend_id: onboardingBackend.id,
+          default_budget: { max_steps: 6, max_tokens: 8192, max_usd: 2.0 },
+        });
+      }
+      setOnboardingBackend(null);
+    } catch (err) {
+      // Surface the (likely FK / mutation) error and leave the already-created
+      // backend intact — do NOT silently mint replacement Character /
+      // CapabilitySet records from the frontend.
+      setOnboardingError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  };
+
+  const handleSkipOnboarding = () => {
+    setOnboardingBackend(null);
+    setOnboardingError("");
   };
 
   const handleDelete = (id: string) => {
@@ -250,6 +362,24 @@ function ProvidersPage() {
                     placeholder="sk-..."
                   />
                 </Field>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="每日预算 (USD)">
+                    <Input
+                      inputMode="decimal"
+                      value={form.dailyUsd}
+                      onChange={(e) => setForm({ ...form, dailyUsd: e.target.value })}
+                      placeholder="留空 = 不限"
+                    />
+                  </Field>
+                  <Field label="每月预算 (USD)">
+                    <Input
+                      inputMode="decimal"
+                      value={form.monthlyUsd}
+                      onChange={(e) => setForm({ ...form, monthlyUsd: e.target.value })}
+                      placeholder="留空 = 不限"
+                    />
+                  </Field>
+                </div>
                 {baseUrlWarning && (
                   <p className="flex items-center gap-1.5 text-xs text-destructive">
                     <AlertTriangle className="size-3.5" /> {baseUrlWarning}
@@ -292,6 +422,31 @@ function ProvidersPage() {
             </div>
           </div>
         )}
+
+        {/* Onboarding dialog — offered after the FIRST OpenAI/DeepSeek backend
+            create. Lets the user create ready-to-chat preset Actors bound to
+            that backend in a single click. */}
+        <Dialog open={onboardingBackend !== null} onOpenChange={(open) => { if (!open) handleSkipOnboarding(); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>创建预设 Actor？</DialogTitle>
+              <DialogDescription>
+                是否使用当前 LLM backend 创建预设 Actor?（安装后即可使用）
+              </DialogDescription>
+            </DialogHeader>
+            {onboardingError && (
+              <p className="text-xs text-destructive">{onboardingError}</p>
+            )}
+            <DialogFooter>
+              <Button variant="ghost" onClick={handleSkipOnboarding} disabled={onboardingBusy}>
+                跳过
+              </Button>
+              <Button onClick={handleCreatePresetActors} disabled={onboardingBusy}>
+                {onboardingBusy ? "创建中…" : "创建"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </PageShell>
   );
