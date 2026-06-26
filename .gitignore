@@ -49,3 +49,4 @@ vendor/
 # Preserve frontend source directories named lib
 !apps/yuubot/web/src/lib/
 .agents/
+.timetracking/
