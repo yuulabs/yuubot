@@ -32,12 +32,14 @@ test("actors.tsx no longer inlines a <form> create (create moved to /actors/new)
   assert.ok(!/useCreateResource/.test(src), "actors browse must not call useCreateResource");
 });
 
-test("actors.$id.tsx is pure detail: three LegendCard titles + danger RailCard + listConversations + ingress-rules client filter", () => {
+test("actors.$id.tsx is pure detail: ActorEditor view mode + detail blocks + listConversations + ingress-rules client filter", () => {
   const src = read("actors.$id.tsx");
-  assert.ok(src.includes("配置概览"), "detail must render 配置概览 LegendCard");
+  assert.ok(src.includes("<ActorEditor"), "detail must reuse <ActorEditor>");
+  assert.ok(src.includes('mode="view"'), "detail must render ActorEditor in view mode");
+  assert.ok(src.includes("运行上下文"), "detail must render runtime context detail block");
   assert.ok(src.includes("事件路由"), "detail must render 事件路由 LegendCard");
   assert.ok(src.includes("能力"), "detail must render 能力 LegendCard");
-  assert.ok(src.includes("danger"), "detail must render a danger RailCard");
+  assert.ok(src.includes("onDelete"), "detail must pass delete action into ActorEditor danger rail");
   assert.ok(src.includes("listConversations"), "detail must list this Actor's conversations via listConversations");
   assert.ok(src.includes(".filter("), "detail must client-filter ingress-rules by actor_id");
 });
@@ -73,15 +75,27 @@ test("actors.$id.edit.tsx exists and drives update", () => {
   );
 });
 
-test("schema-deviation placeholders are visible in source (max_concurrent / cooldown disabled, strict global hint)", () => {
+test("actor editor labels match the create/detail contract", () => {
   const here2 = path.dirname(fileURLToPath(import.meta.url));
   const newSrc = readFileSync(path.join(here2, "actors.new.tsx"), "utf8");
   const editSrc = readFileSync(path.join(here2, "actors.$id.edit.tsx"), "utf8");
-  // The disabled placeholders live in the shared presentational editor body.
+  const detailSrc = readFileSync(path.join(here2, "actors.$id.tsx"), "utf8");
   const editorSrc = readFileSync(
     path.join(here2, "..", "components", "baseline", "ActorEditor.tsx"),
     "utf8",
   );
-  const combined = `${newSrc}\n${editSrc}\n${editorSrc}`;
-  assert.ok(combined.includes("待后端"), "disabled placeholders must surface 待后端 hint");
+  const combined = `${newSrc}\n${editSrc}\n${detailSrc}\n${editorSrc}`;
+  assert.ok(combined.includes("Actor Type"), "Actor pages must expose Actor Type");
+  assert.ok(combined.includes("actorType"), "Actor editor state must carry actorType");
+  assert.ok(combined.includes("LLM 供应商"), "Actor pages must label provider selection as LLM 供应商");
+  assert.ok(
+    combined.includes("Character Persona"),
+    "Actor pages must expose Character Persona",
+  );
+  const oldAgentLabel = ["Agent", "规格"].join(" ");
+  const oldProviderLabel = ["LLM", "角色"].join(" ");
+  const oldPlaceholder = "待" + "后端";
+  assert.ok(!combined.includes(oldAgentLabel), "Actor pages must not expose the old agent label");
+  assert.ok(!combined.includes(oldProviderLabel), "Actor pages must not expose the old provider label");
+  assert.ok(!combined.includes(oldPlaceholder), "Actor pages must not render placeholder controls");
 });

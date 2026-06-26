@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, X, UserRound, SquareTerminal, BookOpen, FileEdit, FilePen, Play, Square, Plus } from "lucide-react";
+import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, X, UserRound, SquareTerminal, BookOpen, FileEdit, FilePen, Play, Square, Plus, Trash2 } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
-import { sendConversationMessage, cancelConversationTurn, getConversation, getConversationMessages, listConversations } from "@/lib/api";
+import { sendConversationMessage, cancelConversationTurn, deleteConversation, getConversation, getConversationMessages, listConversations } from "@/lib/api";
 import {
   appendRenderBlocks,
   historyItemsFromMessages,
@@ -703,7 +703,11 @@ function AdminConversationPage() {
       try {
         const rows = await listConversations();
         if (cancelled) return;
-        setConversationItems(rows.sort((left, right) => conversationTime(right) - conversationTime(left)));
+        setConversationItems(
+          rows
+            .filter((item) => item.actor_id === actorId)
+            .sort((left, right) => conversationTime(right) - conversationTime(left)),
+        );
       } catch {
         if (!cancelled) setConversationItems([]);
       } finally {
@@ -713,7 +717,7 @@ function AdminConversationPage() {
     return () => {
       cancelled = true;
     };
-  }, [conversationId, conversationMetadata]);
+  }, [conversationId, conversationMetadata, actorId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -736,6 +740,22 @@ function AdminConversationPage() {
       setError(err instanceof Error ? err.message : "Failed to stop the turn");
     } finally {
       setIsStopping(false);
+    }
+  };
+
+  const handleDeleteConversation = async (targetConversationId: string) => {
+    await deleteConversation(targetConversationId);
+    setConversationItems((current) => (
+      current.filter((item) => item.conversation_id !== targetConversationId)
+    ));
+    if (targetConversationId === conversationId) {
+      closeSse();
+      setHistoryOpen(false);
+      navigate({
+        to: "/admin/conversations/$conversationId",
+        params: { conversationId: actorId ? `actor-${actorId}` : "new" },
+        replace: true,
+      });
     }
   };
 
@@ -976,6 +996,8 @@ function AdminConversationPage() {
               activeConversationId={conversationId}
               actorId={actor?.id ?? actorId}
               loading={conversationListLoading}
+              deletingDisabled={isSending || isStopping}
+              onDeleteConversation={handleDeleteConversation}
               onClose={() => setHistoryOpen(false)}
             />
           </div>
@@ -1007,6 +1029,8 @@ function ConversationRail({
   activeConversationId,
   actorId,
   loading,
+  deletingDisabled,
+  onDeleteConversation,
   onClose,
 }: {
   conversations: ConversationListItem[];
@@ -1014,6 +1038,8 @@ function ConversationRail({
   activeConversationId: string;
   actorId: string;
   loading: boolean;
+  deletingDisabled: boolean;
+  onDeleteConversation: (conversationId: string) => Promise<void>;
   onClose: () => void;
 }) {
   const newConversationId = actorId ? `actor-${actorId}` : "new";
@@ -1045,21 +1071,40 @@ function ConversationRail({
           conversations.map((item) => {
             const actor = actorsById.get(item.actor_id);
             const shortId = shortConversationId(item.conversation_id);
+            const displayTitle = conversationDisplayTitle(item);
             return (
-              <Link
+              <div
                 key={item.conversation_id}
-                to="/admin/conversations/$conversationId"
-                params={{ conversationId: item.conversation_id }}
                 className={`conv-item ${item.conversation_id === activeConversationId ? "is-active" : ""}`}
                 title={item.conversation_id}
-                onClick={onClose}
               >
-                <span className="conv-item__top">
-                  <span className="conv-item__name">{actor?.name ?? item.actor_id}</span>
-                  <span className="conv-item__time">{shortConversationTime(item.updated_at ?? item.created_at)}</span>
-                </span>
-                <span className="conv-item__preview">ID {shortId}</span>
-              </Link>
+                <Link
+                  to="/admin/conversations/$conversationId"
+                  params={{ conversationId: item.conversation_id }}
+                  className="conv-item__link"
+                  onClick={onClose}
+                >
+                  <span className="conv-item__top">
+                    <span className="conv-item__name">{displayTitle}</span>
+                    <span className="conv-item__time">{shortConversationTime(item.updated_at ?? item.created_at)}</span>
+                  </span>
+                  <span className="conv-item__preview">{actor?.name ?? item.actor_id} · ID {shortId}</span>
+                </Link>
+                <button
+                  type="button"
+                  className="conv-item__delete"
+                  disabled={deletingDisabled}
+                  aria-label={`删除 ${displayTitle}`}
+                  title="删除"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void onDeleteConversation(item.conversation_id);
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
             );
           })
         )}
@@ -1172,6 +1217,10 @@ function shortConversationTime(value?: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function conversationDisplayTitle(item: ConversationListItem): string {
+  return item.title.trim() || `Conversation ${shortConversationId(item.conversation_id)}`;
 }
 
 function shortConversationId(value: string): string {

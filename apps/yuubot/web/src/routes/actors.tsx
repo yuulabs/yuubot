@@ -15,11 +15,10 @@ import {
   createFileRoute,
   Link,
   Outlet,
-  useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
-import { Edit3, Eye, MessageSquare, MoreVertical } from "lucide-react";
-import { useResourceList } from "@/hooks/use-resources";
+import { Edit3, Eye, MessageSquare, MoreVertical, Trash2 } from "lucide-react";
+import { useDeleteResource, useResourceList } from "@/hooks/use-resources";
 import type {
   ActorResource,
   CapabilitySetResource,
@@ -114,14 +113,14 @@ function ActorsBrowsePage() {
         <div>
           <h1 className="page-title">Actors</h1>
           <p className="page-sub">
-            运行中的 Agent 实例。每个 Actor 绑定一个 Agent 规格与一个 Capability Set，通过 Ingress 规则接收事件并产出回合。点开 Actor 即可发起对话。
+            Actor 绑定 LLM 供应商、模型与 Capability Set，通过 Ingress 规则接收事件并产出回合。点击名称查看详情，右下角可发起对话。
           </p>
         </div>
       </div>
 
       {/* toolbar: search + status seg + layout toggle */}
       <div className="toolbar">
-        <SearchBox value={query} onChange={setQuery} placeholder="按名称、Agent、模型搜索…" />
+        <SearchBox value={query} onChange={setQuery} placeholder="按名称、供应商、模型搜索…" />
         <SegFilter<StatusFilter>
           value={status}
           onChange={setStatus}
@@ -176,37 +175,29 @@ function ActorCard({
     actor.default_character?.name ||
     "该 Actor 暂无描述。";
   const conversationId = `actor-${actor.id}`;
-  const navigate = useNavigate();
-  const openActor = () => {
-    navigate({ to: "/admin/conversations/$conversationId", params: { conversationId } });
+  const deleteMutation = useDeleteResource("actors");
+  const handleDelete = () => {
+    if (confirm(`删除 Actor “${actor.name}”？`)) {
+      deleteMutation.mutate(actor.id);
+    }
   };
   // ISSUE-0010: actor-bound draft route is the sole conversation entry point.
   return (
     <article
       className={`actor-card ${actor.enabled ? "is-running" : "is-paused"}`}
-      role="link"
-      tabIndex={0}
-      onClick={openActor}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          openActor();
-        }
-      }}
-      aria-label={`与 ${actor.name} 对话`}
     >
       <header className="ac__top">
         <div className="ac__avatar">{avatar}</div>
         <div className="ac__titlewrap">
-          <button type="button" className="ac__title" onClick={openActor}>
+          <Link to="/actors/$id" params={{ id: actor.id }} className="ac__title">
             {actor.name}
             <StatusPill variant={actor.enabled ? "running" : "paused"}>
               {actor.enabled ? "运行中" : "已停止"}
             </StatusPill>
-          </button>
+          </Link>
           <div className="ac__desc">{description}</div>
         </div>
-        <details className="ac__menu" onClick={(event) => event.stopPropagation()}>
+        <details className="ac__menu">
           <summary className="ac__menu-btn" aria-label={`${actor.name} 操作`}>
             <MoreVertical size={16} />
           </summary>
@@ -227,18 +218,26 @@ function ActorCard({
               <MessageSquare size={14} />
               <span>发起对话</span>
             </Link>
+            <button
+              type="button"
+              className="menu-item is-danger"
+              onClick={handleDelete}
+              disabled={deleteMutation.isPending}
+            >
+              <Trash2 size={14} />
+              <span>删除 Actor</span>
+            </button>
           </div>
         </details>
       </header>
       <div className="ac__body">
         <div className="ac__row"><span className="lbl">模型</span><code>{actor.default_model}</code></div>
-        <div className="ac__row"><span className="lbl">Backend</span><code>{backendName}</code></div>
+        <div className="ac__row"><span className="lbl">LLM 供应商</span><code>{backendName}</code></div>
         <div className="ac__row">
           <span className="lbl">能力集</span>
           <Link
             to="/capability-sets"
             className="chip"
-            onClick={(event) => event.stopPropagation()}
           >
             {capsetName}
           </Link>
@@ -252,7 +251,6 @@ function ActorCard({
               target="_blank"
               rel="noopener noreferrer"
               className="chip"
-              onClick={(event) => event.stopPropagation()}
             >
               {actor.capability_set.workspace_path}
             </a>
@@ -267,7 +265,7 @@ function ActorCard({
           <span>步数×{actor.default_budget?.max_steps ?? "—"}</span>
         </div>
       </div>
-      <div className="ac__quick" onClick={(event) => event.stopPropagation()}>
+      <div className="ac__quick">
         <Link
           to="/admin/conversations/$conversationId"
           params={{ conversationId }}

@@ -105,16 +105,16 @@ test("index.tsx redirects to Actors instead of rendering a dashboard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// /admin/conversations — history list restored, creator remains actor-scoped
+// /admin/conversations — parent route only, creation remains actor-scoped
 // ---------------------------------------------------------------------------
 
-test("admin.conversations.tsx preserves actor-scoped creation while showing history", () => {
+test("admin.conversations.tsx redirects bare parent while preserving child outlet", () => {
   assert.ok(
-    adminConversationsSrc.includes("listConversations"),
-    "admin.conversations.tsx must list historical conversations",
+    adminConversationsSrc.includes("redirect") && adminConversationsSrc.includes("/actors"),
+    "bare /admin/conversations must redirect to Actors",
   );
   assert.ok(
-    adminConversationsSrc.includes("/actors"),
-    "admin.conversations.tsx must direct new conversation creation through /actors",
+    adminConversationsSrc.includes("<Outlet"),
+    "admin.conversations.tsx must remain a parent outlet for conversation detail",
   );
 });

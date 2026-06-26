@@ -54,6 +54,7 @@ function ActorsEditPage() {
     name: "",
     description: "",
     systemPrompt: "",
+    actorType: "simple_loop",
     backendId: "",
     model: "",
     capabilitySetId: "",
@@ -73,6 +74,7 @@ function ActorsEditPage() {
       name: actor.name ?? "",
       description: actor.default_character?.description ?? character?.description ?? "",
       systemPrompt: character?.system_prompt ?? "",
+      actorType: actor.type ?? "simple_loop",
       backendId: actor.default_llm_backend?.id ?? backend?.id ?? "",
       model: actor.default_model ?? "",
       capabilitySetId: actor.capability_set?.id ?? "",
@@ -115,9 +117,9 @@ function ActorsEditPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!state.name.trim()) return setError("请输入名称。");
-    if (!state.model.trim()) return setError("请选择模型。");
     if (!state.capabilitySetId) return setError("请选择 Capability Set。");
-    if (!state.backendId) return setError("请选择 LLM Backend。");
+    if (!state.backendId) return setError("请选择 LLM 供应商。");
+    if (!state.model.trim()) return setError("请选择模型。");
     setError("");
     const budget = {
       max_steps: Number(state.maxSteps) || 0,
@@ -136,6 +138,7 @@ function ActorsEditPage() {
         id: actor.id,
         data: {
           name: state.name,
+          type: state.actorType,
           default_model: state.model,
           default_llm_backend_id: state.backendId,
           capability_set_id: state.capabilitySetId,
@@ -162,7 +165,7 @@ function ActorsEditPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">编辑 {actor.name}</h1>
-          <p className="page-sub">修改 Agent 规格、模型、Capability Set、预算与系统提示词覆盖。</p>
+          <p className="page-sub">修改 LLM 供应商、模型、Capability Set、预算与 Character Persona。</p>
         </div>
       </div>
       <form className="editor" id="actor-editor-form" onSubmit={handleSave} autoComplete="off">

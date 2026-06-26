@@ -3,7 +3,7 @@
 // Source-marker test for ISSUE-0010: "start a conversation with this Actor"
 // is the sole creation path. Asserts the four route files + actor-actions
 // reflect the per-Actor conversation entry, and that the top-level
-// [New Conversation] creator is gone while history remains visible.
+// [New Conversation] creator is gone and the bare parent route redirects away.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync, existsSync } from "node:fs";
@@ -27,17 +27,15 @@ test("__root.tsx no longer exposes a top-level Conversation nav entry", () => {
     "no nav item should target /admin/conversations");
 });
 
-test("admin.conversations.tsx shows history without restoring a top-level creator", () => {
+test("admin.conversations.tsx remains only a parent route without top-level UI", () => {
   assert.ok(!listSrc.includes("handleNewConversation"),
     "handleNewConversation creator must be removed");
   assert.ok(!listSrc.includes("New Conversation"),
     "[New Conversation] button copy must be removed");
-  assert.ok(listSrc.includes("listConversations"),
-    "bare /admin/conversations must render historical conversations");
-  assert.ok(listSrc.includes("/actors"),
-    "the only creation affordance should send users to /actors");
-  assert.ok(!listSrc.includes("redirect"),
-    "bare /admin/conversations should no longer redirect away from history");
+  assert.ok(!listSrc.includes("listConversations"),
+    "bare /admin/conversations must not render a top-level history list");
+  assert.ok(listSrc.includes("redirect") && listSrc.includes("/actors"),
+    "bare /admin/conversations should redirect users back to Actors");
 });
 
 test("admin.conversations.$conversationId.tsx detects the actor-bound draft and locks the actor", () => {
@@ -54,6 +52,13 @@ test("admin.conversations.$conversationId.tsx detects the actor-bound draft and 
   const selectMatches = convoSrc.match(/<Select[\s>]/g) || [];
   assert.ok(selectMatches.length <= 1,
     "the actor-selection Select must be removed or at most one Select remains");
+});
+
+test("admin.conversations.$conversationId.tsx filters history rail by the active actor", () => {
+  assert.ok(
+    /\.filter\(\s*\(item\)\s*=>\s*item\.actor_id\s*===\s*actorId\s*\)/.test(convoSrc),
+    "conversation history rail must only show rows for the active actor",
+  );
 });
 
 test("actors.tsx row action links to the actor-bound draft route", () => {

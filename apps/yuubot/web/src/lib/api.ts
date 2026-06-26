@@ -190,6 +190,13 @@ export async function listConversations(): Promise<ConversationListItem[]> {
   return res.data;
 }
 
+export async function deleteConversation(conversationId: string): Promise<void> {
+  await request<{ status: string; data: { conversation_id: string; deleted: boolean } }>(
+    `${BASE}/admin/conversations/${conversationId}`,
+    { method: "DELETE" },
+  );
+}
+
 export async function getConversationMessages(
   conversationId: string,
 ): Promise<ConversationMessage[]> {

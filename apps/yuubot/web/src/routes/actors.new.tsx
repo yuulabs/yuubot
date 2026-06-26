@@ -32,6 +32,7 @@ const DRAFT: ActorEditorState = {
   name: "",
   description: "",
   systemPrompt: "",
+  actorType: "simple_loop",
   backendId: "",
   model: "",
   capabilitySetId: "",
@@ -76,9 +77,9 @@ function ActorsNewPage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!state.name.trim()) return setError("请输入名称。");
-    if (!state.model.trim()) return setError("请选择模型。");
     if (!state.capabilitySetId) return setError("请选择 Capability Set。");
-    if (!state.backendId) return setError("请选择 LLM Backend。");
+    if (!state.backendId) return setError("请选择 LLM 供应商。");
+    if (!state.model.trim()) return setError("请选择模型。");
     setError("");
     const budget = {
       max_steps: Number(state.maxSteps) || 0,
@@ -98,7 +99,7 @@ function ActorsNewPage() {
       });
       const created = await createActorMutation.mutateAsync({
         name: state.name,
-        type: "simple_loop",
+        type: state.actorType,
         enabled: state.enabled,
         default_model: state.model,
         default_character_id: character.id,
@@ -117,7 +118,7 @@ function ActorsNewPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">新建 Actor</h1>
-          <p className="page-sub">配置 Agent 规格、模型、Capability Set 与预算，创建一个新的 Actor 实例。</p>
+          <p className="page-sub">配置 LLM 供应商、模型、Capability Set、预算与 Character Persona，创建一个新的 Actor 实例。</p>
         </div>
       </div>
       <form className="editor" id="actor-editor-form" onSubmit={handleSave} autoComplete="off">

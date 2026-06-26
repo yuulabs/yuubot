@@ -318,6 +318,7 @@ export interface LiveCapabilitiesResponse {
 
 export interface ConversationData {
   conversation_id: string;
+  title: string;
   actor_id: string;
   character_id: string;
   capability_set_id: string;
@@ -350,6 +351,7 @@ export interface CancelTurnResponse {
 
 export interface ConversationListItem {
   conversation_id: string;
+  title: string;
   actor_id: string;
   created_at?: string;
   updated_at?: string;
