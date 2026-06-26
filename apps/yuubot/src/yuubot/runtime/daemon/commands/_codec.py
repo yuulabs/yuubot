@@ -25,7 +25,7 @@ from yuubot.resources.records import (
     IntegrationRecord,
     LLMBackendRecord,
     ToolConfig,
-    YuuAgentBudget,
+    RunBudget,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.service import ResourceService
@@ -194,7 +194,7 @@ class ResourceCodec:
             generation_override=_value_or(
                 request.generation_override, GenerationParams()
             ),
-            per_run_budget=_value_or(request.per_run_budget, YuuAgentBudget()),
+            per_run_budget=_value_or(request.per_run_budget, RunBudget()),
         )
 
     async def _actor_fields_from_patch(
@@ -301,7 +301,7 @@ class ResourceCodec:
         llm_backend: LLMBackendRecord,
     ) -> JSONResponse | None:
         """Reject actors with budgets that have no configured model."""
-        budget = _value_or(request.per_run_budget, YuuAgentBudget())
+        budget = _value_or(request.per_run_budget, RunBudget())
         requires_pricing = (
             budget.max_usd > 0
             or (llm_backend.budget.daily_usd is not None and llm_backend.budget.daily_usd > 0)

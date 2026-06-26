@@ -19,7 +19,7 @@ from yuubot.resources.records import (
     ModelCapabilities,
     ModelConfig,
     Pricing,
-    YuuAgentBudget,
+    RunBudget,
 )
 
 if TYPE_CHECKING:
@@ -184,5 +184,5 @@ def _dummy_llm():
     )
 
 
-def _dummy_budget() -> YuuAgentBudget:
-    return YuuAgentBudget()
+def _dummy_budget() -> RunBudget:
+    return RunBudget()

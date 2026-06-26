@@ -34,7 +34,7 @@ from yuubot.resources.records import (
     BudgetPolicy,
     ModelConfig,
     Pricing,
-    YuuAgentBudget,
+    RunBudget,
 )
 from yuubot.resources.store.models import ActorORM, LLMBackendORM
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
@@ -147,7 +147,7 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
         await daemon.resources.repository.update(
             ActorORM,
             resources.actor.id,
-            per_run_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
+            per_run_budget=msgspec.to_builtins(RunBudget(max_usd=1.0)),
         )
         await daemon.resources.event_bus.drain()
 
@@ -238,7 +238,7 @@ async def test_pricing_check_passes_when_pricing_entry_exists(
         await daemon.resources.repository.update(
             ActorORM,
             resources.actor.id,
-            per_run_budget=msgspec.to_builtins(YuuAgentBudget(max_usd=1.0)),
+            per_run_budget=msgspec.to_builtins(RunBudget(max_usd=1.0)),
         )
         await daemon.resources.event_bus.drain()
 

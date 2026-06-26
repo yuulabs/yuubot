@@ -18,7 +18,7 @@ from yuubot.resources.records import (
     ResourcePolicy,
     RuntimePolicy,
     ToolConfig,
-    YuuAgentBudget,
+    RunBudget,
 )
 
 in_command_context: ContextVar[bool] = ContextVar("in_command_context", default=False)
@@ -42,7 +42,7 @@ class ActorCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
     enabled: bool = True
     version: int = 1
     generation_override: GenerationParams | msgspec.UnsetType = msgspec.UNSET
-    per_run_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
+    per_run_budget: RunBudget | msgspec.UnsetType = msgspec.UNSET
     created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
     updated_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
 
@@ -58,7 +58,7 @@ class ActorPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
     enabled: bool | msgspec.UnsetType = msgspec.UNSET
     generation_override: GenerationParams | msgspec.UnsetType = msgspec.UNSET
-    per_run_budget: YuuAgentBudget | msgspec.UnsetType = msgspec.UNSET
+    per_run_budget: RunBudget | msgspec.UnsetType = msgspec.UNSET
 
 
 class CapabilitySetPatchRequest(msgspec.Struct, forbid_unknown_fields=True):

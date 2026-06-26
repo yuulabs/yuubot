@@ -86,7 +86,7 @@ class IntegrationRecord(msgspec.Struct):
         return msgspec.convert(self.config, type=schema, strict=False)
 
 
-class YuuAgentBudget(msgspec.Struct):
+class RunBudget(msgspec.Struct):
     """Direct shape of yuuagents.definition.BudgetConfig."""
 
     max_steps: int = 0
@@ -181,7 +181,7 @@ class ActorRecord(msgspec.Struct):
     generation_override: GenerationParams = msgspec.field(
         default_factory=GenerationParams
     )
-    per_run_budget: YuuAgentBudget = msgspec.field(default_factory=YuuAgentBudget)
+    per_run_budget: RunBudget = msgspec.field(default_factory=RunBudget)
     id: str = ""
     type: str = "simple_loop"
     config: dict[str, object] = msgspec.field(default_factory=dict)

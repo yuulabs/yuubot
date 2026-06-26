@@ -35,7 +35,7 @@ from yuubot.resources.records import (
     Pricing,
     ResourcePolicy,
     RuntimePolicy,
-    YuuAgentBudget,
+    RunBudget,
 )
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
 
@@ -378,7 +378,7 @@ def _actor_payload(actor_id: str) -> dict[str, object]:
         "llm_backend_id": f"{actor_id}-backend",
         "model": "",
         "generation_override": {},
-        "per_run_budget": _record_payload(YuuAgentBudget(max_steps=4)),
+        "per_run_budget": _record_payload(RunBudget(max_steps=4)),
     }
 
 

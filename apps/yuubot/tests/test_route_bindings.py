@@ -28,7 +28,7 @@ from yuubot.resources.records import (
     Pricing,
     ResourcePolicy,
     RuntimePolicy,
-    YuuAgentBudget,
+    RunBudget,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.root import Resources
@@ -311,7 +311,7 @@ async def _create_actor(
         capability_set_id=capability_set.id,
         llm_backend_id=backend.id,
         model="",
-        per_run_budget=YuuAgentBudget(),
+        per_run_budget=RunBudget(),
     )
     return await repository.insert(ActorORM, record)
 

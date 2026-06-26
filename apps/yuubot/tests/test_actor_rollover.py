@@ -24,7 +24,7 @@ from yuubot.resources.records import (
     CapabilitySetRecord,
     LLMBackendRecord,
     RuntimePolicy,
-    YuuAgentBudget,
+    RunBudget,
 )
 
 
@@ -49,7 +49,7 @@ async def test_runtime_rollover_compacts_history_when_token_threshold_is_reached
             capability_set=capability_set,
             max_steps=10,
         ),
-        per_run_budget=YuuAgentBudget(max_steps=10, max_tokens=10),
+        per_run_budget=RunBudget(max_steps=10, max_tokens=10),
     )
     binding = _default_agent_binding(
         actor,

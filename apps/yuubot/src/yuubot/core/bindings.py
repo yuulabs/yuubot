@@ -15,7 +15,7 @@ from yuubot.resources.records import (
     ConversationRecord,
     LLMBackendRecord,
     ResolvedActor,
-    YuuAgentBudget,
+    RunBudget,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import (
@@ -75,7 +75,7 @@ class AgentBinding(msgspec.Struct):
     actor: ActorRecord
     capability_set: CapabilitySetRecord
     llm: BoundLLM
-    budget: YuuAgentBudget
+    budget: RunBudget
     workspace_path: Path | None = None
 
     def require_workspace_path(self) -> Path:

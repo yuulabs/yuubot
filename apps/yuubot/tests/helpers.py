@@ -41,7 +41,7 @@ from yuubot.resources.records import (
     RuntimePolicy,
     ResolvedActor,
     ToolConfig,
-    YuuAgentBudget,
+    RunBudget,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import (
@@ -379,7 +379,7 @@ def make_actor_record(
         capability_set_id=cap_set.id,
         llm_backend_id=llm_backend.id,
         model="",
-        per_run_budget=YuuAgentBudget(max_steps=max_steps),
+        per_run_budget=RunBudget(max_steps=max_steps),
     )
 
 
