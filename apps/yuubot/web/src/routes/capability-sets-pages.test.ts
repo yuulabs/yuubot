@@ -55,8 +55,8 @@ test("/capability-sets/$id/edit editor exists and wires CapTree + update mutatio
 test("CapTree groups are assembled from live capabilities", () => {
   const combined = `${newSrc}\n${editSrc}`;
   assert.ok(
-    combined.includes("integration_capability_ids"),
-    "editor must drive integration_capability_ids from selection",
+    combined.includes("integration_ids"),
+    "editor must drive integration_ids from selection",
   );
   assert.ok(
     combined.includes("useLiveCapabilities") || combined.includes("liveCapabilities"),

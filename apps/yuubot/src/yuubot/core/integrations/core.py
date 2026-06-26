@@ -261,21 +261,54 @@ class IntegrationCore:
         return await cache.get()
 
     async def _load_owner_allowed(self, owner_id: str) -> set[str]:
+        """Resolve the set of integration capability_ids an owner may invoke.
+
+        CapabilitySets now declare selected integrations by
+        ``integration_ids`` (``IntegrationRecord.id``), not capability ids.
+        The owner is authorised for every capability of each selected
+        integration that has an existing record with a registered factory
+        (matching the previous behaviour, which authorised the stored
+        capability ids directly). Whether the integration is actually
+        running is enforced at invoke time by ``_find_capability``.
+        """
+        capability_set = await self._capability_set_for_owner(owner_id)
+        if capability_set is None:
+            return set()
+        selected = set(capability_set.integration_ids)
+        if not selected:
+            return set()
+        result: set[str] = set()
+        records = await self.repository.list(IntegrationORM)
+        for record in records:
+            if record.id not in selected:
+                continue
+            try:
+                factory = self.factories.get(record.name)
+            except LookupError:
+                continue
+            for spec in factory.capability_specs():
+                result.add(spec.id)
+        return result
+
+    async def _capability_set_for_owner(self, owner_id: str):
+        """Resolve the CapabilitySetRecord backing an actor owner_id.
+
+        The owner is either an actor id (direct) or a conversation id
+        (indirected through the conversation's actor). Returns ``None`` when
+        no enabled actor + capability set is reachable.
+        """
         actor = await self.repository.get(ActorORM, owner_id)
         if actor is not None and actor.enabled:
-            capability_set = await self.repository.get(
+            return await self.repository.get(
                 CapabilitySetORM,
                 actor.capability_set_id,
             )
-            if capability_set is None:
-                return set()
-            return set(capability_set.integration_capability_ids)
         with self.repository.store.db.activate():
             row = await ConversationORM.get_or_none(
                 conversation_id=owner_id
             )
             if row is None:
-                return set()
+                return None
             conversation = await from_orm(
                 row,
                 ConversationRecord,
@@ -283,14 +316,11 @@ class IntegrationCore:
             )
         actor = await self.repository.get(ActorORM, conversation.actor_id)
         if actor is None or not actor.enabled:
-            return set()
-        capability_set = await self.repository.get(
+            return None
+        return await self.repository.get(
             CapabilitySetORM,
             actor.capability_set_id,
         )
-        if capability_set is None:
-            return set()
-        return set(capability_set.integration_capability_ids)
 
     async def _disable_removed_or_disabled_locked(
         self,

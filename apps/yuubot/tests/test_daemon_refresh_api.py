@@ -33,8 +33,6 @@ from yuubot.resources.records import (
     ModelCapabilities,
     ModelConfig,
     Pricing,
-    ResourcePolicy,
-    RuntimePolicy,
     RunBudget,
 )
 from yuubot.resources.repository import ResourceRepository
@@ -441,8 +439,6 @@ async def _create_actor_bundle(
         CapabilitySetRecord(
             id=f"{actor_id}-capabilities",
             name=f"{actor_id}-capabilities",
-            runtime_policy=RuntimePolicy(),
-            resource_policy=ResourcePolicy(),
         ),
     )
     return await repository.insert(

@@ -62,7 +62,7 @@ def test_env_management_bullets_live_inside_system_instructions_section(
     system = _system_prompt(binding, mode="conversation")
 
     sys_inst_pos = system.find("# System Instructions")
-    integ_pos = system.find("# Integration Prompt Sections")
+    integ_pos = system.find("# Integration SDKs")
     assert sys_inst_pos != -1 and integ_pos != -1
     section_two = system[sys_inst_pos:integ_pos]
 
@@ -146,7 +146,7 @@ def test_figure_delivery_bullets_live_inside_system_instructions_section(
     system = _system_prompt(binding, mode="conversation")
 
     sys_inst_pos = system.find("# System Instructions")
-    integ_pos = system.find("# Integration Prompt Sections")
+    integ_pos = system.find("# Integration SDKs")
     section_two = system[sys_inst_pos:integ_pos]
 
     for needle in ("/workspace/test/", *FIGURE_BULLETS):

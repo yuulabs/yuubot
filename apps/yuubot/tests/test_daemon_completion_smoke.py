@@ -33,8 +33,6 @@ from yuubot.resources.records import (
     ModelCapabilities,
     ModelConfig,
     Pricing,
-    ResourcePolicy,
-    RuntimePolicy,
     RunBudget,
 )
 from yuubot.runtime.daemon import YuubotDaemon, build_daemon
@@ -354,10 +352,7 @@ def _capability_set_record(actor_id: str) -> CapabilitySetRecord:
     return CapabilitySetRecord(
         id=f"{actor_id}-capabilities",
         name=f"{actor_id}-capabilities",
-        integration_capability_ids=(ECHO_CAPABILITY_ID,),
-        agent_tools=(),
-        runtime_policy=RuntimePolicy(),
-        resource_policy=ResourcePolicy(workspace_access="read_write"),
+        integration_ids=("echo-main",),
     )
 
 

@@ -447,7 +447,7 @@ class YuuAgentsActorRuntime:
                     # ── Stage B: tool execution ────────────────────────
                     # The tool batch is the second natural interruptible
                     # unit of work; its own except handler calls
-                    # ``_cancel_agent_tools`` (which synthesises
+                    # ``_cancel_inflight_tool_calls`` (which synthesises
                     # ``[cancelled]`` tool_results + emits
                     # ``tool.result_appended``). The LLM stage already
                     # emitted ``llm.finished`` naturally above — do NOT
@@ -510,7 +510,7 @@ class YuuAgentsActorRuntime:
                             # so the frontend + DB see them). The LLM message
                             # was already naturally emitted in Stage A — do
                             # NOT re-emit ``llm.finished`` here.
-                            await self._cancel_agent_tools(agent)
+                            await self._cancel_inflight_tool_calls(agent)
                             break
 
                     # Step 7: Charge step
@@ -539,7 +539,7 @@ class YuuAgentsActorRuntime:
                     },
                 )
 
-    async def _cancel_agent_tools(self, agent: Agent) -> None:
+    async def _cancel_inflight_tool_calls(self, agent: Agent) -> None:
         """Cancel running tool tasks and synthesize ``[cancelled]`` results.
 
         Called from Stage B's (tool-execution) CancelledError handler. After

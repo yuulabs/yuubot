@@ -112,7 +112,7 @@ function CapabilitySetsPage() {
               {
                 key: "caps",
                 label: "能力",
-                render: (cs) => cs.integration_capability_ids.length,
+                render: (cs) => cs.integration_ids.length,
               },
               {
                 key: "ws",
@@ -120,23 +120,20 @@ function CapabilitySetsPage() {
                 render: (cs) => cs.workspace_path || "—",
               },
               {
-                key: "mem",
-                label: "内存",
-                render: (cs) => (
-                  <StatusPill
-                    variant={cs.runtime_policy.memory_enabled ? "running" : "default"}
-                  >
-                    {cs.runtime_policy.memory_enabled ? "已启用" : "已关闭"}
-                  </StatusPill>
-                ),
+                key: "tools",
+                label: "工具",
+                render: (cs) => cs.tools.length,
               },
               {
-                key: "budget",
-                label: "预算",
-                render: (cs) =>
-                  cs.resource_policy.budget_usd_daily != null
-                    ? `$${cs.resource_policy.budget_usd_daily}`
-                    : "不限",
+                key: "rollover",
+                label: "历史压缩",
+                render: (cs) => (
+                  <StatusPill
+                    variant={cs.loop_policy.rollover_enabled ? "running" : "default"}
+                  >
+                    {cs.loop_policy.rollover_enabled ? "已启用" : "已关闭"}
+                  </StatusPill>
+                ),
               },
               {
                 key: "actions",

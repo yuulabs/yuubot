@@ -13,7 +13,7 @@ implemented at the yuubot ``ExecutePythonTool`` layer.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import msgspec
 import pydantic
@@ -24,6 +24,9 @@ from yuuagents.tool.primitives import (
     ToolDefinition,
 )
 
+if TYPE_CHECKING:
+    from yuubot.core.assembly._compiler import ToolDeriveContext
+
 
 class RestartKernelParams(pydantic.BaseModel):
     """The restart_kernel tool takes no parameters."""
@@ -31,10 +34,7 @@ class RestartKernelParams(pydantic.BaseModel):
 
 class RestartKernelConfig(msgspec.Struct):
     """restart_kernel needs no runtime configuration — it discovers the
-    ``execute_python`` tool by name at call time.
-
-    Accepts ``{}`` from the assembly ``_agent_tool_configs`` injection
-    (``RESTART_KERNEL_TOOL_KEY: {}``).
+    ``execute_python`` tool by name at call time (§6.5).
     """
 
 
@@ -111,6 +111,21 @@ class RestartKernelToolFactory:
     @property
     def config_schema(self) -> type[RestartKernelConfig]:
         return RestartKernelConfig
+
+    @property
+    def user_fields_type(self) -> type[msgspec.Struct]:
+        from yuubot.core.tools.contracts import EmptyFrontendFields
+
+        return EmptyFrontendFields
+
+    def derive(
+        self,
+        user_fields: dict[str, object],
+        context: "ToolDeriveContext",
+    ) -> RestartKernelConfig:
+        # Empty config — the tool resolves execute_python by name at call
+        # time (§6.5).
+        return RestartKernelConfig()
 
     def tool_class(self) -> type[Tool[Any, Any]]:
         return RestartKernelTool

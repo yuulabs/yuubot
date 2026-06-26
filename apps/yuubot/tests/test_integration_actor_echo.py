@@ -15,7 +15,6 @@ from yuubot.core.integrations import (
     IntegrationFactoryRegistry,
 )
 from yuubot.core.integrations.impls.echo import (
-    ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
     EchoPayload,
     EchoIntegrationFactory,
@@ -149,7 +148,7 @@ async def _create_actor_bundle(
         CapabilitySetRecord(
             id=f"{actor_id}-capabilities",
             name=f"{actor_id}-capabilities",
-            integration_capability_ids=(ECHO_CAPABILITY_ID,),
+            integration_ids=("test-integration",),
         ),
     )
     return await repository.insert(

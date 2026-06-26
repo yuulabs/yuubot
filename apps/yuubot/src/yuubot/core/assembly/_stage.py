@@ -70,9 +70,9 @@ def start_yuuagents_actor(
         stage=stage,
         definitions={definition.name: definition},
         conversation_definition=conversation_definition,
-        rollover_enabled=binding.capability_set.runtime_policy.rollover_enabled,
-        idle_timeout_s=binding.capability_set.runtime_policy.idle_timeout_s,
-        summarize_steps_span=binding.capability_set.runtime_policy.summarize_steps_span,
+        rollover_enabled=binding.capability_set.loop_policy.rollover_enabled,
+        idle_timeout_s=binding.capability_set.loop_policy.idle_timeout_s,
+        summarize_steps_span=binding.capability_set.loop_policy.summarize_steps_span,
         agent_model_configs={definition.name: binding.llm.backend.model_configs},
     )
     return runtime
@@ -82,6 +82,8 @@ def _get_workspace_path(
     binding: AgentBinding,
     facade: ActorFacadeBinding | None,
 ) -> str | None:
+    if binding.workspace_path is not None:
+        return str(binding.workspace_path)
     if facade is None:
         return None
     return str(binding.require_workspace_path())
@@ -89,11 +91,13 @@ def _get_workspace_path(
 
 def _register_tools(stage: Stage, definition: AgentDefinition) -> None:
     """Register tool instances from an agent definition into the runtime registry."""
-    from yuubot.core.assembly._tools import _tool_registry
+    from yuubot.core.assembly._tools import get_assembly_tool_registry
+
+    registry = get_assembly_tool_registry()
 
     for tool_name, raw_config in definition.tools.items():
-        if _tool_registry is not None:
-            tool_cls = _tool_registry.tool_class(tool_name)
+        if registry is not None:
+            tool_cls = registry.tool_class(tool_name)
         else:
             tool_cls = resolve_tool_type(tool_name)
         typed_config = msgspec.convert(raw_config, tool_cls.config_type)

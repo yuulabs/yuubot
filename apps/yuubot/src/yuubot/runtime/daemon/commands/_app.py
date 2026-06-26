@@ -17,7 +17,6 @@ from yuubot.resources.store.models import (
     CapabilitySetORM,
     IntegrationORM,
     LLMBackendORM,
-    PromptTemplateORM,
 )
 from yuubot.runtime.daemon.commands._handlers import ResourceCommandHandlers
 from yuubot.runtime.daemon.commands._middleware import SecretMiddleware
@@ -47,7 +46,6 @@ def build_default_resource_type_registry(
         lifecycle_handler=actor_lifecycle_handler,
     )
     registry.register("ingress-rules", ActorIngressRuleORM)
-    registry.register("prompt-templates", PromptTemplateORM)
     return registry
 
 

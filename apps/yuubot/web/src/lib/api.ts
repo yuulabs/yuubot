@@ -213,7 +213,7 @@ export async function getConversationMessages(
  * single-point safety trip so a CancelledError lands even if the loop is
  * between awaits), calls `task.cancel()`, and then **awaits the task** so
  * the HTTP response returns only after the loop's CancelledError handler
- * has completed (flush_entitylog + cancel_agent_tools + synthesize
+ * has completed (flush_entitylog + cancel_inflight_tool_calls + synthesize
  * `[cancelled]` tool_results) and the loop's own exit path has emitted
  * `agent.turn_completed`. The HTTP response itself is the "stop receipt"
  * the frontend waits for.

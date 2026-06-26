@@ -22,8 +22,8 @@ from yuubot.core.bindings import AgentBinding
 from yuubot.resources.records import (
     ActorRecord,
     CapabilitySetRecord,
+    LoopPolicy,
     LLMBackendRecord,
-    RuntimePolicy,
     RunBudget,
 )
 
@@ -36,7 +36,7 @@ async def test_runtime_rollover_compacts_history_when_token_threshold_is_reached
     backend = make_llm_backend_record("actor-1")
     capability_set = make_capability_set_record(
         "actor-1",
-        runtime_policy=RuntimePolicy(
+        loop_policy=LoopPolicy(
             rollover_enabled=True,
             summarize_steps_span=8,
         ),
@@ -93,7 +93,7 @@ async def test_runtime_expires_idle_agent_and_recreates_on_next_message(
     backend = make_llm_backend_record("actor-1")
     capability_set = make_capability_set_record(
         "actor-1",
-        runtime_policy=RuntimePolicy(idle_timeout_s=0.01),
+        loop_policy=LoopPolicy(idle_timeout_s=0.01),
     )
     actor = make_actor_record(
         "actor-1",
@@ -198,7 +198,7 @@ async def test_runtime_schedule_tool_uses_actor_schedule_executor(
         actor,
         capability_set=make_capability_set_record(
             "actor-1",
-            runtime_policy=RuntimePolicy(
+            loop_policy=LoopPolicy(
                 rollover_enabled=True,
                 summarize_steps_span=8,
             ),

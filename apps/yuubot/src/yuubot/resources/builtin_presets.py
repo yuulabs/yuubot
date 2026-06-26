@@ -9,8 +9,8 @@ from tortoise import Model
 
 from yuubot.resources.records import (
     CapabilitySetRecord,
-    ResourcePolicy,
-    RuntimePolicy,
+    LoopPolicy,
+    ToolSelection,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import CapabilitySetORM
@@ -85,6 +85,24 @@ def _record_id(record: _HasId) -> str:
     return record.id
 
 
+# The standard tool set pre-filled into every builtin CapabilitySet (§3.6.1).
+# Tools are explicitly listed — the compiler performs no implicit injection.
+STANDARD_TOOLS: tuple[ToolSelection, ...] = (
+    ToolSelection("bash"),
+    ToolSelection("read"),
+    ToolSelection("edit"),
+    ToolSelection("write"),
+    ToolSelection("execute_python"),
+    ToolSelection("restart_kernel"),
+)
+
+# Sensible default loop convergence policy for builtin presets.
+_BUILTIN_LOOP_POLICY = LoopPolicy(
+    rollover_enabled=True,
+    idle_timeout_s=1800,
+    summarize_steps_span=20,
+)
+
 BUILTIN_CAPABILITY_PRESETS: tuple[CapabilitySetPreset, ...] = (
     CapabilitySetPreset(
         CapabilitySetRecord(
@@ -92,11 +110,8 @@ BUILTIN_CAPABILITY_PRESETS: tuple[CapabilitySetPreset, ...] = (
             name="general",
             description="Preset general capability set",
             workspace_path="general",
-            runtime_policy=RuntimePolicy(memory_enabled=False),
-            resource_policy=ResourcePolicy(
-                workspace_access="read_write",
-                concurrency_limit=1,
-            ),
+            tools=STANDARD_TOOLS,
+            loop_policy=_BUILTIN_LOOP_POLICY,
         )
     ),
     CapabilitySetPreset(
@@ -105,11 +120,8 @@ BUILTIN_CAPABILITY_PRESETS: tuple[CapabilitySetPreset, ...] = (
             name="shiori",
             description="Preset Shiori capability set",
             workspace_path="shiori",
-            runtime_policy=RuntimePolicy(memory_enabled=False),
-            resource_policy=ResourcePolicy(
-                workspace_access="read_write",
-                concurrency_limit=1,
-            ),
+            tools=STANDARD_TOOLS,
+            loop_policy=_BUILTIN_LOOP_POLICY,
         )
     ),
 )

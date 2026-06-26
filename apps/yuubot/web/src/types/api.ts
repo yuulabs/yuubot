@@ -74,8 +74,7 @@ export type ResourceType =
   | "capability-sets"
   | "actors"
   | "ingress-rules"
-  | "integrations"
-  | "prompt-templates";
+  | "integrations";
 
 // ---------------------------------------------------------------------------
 // Resource records (mirror msgspec struct shapes returned by the API)
@@ -145,26 +144,33 @@ export interface LLMBackendResource extends Resource {
   default_generation_params?: GenerationParams;
 }
 
+/** Mirrors backend `ToolSelection` — a user-configured tool entry. */
+export interface ToolSelection {
+  tool_name: string;
+  user_fields?: Record<string, unknown>;
+}
+
+/** Mirrors backend `LoopPolicy` — loop convergence policy. */
+export interface LoopPolicy {
+  rollover_enabled?: boolean;
+  idle_timeout_s?: number;
+  summarize_steps_span?: number;
+}
+
 /** Mirrors backend `CapabilitySetRecord` — reusable execution + prompt bundle.
  *
  * The backend splits Actor into Actor + CapabilitySet so that the same
  * capability/workspace/policy bundle can be shared across actors with
- * different personas. Only MVP fields are typed here; advanced fields
- * (agent_tools, tool_ids, skills, prompt_fragments, permission_limits,
- * bootstrap_path) use backend defaults and are omitted from the UI.
+ * different personas. Tools are explicitly listed in `tools`; integration
+ * references use `integration_ids` (FK to IntegrationRecord.id).
  */
 export interface CapabilitySetResource extends Resource {
   name: string;
   description: string;
-  integration_capability_ids: string[];
   workspace_path: string;
-  runtime_policy: {
-    memory_enabled: boolean;
-  };
-  resource_policy: {
-    budget_usd_daily?: number | null;
-    concurrency_limit?: number;
-  };
+  tools: ToolSelection[];
+  integration_ids: string[];
+  loop_policy: LoopPolicy;
 }
 
 export interface ActorResource extends Resource {
@@ -202,14 +208,6 @@ export interface ActorIngressRuleResource extends Resource {
 export interface IntegrationResource extends Resource {
   name: string;
   config?: Record<string, unknown>;
-}
-
-export interface PromptTemplateResource extends Resource {
-  name: string;
-  description: string;
-  content: string;
-  is_builtin: boolean;
-  builtin_version: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +272,6 @@ export interface ConversationData {
   conversation_id: string;
   title: string;
   actor_id: string;
-  character_id: string;
   capability_set_id: string;
   llm_backend_id: string;
   model: string;

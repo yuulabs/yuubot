@@ -8,8 +8,9 @@ Renders a five-section system prompt contract:
     # System Instructions
     <tool-surface prose + workspace conventions + optional IM-mode guidance>
 
-    # Integration Prompt Sections
-    <GitHub facade guidance when visible; default line otherwise>
+    # Integration SDKs
+    <integration SDK usage guidance when any integration_ids are selected;
+     default line otherwise>
 
     # AGENTS.md Context
     <full AGENTS.md text + freeze note when present; default line otherwise>
@@ -21,6 +22,12 @@ Section order is part of the public contract. ``_render_extension_fragments``
 exists as a code-only insertion point immediately before AGENTS.md Context;
 it returns ``""`` today and the assembled prompt MUST NOT contain a
 ``# Extension Section`` header.
+
+Integration SDK rendering is interim: T3/T4 only knows that integrations are
+selected (``CapabilitySet.integration_ids`` → ``IntegrationRecord.id``) and
+renders a concise placeholder. T5 replaces this with full
+``IntegrationSdkSpec``-based rendering (short summary + import paths +
+representative examples per selected, enabled, running integration).
 """
 
 from __future__ import annotations
@@ -39,7 +46,7 @@ from ._constants import IM_MODE_SYSTEM_GUIDANCE
 SECTION_HEADERS: tuple[str, ...] = (
     "Persona",
     "System Instructions",
-    "Integration Prompt Sections",
+    "Integration SDKs",
     "AGENTS.md Context",
     "Real-Time Data",
 )
@@ -50,40 +57,11 @@ _AGENTS_MD_FREEZE_NOTE = (
     "The current conversation will keep using the snapshot assembled at first send."
 )
 
-# Hand-written GitHub facade section. Rendered when any ``github.*`` integration
-# capability is in the binding's capability set. This prose does NOT derive
-# import paths mechanically from capability ids; it documents the
-# hand-written ``yext.github`` facade API surface delivered by Phase 5.1.
-_GITHUB_FACADE_SECTION = """\
-## GitHub facade
-
-- Surface: execute_python
-- Python facade: yext.github hand-written API.
-  Do NOT derive import paths mechanically from capability ids.
-
-Examples:
-```python
-import yext.github
-
-repo = yext.github.repo("OWNER", "REPO")
-issues = await repo.issues.list_recent(limit=5)
-issue = await repo.issues.read(123, body_max_chars=4000)
-content = await repo.files.read("README.md", ref="main", max_chars=8000)
-```
-
-Capabilities:
-- github.issue.list     — read.  Inputs: owner?, repo?, state?, per_page?.
-- github.issue.read     — read.  Inputs: number, body_max_chars?.
-- github.issue.create   — write. Inputs: owner?, repo?, title, body?.
-- github.issue.comment  — write. Inputs: number, body.
-- github.file.read      — read.  Inputs: path, ref?, max_chars?.
-
-Failure guidance:
-- If owner/repo are missing, ask the user or use configured defaults if documented.
-- If GitHub returns not found/private/scope/rate-limit, summarize the exact failure; do not retry the same call.
-- If output is too large, narrow the request or ask before retry."""
-
-_NO_INTEGRATION_CAPABILITIES = "No integration capabilities configured."
+_NO_INTEGRATION_SDKS = "No integration SDKs configured."
+_INTEGRATION_SDKS_PLACEHOLDER = (
+    "Integration SDKs configured for this actor. Import the `yext` package to "
+    "access them."
+)
 
 
 def _system_prompt(
@@ -96,7 +74,7 @@ def _system_prompt(
     sections: list[tuple[str, str]] = [
         ("Persona", _render_persona(binding)),
         ("System Instructions", _render_system_instructions(binding, mode)),
-        ("Integration Prompt Sections", _render_integration_sections(binding)),
+        ("Integration SDKs", _render_integration_sections(binding)),
         ("", _render_extension_fragments()),
         ("AGENTS.md Context", _render_agents_md_context(binding.workspace_path)),
         ("Real-Time Data", _render_realtime()),
@@ -106,7 +84,7 @@ def _system_prompt(
         if not header:
             # Invisible insertion point; "" today.
             continue
-        if body or header == "Integration Prompt Sections":
+        if body or header == "Integration SDKs":
             rendered.append(f"# {header}\n{body}" if body else f"# {header}")
     return "\n\n".join(rendered)
 
@@ -222,40 +200,17 @@ def _file_delivery_bullets(
 
 
 def _render_integration_sections(binding: AgentBinding) -> str:
-    integration_caps = tuple(
-        cap_id
-        for cap_id in binding.capability_set.integration_capability_ids
-        if not cap_id.startswith("builtin.")
-    )
-    if not integration_caps:
-        return _NO_INTEGRATION_CAPABILITIES
+    """Render the Integration SDKs section.
 
-    sub_sections: list[str] = []
-    if any(cap_id.startswith("github.") for cap_id in integration_caps):
-        sub_sections.append(_GITHUB_FACADE_SECTION)
-
-    other_caps = [
-        cap_id
-        for cap_id in integration_caps
-        if not cap_id.startswith("github.")
-    ]
-    if other_caps:
-        sub_sections.append(_render_generic_integration_section(other_caps))
-
-    return "\n\n".join(sub_sections)
-
-
-def _render_generic_integration_section(capability_ids: list[str]) -> str:
-    """Render a fallback sub-section for non-GitHub integration capabilities.
-
-    Lists each capability id alongside its effect label as configured in the
-    integration spec. The fallback MUST NOT contain any mechanical
-    id-to-module mapping text.
+    Interim (T3/T4): ``CapabilitySet.integration_ids`` selects integration
+    instances by ``IntegrationRecord.id``. We cannot derive per-integration
+    SDK prose from ids alone here, so render a concise placeholder when any
+    integration is selected and the empty default otherwise. T5 replaces this
+    with full ``IntegrationSdkSpec``-based rendering.
     """
-    lines = ["## Integration capabilities"]
-    for cap_id in capability_ids:
-        lines.append(f"- {cap_id} — see integration spec for effect and inputs.")
-    return "\n".join(lines)
+    if not binding.capability_set.integration_ids:
+        return _NO_INTEGRATION_SDKS
+    return _INTEGRATION_SDKS_PLACEHOLDER
 
 
 def _render_extension_fragments() -> str:

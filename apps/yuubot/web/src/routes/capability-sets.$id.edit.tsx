@@ -81,8 +81,8 @@ function CapabilitySetEditPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
-  const [budget, setBudget] = useState("");
-  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [rolloverEnabled, setRolloverEnabled] = useState(false);
+  const [idleTimeout, setIdleTimeout] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [hydrated, setHydrated] = useState(false);
 
@@ -92,13 +92,13 @@ function CapabilitySetEditPage() {
       setName(cs.name);
       setDescription(cs.description);
       setWorkspacePath(cs.workspace_path ?? "");
-      setBudget(
-        cs.resource_policy.budget_usd_daily != null
-          ? String(cs.resource_policy.budget_usd_daily)
+      setRolloverEnabled(!!cs.loop_policy?.rollover_enabled);
+      setIdleTimeout(
+        cs.loop_policy?.idle_timeout_s
+          ? String(cs.loop_policy.idle_timeout_s)
           : "",
       );
-      setMemoryEnabled(!!cs.runtime_policy?.memory_enabled);
-      setSelectedIds(cs.integration_capability_ids ?? []);
+      setSelectedIds(cs.integration_ids ?? []);
       setHydrated(true);
     }
   }, [cs, hydrated]);
@@ -117,10 +117,12 @@ function CapabilitySetEditPage() {
       data: {
         name,
         description,
-        integration_capability_ids: selectedIds,
+        integration_ids: selectedIds,
         workspace_path: workspacePath,
-        runtime_policy: { memory_enabled: memoryEnabled },
-        resource_policy: { budget_usd_daily: Number(budget) || null },
+        loop_policy: {
+          rollover_enabled: rolloverEnabled,
+          idle_timeout_s: Number(idleTimeout) || 0,
+        },
       },
     });
     navigate({ to: "/capability-sets" });
@@ -201,25 +203,25 @@ function CapabilitySetEditPage() {
                     className="font-mono"
                   />
                 </Field>
-                <Field label="日预算 (USD)">
+                <Field label="空闲超时 (秒)">
                   <Input
                     type="number"
                     min="0"
-                    step="0.01"
-                    value={budget}
-                    onChange={(e) => setBudget(e.target.value)}
-                    placeholder="0 = 不限"
+                    step="1"
+                    value={idleTimeout}
+                    onChange={(e) => setIdleTimeout(e.target.value)}
+                    placeholder="0 = 不超时"
                   />
                 </Field>
               </div>
               <label className="flex items-center gap-2 text-sm" style={{ marginTop: "var(--sp-4)" }}>
                 <input
                   type="checkbox"
-                  checked={memoryEnabled}
-                  onChange={(e) => setMemoryEnabled(e.target.checked)}
+                  checked={rolloverEnabled}
+                  onChange={(e) => setRolloverEnabled(e.target.checked)}
                   className="size-4 rounded border-input"
                 />
-                启用内存
+                启用历史压缩 (rollover)
               </label>
             </LegendCard>
 

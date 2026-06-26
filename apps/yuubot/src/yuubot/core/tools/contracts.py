@@ -12,7 +12,16 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import msgspec
 
 if TYPE_CHECKING:
+    from yuubot.core.assembly._compiler import ToolDeriveContext
     from yuuagents.tool.primitives import Tool
+
+
+class EmptyFrontendFields(msgspec.Struct):
+    """A tool whose full runtime config is derived from context (§3.5).
+
+    The user fills in no fields — every config field is produced by the
+    system ``ToolFactory.derive`` from the assembly context.
+    """
 
 
 class ToolFactory(Protocol):
@@ -21,6 +30,11 @@ class ToolFactory(Protocol):
     Each implementation corresponds to a single ``register_tool_type`` key
     in the yuuagents runtime.  Yuubot owns registration; yuuagents Tool
     subclasses are created through ``tool_class()`` at assembly time.
+
+    The system (yuubot) owns per-tool derivation: ``derive`` converts a
+    ``ToolSelection.user_fields`` dict + the assembly ``ToolDeriveContext``
+    into a fully typed runtime config (``config_schema`` instance). Tool
+    classes (yuuagents) do not participate in derivation.
     """
 
     @property
@@ -31,12 +45,35 @@ class ToolFactory(Protocol):
 
     @property
     def config_schema(self) -> type | dict[str, object]:
-        """JSON Schema for the tool's ``config`` dict in ``ToolConfig``.
+        """JSON Schema for the tool's ``config`` dict.
 
         May return a ``msgspec.Struct`` subclass (converted to JSON Schema
         by ``tool_kind_info``) or a pre-built schema dict.
         """
         return {}
+
+    @property
+    def user_fields_type(self) -> type[msgspec.Struct]:
+        """System-defined frontend-fields schema for this tool (§3.5).
+
+        A ``msgspec.Struct`` subclass whose JSON Schema drives the Admin UI
+        form for ``ToolSelection.user_fields``. Defaults to
+        ``EmptyFrontendFields`` when every config field is derived from
+        context.
+        """
+        return EmptyFrontendFields
+
+    def derive(
+        self,
+        user_fields: dict[str, object],
+        context: "ToolDeriveContext",
+    ) -> msgspec.Struct:
+        """System-layer derivation: user_fields + context → typed config.
+
+        Returns an instance of ``config_schema``. The compiler system calls
+        this exactly once per ``ToolSelection`` at assembly time (§3.6).
+        """
+        ...
 
     def tool_class(self) -> type[Tool[Any, Any]]:
         """Return the yuuagents ``Tool`` subclass for assembly."""
@@ -47,8 +84,8 @@ class ToolFactory(Protocol):
 class ToolKindInfo:
     """Static metadata about a registered tool type.
 
-    The admin UI uses this to render a selection list for ``agent_tools``
-    configuration.
+    The admin UI uses this to render a selection list for the CapabilitySet
+    ``tools`` editor.
     """
 
     name: str

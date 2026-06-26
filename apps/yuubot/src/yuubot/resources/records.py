@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, TypeVar
+from typing import TypeVar
 
 import msgspec
 
 from yuubot.core.validation import GenerationParams, LLMProviderOptions
-
-
-class ToolSpecConfig(msgspec.Struct):
-    level: str = "summary"
 
 
 ConfigT = TypeVar("ConfigT", bound=msgspec.Struct)
@@ -108,62 +104,35 @@ class RunBudget(msgspec.Struct):
         )
 
 
-class ToolConfig(msgspec.Struct):
-    """One yuuagents AgentDefinition.tools entry."""
+class LoopPolicy(msgspec.Struct):
+    """Loop convergence policy for a CapabilitySet (§2.7.2)."""
 
-    tool_name: str
-    config: dict[str, object] = msgspec.field(default_factory=dict)
-    spec: ToolSpecConfig = msgspec.field(default_factory=ToolSpecConfig)
-
-
-class PromptTemplateRecord(msgspec.Struct):
-    name: str
-    content: str = ""
-    description: str = ""
-    id: str = ""
-    is_builtin: bool = False
-    builtin_version: str = ""
-    version: int = 1
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class RuntimePolicy(msgspec.Struct):
-    """yuubot product policy; execution wiring lives in yuuagents-native fields."""
-
-    memory_enabled: bool = False
-    memory_curator_enabled: bool = False
     rollover_enabled: bool = False
     idle_timeout_s: float = 0.0
     summarize_steps_span: int = 20
-    strict_usage_sink: bool = False
 
 
-class ResourcePolicy(msgspec.Struct):
-    budget_usd_daily: float | None = None
-    concurrency_limit: int = 1
-    bridge_nodes: tuple[str, ...] = ()
-    workspace_access: Literal["none", "read_only", "read_write"] = "none"
+class ToolSelection(msgspec.Struct):
+    """User-configured tool entry on a CapabilitySet (storage view, §3.1)."""
+
+    tool_name: str
+    user_fields: dict[str, object] = msgspec.field(default_factory=dict)
 
 
 class CapabilitySetRecord(msgspec.Struct):
-    """Reusable execution and prompt-visible capability bundle."""
+    """Reusable execution and prompt-visible capability bundle (§2.7.1).
+
+    Storage view: only references (``integration_ids`` → IntegrationRecord.id)
+    + own configuration. No read-model snapshots. Tools are explicitly listed
+    in ``tools`` — there is no implicit injection at assembly time.
+    """
 
     name: str
     description: str = ""
-    integration_capability_ids: tuple[str, ...] = ()
     workspace_path: str = ""
-    tool_ids: tuple[str, ...] = ()
-    bootstrap_path: str = ""
-    enabled_global_skill_refs: tuple[str, ...] = ()
-    workspace_skill_root: str = ".agents/skills"
-    preexpanded_skill_refs: tuple[str, ...] = ()
-    runtime_policy: RuntimePolicy = msgspec.field(default_factory=RuntimePolicy)
-    prompt_fragments: tuple[str, ...] = ()
-    permission_limits: dict[str, object] = msgspec.field(default_factory=dict)
-    integration_visible_state: dict[str, object] = msgspec.field(default_factory=dict)
-    agent_tools: tuple[ToolConfig, ...] = ()
-    resource_policy: ResourcePolicy = msgspec.field(default_factory=ResourcePolicy)
+    tools: tuple[ToolSelection, ...] = ()
+    integration_ids: tuple[str, ...] = ()   # FK to IntegrationRecord.id
+    loop_policy: LoopPolicy = msgspec.field(default_factory=LoopPolicy)
     id: str = ""
     version: int = 1
     created_at: datetime | None = None

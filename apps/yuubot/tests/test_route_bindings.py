@@ -26,8 +26,6 @@ from yuubot.resources.records import (
     ModelCapabilities,
     ModelConfig,
     Pricing,
-    ResourcePolicy,
-    RuntimePolicy,
     RunBudget,
 )
 from yuubot.resources.repository import ResourceRepository
@@ -300,8 +298,6 @@ async def _create_actor(
         CapabilitySetRecord(
             id=f"{name}-capabilities",
             name=f"{name}-capabilities",
-            runtime_policy=RuntimePolicy(),
-            resource_policy=ResourcePolicy(),
         ),
     )
     record = ActorRecord(

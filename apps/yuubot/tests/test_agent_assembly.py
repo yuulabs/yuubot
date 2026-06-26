@@ -20,6 +20,7 @@ from tests.helpers import (
 from yuubot.core.assembly._python_tool import ExecutePythonParams, ExecutePythonTool
 from yuubot.core.assembly import build_agent_definition
 from yuubot.core.facade import ActorFacadeBinding
+from yuubot.resources.records import ToolSelection
 
 
 def test_python_tool_facade_imports_include_supported_surfaces(tmp_path: Path) -> None:
@@ -30,7 +31,10 @@ def test_python_tool_facade_imports_include_supported_surfaces(tmp_path: Path) -
     )
     binding = make_actor_binding(
         actor,
-        capability_set=make_capability_set_record("actor-1"),
+        capability_set=make_capability_set_record(
+            "actor-1",
+            tools=(ToolSelection("execute_python"),),
+        ),
         llm_backend=backend,
         workspace_path=tmp_path,
     ).default_agent_binding()
@@ -99,14 +103,14 @@ def test_agent_prompt_guidance_is_mode_specific(tmp_path: Path) -> None:
     _assert_section_order(im_prompt)
 
     # IM guidance lives inside Section 2 (between the System Instructions
-    # header and the Integration Prompt Sections header).
+    # header and the Integration SDKs header).
     sys_inst_pos = im_prompt.find("# System Instructions")
-    integ_pos = im_prompt.find("# Integration Prompt Sections")
+    integ_pos = im_prompt.find("# Integration SDKs")
     tim_channel_pos = im_prompt.find("tim.Channel")
 
     assert "tim.Channel" in im_prompt
     assert sys_inst_pos != -1, "missing # System Instructions header"
-    assert integ_pos != -1, "missing # Integration Prompt Sections header"
+    assert integ_pos != -1, "missing # Integration SDKs header"
     assert tim_channel_pos != -1, "missing tim.Channel substring"
     assert sys_inst_pos < tim_channel_pos < integ_pos, (
         "tim.Channel guidance must appear inside Section 2 (System Instructions), "
@@ -168,11 +172,11 @@ def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
     llm_backend = make_llm_backend_record("llm-1")
     capability_set = make_capability_set_record(
         "actor-1",
-        integration_capability_ids=(
-            "builtin.read",
-            "builtin.edit",
-            "builtin.write",
-            "builtin.bash",
+        tools=(
+            ToolSelection("read"),
+            ToolSelection("edit"),
+            ToolSelection("write"),
+            ToolSelection("bash"),
         ),
     )
     actor = make_actor_record(
@@ -209,7 +213,10 @@ def test_execute_python_description_can_import_github_facade(tmp_path: Path) -> 
     )
     binding = make_actor_binding(
         actor,
-        capability_set=make_capability_set_record("actor-1"),
+        capability_set=make_capability_set_record(
+            "actor-1",
+            tools=(ToolSelection("execute_python"),),
+        ),
         llm_backend=llm_backend,
     ).default_agent_binding(
         workspace_path=tmp_path / "workspace",
@@ -237,22 +244,21 @@ def test_execute_python_description_can_import_github_facade(tmp_path: Path) -> 
 def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> None:
     """Five-section system prompt contract: section order and content.
 
-    Replaces the legacy flat-contract assertions (``Capability Set:`` line,
-    mechanical ``yext.github.issue.list`` mapping example). Under the new
-    contract:
+    Under the §2.7.1 CapabilitySet model the integration section (``# Integration
+    SDKs``) renders an interim placeholder: an empty line when no
+    ``integration_ids`` are selected, and a concise "import yext" hint
+    otherwise. Full per-integration ``IntegrationSdkSpec`` rendering is T5.
 
+    Contract checks:
     - Persona leads the prompt; ``# Persona\nBase prompt.`` is the prefix.
-    - The five visible section headers appear in the canonical order.
+    - The five visible section headers appear in canonical order.
     - No ``# Extension Section`` header is rendered (extension zone is
       code-only).
-    - Section 2 documents the hand-written tool surface (bash / read / edit /
-      write / execute_python) and workspace conventions; it MUST NOT
-      duplicate the ``execute_python`` tool-spec description (ipykernel cell
-      semantics, crash/reset strategy, session rules) which is owned by
-      ``_python_tool.py``.
-    - Section 3 documents the hand-written GitHub facade (``yext.github``)
-      with read/write effect labels and failure guidance, and MUST NOT
-      carry the legacy mechanical id-to-module mapping text.
+    - Section 2 documents the hand-written tool surface and workspace
+      conventions; it MUST NOT duplicate the ``execute_python`` tool-spec
+      description.
+    - Section 3 renders the integration placeholder (no legacy mechanical
+      github id→module mapping text).
     - Section 4 includes the full AGENTS.md text and the freeze note.
     - Section 5 carries platform / datetime / timezone tokens.
     - No sentinel/default object representations leak into the prompt.
@@ -260,7 +266,7 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     llm_backend = make_llm_backend_record("llm-1")
     capability_set = make_capability_set_record(
         "actor-1",
-        integration_capability_ids=("github.issue.list",),
+        integration_ids=("github-main",),
     )
     actor = make_actor_record(
         "actor-1",
@@ -287,11 +293,11 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     assert "# Extension Section" not in system
 
     section2 = _section_body(
-        system, "# System Instructions", "# Integration Prompt Sections"
+        system, "# System Instructions", "# Integration SDKs"
     )
     section3 = _section_body(
         system,
-        "# Integration Prompt Sections",
+        "# Integration SDKs",
         "# AGENTS.md Context",
     )
     section4 = _section_body(
@@ -324,17 +330,12 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
         f"Section 2 duplicates execute_python tool-spec phrases: {leaked}"
     )
 
-    # Section 3 — hand-written GitHub facade.
-    assert "yext.github" in section3, "yext.github facade missing from Section 3"
-    assert "await " in section3, "no await example in Section 3"
-    assert "github.issue.list" in section3
-    assert "— read." in section3, "no read effect label in Section 3"
-    assert "— write." in section3, "no write effect label in Section 3"
-    assert "Failure guidance" in section3, "failure guidance missing from Section 3"
+    # Section 3 — interim integration SDK placeholder (T5 replaces this).
+    assert "yext" in section3, "integration SDK placeholder must mention yext"
     # Legacy mechanical id-to-module mapping text MUST NOT appear.
     assert "Map a capability id to yext by keeping the prefix" not in section3
     assert "Non-builtin capabilities are async Python facade functions" not in section3
-    assert "Example: github.issue.list -> await yext.github.issue.list(" not in section3
+    assert "github.issue.list -> await yext.github.issue.list(" not in section3
 
     # Section 4 — AGENTS.md context + freeze note.
     assert "__MARKER_AGENTS_V1__" in section4, "AGENTS.md marker missing from Section 4"
@@ -359,6 +360,27 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     # Sentinel / default object repr guards.
     assert "representation at 0x" not in system
     assert "<object" not in system
+
+
+def test_integration_sdk_section_empty_when_no_integrations(tmp_path: Path) -> None:
+    """When ``integration_ids`` is empty, Section 3 renders the empty default."""
+    llm_backend = make_llm_backend_record("llm-1")
+    actor = make_actor_record(
+        "actor-1",
+        persona_prompt="Base prompt.",
+        llm_backend=llm_backend,
+    )
+    binding = make_actor_binding(
+        actor,
+        capability_set=make_capability_set_record("actor-1"),
+        llm_backend=llm_backend,
+        workspace_path=tmp_path,
+    ).default_agent_binding()
+
+    system = build_agent_definition(binding, mode="conversation").prompt.system
+
+    section3 = _section_body(system, "# Integration SDKs", "# AGENTS.md Context")
+    assert section3 == "No integration SDKs configured."
 
 
 def _write_agents_md(workspace: Path, text: str) -> None:
@@ -387,7 +409,7 @@ def _assert_section_order(system: str) -> None:
     expected = (
         "# Persona",
         "# System Instructions",
-        "# Integration Prompt Sections",
+        "# Integration SDKs",
         "# AGENTS.md Context",
         "# Real-Time Data",
     )

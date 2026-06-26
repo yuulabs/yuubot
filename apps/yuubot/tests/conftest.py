@@ -5,8 +5,21 @@ from __future__ import annotations
 import pytest
 
 from yuubot.bootstrap.config import BootstrapConfig
+from yuubot.core.assembly._tools import set_assembly_tool_registry
+from yuubot.core.tools import default_tool_factories
 from yuubot.process import open_resources
 from yuubot.resources.store.resource import Store
+
+
+@pytest.fixture(autouse=True)
+def _assembly_tool_registry() -> None:
+    """Populate the assembly ToolRegistry used by ``build_agent_definition``.
+
+    Mirrors the daemon's startup wiring (``set_assembly_tool_registry``) so
+    the tool compiler can resolve ``ToolFactory`` by name in unit tests that
+    build agent definitions without spawning the full daemon.
+    """
+    set_assembly_tool_registry(default_tool_factories())
 
 
 @pytest.fixture

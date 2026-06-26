@@ -107,10 +107,23 @@ class ActorPythonSessionFactory:
         self,
         binding: AgentBinding,
     ) -> list[AnyCapabilitySpec]:
-        allowed = set(binding.capability_set.integration_capability_ids)
+        """Capabilities visible to this actor's facade.
+
+        CapabilitySets declare selected integrations by ``integration_ids``
+        (``IntegrationRecord.id``). The visible facade modules derive from
+        the capabilities of those selected integration instances. Whether an
+        integration is actually running is enforced at invoke time by the
+        IntegrationCore authorisation boundary.
+        """
+        selected = set(binding.capability_set.integration_ids)
+        if not selected:
+            return []
         existing = await self.integrations.existing_instance_capabilities()
-        existing_ids = {info.capability_id for info in existing}
-        visible_ids = allowed & existing_ids
+        visible_ids = {
+            info.capability_id
+            for info in existing
+            if info.integration_id in selected
+        }
         return [
             capability
             for capability in self.integrations.declared_capability_specs()

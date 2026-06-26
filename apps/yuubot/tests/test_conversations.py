@@ -287,9 +287,12 @@ async def test_first_send_persists_prefix_and_user_message() -> None:
     store.create_conversation_row = AsyncMock(return_value=MagicMock())
     store.history = AsyncMock(return_value=[])
 
+    repository = MagicMock()
+    repository.get = AsyncMock(return_value=MagicMock())
+
     manager = ConversationManager(
         store=store,
-        repository=MagicMock(),
+        repository=repository,
         python_sessions=MagicMock(),
         llm_session_factory_factory=MagicMock(),
     )
@@ -847,7 +850,7 @@ async def test_cancel_during_tool_execution_does_not_double_persist_assistant() 
     ``_run_agent_turn`` must NOT re-emit ``llm.finished`` — the LLM stage
     already signed off its own message on the natural terminal path. Only
     Stage B (tool execution) is interrupted, so only Stage B's handler runs:
-    it calls ``_cancel_agent_tools`` which synthesises ``[cancelled]``
+    it calls ``_cancel_inflight_tool_calls`` which synthesises ``[cancelled]``
     tool_results and emits ``tool.result_appended`` for each.
 
     Closes Phase 4 side note #1: the single CancelledError handler
@@ -855,7 +858,7 @@ async def test_cancel_during_tool_execution_does_not_double_persist_assistant() 
     carrying the same already-persisted assistant → two DB writes for one
     message. Phase 5 splits the single handler into two: Stage A (LLM step)
     owns ``llm.finished``; Stage B (tool execution) owns
-    ``tool.result_appended`` via ``_cancel_agent_tools``.
+    ``tool.result_appended`` via ``_cancel_inflight_tool_calls``.
     """
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1020,11 +1023,11 @@ async def test_cancel_during_tool_execution_does_not_double_persist_assistant() 
     # Phase 5: Stage B's handler does NOT re-emit llm.finished.
     assert roles.count("assistant") == 1
     assert roles.count("user") == 1
-    # Stage B's _cancel_agent_tools synthesised a [cancelled] tool_result and
+    # Stage B's _cancel_inflight_tool_calls synthesised a [cancelled] tool_result and
     # emitted tool.result_appended → _handle_tool_result persisted it.
     assert roles.count("tool") == 1
 
     # Exactly one llm.finished event on the whole turn (Stage A natural).
     assert emitted_events.count("llm.finished") == 1
-    # At least one tool.result_appended fired from _cancel_agent_tools.
+    # At least one tool.result_appended fired from _cancel_inflight_tool_calls.
     assert emitted_events.count("tool.result_appended") >= 1

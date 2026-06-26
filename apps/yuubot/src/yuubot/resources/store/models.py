@@ -11,7 +11,6 @@ from yuubot.resources.records import (
     ConversationRecord,
     IntegrationRecord,
     LLMBackendRecord,
-    PromptTemplateRecord,
 )
 from yuubot.resources.store.model_factory import (
     FieldSpec,
@@ -42,20 +41,6 @@ IntegrationORM = resource_model(
     },
 )
 
-PromptTemplateORM = resource_model(
-    "PromptTemplateORM",
-    PromptTemplateRecord,
-    table="prompt_templates",
-    module=__name__,
-    field_specs={
-        "id": char(primary_key=True),
-        "name": char(unique=True),
-        "description": text(),
-        "content": text(),
-        "builtin_version": char(max_length=64),
-    },
-)
-
 CapabilitySetORM = resource_model(
     "CapabilitySetORM",
     CapabilitySetRecord,
@@ -66,8 +51,6 @@ CapabilitySetORM = resource_model(
         "name": char(unique=True),
         "description": text(),
         "workspace_path": text(),
-        "bootstrap_path": text(),
-        "workspace_skill_root": text(),
     },
 )
 

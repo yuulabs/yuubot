@@ -114,7 +114,7 @@ async def _create_capability_set(
         json={
             "name": f"conversation-capabilities-{suffix}",
             "description": "E2E conversation capability set",
-            "integration_capability_ids": [],
+            "integration_ids": [],
         },
         headers=_headers(config),
     )

@@ -19,14 +19,13 @@ from yuubot.core.actors import Actor
 from yuubot.core.bindings import ActorBinding, AgentBinding
 from yuubot.core.gateway import Mailbox
 from yuubot.core.integrations.impls.echo import (
-    ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
-    ECHO_REPLY_CAPABILITY_ID,
 )
 from yuubot.process import ServiceHost
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.root import Resources
 from yuubot.runtime.daemon import DaemonInfrastructure
+from yuubot.resources.builtin_presets import STANDARD_TOOLS
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
@@ -34,14 +33,13 @@ from yuubot.resources.records import (
     CapabilitySetRecord,
     IntegrationRecord,
     LLMBackendRecord,
+    LoopPolicy,
     ModelConfig,
     ModelCapabilities,
     Pricing,
-    ResourcePolicy,
-    RuntimePolicy,
     ResolvedActor,
-    ToolConfig,
     RunBudget,
+    ToolSelection,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import (
@@ -342,22 +340,16 @@ def make_llm_backend_record(
 def make_capability_set_record(
     actor_id: str,
     *,
-    integration_capability_ids: tuple[str, ...] = (
-        ECHO_CAPABILITY_ID,
-        ECHO_REPLY_CAPABILITY_ID,
-    ),
-    agent_tools: tuple[ToolConfig, ...] = (),
-    runtime_policy: RuntimePolicy | None = None,
-    resource_policy: ResourcePolicy | None = None,
+    integration_ids: tuple[str, ...] = (),
+    tools: tuple[ToolSelection, ...] | None = None,
+    loop_policy: LoopPolicy | None = None,
 ) -> CapabilitySetRecord:
     return CapabilitySetRecord(
         id=f"{actor_id}-capabilities",
         name=f"{actor_id}-capabilities",
-        integration_capability_ids=integration_capability_ids,
-        agent_tools=agent_tools,
-        runtime_policy=runtime_policy or RuntimePolicy(),
-        resource_policy=resource_policy
-        or ResourcePolicy(workspace_access="read_write"),
+        integration_ids=integration_ids,
+        tools=tools if tools is not None else STANDARD_TOOLS,
+        loop_policy=loop_policy or LoopPolicy(),
     )
 
 

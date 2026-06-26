@@ -221,21 +221,20 @@ async def test_create_capability_set(resources: Resources, tmp_path: Path) -> No
                 json={
                     "id": "cap-e2e",
                     "name": "cap-e2e",
-                    "integration_capability_ids": ["echo.send"],
-                    "agent_tools": [],
-                    "runtime_policy": {},
-                    "resource_policy": {},
+                    "integration_ids": ["echo-main"],
+                    "tools": [],
+                    "loop_policy": {"rollover_enabled": False},
                 },
             )
             assert resp.status_code == 201, resp.text
-            assert resp.json()["data"]["integration_capability_ids"] == ["echo.send"]
+            assert resp.json()["data"]["integration_ids"] == ["echo-main"]
 
             get_resp = await client.get(
                 "/api/resources/capability-sets/cap-e2e",
                 headers=HEADERS,
             )
             assert get_resp.status_code == 200
-            assert "echo.send" in get_resp.json()["data"]["integration_capability_ids"]
+            assert "echo-main" in get_resp.json()["data"]["integration_ids"]
 
             list_resp = await client.get(
                 "/api/resources/capability-sets",

@@ -26,8 +26,7 @@ from yuubot.core.secrets import Secret
 from yuubot.resources.records import (
     CapabilitySetRecord,
     IntegrationRecord,
-    ResourcePolicy,
-    RuntimePolicy,
+    LoopPolicy,
 )
 from yuubot.resources.root import Resources
 from yuubot.resources.store.models import IntegrationORM
@@ -228,13 +227,12 @@ async def test_visible_capabilities_filters_by_existing_instances(
         bridge=bridge,
     )
 
-    # CapabilitySet allows echo.echo AND a non-existent capability
+    # CapabilitySet selects the echo integration AND a non-existent one
     cap_set = CapabilitySetRecord(
         id="test-cs",
         name="Test CS",
-        integration_capability_ids=("echo.echo", "telegram.send"),
-        runtime_policy=RuntimePolicy(),
-        resource_policy=ResourcePolicy(workspace_access="read_write"),
+        integration_ids=("echo-main", "telegram-main"),
+        loop_policy=LoopPolicy(),
     )
 
     class FakeBinding:
@@ -269,9 +267,8 @@ async def test_visible_capabilities_returns_empty_when_no_instances_match(
     cap_set = CapabilitySetRecord(
         id="test-cs",
         name="Test CS",
-        integration_capability_ids=("echo.echo",),
-        runtime_policy=RuntimePolicy(),
-        resource_policy=ResourcePolicy(workspace_access="read_write"),
+        integration_ids=("echo-main",),
+        loop_policy=LoopPolicy(),
     )
 
     class FakeBinding:

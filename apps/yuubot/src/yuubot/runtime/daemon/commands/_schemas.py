@@ -14,11 +14,10 @@ import msgspec
 from yuubot.core.validation import GenerationParams, LLMProviderOptions
 from yuubot.resources.records import (
     BudgetPolicy,
+    LoopPolicy,
     ModelConfig,
-    ResourcePolicy,
-    RuntimePolicy,
-    ToolConfig,
     RunBudget,
+    ToolSelection,
 )
 
 in_command_context: ContextVar[bool] = ContextVar("in_command_context", default=False)
@@ -65,19 +64,10 @@ class CapabilitySetPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     id: str | msgspec.UnsetType = msgspec.UNSET
     name: str | msgspec.UnsetType = msgspec.UNSET
     description: str | msgspec.UnsetType = msgspec.UNSET
-    integration_capability_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
     workspace_path: str | msgspec.UnsetType = msgspec.UNSET
-    tool_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
-    bootstrap_path: str | msgspec.UnsetType = msgspec.UNSET
-    enabled_global_skill_refs: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
-    workspace_skill_root: str | msgspec.UnsetType = msgspec.UNSET
-    preexpanded_skill_refs: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
-    runtime_policy: RuntimePolicy | msgspec.UnsetType = msgspec.UNSET
-    prompt_fragments: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
-    permission_limits: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
-    integration_visible_state: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
-    agent_tools: tuple[ToolConfig, ...] | msgspec.UnsetType = msgspec.UNSET
-    resource_policy: ResourcePolicy | msgspec.UnsetType = msgspec.UNSET
+    tools: tuple[ToolSelection, ...] | msgspec.UnsetType = msgspec.UNSET
+    integration_ids: tuple[str, ...] | msgspec.UnsetType = msgspec.UNSET
+    loop_policy: LoopPolicy | msgspec.UnsetType = msgspec.UNSET
 
 
 class IntegrationCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
@@ -107,16 +97,6 @@ class LLMBackendPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     provider_options: LLMProviderOptions | msgspec.UnsetType = msgspec.UNSET
     recommended_model: str | msgspec.UnsetType = msgspec.UNSET
     default_generation_params: GenerationParams | msgspec.UnsetType = msgspec.UNSET
-    version: int | msgspec.UnsetType = msgspec.UNSET
-
-
-class PromptTemplatePatchRequest(msgspec.Struct, forbid_unknown_fields=True):
-    id: str | msgspec.UnsetType = msgspec.UNSET
-    name: str | msgspec.UnsetType = msgspec.UNSET
-    content: str | msgspec.UnsetType = msgspec.UNSET
-    description: str | msgspec.UnsetType = msgspec.UNSET
-    is_builtin: bool | msgspec.UnsetType = msgspec.UNSET
-    builtin_version: str | msgspec.UnsetType = msgspec.UNSET
     version: int | msgspec.UnsetType = msgspec.UNSET
 
 

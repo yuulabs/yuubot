@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import msgspec
 from yuuagents.tool.files import EditTool, FileToolConfig, ReadTool, WriteTool
+
+from yuubot.core.tools.contracts import EmptyFrontendFields
 
 if TYPE_CHECKING:
     from yuuagents.tool.primitives import Tool
+    from yuubot.core.assembly._compiler import ToolDeriveContext
 
 
 class ReadToolFactory:
@@ -22,6 +26,18 @@ class ReadToolFactory:
     @property
     def config_schema(self) -> type[FileToolConfig]:
         return FileToolConfig
+
+    @property
+    def user_fields_type(self) -> type[msgspec.Struct]:
+        return EmptyFrontendFields
+
+    def derive(
+        self,
+        user_fields: dict[str, object],
+        context: "ToolDeriveContext",
+    ) -> FileToolConfig:
+        # workspace_root ← context.workspace_path; max_read_bytes default (§6.2).
+        return FileToolConfig(workspace_root=context.workspace_path)
 
     def tool_class(self) -> type[Tool[Any, Any]]:
         return ReadTool
@@ -40,6 +56,18 @@ class EditToolFactory:
     def config_schema(self) -> type[FileToolConfig]:
         return FileToolConfig
 
+    @property
+    def user_fields_type(self) -> type[msgspec.Struct]:
+        return EmptyFrontendFields
+
+    def derive(
+        self,
+        user_fields: dict[str, object],
+        context: "ToolDeriveContext",
+    ) -> FileToolConfig:
+        # workspace_root ← context.workspace_path (§6.3).
+        return FileToolConfig(workspace_root=context.workspace_path)
+
     def tool_class(self) -> type[Tool[Any, Any]]:
         return EditTool
 
@@ -56,6 +84,18 @@ class WriteToolFactory:
     @property
     def config_schema(self) -> type[FileToolConfig]:
         return FileToolConfig
+
+    @property
+    def user_fields_type(self) -> type[msgspec.Struct]:
+        return EmptyFrontendFields
+
+    def derive(
+        self,
+        user_fields: dict[str, object],
+        context: "ToolDeriveContext",
+    ) -> FileToolConfig:
+        # workspace_root ← context.workspace_path (§6.4).
+        return FileToolConfig(workspace_root=context.workspace_path)
 
     def tool_class(self) -> type[Tool[Any, Any]]:
         return WriteTool

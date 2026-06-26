@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from yuuagents import PythonImport
-
 PYTHON_PROVIDER_KEY = "execute_python"
 RESTART_KERNEL_TOOL_KEY = "restart_kernel"
 ROLLOVER_THRESHOLD = 0.85
@@ -17,20 +15,4 @@ IM_MODE_SYSTEM_GUIDANCE = (
     "For user-visible replies, use tim.Channel(path).send(text) to send messages "
     "directly to an integration channel. "
     "Plain assistant text is internal and is not delivered to the IM user."
-)
-FACADE_IMPORTS = (
-    PythonImport(module="yb"),
-    PythonImport(module="yb.actor"),
-    PythonImport(module="yb.delegate"),
-    PythonImport(module="yb.schedule"),
-    PythonImport(module="yb.tasks"),
-    PythonImport(module="tim"),
-)
-FACADE_EXPAND_FUNCTIONS = (
-    "yb.*",
-    "yb.actor.*",
-    "yb.delegate.*",
-    "yb.schedule.*",
-    "yb.tasks.*",
-    "tim.*",
 )

@@ -24,8 +24,8 @@ from yuubot.resources.records import (
     CapabilitySetRecord,
     IntegrationRecord,
     LLMBackendRecord,
-    ToolConfig,
     RunBudget,
+    ToolSelection,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.service import ResourceService
@@ -114,7 +114,7 @@ class ResourceCodec:
             return record
         _ensure_record_id(record)
         if isinstance(record, CapabilitySetRecord):
-            error = self._validate_agent_tools(record.agent_tools)
+            error = self._validate_tool_selections(record.tools)
             if error is not None:
                 return error
         if isinstance(record, LLMBackendRecord):
@@ -151,9 +151,9 @@ class ResourceCodec:
             return patch
         fields = _patch_fields(patch)
         if isinstance(patch, CapabilitySetPatchRequest):
-            tools = fields.get("agent_tools")
+            tools = fields.get("tools")
             if isinstance(tools, tuple):
-                error = self._validate_agent_tools(tools)
+                error = self._validate_tool_selections(tools)
                 if error is not None:
                     return error
         if "provider_identity" in fields:
@@ -338,22 +338,22 @@ class ResourceCodec:
             return _error("validation_error", f"llm_backend '{backend_id}' not found", 400)
         return llm_backend
 
-    # -- agent tools validation --
+    # -- tool selection validation --
 
-    def _validate_agent_tools(
+    def _validate_tool_selections(
         self,
-        agent_tools: tuple[ToolConfig, ...],
+        tools: tuple[ToolSelection, ...],
     ) -> JSONResponse | None:
-        """Validate that every tool_name references a registered tool type."""
+        """Validate that every ``ToolSelection.tool_name`` resolves via the registry."""
         if self._tool_registry is None:
             return None
-        for tool in agent_tools:
+        for selection in tools:
             try:
-                self._tool_registry.get(tool.tool_name)
+                self._tool_registry.get(selection.tool_name)
             except LookupError:
                 return _error(
                     "validation_error",
-                    f"Unknown tool type {tool.tool_name!r} — "
+                    f"Unknown tool type {selection.tool_name!r} — "
                     f"available: {sorted(self._tool_registry._factories)!r}",
                     400,
                 )

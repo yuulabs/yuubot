@@ -26,10 +26,11 @@ from yuuagents.core.task import Owner, OwnerType
 from yuuagents.obs import EntityLog
 from yuuagents.tool.primitives import ToolCallParams, ToolCallTask, ToolContext
 
+from yuubot.core.assembly._compiler import ToolDeriveContext
 from yuubot.core.assembly._python_tool import ExecutePythonParams, ExecutePythonTool
-from yuubot.core.assembly._tools import _python_tool_runtime
 from yuubot.core.facade import ActorFacadeBinding
 from yuubot.core.facade.workspace import FacadeEndpoint, FacadeWorkspace
+from yuubot.core.tools.impls.execute_python import ExecutePythonToolFactory
 
 
 def _free_port() -> int:
@@ -51,7 +52,18 @@ def _provision_facade(tmp_path: Path) -> ActorFacadeBinding:
 
 
 def _make_ep_tool(facade: ActorFacadeBinding) -> ExecutePythonTool:
-    config = _python_tool_runtime(facade, workspace_path=str(facade.root))
+    config = ExecutePythonToolFactory().derive(
+        {},
+        ToolDeriveContext(
+            workspace_path=str(facade.root),
+            venv_python=facade.venv_python or "",
+            facade=facade,
+            actor_id=facade.actor_id,
+            agent_name=facade.agent_name,
+            session_id=facade.session_id,
+            mailbox_id=facade.mailbox_id,
+        ),
+    )
     return ExecutePythonTool.from_startup(runtime=None, config=config)
 
 

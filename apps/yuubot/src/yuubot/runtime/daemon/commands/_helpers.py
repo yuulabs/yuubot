@@ -14,13 +14,11 @@ from yuubot.resources.store.models import (
     ActorIngressRuleORM,
     CapabilitySetORM,
     LLMBackendORM,
-    PromptTemplateORM,
 )
 from yuubot.runtime.daemon.commands._schemas import (
     ActorIngressRulePatchRequest,
     CapabilitySetPatchRequest,
     LLMBackendPatchRequest,
-    PromptTemplatePatchRequest,
     StructT,
     ValueT,
 )
@@ -104,7 +102,6 @@ def _value_or(value: ValueT | msgspec.UnsetType, default: ValueT) -> ValueT:
 _PATCH_TYPES: dict[type[Model], type[msgspec.Struct]] = {
     LLMBackendORM: LLMBackendPatchRequest,
     CapabilitySetORM: CapabilitySetPatchRequest,
-    PromptTemplateORM: PromptTemplatePatchRequest,
     ActorIngressRuleORM: ActorIngressRulePatchRequest,
 }
 

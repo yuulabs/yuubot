@@ -117,7 +117,7 @@ function ActorDetailPage() {
   const rulesForActor = ingressRules.filter((r) => r.actor_id === actor.id);
   // Capabilities exposed via this actor's capability set (names resolved via
   // live-capabilities lookup).
-  const capIds = capset?.integration_capability_ids ?? [];
+  const capIds = capset?.integration_ids ?? [];
   const capName = (capId: string) =>
     liveCaps?.find((c) => c.capability_id === capId)?.capability_name ?? capId;
   const editorState: ActorEditorState = {
@@ -186,8 +186,8 @@ function ActorDetailPage() {
                   </div>
                   <div className="readonly-kv"><b>Workspace</b><span>{capset?.workspace_path ?? "-"}</span></div>
                   <div className="readonly-kv">
-                    <b>Memory</b>
-                    <span>{capset?.runtime_policy?.memory_enabled ? "enabled" : "disabled"}</span>
+                    <b>Rollover</b>
+                    <span>{capset?.loop_policy?.rollover_enabled ? "enabled" : "disabled"}</span>
                   </div>
                 </div>
               </LegendCard>

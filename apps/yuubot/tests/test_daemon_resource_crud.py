@@ -440,7 +440,7 @@ async def test_create_actor_accepts_typed_simplified_request(
         CapabilitySetRecord(
             id="cap-simple",
             name="cap-simple",
-            integration_capability_ids=("echo.send",),
+            integration_ids=("echo-main",),
         ),
     )
 
