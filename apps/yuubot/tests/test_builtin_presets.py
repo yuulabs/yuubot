@@ -114,3 +114,52 @@ async def test_open_resources_does_not_seed_actors(
     resources = await _open(db, yuubot_config)
     actors = await resources.repository.list(ActorORM)
     assert actors == ()
+
+
+async def test_version_bump_refreshes_builtin_character_content(
+    db: Store, yuubot_config: BootstrapConfig
+) -> None:
+    """When the source preset version advances, the next seed refreshes the
+    existing builtin Character's content fields to source.
+
+    Simulates a future maintainer bumping a preset version: the persisted
+    builtin Character carries an older version + stale content; reopening must
+    overwrite the managed content fields (not actor-bound / user-cloned data).
+    User-cloned (is_builtin=false) Characters are never touched.
+    """
+    from yuubot.resources import builtin_presets
+
+    first = await _open(db, yuubot_config)
+    # Simulate a stale install: old version + old content persisted.
+    await first.repository.update(
+        CharacterORM,
+        GENERAL_CHARACTER_ID,
+        system_prompt="stale old prompt",
+        description="stale description",
+        builtin_version="general-v0",
+    )
+    # A user-cloned character sharing the builtin id namespace must be left
+    # alone even if its version looks stale — only is_builtin records update.
+    await first.repository.update(
+        CharacterORM,
+        SHIORI_CHARACTER_ID,
+        is_builtin=False,
+        builtin_version="ancient",
+        system_prompt="user-customized shiori prompt",
+    )
+
+    second = await _open(db, yuubot_config)
+    characters = {c.id: c for c in await second.repository.list(CharacterORM)}
+
+    # Stale builtin general refreshed to source content + current version.
+    general = characters[GENERAL_CHARACTER_ID]
+    assert general.is_builtin is True
+    assert general.system_prompt == "You are a helpful assistant."
+    assert general.description == "Preset general assistant"
+    assert general.builtin_version == builtin_presets.GENERAL_PRESET_VERSION
+
+    # User-cloned (is_builtin=false) shiori left untouched.
+    shiori = characters[SHIORI_CHARACTER_ID]
+    assert shiori.is_builtin is False
+    assert shiori.system_prompt == "user-customized shiori prompt"
+    assert shiori.builtin_version == "ancient"

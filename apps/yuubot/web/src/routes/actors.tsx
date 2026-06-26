@@ -17,8 +17,18 @@ import {
   Outlet,
   useRouterState,
 } from "@tanstack/react-router";
-import { Edit3, Eye, MessageSquare, MoreVertical, Trash2 } from "lucide-react";
-import { useDeleteResource, useResourceList } from "@/hooks/use-resources";
+import { Edit3, Eye, MessageSquare, MoreVertical, RefreshCw, Trash2 } from "lucide-react";
+import { useCreateResource, useDeleteResource, useResourceList } from "@/hooks/use-resources";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { PRESET_ACTORS, presetActorCreatePayload } from "@/lib/presets";
 import type {
   ActorResource,
   CapabilitySetResource,
@@ -53,10 +63,29 @@ function ActorsBrowsePage() {
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: capabilitySets = [] } =
     useResourceList<CapabilitySetResource>("capability-sets");
+  const createActorMutation = useCreateResource<ActorResource>("actors");
 
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [layout, setLayout] = useState<Layout>("grid");
+
+  // "更新预设 Actor" dialog: lets existing users (who already have a backend,
+  // so the onboarding dialog never fired) bind the seeded preset Actors to a
+  // backend. Also re-runnable so future preset additions reach everyone.
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncBackendId, setSyncBackendId] = useState("");
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncError, setSyncError] = useState("");
+  const [syncResult, setSyncResult] = useState("");
+
+  const existingActorNames = useMemo(
+    () => new Set(actors.map((a) => a.name)),
+    [actors],
+  );
+  const missingPresets = useMemo(
+    () => PRESET_ACTORS.filter((p) => !existingActorNames.has(p.actorName)),
+    [existingActorNames],
+  );
 
   // Push the "新建 Actor" primary action into the shell topbar.
   const { setActions } = useAppShellActions();
@@ -107,6 +136,44 @@ function ActorsBrowsePage() {
       });
   }, [actors, query, status, backends, capabilitySets]);
 
+  const openSyncDialog = () => {
+    setSyncError("");
+    setSyncResult("");
+    setSyncBackendId(backends[0]?.id ?? "");
+    setSyncOpen(true);
+  };
+
+  const handleSyncPresetActors = async () => {
+    const backend = backends.find((b) => b.id === syncBackendId);
+    if (!backend) {
+      setSyncError("请选择一个 LLM backend。");
+      return;
+    }
+    setSyncBusy(true);
+    setSyncError("");
+    setSyncResult("");
+    try {
+      let created = 0;
+      let skipped = 0;
+      for (const preset of PRESET_ACTORS) {
+        if (existingActorNames.has(preset.actorName)) {
+          skipped += 1;
+          continue;
+        }
+        await createActorMutation.mutateAsync(
+          presetActorCreatePayload(preset, backend),
+        );
+        created += 1;
+      }
+      setSyncResult(`已创建 ${created} 个，跳过已存在的 ${skipped} 个。`);
+      setSyncOpen(false);
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncBusy(false);
+    }
+  };
+
   return (
     <div className="view">
       <div className="page-head">
@@ -115,6 +182,17 @@ function ActorsBrowsePage() {
           <p className="page-sub">
             Actor 绑定 LLM 供应商、模型与 Capability Set，通过 Ingress 规则接收事件并产出回合。点击名称查看详情，右下角可发起对话。
           </p>
+        </div>
+        <div className="page-head__actions">
+          <Button
+            variant="outline"
+            onClick={openSyncDialog}
+            disabled={backends.length === 0}
+            title={backends.length === 0 ? "请先在 Providers 页创建一个 backend" : "创建或检查预设 Actor (general / shiori)"}
+          >
+            <RefreshCw size={14} />
+            <span>更新预设 Actor</span>
+          </Button>
         </div>
       </div>
 
@@ -156,6 +234,44 @@ function ActorsBrowsePage() {
           ))}
         </div>
       )}
+
+      {/* 更新预设 Actor — binds the seeded preset Characters/CapabilitySets to
+          a chosen backend. Disabled-button path shown when no backend exists. */}
+      <Dialog open={syncOpen} onOpenChange={setSyncOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>更新预设 Actor</DialogTitle>
+            <DialogDescription>
+              将预设 Actor（general / shiori）绑定到一个 LLM backend。已存在的同名 Actor 会跳过。
+            </DialogDescription>
+          </DialogHeader>
+          {syncError && <p className="text-xs text-destructive">{syncError}</p>}
+          {syncResult && <p className="text-xs text-muted-foreground">{syncResult}</p>}
+          <div className="flex flex-col gap-1">
+            <label htmlFor="sync-backend" className="text-xs">LLM backend</label>
+            <select
+              id="sync-backend"
+              className="border rounded px-2 py-1 text-sm bg-background"
+              value={syncBackendId}
+              onChange={(e) => setSyncBackendId(e.target.value)}
+            >
+              {backends.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSyncOpen(false)} disabled={syncBusy}>
+              取消
+            </Button>
+            <Button onClick={handleSyncPresetActors} disabled={syncBusy || missingPresets.length === 0}>
+              {syncBusy ? "创建中…" : `创建 ${missingPresets.length} 个`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

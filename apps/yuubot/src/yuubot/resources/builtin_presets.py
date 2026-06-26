@@ -23,7 +23,11 @@ from yuubot.resources.records import (
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import CapabilitySetORM, CharacterORM
 
-BUILTIN_VERSION = "ISSUE-0005-v1"
+# Preset content versions are decoupled from Issue numbers: when ISSUE-0008
+# (or any later maintainer) advances a preset's source content, they bump the
+# version here and the next daemon restart re-applies it to existing installs.
+GENERAL_PRESET_VERSION = "general-v1"
+SHIORI_PRESET_VERSION = "shiori-v1"
 
 _OrmT = TypeVar("_OrmT", bound=Model)
 
@@ -111,7 +115,7 @@ def _general_pair() -> PresetPair:
             facade_module="yb",
             default_hints=CharacterHints(language="zh-CN", tone=""),
             is_builtin=True,
-            builtin_version=BUILTIN_VERSION,
+            builtin_version=GENERAL_PRESET_VERSION,
         ),
         capability_set=CapabilitySetRecord(
             id="builtin-capability-general",
@@ -137,7 +141,7 @@ def _shiori_pair() -> PresetPair:
             facade_module="yb",
             default_hints=CharacterHints(language="zh-CN", tone=""),
             is_builtin=True,
-            builtin_version=BUILTIN_VERSION,
+            builtin_version=SHIORI_PRESET_VERSION,
         ),
         capability_set=CapabilitySetRecord(
             id="builtin-capability-shiori",
@@ -164,10 +168,43 @@ async def seed_builtin_presets(repository: ResourceRepository) -> None:
       - else if a record with the preset ``name`` exists under a different id:
         leave it unchanged and do not create a duplicate
       - else insert the preset record
+
+    Preset ``Character`` records are *managed*: when the source preset version
+    advances (``builtin_version`` differs) the existing builtin Character's
+    content fields are refreshed to source on the next seed. Records the user
+    cloned (``is_builtin`` false) are never touched. ``CapabilitySet`` has no
+    version field and stays non-destructive.
     """
     for pair in BUILTIN_PRESETS:
-        await _seed_one(repository, CharacterORM, pair.character)
+        await _seed_character(repository, pair.character)
         await _seed_one(repository, CapabilitySetORM, pair.capability_set)
+
+
+async def _seed_character(
+    repository: ResourceRepository,
+    record: CharacterRecord,
+) -> None:
+    existing = await repository.get(CharacterORM, _record_id(record))
+    if existing is None:
+        with repository.store.db.activate():
+            clash = await CharacterORM.filter(name=record.name).exists()
+        if clash:
+            return
+        await repository.insert(CharacterORM, record)
+        return
+    if not existing.is_builtin:
+        return
+    if existing.builtin_version == record.builtin_version:
+        return
+    await repository.update(
+        CharacterORM,
+        _record_id(record),
+        description=record.description,
+        system_prompt=record.system_prompt,
+        facade_module=record.facade_module,
+        default_hints=record.default_hints,
+        builtin_version=record.builtin_version,
+    )
 
 
 async def _seed_one(

@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { providerBaseUrlWarning } from "@/provider-models";
+import { PRESET_ACTORS, presetActorCreatePayload } from "@/lib/presets";
 import {
   PageShell,
   LegendCard,
@@ -118,31 +119,9 @@ const providerPresets: ProviderPreset[] = [
 
 // ---------------------------------------------------------------------------
 // Preset Actors offered after the FIRST backend create for OpenAI/DeepSeek.
-// References the stable seeded Character / CapabilitySet ids (seeded by the
-// backend in Phase 2) — the frontend never mints replacement Character /
-// CapabilitySet records. If a referenced id is absent the actor create call
-// surfaces the backend's mutation error in the dialog and the already-created
-// backend is left intact.
+// The preset list + create payload live in @/lib/presets (shared with the
+// Actors page "update preset Actors" action).
 // ---------------------------------------------------------------------------
-
-interface PresetActor {
-  actorName: string;
-  characterId: string;
-  capabilitySetId: string;
-}
-
-const presetActors: PresetActor[] = [
-  {
-    actorName: "general",
-    characterId: "builtin-character-general",
-    capabilitySetId: "builtin-capability-general",
-  },
-  {
-    actorName: "shiori",
-    characterId: "builtin-character-shiori",
-    capabilitySetId: "builtin-capability-shiori",
-  },
-];
 
 /** Preset keys that trigger the onboarding dialog after the first backend. */
 const onboardingPresetKeys = new Set(["openai", "deepseek"]);
@@ -280,19 +259,12 @@ function ProvidersPage() {
     setOnboardingBusy(true);
     setOnboardingError("");
     try {
-      for (const preset of presetActors) {
+      for (const preset of PRESET_ACTORS) {
         const exists = existingActors.some((a) => a.name === preset.actorName);
         if (exists) continue;
-        await createActorMutation.mutateAsync({
-          name: preset.actorName,
-          type: "simple_loop",
-          enabled: true,
-          default_model: onboardingBackend.default_model ?? "",
-          default_character_id: preset.characterId,
-          capability_set_id: preset.capabilitySetId,
-          default_llm_backend_id: onboardingBackend.id,
-          default_budget: { max_steps: 6, max_tokens: 8192, max_usd: 2.0 },
-        });
+        await createActorMutation.mutateAsync(
+          presetActorCreatePayload(preset, onboardingBackend),
+        );
       }
       setOnboardingBackend(null);
     } catch (err) {

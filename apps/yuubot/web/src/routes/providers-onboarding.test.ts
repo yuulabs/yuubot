@@ -14,14 +14,6 @@ import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const providersSrc = readFileSync(path.join(here, "providers.tsx"), "utf8");
 
-// Stable seeded preset ids the onboarding Actor create calls MUST reference.
-const STABLE_PRESET_IDS = [
-  "builtin-character-general",
-  "builtin-capability-general",
-  "builtin-character-shiori",
-  "builtin-capability-shiori",
-] as const;
-
 test("providers.tsx ships the onboarding dialog description verbatim", () => {
   assert.ok(
     providersSrc.includes(
@@ -31,13 +23,14 @@ test("providers.tsx ships the onboarding dialog description verbatim", () => {
   );
 });
 
-test("providers.tsx references all four stable seeded preset ids", () => {
-  for (const id of STABLE_PRESET_IDS) {
-    assert.ok(
-      providersSrc.includes(id),
-      `providers.tsx must reference stable preset id ${id}`,
-    );
-  }
+test("providers.tsx sources preset ids from the shared @/lib/presets module", () => {
+  // The four stable seeded preset ids now live in @/lib/presets (covered by
+  // actors-update-presets.test). providers.tsx must import from there rather
+  // than re-declaring the ids inline.
+  assert.ok(
+    providersSrc.includes("@/lib/presets"),
+    "providers.tsx must source preset definitions from @/lib/presets",
+  );
 });
 
 test("providers.tsx creates Actors via useCreateResource(\"actors\")", () => {
@@ -63,18 +56,13 @@ test("providers.tsx sends editable daily_usd and monthly_usd budget fields", () 
   );
 });
 
-test("providers.tsx binds created Actors to the new backend (id + default_model)", () => {
+test("providers.tsx binds created Actors to the new backend via the shared payload helper", () => {
+  // The concrete binding fields (default_llm_backend_id / default_budget /
+  // max_usd=2.0) live in @/lib/presets (covered by actors-update-presets.test);
+  // providers.tsx must route through that helper so the binding is shared.
   assert.ok(
-    providersSrc.includes("default_llm_backend_id"),
-    "providers.tsx must set default_llm_backend_id on the preset Actor payload",
-  );
-  assert.ok(
-    providersSrc.includes("default_budget"),
-    "providers.tsx must set default_budget on the preset Actor payload",
-  );
-  assert.ok(
-    providersSrc.includes("max_usd") && providersSrc.includes("2.0"),
-    "providers.tsx must default the preset Actor budget max_usd to 2.0",
+    providersSrc.includes("presetActorCreatePayload"),
+    "providers.tsx must build preset Actor payloads via presetActorCreatePayload",
   );
 });
 
