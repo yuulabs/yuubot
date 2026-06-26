@@ -17,6 +17,7 @@ from starlette.types import ASGIApp
 
 from yuubot.bootstrap.config import BootstrapConfig, DatabaseConfig, TraceConfig
 from yuubot.bootstrap.layout import DataLayout
+from yuubot.resources.builtin_presets import seed_builtin_presets
 from yuubot.resources.root import Resources
 from yuubot.resources.secrets import SecretCodec
 from yuubot.resources.store.resource import Store
@@ -245,6 +246,12 @@ async def open_resources(
         store = await create_store(config.database)
     else:
         store = await open_store(config.database, layout=layout, migrate=migrate)
-    return await Resources.from_store(
+    resources = await Resources.from_store(
         store, secret_codec=SecretCodec(config.secrets.master_key)
     )
+    # Seeding belongs to the schema-bootstrap step: only the process that owns
+    # migration (the daemon) seeds preset records. The admin opens resources
+    # with migrate=False and reads what the daemon already seeded.
+    if migrate:
+        await seed_builtin_presets(resources.repository)
+    return resources
