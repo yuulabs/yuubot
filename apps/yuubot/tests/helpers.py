@@ -6,19 +6,27 @@ import asyncio
 import json
 import shlex
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
+import httpx
 import yuullm
+from starlette.types import ASGIApp
 from yuuagents import ProviderPoolSessionFactory
 
+from yuubot.core.actors import Actor
 from yuubot.core.assembly._constants import _resolve_yuuagents_provider
-from yuubot.core.bindings import AgentBinding
+from yuubot.core.bindings import ActorBinding, AgentBinding
+from yuubot.core.gateway import Mailbox
 from yuubot.core.integrations.impls.echo import (
     ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
     ECHO_REPLY_CAPABILITY_ID,
 )
+from yuubot.process import ServiceHost
+from yuubot.resources.events import ResourceChanged
+from yuubot.resources.root import Resources
 from yuubot.runtime.daemon import DaemonInfrastructure
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
@@ -594,6 +602,138 @@ def assert_span_timing(
         assert duration >= min_duration_ns, (
             f"span {span['name']!r}: duration {duration}ns < min {min_duration_ns}ns"
         )
+
+
+# -- daemon resource HTTP harness -------------------------------------------
+
+
+@dataclass
+class _FakeActor:
+    binding: ActorBinding
+    started: bool = False
+
+    @property
+    def actor_id(self) -> str:
+        return self.binding.actor.id
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.started = False
+
+    async def handle_resource_changed(self, event: ResourceChanged) -> None:
+        _ = event
+
+    async def handle_message(self, message) -> None:
+        _ = message
+
+
+@dataclass
+class _FakeActorFactory:
+    actor_type: str = "fake"
+    actors: dict[str, _FakeActor] = field(default_factory=dict)
+
+    async def create(self, binding: ActorBinding, mailbox: Mailbox) -> Actor:
+        _ = mailbox
+        actor = _FakeActor(binding)
+        self.actors[binding.actor.id] = actor
+        return actor
+
+
+def build_resource_daemon_runtime(
+    resources: Resources,
+    workspace_root: Path,
+    *,
+    secret: str = "test-secret",
+) -> tuple[ASGIApp, ServiceHost]:
+    """Build a daemon ASGI app over *resources* for scenario-level HTTP tests.
+
+    Returns the ASGI app and the ``ServiceHost`` that owns its lifecycle
+    services (caller must ``start``/``stop`` it). Mirrors the production
+    wiring used by the Admin UI without spawning real child processes.
+    """
+    from yuubot.bootstrap.config import ServerConfig, TraceConfig, YuuAgentsConfig
+    from yuubot.core.actors import ActorFactoryRegistry, ActorManager
+    from yuubot.core.actors.impls.python_session import ActorPythonSessionFactory
+    from yuubot.core.actors.workspace import ActorWorkspaceResolver
+    from yuubot.core.assembly import llm_session_factory_for_binding
+    from yuubot.core.facade import FacadeWorkspace, IntegrationInvokeBridge
+    from yuubot.core.gateway import Gateway
+    from yuubot.core.integrations import IntegrationCore, IntegrationFactoryRegistry
+    from yuubot.core.routing import RouteBindings
+    from yuubot.process import ServiceHost, TraceService
+    from yuubot.runtime.daemon import (
+        ActorLifecycleService,
+        IntegrationLifecycleService,
+        RouteBindingService,
+        _actor_lifecycle_handler,
+        _integration_lifecycle_handler,
+        build_daemon_asgi_app,
+        build_refresh_dispatcher,
+    )
+    from yuubot.runtime.daemon.commands import build_default_resource_type_registry
+
+    gateway = Gateway(routes=RouteBindings(rules=[]))
+    actor_factories = ActorFactoryRegistry()
+    actor_factories.register(_FakeActorFactory())
+    actors = ActorManager(
+        repository=resources.repository,
+        factories=actor_factories,
+        gateway=gateway,
+        workspace_resolver=ActorWorkspaceResolver(workspace_root / "workspaces"),
+    )
+    integration_factories = IntegrationFactoryRegistry()
+    integrations = IntegrationCore(
+        repository=resources.repository,
+        factories=integration_factories,
+        gateway=gateway,
+        integrations_root=workspace_root / "data" / "integrations",
+    )
+    routes = RouteBindingService(repository=resources.repository, gateway=gateway)
+    services = ServiceHost.from_iterable(
+        (
+            IntegrationLifecycleService(integrations),
+            routes,
+            ActorLifecycleService(actors),
+        )
+    )
+    refresh = build_refresh_dispatcher(
+        routes=routes, actors=actors, integrations=integrations
+    )
+    type_registry = build_default_resource_type_registry(
+        integration_lifecycle_handler=_integration_lifecycle_handler(integrations),
+        actor_lifecycle_handler=_actor_lifecycle_handler(actors),
+    )
+    trace_service = TraceService(config=TraceConfig(enabled=False), db_path=":memory:")
+    python_sessions = ActorPythonSessionFactory(
+        integrations=integrations,
+        workspace=FacadeWorkspace(workspace_root / "facades"),
+        bridge=IntegrationInvokeBridge(integrations),
+    )
+    app = build_daemon_asgi_app(
+        config=ServerConfig(daemon_secret=secret),
+        resources=resources,
+        services=services,
+        actors=actors,
+        integrations=integrations,
+        gateway=gateway,
+        refresh=refresh,
+        trace_service=trace_service,
+        type_registry=type_registry,
+        yuuagents_config=YuuAgentsConfig(),
+        python_sessions=python_sessions,
+        llm_session_factory_factory=llm_session_factory_for_binding,
+    )
+    return app, services
+
+
+def daemon_http_client(app: ASGIApp, *, secret: str = "test-secret") -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+        headers={"X-Daemon-Secret": secret},
+    )
 
 
 # -- internal ----------------------------------------------------------------

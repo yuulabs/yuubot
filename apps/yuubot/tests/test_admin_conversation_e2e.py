@@ -131,7 +131,7 @@ async def test_admin_conversation_reports_missing_model_pricing_as_configuration
             backend = await _create_llm_backend(
                 client,
                 name="deepseek-main",
-                provider="deepseek",
+                provider="custom",
                 model="deepseek-v4-flash",
                 daily_budget=1,
                 pricing_entries=[],
