@@ -2,7 +2,7 @@
 id: ISSUE-0015
 slug: skills-v1-global-local-loading
 status: approved
-milestone: none
+milestone: M-03
 priority: P1
 estimated_work_hours: unknown
 ---

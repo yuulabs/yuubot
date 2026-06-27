@@ -2,7 +2,7 @@
 id: ISSUE-0017
 slug: realtime-intel-skill-and-digest
 status: approved
-milestone: none
+milestone: M-06
 priority: P2
 estimated_work_hours: unknown
 ---

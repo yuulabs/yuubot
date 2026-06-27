@@ -2,7 +2,7 @@
 id: ISSUE-0018
 slug: agent-communication-contract
 status: approved
-milestone: none
+milestone: M-04
 priority: P1
 estimated_work_hours: unknown
 ---

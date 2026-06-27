@@ -5,16 +5,18 @@
 
 ## Current Milestone
 
-**M-02 "Admin UX Equals Backend Surface"**（见 `milestones.md`，WIP）。
+**M-03 "Grounded Research + Skills"**（见 `milestones.md`，WIP）。
 
-对齐：`charter.md` Phase Goal 第 2 项（前端完成）。让 Admin UI 的可用面追平
-后端能力面。
+对齐：`charter.md` Phase Goal 第 1 项（Agent Infra 扩展点稳定）与第 5 项
+（研究员获得可解释分析）。目标是尽快赶出研究员自用核心功能：上网查实时消息、
+上传/阅读资料、通过 skills 接入特定平台或信息收集策略。
 
-> 上一轮 sprint（M-01）已随 milestone reschedule 结清：ISSUE-0001 implemented，
-> ISSUE-0002/0003/0004 re-link 到 M-05 并移出（见
-> `lessons/lesson-milestone-cohesion-2026-06-24.md`）。
+> 上一轮 milestone（M-02）已结清：Admin UX 与后端能力面对齐，ISSUE-0005 /
+> ISSUE-0007 implemented，ISSUE-0006 deprecated，结构收敛项 ISSUE-0010 /
+> ISSUE-0011 implemented。
 
-本轮 sprint **短于两周**（用户明确），预算按实际长度等比下调，不作两周标定。
+本轮 sprint 以可用闭环优先，不把部署、定时任务、IM 或 source archive/wiki
+平台化能力作为前置。
 
 ## Blockers
 
@@ -22,39 +24,37 @@ _无。_
 
 ## Frozen Scope
 
-落地顺序依依赖关系：0011（删 Character 顶层页）→ 0010（入口收敛到 Actor）→
-0007（CRUD 视觉基线）。0011 必须在 0007 前落地，否则会给即将被删的 characters
-页做基线返工。0010/0011 是结构收敛，0007 是视觉基线，结构先于视觉。
+落地顺序按信息获取闭环组织：先让 Actor 能加载 skills，再提供通用 web search/read，
+最后补文件上传/资料进入 workspace。这样第三方平台 skills 和通用网页读取都能服务
+同一个研究对话入口。
 
 | Order | Issue | Pri | Est.h | 角色 |
 |-------|-------|-----|-------|------|
-| 1 | ISSUE-0011 | P2 | 1 | Character 折叠进 Actor |
-| 2 | ISSUE-0010 | P2 | 4 | Conversation 入口收敛到 Actor |
-| 3 | ISSUE-0007 | P1 | 8 | CRUD 视觉基线（demo 迭代至 approve → 落地） |
-| **合计** | | | **13h** | core 8h（0007）+ body 5h（0011+0010） |
+| 1 | ISSUE-0015 | P1 | unknown | Skills v1：全局/局部 skill 加载与 Actor 选择 |
+| 2 | ISSUE-0013 | P1 | unknown | Web search/read + citation metadata |
+| 3 | ISSUE-0012 | P1 | unknown | 文件/PDF 上传到 workspace，Agent prompt 可见 |
 
-Core（P0+P1）= 8h，刻意低于 12h 常规门槛 —— 本轮是结构先行 sprint，把 M-02 的
-P1 feature（0005 开箱即用 / 0006 Conversation CRUD）刻意推到下轮，等 0010/0011
-结构收敛后 0005 的默认 Actor provision 才不在 Character 顶层页叠返工。
+验收闭环：研究员能配置带 skills 的 Actor，上传论文/PDF/资料，询问实时问题或文档
+问题；Agent 能从 workspace 文件和 web/skill 来源收集信息，并在回答中保留引用。
 
 ## Trade-offs
 
-- **不做 ISSUE-0005**（P1, 4h，M-02 stopping point #1 开箱即用 Conversation）
-  — 刻意推迟。0010/0011 落地后 0005 的 default Actor provision 才顺：character_prompt
-  内联在 Actor 表单、Conversation 入口在 Actor 处，免得 provision 出来的默认
-  Actor 指向一个要被收掉的 Character 顶层页。下轮 sprint 优先选。
-- **不做 ISSUE-0006**（P1, 2h，M-02 stopping point #2 Conversation CRUD 删/summary）
-  — 推迟。其批量删 UI 想骑 0007 本轮产出的 DataTable 基线，按依赖下轮吃更顺。
-- **本轮 sprint 不让 M-02 done。** 三项 stopping point 里只有 #3（视觉基线）本轮
-  推进；#1（0005）#2（0006）均推下轮。Sprint 跑完研究员仍无法"填个 API key 就
-  跑通 Conversation"—— 那是下轮 0005 的事。
+- **不做 ISSUE-0014**（source archive/wiki reuse）— 先不平台化长期记忆。学习场景
+  暂时由专门 Learning Actor 在 workspace `AGENTS.md` 跟踪进度。
+- **不做 ISSUE-0016/0017**（定时/每日情报）— 上网和 skill 收集能力先按需可用，
+  定时自唤醒等 M-06。
+- **不做 ISSUE-0002/0003/0004**（IM）— IM 是外部触点增强，不阻塞 Admin 自用研究
+  assistant。
 
 ## Velocity
 
-上一轮（M-01 sprint）唯一完成的 Issue：
+最近已结清的 M-02 工作：
 
 | Issue | Est.h | Act.h | Ratio | Note |
 |-------|-------|-------|-------|------|
-| ISSUE-0001 | 7 | 8 | 1.14 | 首次 sprint 样本，N=1，不据此修正未来估算 |
+| ISSUE-0005 | 4 | cycle 29.6h | - | 无 timesheet；仅记录 wall-clock cycle |
+| ISSUE-0007 | 8 | cycle 22.9h | - | 无 timesheet；视觉基线工作受 demo/迭代影响 |
+| ISSUE-0010 | 4 | net 0.2h | 0.05 | 小范围结构收敛，估算样本不代表常规 feature |
+| ISSUE-0011 | 1 | cycle 0.7h | - | 小范围结构收敛 |
 
-ISSUE-0002/0003/0004 未启动即移出，无 actual。数据稀疏，不计算 coefficient。
+M-03 的三个核心 Issue 仍为 `estimated_work_hours: unknown`，启动前需要按实际方案补估。

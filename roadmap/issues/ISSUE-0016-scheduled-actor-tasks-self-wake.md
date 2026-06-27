@@ -2,7 +2,7 @@
 id: ISSUE-0016
 slug: scheduled-actor-tasks-self-wake
 status: approved
-milestone: none
+milestone: M-06
 priority: P1
 estimated_work_hours: unknown
 ---
