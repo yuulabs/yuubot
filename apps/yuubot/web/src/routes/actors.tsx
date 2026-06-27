@@ -29,6 +29,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { PRESET_ACTORS, presetActorCreatePayload } from "@/lib/presets";
+import { workspaceHref } from "@/lib/workspace";
 import type {
   ActorResource,
   CapabilitySetResource,
@@ -291,6 +292,9 @@ function ActorCard({
   const avatar = (actor.name.trim()[0] ?? "A").toUpperCase();
   const description = actor.persona_prompt || "该 Actor 暂无 Persona。";
   const conversationId = `actor-${actor.id}`;
+  // Workspace column regression anchor: this is the resolved capability_set?.workspace_path.
+  const workspacePath = capset?.workspace_path;
+  const workspaceUrl = workspaceHref(workspacePath);
   const deleteMutation = useDeleteResource("actors");
   const handleDelete = () => {
     if (confirm(`删除 Actor “${actor.name}”？`)) {
@@ -322,7 +326,7 @@ function ActorCard({
               <Eye size={14} />
               <span>查看</span>
             </Link>
-            <Link to="/actors/$id/edit" params={{ id: actor.id }} className="menu-item">
+            <Link to="/actors/$id" params={{ id: actor.id }} className="menu-item">
               <Edit3 size={14} />
               <span>编辑</span>
             </Link>
@@ -361,14 +365,14 @@ function ActorCard({
         {/* workspace column regression anchor (conversation-entry-via-actor test). */}
         <div className="ac__row">
           <span className="lbl">Workspace</span>
-          {capset?.workspace_path ? (
+          {workspaceUrl ? (
             <a
-              href={`/workspace/${capset.workspace_path}`}
+              href={workspaceUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="chip"
             >
-              {capset.workspace_path}
+              {workspacePath}
             </a>
           ) : (
             <span className="chip chip--muted">—</span>

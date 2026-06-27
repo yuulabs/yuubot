@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, X, UserRound, SquareTerminal, BookOpen, FileEdit, FilePen, Play, Square, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Send, Loader2, Brain, Hammer, PanelLeft, X, UserRound, SquareTerminal, BookOpen, FileEdit, FilePen, Play, Square, Plus, Trash2, Paperclip } from "lucide-react";
 import { useResourceList } from "@/hooks/use-resources";
-import { sendConversationMessage, cancelConversationTurn, deleteConversation, getConversation, getConversationMessages, listConversations } from "@/lib/api";
+import { sendConversationMessage, cancelConversationTurn, deleteConversation, getConversation, getConversationMessages, listConversations, uploadConversationFiles } from "@/lib/api";
 import {
   appendRenderBlocks,
   historyItemsFromMessages,
@@ -15,10 +15,12 @@ import {
 } from "@/lib/conversation-transcript";
 import type {
   ActorResource,
+  CapabilitySetResource,
   ConversationData,
   ConversationListItem,
   ConversationMessage,
   ConversationSSEEvent,
+  ConversationUploadedFile,
 } from "@/types/api";
 import {
   extractBashCommand,
@@ -28,7 +30,7 @@ import {
   type DiffLine,
   type EditArgs,
 } from "@/lib/tool-renderers";
-import type { ReactElement } from "react";
+import type { ClipboardEvent, ReactElement } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +44,12 @@ import {
 } from "@/components/ui/select";
 import { CostBadge } from "@/components/conversation/cost-badge";
 import { StatusPill } from "@/components/baseline";
+import { workspaceHref } from "@/lib/workspace";
+
+interface PendingAttachment {
+  id: string;
+  file: File;
+}
 
 function pythonHighlightedSegments(line: string): Array<{ text: string; kind: "plain" | "keyword" | "string" | "comment" | "number" }> {
   const commentIndex = line.indexOf("#");
@@ -462,6 +470,7 @@ function AdminConversationPage() {
   const isDraft = conversationId === "new" || isActorDraft;
   const draftActorId = isActorDraft ? conversationId.slice(actorDraftPrefix.length) : null;
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
+  const { data: capabilitySets = [] } = useResourceList<CapabilitySetResource>("capability-sets");
   const runningActors = actors.filter((a) => a.enabled);
   const [actorId, setActorId] = useState<string>(draftActorId ?? runningActors[0]?.id ?? "");
   const [displayItems, setDisplayItems] = useState<DisplayItem[]>([]);
@@ -477,9 +486,12 @@ function AdminConversationPage() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [totalCost, setTotalCost] = useState(0);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const connectingSsePromiseRef = useRef<Promise<void> | null>(null);
   const activeTurnKeyRef = useRef("");
   const currentAssistantItemKeyRef = useRef("");
@@ -759,18 +771,50 @@ function AdminConversationPage() {
     }
   };
 
+  const addFiles = (files: Iterable<File>) => {
+    const next = Array.from(files).filter((file) => file.size >= 0);
+    if (next.length === 0) return;
+    setAttachments((current) => [
+      ...current,
+      ...next.map((file) => ({ id: `attachment-${crypto.randomUUID()}`, file })),
+    ]);
+  };
+
+  const removeAttachment = (attachmentId: string) => {
+    setAttachments((current) => current.filter((item) => item.id !== attachmentId));
+  };
+
+  const handlePaste = (event: ClipboardEvent<HTMLInputElement>) => {
+    const files: File[] = [];
+    for (const item of Array.from(event.clipboardData.items)) {
+      if (!item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file === null) continue;
+      const extension = item.type.split("/")[1] || "png";
+      files.push(new File([file], `pasted-image-${Date.now()}.${extension}`, { type: item.type }));
+    }
+    if (files.length > 0) {
+      addFiles(files);
+    }
+  };
+
   const handleSend = async () => {
     const text = input.trim();
     // Input is never disabled during generation: the Send button is always
     // actionable when visible (during generation it is replaced by the Stop
     // button); the input field is never disabled. Only the empty-input /
     // no-actor guards remain.
-    if (!text || !actorId) return;
+    if ((!text && attachments.length === 0) || !actorId) return;
 
     const isDraftSend = isDraft;
     const targetConversationId = isDraft
       ? `conversation-${crypto.randomUUID()}`
       : conversationId;
+    const filesToUpload = attachments.map((item) => item.file);
+    const optimisticText = [
+      text,
+      ...filesToUpload.map((file) => pendingAttachmentLine(file.name)),
+    ].filter(Boolean).join("\n\n");
 
     const userMsgId = `user-${crypto.randomUUID()}`;
     const turnKey = `turn-${userMsgId}`;
@@ -779,7 +823,7 @@ function AdminConversationPage() {
       conversation_id: targetConversationId,
       message_id: userMsgId,
       role: "user",
-      raw_content: JSON.stringify([{ type: "text", text }]),
+      raw_content: JSON.stringify([{ type: "text", text: optimisticText }]),
       metadata: {},
       timestamp: Math.floor(Date.now() / 1000),
     };
@@ -789,6 +833,8 @@ function AdminConversationPage() {
       ...historyItemsFromMessages([userMsg]),
     ]);
     setInput("");
+    setAttachments([]);
+    setDragActive(false);
     setError("");
     setIsSending(true);
     sendingRef.current = true;
@@ -797,11 +843,33 @@ function AdminConversationPage() {
     const hadMetadata = conversationMetadata !== null;
     void (async () => {
       try {
+        const uploaded: ConversationUploadedFile[] = filesToUpload.length
+          ? await uploadConversationFiles({
+              conversationId: targetConversationId,
+              files: filesToUpload,
+              actorId: isDraftSend ? actorId : undefined,
+            })
+          : [];
+        if (uploaded.length > 0) {
+          const uploadedText = [
+            text,
+            ...uploaded.map((file) => uploadedAttachmentLine(file)),
+          ].filter(Boolean).join("\n\n");
+          const uploadedUserMsg: ConversationMessage = {
+            ...userMsg,
+            raw_content: JSON.stringify([{ type: "text", text: uploadedText }]),
+          };
+          setDisplayItems((prev) => [
+            ...prev.filter((item) => item.key !== userItemKey),
+            ...historyItemsFromMessages([uploadedUserMsg]),
+          ]);
+        }
         await sendConversationMessage({
           conversationId: targetConversationId,
           text,
           messageId: userMsgId,
           actorId: isDraftSend ? actorId : undefined,
+          uploads: uploaded,
         });
         if (isDraftSend) {
           // Quietly switch to the real conversation URL. The remount triggers
@@ -824,6 +892,7 @@ function AdminConversationPage() {
           setIsSending(false);
         }
         setDisplayItems((prev) => prev.filter((item) => item.key !== userItemKey));
+        setAttachments(filesToUpload.map((file) => ({ id: `attachment-${crypto.randomUUID()}`, file })));
         setError(err instanceof Error ? err.message : "Send failed");
         if (!hadMetadata && !isDraftSend) {
           try {
@@ -845,7 +914,12 @@ function AdminConversationPage() {
     ? hasLiveBlocksForTurn(displayItems, activeTurnKeyRef.current)
     : false;
 
-  const workspacePath = actor?.capability_set?.workspace_path;
+  // Workspace source: actor.capability_set.workspace_path when embedded,
+  // falling back to the capability-sets list when the actor response is flat.
+  const actorCapabilitySet = actor?.capability_set ??
+    capabilitySets.find((item) => item.id === actor?.capability_set_id);
+  const workspacePath = actorCapabilitySet?.workspace_path;
+  const workspaceUrl = workspaceHref(workspacePath);
 
   return (
     <div className="view view--conversations">
@@ -872,9 +946,9 @@ function AdminConversationPage() {
                 <PanelLeft size={14} />
                 <span>历史</span>
               </button>
-              {workspacePath ? (
+              {workspaceUrl ? (
                 <a
-                  href={`/workspace/${workspacePath}`}
+                  href={workspaceUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="btn btn--ghost btn--sm"
@@ -944,9 +1018,71 @@ function AdminConversationPage() {
             <div className="chat__error">{error}</div>
           )}
 
-          <form onSubmit={(e) => { e.preventDefault(); void handleSend(); }} className="chat__composer">
+          <form
+            onSubmit={(e) => { e.preventDefault(); void handleSend(); }}
+            className={`chat__composer ${dragActive ? "is-dragging" : ""}`}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragActive(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragActive(true);
+            }}
+            onDragLeave={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              setDragActive(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragActive(false);
+              addFiles(event.dataTransfer.files);
+            }}
+          >
+            {attachments.length > 0 && (
+              <div className="composer__attachments" aria-label="Pending uploads">
+                {attachments.map((attachment) => (
+                  <div key={attachment.id} className="composer__attachment">
+                    <Paperclip size={14} />
+                    <span className="composer__attachment-name">{attachment.file.name || "upload"}</span>
+                    <span className="composer__attachment-size">{formatFileSize(attachment.file.size)}</span>
+                    <button
+                      type="button"
+                      className="composer__attachment-remove"
+                      onClick={() => removeAttachment(attachment.id)}
+                      aria-label={`Remove ${attachment.file.name || "upload"}`}
+                      disabled={isSending}
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="composer">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="composer__file-input"
+                onChange={(event) => {
+                  addFiles(event.currentTarget.files ?? []);
+                  event.currentTarget.value = "";
+                }}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => fileInputRef.current?.click()}
+                aria-label="Attach files"
+                title="Attach files"
+                disabled={isSending}
+              >
+                <Paperclip className="size-4" />
+              </Button>
               <Input value={input} onChange={(e) => setInput(e.target.value)}
+                onPaste={handlePaste}
                 placeholder={actor ? `给 ${actor.name} 发消息...` : "请选择 Actor..."}
                 className="composer__input"
               />
@@ -975,7 +1111,7 @@ function AdminConversationPage() {
                 <Button
                   type="submit"
                   className="composer__send"
-                  disabled={!input.trim() || !actorId}
+                  disabled={(!input.trim() && attachments.length === 0) || !actorId}
                   aria-label="Send message"
                 >
                   <Send className="size-4" />
@@ -1011,6 +1147,7 @@ function AdminConversationPage() {
             <BindingPanel
               actors={runningActors}
               actor={actor}
+              workspaceUrl={workspaceUrl}
               actorLocked={actorLocked}
               isSending={isSending}
               onActorChange={setActorId}
@@ -1116,6 +1253,7 @@ function ConversationRail({
 function BindingPanel({
   actors,
   actor,
+  workspaceUrl,
   actorLocked,
   isSending,
   onActorChange,
@@ -1123,6 +1261,7 @@ function BindingPanel({
 }: {
   actors: ActorResource[];
   actor: ActorResource | undefined;
+  workspaceUrl: string | null;
   actorLocked: boolean;
   isSending: boolean;
   onActorChange: (id: string) => void;
@@ -1173,9 +1312,9 @@ function BindingPanel({
           {/* Uses the user-configured CapabilitySet.workspace_path —
               a relative path under <data_dir>/workspace. If empty,
               no workspace was configured for this actor's CapabilitySet. */}
-          {actor?.capability_set?.workspace_path ? (
+          {workspaceUrl ? (
             <a
-              href={`/workspace/${actor.capability_set.workspace_path}`}
+              href={workspaceUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-blue-600 underline-offset-2 hover:underline dark:text-blue-400"
@@ -1221,6 +1360,20 @@ function shortConversationTime(value?: string): string {
 
 function conversationDisplayTitle(item: ConversationListItem): string {
   return item.title.trim() || `Conversation ${shortConversationId(item.conversation_id)}`;
+}
+
+function pendingAttachmentLine(name: string): string {
+  return `[User uploaded a file ${name}, upload pending]`;
+}
+
+function uploadedAttachmentLine(file: ConversationUploadedFile): string {
+  return `[User uploaded a file ${file.name}, stored at ${file.url}]`;
+}
+
+function formatFileSize(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function shortConversationId(value: string): string {

@@ -61,11 +61,13 @@ def test_python_tool_facade_imports_include_supported_surfaces(tmp_path: Path) -
     )
     github_expand_functions = cast(tuple[str, ...], github_tool["expand_functions"])
     assert "yb.delegate" in no_capability_imports
+    assert "yb.office.pdf" in no_capability_imports
     assert "tim" in no_capability_imports
     assert "yb.schedule" in no_capability_imports
     assert "yext.github" not in no_capability_imports
     assert "yext.github" in github_imports
     assert "yb.delegate.*" in no_capability_expand_functions
+    assert "yb.office.pdf.*" in no_capability_expand_functions
     assert "tim.*" in no_capability_expand_functions
     assert "yb.schedule.*" in no_capability_expand_functions
     assert "yext.github.*" not in no_capability_expand_functions

@@ -71,6 +71,7 @@ from yuubot.runtime.daemon.handlers import (
     make_refresh_handler,
     make_send_conversation_message_handler,
     make_status_handler,
+    make_upload_conversation_files_handler,
 )
 from yuubot.runtime.daemon.middleware import DaemonSecretMiddleware
 from yuubot.runtime.http_utils import error_response
@@ -431,6 +432,11 @@ def build_daemon_asgi_app(
         Route(
             "/api/admin/conversations/{conversation_id}/messages",
             make_send_conversation_message_handler(conversation_manager),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/admin/conversations/{conversation_id}/uploads",
+            make_upload_conversation_files_handler(conversation_manager),
             methods=("POST",),
         ),
         Route(

@@ -120,8 +120,11 @@ def test_bind_actor_venv_imports_facade(tmp_path: Path) -> None:
 
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(binding.sys_path))
     out = subprocess.run(
-        [binding.venv_python, "-c",
-         "import yb, tim, yext.github, msgspec, pandas; print('ok')"],
+        [
+            binding.venv_python,
+            "-c",
+            "import yb, tim, yext.github, msgspec, pandas, pymupdf4llm; print('ok')",
+        ],
         capture_output=True,
         text=True,
         env=env,

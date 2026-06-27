@@ -77,7 +77,7 @@ function resolveCrumbs(
     };
   }
 
-  const actorMatch = pathname.match(/^\/actors\/([^/]+)(?:\/(edit))?$/);
+  const actorMatch = pathname.match(/^\/actors\/([^/]+)(?:\/edit)?$/);
   if (actorMatch) {
     const actorId = actorMatch[1] ?? "";
     const actor = resources.actors.find((item) => item.id === actorId);
@@ -86,7 +86,6 @@ function resolveCrumbs(
       trail: [
         { label: "Actors", to: "/actors" },
         { label: actor?.name ?? actorId, to: `/actors/${actorId}` },
-        ...(actorMatch[2] ? [{ label: "编辑", to: `/actors/${actorId}/edit` }] : []),
       ],
     };
   }

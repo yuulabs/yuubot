@@ -152,10 +152,14 @@ async def _send_message(
     text: str,
     *,
     actor_id: str,
+    uploads: list[dict[str, Any]] | None = None,
 ) -> httpx.Response:
+    body: dict[str, Any] = {"text": text, "actor_id": actor_id}
+    if uploads is not None:
+        body["uploads"] = uploads
     return await client.post(
         f"/api/admin/conversations/{conversation_id}/messages",
-        json={"text": text, "actor_id": actor_id},
+        json=body,
         headers=_headers(config),
     )
 
@@ -218,6 +222,14 @@ def _captured_system_text(captured_messages: list[yuullm.Message]) -> str:
         "no system message captured in the LLM call history; "
         f"roles seen: {[m.role for m in captured_messages]}"
     )
+
+
+def _last_user_prompt_text(capture: PromptCapture) -> str:
+    assert capture.calls, "LLM was not called"
+    for message in reversed(capture.calls[-1]):
+        if message.role == "user":
+            return yuullm.render_message_text(message)
+    raise AssertionError("no user message captured in the last LLM call")
 
 
 def _render_message_text(item_payload: dict[str, Any]) -> str:
@@ -294,6 +306,72 @@ async def _insert_echo_actor_with_workspace(
 # ---------------------------------------------------------------------------
 # Red tests
 # ---------------------------------------------------------------------------
+
+
+async def test_uploads_are_stored_in_workspace_and_visible_to_agent(
+    yuubot_config: BootstrapConfig,
+    tmp_path: Path,
+) -> None:
+    capture = PromptCapture()
+    register_test_llm_provider("openai", capture)
+
+    daemon = await _build_daemon(yuubot_config, tmp_path)
+    await daemon.start()
+    try:
+        async with _client(daemon.asgi_app(), yuubot_config) as client:
+            actor_id = "upload-agent"
+            workspace_rel = "upload-workspace"
+            await _insert_echo_actor_with_workspace(
+                daemon,
+                actor_id=actor_id,
+                workspace_path=workspace_rel,
+                system_prompt="You read uploaded files when asked.",
+            )
+
+            conversation_id = "upload-conversation"
+            upload_response = await client.post(
+                f"/api/admin/conversations/{conversation_id}/uploads",
+                data={"actor_id": actor_id},
+                files=[
+                    ("files", ("../../paper.pdf", b"%PDF test", "application/pdf")),
+                    ("files", ("plot.png", b"\x89PNG\r\n", "image/png")),
+                ],
+                headers=_headers(yuubot_config),
+            )
+            assert upload_response.status_code == 201, upload_response.text
+            uploads = upload_response.json()["data"]
+            assert [item["name"] for item in uploads] == ["paper.pdf", "plot.png"]
+
+            workspace_dir = tmp_path / "data" / "workspace" / workspace_rel
+            assert (workspace_dir / uploads[0]["path"]).read_bytes() == b"%PDF test"
+            assert (workspace_dir / uploads[1]["path"]).read_bytes() == b"\x89PNG\r\n"
+            assert uploads[0]["url"].startswith(
+                f"/workspace/{workspace_rel}/uploads/upload-conversation-"
+            )
+
+            response = await _send_message(
+                client,
+                yuubot_config,
+                conversation_id,
+                "Please inspect these files.",
+                actor_id=actor_id,
+                uploads=uploads,
+            )
+            assert response.status_code == 202, response.text
+            await _wait_for_messages(client, yuubot_config, conversation_id, count=2)
+
+            prompt_text = _last_user_prompt_text(capture)
+            assert "Please inspect these files." in prompt_text
+            assert (
+                f"[User uploaded a file paper.pdf, stored at {uploads[0]['url']}]"
+                in prompt_text
+            )
+            assert (
+                f"[User uploaded a file plot.png, stored at {uploads[1]['url']}]"
+                in prompt_text
+            )
+    finally:
+        await daemon.stop()
 
 
 async def test_first_send_creates_conversation_and_ordered_history(

@@ -292,6 +292,19 @@ export interface SendMessageResponse {
   };
 }
 
+export interface ConversationUploadedFile {
+  name: string;
+  path: string;
+  url: string;
+  size: number;
+  content_type: string;
+}
+
+export interface ConversationUploadResponse {
+  status: string;
+  data: ConversationUploadedFile[];
+}
+
 export interface CancelTurnResponse {
   status: string;
   data: {

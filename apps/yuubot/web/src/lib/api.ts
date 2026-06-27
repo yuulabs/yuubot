@@ -10,6 +10,8 @@ import type {
   ConversationCreateResponse,
   ConversationData,
   ConversationMessagesResponse,
+  ConversationUploadedFile,
+  ConversationUploadResponse,
   CancelTurnResponse,
   ConversationMessage,
   HealthResponse,
@@ -170,6 +172,7 @@ export async function sendConversationMessage(args: {
   text: string;
   messageId?: string;
   actorId?: string;
+  uploads?: ConversationUploadedFile[];
 }): Promise<SendMessageResponse["data"]> {
   const body: Record<string, unknown> = {
     text: args.text,
@@ -178,10 +181,37 @@ export async function sendConversationMessage(args: {
   if (args.actorId) {
     body.actor_id = args.actorId;
   }
+  if (args.uploads?.length) {
+    body.uploads = args.uploads;
+  }
   const res = await request<SendMessageResponse>(
     `${BASE}/admin/conversations/${args.conversationId}/messages`,
     { method: "POST", body: JSON.stringify(body) },
   );
+  return res.data;
+}
+
+export async function uploadConversationFiles(args: {
+  conversationId: string;
+  files: File[];
+  actorId?: string;
+}): Promise<ConversationUploadedFile[]> {
+  const body = new FormData();
+  if (args.actorId) {
+    body.append("actor_id", args.actorId);
+  }
+  for (const file of args.files) {
+    body.append("files", file, file.name || "upload");
+  }
+  const response = await fetch(
+    `${BASE}/admin/conversations/${args.conversationId}/uploads`,
+    { method: "POST", body },
+  );
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    throw new Error(errorMessage(errorBody, response.status));
+  }
+  const res = await response.json() as ConversationUploadResponse;
   return res.data;
 }
 

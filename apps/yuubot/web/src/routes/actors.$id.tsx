@@ -1,19 +1,19 @@
-// actors.$id.tsx — /actors/$id pure detail view (ISSUE-0007 S3).
+// actors.$id.tsx — /actors/$id merged detail + editor view.
 //
 // Reuses the same ActorEditor hero + editor__cols shell as /actors/new and
-// /actors/$id/edit, but renders fields read-only and injects detail-only
-// blocks for runtime context, ingress, capabilities, history, and deletion.
-// Editing no longer inlines here — the 编辑 action routes to /actors/$id/edit.
+// renders editable fields while injecting detail-only blocks for runtime
+// context, ingress, capabilities, history, and deletion.
 //
 // ISSUE-0010 regression (conversation-entry-via-actor test): this page still
 // lists this Actor's historical conversations via listConversations() filtered
 // by actor_id, each row linking to the conversation view route.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   useDeleteResource,
   useLiveCapabilities,
   useResourceList,
+  useUpdateResource,
 } from "@/hooks/use-resources";
 import type {
   ActorIngressRuleResource,
@@ -23,6 +23,7 @@ import type {
   LLMBackendResource,
 } from "@/types/api";
 import { listConversations } from "@/lib/api";
+import { workspaceHref } from "@/lib/workspace";
 import {
   Empty,
   ActorEditor,
@@ -47,37 +48,92 @@ function ActorDetailPage() {
   const { data: ingressRules = [] } =
     useResourceList<ActorIngressRuleResource>("ingress-rules");
   const { data: liveCaps } = useLiveCapabilities();
+  const updateActorMutation = useUpdateResource<ActorResource>("actors");
   const deleteMutation = useDeleteResource("actors");
 
   const actor = actors.find((a) => a.id === id);
+  const [state, setStateRaw] = useState<ActorEditorState>({
+    name: "",
+    description: "",
+    systemPrompt: "",
+    actorType: "simple_loop",
+    backendId: "",
+    model: "",
+    capabilitySetId: "",
+    maxTokens: "8192",
+    maxSteps: "6",
+    enabled: true,
+  });
+  const [error, setError] = useState("");
+  const [hydratedActorKey, setHydratedActorKey] = useState("");
+  const setState = <K extends keyof ActorEditorState>(key: K, value: ActorEditorState[K]) =>
+    setStateRaw((current) => ({ ...current, [key]: value }));
 
   // ISSUE-0010: per-Actor historical conversations. Pure client-side filter of
   // listConversations() by actor_id — no new endpoint.
   const [actorConversations, setActorConversations] = useState<ConversationListItem[]>([]);
   const [conversationsLoading, setConversationsLoading] = useState(true);
+  const actorSnapshotKey = actor
+    ? `${actor.id}:${actor.version ?? ""}:${actor.updated_at ?? ""}`
+    : "";
 
-  // Inject 编辑 + 发起对话 actions into the shell topbar.
+  useEffect(() => {
+    if (!actor) return;
+    if (actorSnapshotKey === hydratedActorKey) return;
+    setStateRaw({
+      name: actor.name ?? "",
+      description: "",
+      systemPrompt: actor.persona_prompt ?? "",
+      actorType: actor.type ?? "simple_loop",
+      backendId: actor.llm_backend_id ?? "",
+      model: actor.model ?? "",
+      capabilitySetId: actor.capability_set_id ?? "",
+      maxTokens: String(actor.per_run_budget?.max_tokens ?? 8192),
+      maxSteps: String(actor.per_run_budget?.max_steps ?? 6),
+      enabled: actor.enabled ?? true,
+    });
+    setHydratedActorKey(actorSnapshotKey);
+    setError("");
+  }, [actor, actorSnapshotKey, hydratedActorKey]);
+
+  const selectedBackend = backends.find((b) => b.id === state.backendId);
+  const modelOptions = useMemo(() => modelOptionsFor(selectedBackend), [selectedBackend]);
+  const isPending = updateActorMutation.isPending || deleteMutation.isPending;
+
+  // Inject save + conversation actions into the shell topbar.
   const { setActions } = useAppShellActions();
   useEffect(() => {
     if (!actor) {
       setActions(null);
       return;
     }
+    const capset = capabilitySets.find((c) => c.id === actor.capability_set_id);
+    const workspaceUrl = workspaceHref(actor.capability_set?.workspace_path ?? capset?.workspace_path);
     setActions(
       <>
-        <Link to="/actors/$id/edit" params={{ id: actor.id }}>
-          <button type="button" className="btn btn--ghost">编辑</button>
-        </Link>
+        <button type="submit" form="actor-editor-form" className="btn btn--primary" disabled={isPending}>
+          保存
+        </button>
+        {workspaceUrl ? (
+          <a
+            href={workspaceUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn--ghost"
+          >
+            Workspace
+          </a>
+        ) : null}
         <Link
           to="/admin/conversations/$conversationId"
           params={{ conversationId: `actor-${actor.id}` }}
         >
-          <button type="button" className="btn btn--primary">发起对话</button>
+          <button type="button" className="btn btn--ghost">发起对话</button>
         </Link>
       </>,
     );
     return () => setActions(null);
-  }, [setActions, actor]);
+  }, [setActions, actor, capabilitySets, isPending]);
 
   useEffect(() => {
     if (!actor) return;
@@ -113,6 +169,7 @@ function ActorDetailPage() {
 
   const backend = backends.find((b) => b.id === actor.llm_backend_id);
   const capset = capabilitySets.find((c) => c.id === actor.capability_set_id);
+  const workspaceUrl = workspaceHref(capset?.workspace_path);
   // Ingress rules routing to this actor (client-side filter of ingress-rules).
   const rulesForActor = ingressRules.filter((r) => r.actor_id === actor.id);
   // Capabilities exposed via this actor's capability set (names resolved via
@@ -120,21 +177,37 @@ function ActorDetailPage() {
   const capIds = capset?.integration_ids ?? [];
   const capName = (capId: string) =>
     liveCaps?.find((c) => c.capability_id === capId)?.capability_name ?? capId;
-  const editorState: ActorEditorState = {
-    name: actor.name ?? "",
-    description: "",
-    systemPrompt: actor.persona_prompt ?? "",
-    actorType: actor.type ?? "simple_loop",
-    backendId: actor.llm_backend_id ?? "",
-    model: actor.model ?? "",
-    capabilitySetId: actor.capability_set_id ?? "",
-    maxTokens: String(actor.per_run_budget?.max_tokens ?? ""),
-    maxSteps: String(actor.per_run_budget?.max_steps ?? ""),
-    enabled: actor.enabled ?? true,
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!state.name.trim()) return setError("请输入名称。");
+    if (!state.capabilitySetId) return setError("请选择 Capability Set。");
+    if (!state.backendId) return setError("请选择 LLM 供应商。");
+    if (!state.model.trim()) return setError("请选择模型。");
+    setError("");
+    const budget = {
+      max_steps: Number(state.maxSteps) || 0,
+      max_tokens: Number(state.maxTokens) || 0,
+      max_usd: 0,
+    };
+    try {
+      await updateActorMutation.mutateAsync({
+        id: actor.id,
+        data: {
+          name: state.name,
+          type: state.actorType,
+          persona_prompt: state.systemPrompt,
+          model: state.model,
+          llm_backend_id: state.backendId,
+          capability_set_id: state.capabilitySetId,
+          per_run_budget: budget,
+          enabled: state.enabled,
+        },
+      });
+    } catch {
+      /* mutation error surfaces below */
+    }
   };
-  const selectedBackend = backends.find((b) => b.id === editorState.backendId);
-  const modelOptions = modelOptionsFor(selectedBackend);
-  const setReadOnlyState = () => undefined;
 
   const handleDelete = () => {
     if (confirm(`删除 Actor “${actor.name}”？`)) {
@@ -146,21 +219,22 @@ function ActorDetailPage() {
     <div className="view">
       <div className="page-head">
         <div>
-          <h1 className="page-title">查看 {actor.name}</h1>
-          <p className="page-sub">查看这个 Actor 的 LLM 供应商、模型、Capability Set、预算、Persona 与路由状态。</p>
+          <h1 className="page-title">Actor {actor.name}</h1>
+          <p className="page-sub">配置这个 Actor 的 LLM 供应商、模型、Capability Set、预算、Persona 与路由状态。</p>
         </div>
       </div>
 
-      <div className="editor">
+      <form className="editor" id="actor-editor-form" onSubmit={handleSave} autoComplete="off">
         <ActorEditor
-          mode="view"
+          mode="edit"
           actor={actor}
-          state={editorState}
-          setState={setReadOnlyState}
+          state={state}
+          setState={setState}
           backends={backends}
           capabilitySets={capabilitySets}
           modelOptions={modelOptions}
-          isPending={deleteMutation.isPending}
+          isPending={isPending}
+          error={error || updateActorMutation.error?.message}
           onDelete={handleDelete}
           mainAfter={
             <>
@@ -184,7 +258,16 @@ function ActorDetailPage() {
                       ? <Link to="/capability-sets" className="inline-link">{capset.name}</Link>
                       : <span>-</span>}
                   </div>
-                  <div className="readonly-kv"><b>Workspace</b><span>{capset?.workspace_path ?? "-"}</span></div>
+                  <div className="readonly-kv">
+                    <b>Workspace</b>
+                    {workspaceUrl ? (
+                      <a href={workspaceUrl} target="_blank" rel="noopener noreferrer" className="inline-link">
+                        {capset?.workspace_path}
+                      </a>
+                    ) : (
+                      <span>-</span>
+                    )}
+                  </div>
                   <div className="readonly-kv">
                     <b>Rollover</b>
                     <span>{capset?.loop_policy?.rollover_enabled ? "enabled" : "disabled"}</span>
@@ -245,11 +328,6 @@ function ActorDetailPage() {
                     illustration="Cap"
                     title="无能力绑定"
                     description="为该 Actor 的 Capability Set 选择能力。"
-                    action={
-                      <Link to="/actors/$id/edit" params={{ id: actor.id }}>
-                        <button type="button" className="btn btn--ghost">去编辑</button>
-                      </Link>
-                    }
                   />
                 ) : (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -301,7 +379,7 @@ function ActorDetailPage() {
           </RailCard>
           }
         />
-      </div>
+      </form>
     </div>
   );
 }

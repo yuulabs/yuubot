@@ -1,9 +1,9 @@
 // actors-pages.test.ts
 //
 // Source-text contract test for ISSUE-0007 S3 — Actors 页（browse + editor +
-// detail）照 demo 重建. Reads the four route files and asserts the demo
-// interaction surface is present in source, the editor is split into its own
-// routes, and the documented schema deviations (D1–D3 + D-extra) are visible.
+// detail）照 demo 重建. Reads the route files and asserts the demo interaction
+// surface is present in source and the documented schema deviations
+// (D1–D3 + D-extra) are visible.
 //
 // Shape mirrors conversation-entry-via-actor.test.ts: node:test + readFileSync,
 // no component rendering.
@@ -29,25 +29,21 @@ test("actors.tsx browse view exposes SearchBox + SegFilter + LayoutToggle + Empt
 test("actors.tsx no longer inlines a <form> create (create moved to /actors/new)", () => {
   const src = read("actors.tsx");
   assert.ok(!/<form\b/.test(src), "actors browse must not inline a create <form>");
-  assert.ok(!/useCreateResource/.test(src), "actors browse must not call useCreateResource");
 });
 
-test("actors.$id.tsx is pure detail: ActorEditor view mode + detail blocks + listConversations + ingress-rules client filter", () => {
+test("actors.$id.tsx merges detail and edit: ActorEditor edit mode + update + save + detail blocks", () => {
   const src = read("actors.$id.tsx");
   assert.ok(src.includes("<ActorEditor"), "detail must reuse <ActorEditor>");
-  assert.ok(src.includes('mode="view"'), "detail must render ActorEditor in view mode");
+  assert.ok(src.includes('mode="edit"'), "detail must render ActorEditor in edit mode");
+  assert.ok(src.includes("useUpdateResource"), "detail must update Actor resources");
+  assert.ok(src.includes('form="actor-editor-form"'), "detail must expose a topbar save button");
   assert.ok(src.includes("运行上下文"), "detail must render runtime context detail block");
   assert.ok(src.includes("事件路由"), "detail must render 事件路由 LegendCard");
   assert.ok(src.includes("能力"), "detail must render 能力 LegendCard");
   assert.ok(src.includes("onDelete"), "detail must pass delete action into ActorEditor danger rail");
   assert.ok(src.includes("listConversations"), "detail must list this Actor's conversations via listConversations");
   assert.ok(src.includes(".filter("), "detail must client-filter ingress-rules by actor_id");
-});
-
-test("actors.$id.tsx no longer inlines the edit form (no Textarea system_prompt edit)", () => {
-  const src = read("actors.$id.tsx");
-  assert.ok(!/<Textarea\b/.test(src), "detail must not inline a System-prompt Textarea editor");
-  assert.ok(!/useUpdateResource/.test(src), "detail must not call useUpdateResource (edit moved out)");
+  assert.ok(src.includes("<form"), "merged detail/editor must render a <form>");
 });
 
 test("actors.new.tsx exists and creates an Actor with inline persona", () => {
@@ -65,12 +61,10 @@ test("actors.new.tsx exists and creates an Actor with inline persona", () => {
   );
 });
 
-test("actors.$id.edit.tsx exists and drives update", () => {
+test("actors.$id.edit.tsx redirects to the merged detail/editor page", () => {
   const src = read("actors.$id.edit.tsx");
-  assert.ok(
-    src.includes("useUpdateResource") || src.includes("updateActor"),
-    "edit route must reference useUpdateResource / updateActor",
-  );
+  assert.ok(src.includes("redirect"), "legacy edit route must redirect");
+  assert.ok(src.includes('to: "/actors/$id"'), "legacy edit route must target merged detail/editor");
 });
 
 test("actor editor labels match the create/detail contract", () => {

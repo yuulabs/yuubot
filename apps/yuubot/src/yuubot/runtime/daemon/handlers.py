@@ -14,6 +14,7 @@ from typing import cast
 import msgspec
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
+from starlette.datastructures import UploadFile
 import yuullm
 
 from yuubot.bootstrap.config import ServerConfig
@@ -24,6 +25,8 @@ from yuubot.core.conversations import (
     ConversationBindingConflict,
     ConversationManager,
     ConversationSendBinding,
+    ConversationUploadBinding,
+    ConversationUploadedFile,
 )
 from yuubot.resources.records import ConversationRecord
 from yuubot.core.integrations import IntegrationCore
@@ -59,6 +62,7 @@ class ConversationMessageRequest(msgspec.Struct, forbid_unknown_fields=False):
     capability_set_id: str = ""
     llm_backend_id: str = ""
     model: str = ""
+    uploads: list[ConversationUploadedFile] = msgspec.field(default_factory=list)
 
 
 # --
@@ -148,9 +152,39 @@ async def _conversation_message_request_from_request(
     except (msgspec.ValidationError, msgspec.DecodeError):
         return error_response("invalid request body", status_code=400)
 
-    if not req.text.strip():
-        return error_response("text must be provided", status_code=400)
+    if not req.text.strip() and not req.uploads:
+        return error_response("text or uploads must be provided", status_code=400)
     return req
+
+
+async def _conversation_upload_request_from_request(
+    request: Request,
+) -> tuple[ConversationUploadBinding, list[tuple[str, bytes, str]]] | JSONResponse:
+    try:
+        form = await request.form()
+    except Exception:
+        logger.exception("failed to parse conversation upload request")
+        return error_response(
+            "request body must be multipart/form-data",
+            status_code=400,
+        )
+
+    binding = ConversationUploadBinding(actor_id=str(form.get("actor_id") or ""))
+    files: list[tuple[str, bytes, str]] = []
+    for value in form.getlist("files"):
+        if not isinstance(value, UploadFile):
+            continue
+        content = await value.read()
+        files.append(
+            (
+                value.filename or "upload",
+                content,
+                value.content_type or "application/octet-stream",
+            )
+        )
+    if not files:
+        return error_response("at least one file must be provided", status_code=400)
+    return binding, files
 
 
 def _bearer_token(request: Request) -> str | None:
@@ -523,7 +557,7 @@ def make_send_conversation_message_handler(
         try:
             _, message_id = await conversation_manager.send_message(
                 conversation_id=conversation_id,
-                text=req.text,
+                text=_conversation_prompt_text(req.text, req.uploads),
                 binding=binding,
                 message_id=req.message_id.strip() or None,
             )
@@ -549,6 +583,37 @@ def make_send_conversation_message_handler(
         )
 
     return send_conversation_message
+
+
+def make_upload_conversation_files_handler(
+    conversation_manager: ConversationManager,
+):
+    async def upload_conversation_files(request: Request) -> JSONResponse:
+        req_or_response = await _conversation_upload_request_from_request(request)
+        if isinstance(req_or_response, JSONResponse):
+            return req_or_response
+        binding, files = req_or_response
+        conversation_id = request.path_params["conversation_id"]
+
+        try:
+            uploaded = await conversation_manager.store_uploads(
+                conversation_id=conversation_id,
+                files=files,
+                binding=binding,
+            )
+        except LookupError as exc:
+            return error_response(str(exc), status_code=404)
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        return JSONResponse(
+            {
+                "status": "ok",
+                "data": [msgspec.to_builtins(item) for item in uploaded],
+            },
+            status_code=201,
+        )
+
+    return upload_conversation_files
 
 
 def make_cancel_conversation_turn_handler(
@@ -652,3 +717,15 @@ def _project_message_history_row(
 def _decoded_item_to_builtins(item: yuullm.PromptItem) -> object:
     """Stable JSON-safe builtins form of a decoded history item."""
     return msgspec.to_builtins(item)
+
+
+def _conversation_prompt_text(
+    text: str,
+    uploads: list[ConversationUploadedFile],
+) -> str:
+    parts: list[str] = []
+    body = text.strip()
+    if body:
+        parts.append(body)
+    parts.extend(upload.prompt_line() for upload in uploads)
+    return "\n\n".join(parts)

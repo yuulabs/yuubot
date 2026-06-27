@@ -16,6 +16,8 @@ dependencies = [
     "yuutrace",
     "cryptography>=48.0.0",
     "httpx>=0.28.1",
+    "pymupdf4llm>=1.27.2.3",
+    "python-multipart>=0.0.32",
 ]
 
 [project.optional-dependencies]

@@ -133,6 +133,7 @@ def _workspace_bullets(
         "- tmp/ is for scratch output; artifacts/ is the local artifact store "
         "(create it first if missing: os.makedirs('artifacts', exist_ok=True)).",
         "- AGENTS.md at the workspace root is the project map; update it when projects change (create / remove / rename).",
+        "- User uploads are stored under uploads/<conversation-id>/; uploaded PDF files can be converted with yb.office.pdf.to_markdown(path, pages=[0, 1, 2], write_images_to='artifacts/pdf-images') to limit pages and extract PNG images at 150 dpi by default.",
         "",
         "Python execution environment:",
         "- execute_python runs in the workspace's isolated .venv; `pd`, `np`, `plt` are pre-imported there — use them directly.",
