@@ -98,6 +98,12 @@ class FakeIntegrationFactory:
     def capability_specs(self) -> tuple[AnyCapabilitySpec, ...]:
         return ()
 
+    @property
+    def sdk_spec(self):
+        from yuubot.core.integrations.contracts import IntegrationSdkSpec
+
+        return IntegrationSdkSpec()
+
     async def create(
         self,
         record: IntegrationRecord,

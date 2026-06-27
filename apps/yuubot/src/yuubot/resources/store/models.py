@@ -37,7 +37,7 @@ IntegrationORM = resource_model(
     module=__name__,
     field_specs={
         "id": char(primary_key=True),
-        "name": char(unique=True),
+        "name": char(),
     },
 )
 

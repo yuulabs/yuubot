@@ -62,35 +62,6 @@ def _provider_model_payload(model: yuullm.ProviderModel) -> dict[str, object]:
     return payload
 
 
-def _provider_capabilities_payload(backend: LLMBackendRecord) -> dict[str, bool]:
-    selected_model = _selected_model(backend)
-    config = backend.model_configs.get(selected_model) if selected_model else None
-    if config is None:
-        return {
-            "chat": False,
-            "vision": False,
-            "tool_calling": False,
-            "reasoning": False,
-            "embedding": False,
-            "structured_output": False,
-        }
-    capabilities = config.capabilities
-    return {
-        "chat": capabilities.chat,
-        "vision": capabilities.vision,
-        "tool_calling": capabilities.tool_calling,
-        "reasoning": capabilities.reasoning,
-        "embedding": capabilities.embedding,
-        "structured_output": capabilities.structured_output,
-    }
-
-
-def _selected_model(backend: LLMBackendRecord) -> str:
-    if backend.recommended_model:
-        return backend.recommended_model
-    return next(iter(backend.model_configs), "")
-
-
 # -- Handler factories --
 
 
@@ -174,26 +145,18 @@ def make_validate_provider_handler(
                     "data": {
                         "valid": False,
                         "detail": str(exc),
-                        "recommended_model_valid": False,
                         "models": [],
-                        "capabilities": _provider_capabilities_payload(backend),
                     },
                 }
             )
 
-        model_ids = [model.id for model in models]
-        selected_model = _selected_model(backend)
         return JSONResponse(
             {
                 "status": "ok",
                 "data": {
                     "valid": True,
                     "detail": "",
-                    "recommended_model_valid": (
-                        not selected_model or selected_model in set(model_ids)
-                    ),
                     "models": [_provider_model_payload(model) for model in models],
-                    "capabilities": _provider_capabilities_payload(backend),
                 },
             }
         )

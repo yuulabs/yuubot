@@ -69,7 +69,6 @@ async def test_single_channel_ingress_and_response(resources: Resources, tmp_pat
         gateway=gateway,
         integrations_root=tmp_path / "data" / "integrations",
     )
-    await integrations.refresh_capabilities()
     await integrations.enable(channel.id)
 
     try:
@@ -126,7 +125,6 @@ async def test_multi_channel_ingress_routes_to_correct_actor(resources: Resource
         gateway=gateway,
         integrations_root=tmp_path / "data" / "integrations",
     )
-    await integrations.refresh_capabilities()
     await integrations.enable(channel.id)
 
     try:
@@ -295,7 +293,6 @@ async def test_bridge_im_send_dispatches_directly_to_integration(resources: Reso
         gateway=gateway,
         integrations_root=tmp_path / "data" / "integrations",
     )
-    await integrations.refresh_capabilities()
     await integrations.enable(channel.id)
 
     bridge = IntegrationInvokeBridge(integrations=integrations)
@@ -392,7 +389,7 @@ async def _create_actor_bundle(repository: ResourceRepository, actor_id: str) ->
             persona_prompt="You are a test actor.",
             capability_set_id=capability_set.id,
             llm_backend_id=backend.id,
-            model="",
+            model="gpt-4",
         ),
     )
 
@@ -404,7 +401,6 @@ async def _create_llm_backend(repository: ResourceRepository, backend_id: str) -
             id=backend_id,
             name=backend_id,
             provider_identity="openai",
-            recommended_model="gpt-4",
             model_configs={
                 "gpt-4": ModelConfig(
                     pricing=Pricing(),

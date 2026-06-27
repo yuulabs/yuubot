@@ -25,7 +25,7 @@ export const PRESET_ACTORS: readonly PresetActor[] = [
 
 export interface LLMBackendLike {
   id: string;
-  recommended_model?: string | null;
+  model_configs: Record<string, unknown>;
 }
 
 /**
@@ -42,9 +42,13 @@ export function presetActorCreatePayload(
     type: "simple_loop",
     enabled: true,
     persona_prompt: preset.personaPrompt,
-    model: backend.recommended_model ?? "",
+    model: firstConfiguredModel(backend),
     capability_set_id: preset.capabilitySetId,
     llm_backend_id: backend.id,
     per_run_budget: { max_steps: 6, max_tokens: 8192, max_usd: 2.0 },
   };
+}
+
+function firstConfiguredModel(backend: LLMBackendLike): string {
+  return Object.keys(backend.model_configs).sort()[0] ?? "";
 }

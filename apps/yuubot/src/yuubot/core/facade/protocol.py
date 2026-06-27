@@ -15,6 +15,7 @@ class FacadeRpcRequest(msgspec.Struct):
 
     token: str
     actor_id: str
+    integration_id: str = ""
     capability_id: str = ""
     kind: str = "invoke"
     payload: dict[str, object] = msgspec.field(default_factory=dict)

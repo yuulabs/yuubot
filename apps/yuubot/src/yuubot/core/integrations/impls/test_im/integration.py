@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.contracts import (
     IntegrationInstance,
+    IntegrationSdkSpec,
     IntegrationStorage,
     ReactionKind,
 )
@@ -161,6 +162,13 @@ class TestImIntegrationFactory:
 
     def capability_specs(self) -> list:
         return []
+
+    @property
+    def sdk_spec(self) -> IntegrationSdkSpec:
+        # test_im is an inbound-only IM ingress integration: it registers no
+        # callable facade module and contributes nothing to the system prompt's
+        # # Integration SDKs section (§2.7.1).
+        return IntegrationSdkSpec()
 
     @property
     def source_path_convention(self) -> str:

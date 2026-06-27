@@ -27,6 +27,48 @@ Integrations that cannot represent a reaction should silently ignore it.
 """
 
 
+@dataclass(frozen=True)
+class IntegrationSdkSpec:
+    """SDK surface an integration exposes to agent facades + system prompt.
+
+    Declared per-integration-kind by its ``IntegrationFactory.sdk_spec``. The
+    facade derives ``VisibleIntegrationSurface`` read-models from the
+    selected + running integrations; the system prompt renders
+    ``prompt_summary`` per surface, and ``ExecutePythonToolFactory`` derives
+    the kernel ``imports`` from ``import_paths`` (§2.7.1, §6.6).
+    """
+
+    import_paths: tuple[str, ...] = ()
+    prompt_summary: str = ""
+    doc_modules: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class IntegrationCapabilityRef:
+    """An ``(integration_id, capability_id)`` routing pair for a visible SDK."""
+
+    integration_id: str
+    capability_id: str
+
+
+@dataclass(frozen=True)
+class VisibleIntegrationSurface:
+    """Read-model for a selected + running integration (§2.7.1).
+
+    Derived at facade-bind time from ``CapabilitySet.integration_ids`` ∩
+    enabled ``IntegrationRecord`` ∩ running ``IntegrationInstance``. Carries
+    the integration's declared ``IntegrationSdkSpec`` + the capability specs
+    it actually provides, so the facade, kernel imports, and the system
+    prompt's ``# Integration SDKs`` section all share one source of truth.
+    """
+
+    integration_id: str
+    integration_name: str
+    sdk: IntegrationSdkSpec
+    capabilities: tuple[AnyCapabilitySpec, ...]
+    capability_refs: tuple[IntegrationCapabilityRef, ...]
+
+
 @dataclass
 class IntegrationKindInfo:
     """Static metadata about a registered integration kind.
@@ -39,6 +81,9 @@ class IntegrationKindInfo:
     integration kind constructs the ``source.path`` on inbound messages.
     Integration developers document their path naming scheme here so that
     users can write correct ``source_path_pattern`` globs in Ingress Rules.
+
+    ``sdk_spec`` mirrors ``IntegrationFactory.sdk_spec`` so the admin UI can
+    surface each kind's SDK import paths / prompt summary.
     """
 
     name: str
@@ -46,6 +91,7 @@ class IntegrationKindInfo:
     config_schema: dict[str, object] = field(default_factory=dict)
     capabilities: tuple[AnyCapabilitySpec, ...] = ()
     source_path_convention: str = ""
+    sdk_spec: IntegrationSdkSpec = field(default_factory=IntegrationSdkSpec)
 
 
 class IntegrationFactory(Protocol):
@@ -69,6 +115,17 @@ class IntegrationFactory(Protocol):
         not produce inbound messages or if the path is purely external.
         """
         return ""
+
+    @property
+    def sdk_spec(self) -> IntegrationSdkSpec:
+        """SDK surface this integration kind exposes to agent facades.
+
+        Default: empty (no facade module, no prompt). Integration kinds that
+        ship a callable ``yext.*`` facade override this to declare their
+        import paths + a short prompt summary (§2.7.1). Inbound-only kinds
+        (no callable facade) keep the empty default.
+        """
+        return IntegrationSdkSpec()
 
     def capability_specs(self) -> list[AnyCapabilitySpec]: ...
 
@@ -137,6 +194,7 @@ def integration_kind_info(factory: IntegrationFactory) -> IntegrationKindInfo:
         config_schema=schema,
         capabilities=tuple(factory.capability_specs()),
         source_path_convention=factory.source_path_convention,
+        sdk_spec=factory.sdk_spec,
     )
 
 

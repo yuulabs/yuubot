@@ -5,7 +5,49 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import msgspec
+
+from yuubot.core.capabilities import CapabilitySpec
+from yuubot.core.facade.codegen import write_facade_package
 from yuubot.core.facade.workspace import FacadeEndpoint, FacadeWorkspace
+from yuubot.core.integrations.contracts import (
+    IntegrationCapabilityRef,
+    IntegrationSdkSpec,
+    VisibleIntegrationSurface,
+)
+
+
+class _EchoInput(msgspec.Struct):
+    value: str = ""
+
+
+class _EchoOutput(msgspec.Struct):
+    value: str = ""
+
+
+_ECHO_SPEC = CapabilitySpec(
+    id="echo.echo",
+    name="Echo",
+    description="Echo a value.",
+    input_type=_EchoInput,
+    output_type=_EchoOutput,
+    namespace="echo",
+)
+
+
+def _surface(integration_id: str) -> VisibleIntegrationSurface:
+    return VisibleIntegrationSurface(
+        integration_id=integration_id,
+        integration_name="echo",
+        sdk=IntegrationSdkSpec(import_paths=("yext.echo",)),
+        capabilities=(_ECHO_SPEC,),
+        capability_refs=(
+            IntegrationCapabilityRef(
+                integration_id=integration_id,
+                capability_id=_ECHO_SPEC.id,
+            ),
+        ),
+    )
 
 
 def test_bind_actor_provisions_isolated_venv(tmp_path: Path) -> None:
@@ -15,7 +57,7 @@ def test_bind_actor_provisions_isolated_venv(tmp_path: Path) -> None:
         agent_name="a",
         session_id="s",
         mailbox_id="m",
-        capabilities=(),
+        surfaces=(),
         endpoint=FacadeEndpoint(host="127.0.0.1", port=1, token="t"),
     )
 
@@ -32,14 +74,36 @@ def test_bind_actor_provisions_isolated_venv(tmp_path: Path) -> None:
     assert out.returncode == 0, out.stderr
 
 
+def test_generated_facade_disambiguates_duplicate_capability_ids(
+    tmp_path: Path,
+) -> None:
+    write_facade_package(
+        tmp_path,
+        surfaces=(
+            _surface("echo-a"),
+            _surface("echo-b"),
+        ),
+    )
+
+    module = tmp_path / "yext" / "echo.py"
+    source = module.read_text(encoding="utf-8")
+
+    assert "async def echo__echo_a" in source
+    assert "async def echo__echo_b" in source
+    assert "integration_id='echo-a'" in source
+    assert "integration_id='echo-b'" in source
+
+
 def test_bind_actor_venv_imports_facade(tmp_path: Path) -> None:
     """The actor venv + binding sys_path must let the facade imports resolve.
 
-    The kernel bootstrap runs ``import yb; import tim; import yext.github`` plus
-    ``import facade_context`` unconditionally. For that to work on the isolated
-    actor ``.venv`` (not the daemon venv), two things must hold:
-    ``msgspec`` (the facade's only third-party dep) is installed in the actor
-    venv, and the daemon's ``apps/yuubot/src`` is on the binding ``sys_path``.
+    The kernel bootstrap runs ``import yb; import tim; import facade_context``
+    and the agent imports ``yext.*`` on demand; the subprocess below exercises
+    the same module resolution (``yb``, ``tim``, ``yext.github``) that both
+    paths rely on. For that to work on the isolated actor ``.venv`` (not the
+    daemon venv), two things must hold: ``msgspec`` (the facade's only
+    third-party dep) is installed in the actor venv, and the daemon's
+    ``apps/yuubot/src`` is on the binding ``sys_path``.
     """
     ws = FacadeWorkspace(root=tmp_path, package_name="yext")
     binding = ws.bind_actor(
@@ -47,7 +111,7 @@ def test_bind_actor_venv_imports_facade(tmp_path: Path) -> None:
         agent_name="a",
         session_id="s",
         mailbox_id="m",
-        capabilities=(),
+        surfaces=(),
         endpoint=FacadeEndpoint(host="127.0.0.1", port=1, token="t"),
     )
     assert binding.venv_python is not None
@@ -92,7 +156,7 @@ def test_bind_actor_is_idempotent(tmp_path: Path) -> None:
         agent_name="a",
         session_id="s1",
         mailbox_id="m",
-        capabilities=(),
+        surfaces=(),
         endpoint=endpoint,
     )
     assert first.venv_python is not None
@@ -112,7 +176,7 @@ def test_bind_actor_is_idempotent(tmp_path: Path) -> None:
         agent_name="a",
         session_id="s2",
         mailbox_id="m",
-        capabilities=(),
+        surfaces=(),
         endpoint=endpoint,
     )
 
@@ -151,7 +215,7 @@ def test_bind_actor_resyncs_when_pyproject_drifts(tmp_path: Path) -> None:
         agent_name="a",
         session_id="s1",
         mailbox_id="m",
-        capabilities=(),
+        surfaces=(),
         endpoint=endpoint,
     )
     assert first.venv_python is not None
@@ -179,7 +243,7 @@ def test_bind_actor_resyncs_when_pyproject_drifts(tmp_path: Path) -> None:
         agent_name="a",
         session_id="s2",
         mailbox_id="m",
-        capabilities=(),
+        surfaces=(),
         endpoint=endpoint,
     )
 

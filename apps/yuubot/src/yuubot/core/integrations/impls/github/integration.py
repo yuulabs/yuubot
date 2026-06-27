@@ -16,7 +16,11 @@ from yuubot.core.capabilities import (
 )
 from yuubot.core.gateway import Gateway
 from yuubot.core.integrations.context import InvocationContext
-from yuubot.core.integrations.contracts import IntegrationStorage, ReactionKind
+from yuubot.core.integrations.contracts import (
+    IntegrationSdkSpec,
+    IntegrationStorage,
+    ReactionKind,
+)
 from yuubot.core.integrations.impls.github.client import GitHubClient
 from yuubot.core.integrations.impls.github.models import (
     FileReadInput,
@@ -54,6 +58,44 @@ GITHUB_INTEGRATION_DESCRIPTION = (
 GITHUB_SOURCE_PATH_CONVENTION = (
     "GitHub is exposed only as agent-callable capabilities in this phase. "
     "It does not emit inbound messages and has no source path convention."
+)
+
+# SDK surface the GitHub integration exposes to agent facades + the system
+# prompt ``# Integration SDKs`` section (design §2.7.1). The hand-written
+# ``yext.github`` facade module is the callable surface; this prose documents
+# its API, capabilities, and failure guidance so the agent knows how to use it
+# without the system prompt mechanically expanding every function schema.
+_GITHUB_SDK_PROMPT_SUMMARY = """\
+- Surface: execute_python
+- Python facade: yext.github hand-written API.
+  Do NOT derive import paths mechanically from capability ids.
+
+Examples:
+```python
+import yext.github
+
+repo = yext.github.repo("OWNER", "REPO")
+issues = await repo.issues.list_recent(limit=5)
+issue = await repo.issues.read(123, body_max_chars=4000)
+content = await repo.files.read("README.md", ref="main", max_chars=8000)
+```
+
+Capabilities:
+- github.issue.list     — read.  Inputs: owner?, repo?, state?, per_page?.
+- github.issue.read     — read.  Inputs: number, body_max_chars?.
+- github.issue.create   — write. Inputs: owner?, repo?, title, body?.
+- github.issue.comment  — write. Inputs: number, body.
+- github.file.read      — read.  Inputs: path, ref?, max_chars?.
+
+Failure guidance:
+- If owner/repo are missing, ask the user or use configured defaults if documented.
+- If GitHub returns not found/private/scope/rate-limit, summarize the exact failure; do not retry the same call.
+- If output is too large, narrow the request or ask before retry."""
+
+GITHUB_SDK_SPEC = IntegrationSdkSpec(
+    import_paths=("yext.github",),
+    prompt_summary=_GITHUB_SDK_PROMPT_SUMMARY,
+    doc_modules=("yext.github",),
 )
 
 GITHUB_ISSUE_LIST_CAPABILITY_SPEC = CapabilitySpec[IssueListInput, IssueListOutput](
@@ -130,6 +172,10 @@ class GitHubIntegrationFactory:
 
     def capability_specs(self) -> list[AnyCapabilitySpec]:
         return list(GITHUB_CAPABILITY_SPECS)
+
+    @property
+    def sdk_spec(self) -> IntegrationSdkSpec:
+        return GITHUB_SDK_SPEC
 
     async def create(
         self,

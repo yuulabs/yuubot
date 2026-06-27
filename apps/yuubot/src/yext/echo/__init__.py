@@ -23,19 +23,25 @@ from yb import _context
 from yb._client import request as _request
 
 
-async def echo(value: object = None) -> dict[str, object]:
+async def echo(value: object = None, *, integration_id: str = "") -> dict[str, object]:
     """Echo ``value`` through the integration facade RPC bridge.
 
     Returns the daemon result dict (the EchoPayload fields as a JSON object).
     """
 
     payload_value = str(value) if value is not None else ""
-    return await _invoke("echo.echo", {"value": payload_value})
+    return await _invoke(
+        "echo.echo",
+        {"value": payload_value},
+        integration_id=integration_id,
+    )
 
 
 async def _invoke(
     capability_id: str,
     payload: dict[str, object],
+    *,
+    integration_id: str = "",
 ) -> dict[str, object]:
     actor = _context.actor_context()
     bridge = _context.bridge_context()
@@ -43,6 +49,7 @@ async def _invoke(
         FacadeRpcRequest(
             token=bridge.token,
             actor_id=actor.actor_id,
+            integration_id=integration_id,
             agent_name=actor.agent_name,
             session_id=actor.session_id,
             mailbox_id=actor.mailbox_id,

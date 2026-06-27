@@ -1,15 +1,9 @@
 // capability-sets.new.tsx — `/capability-sets/new` editor (ISSUE-0007 S5).
 //
 // Demo-aligned Capability Set editor (新建态): editor__hero (CS avatar mark +
-// name/description inline fields + selected-cap-count + ID) + editor__cols
-// (main: 基本 LegendCard with workspace path / daily budget / memory toggle;
-// 能力 LegendCard with lead + CapTree grouped by integration source) + rail
-// (提示 card only — danger zone is edit-only).
-//
-// CapTree is provided by S1 (`components/baseline/CapTree`); this route only
-// assembles `groups` from `useLiveCapabilities()` and feeds them in. The Save
-// action is pushed into the shell topbar (the shell owns the topbar, per the
-// S2 app-shell reconciliation note).
+// name/description inline fields + selected integration count + ID) + editor__cols
+// (main: 基本 LegendCard with workspace path / loop policy; 能力 LegendCard
+// with flat integration-instance selection) + rail.
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
@@ -42,7 +36,7 @@ interface CapGroup {
   }[];
 }
 
-/** Group live capabilities by integration source (CapTree groups contract). */
+/** Group live capabilities by integration instance (selection value = id). */
 function groupByIntegration(caps: LiveCapability[]): CapGroup[] {
   const bySource = new Map<string, LiveCapability[]>();
   for (const c of caps) {
@@ -145,7 +139,7 @@ function CapabilitySetNewPage() {
               />
             </Field>
             <div className="hero__meta">
-              <span className="kv"><b>已选</b> <code>{selectedIds.length}</code> 项能力</span>
+              <span className="kv"><b>已选</b> <code>{selectedIds.length}</code> 个集成</span>
               <span className="kv"><b>ID</b> <code>—</code></span>
             </div>
           </div>
@@ -186,7 +180,7 @@ function CapabilitySetNewPage() {
             </LegendCard>
 
             <LegendCard dotColor="green" legend="能力">
-              <p className="card__lead">按来源分组，可整组勾选。展开查看具体能力。</p>
+              <p className="card__lead">按集成实例选择；选中后该实例的全部 SDK 能力对 Actor 可见。</p>
               <CapTree
                 groups={capGroups}
                 selectedIds={selectedIds}

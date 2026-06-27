@@ -101,7 +101,6 @@ def _dummy_llm():
     backend = LLMBackendRecord(
         name="test-backend",
         provider_identity="openai",
-        recommended_model="gpt-4",
         model_configs={
             "gpt-4": ModelConfig(
                 pricing=Pricing(),

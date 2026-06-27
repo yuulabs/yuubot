@@ -131,7 +131,7 @@ class ResourceCodec:
             request = _convert_request(raw_payload, ActorPatchRequest)
             if isinstance(request, JSONResponse):
                 return request
-            return await self._actor_fields_from_patch(request)
+            return await self._actor_fields_from_patch(row_id, request)
 
         if orm_type is IntegrationORM:
             request = _convert_request(raw_payload, IntegrationPatchRequest)
@@ -176,6 +176,14 @@ class ResourceCodec:
         if isinstance(llm_backend, JSONResponse):
             return llm_backend
 
+        model_error = _validate_actor_model(
+            actor_name=request.name,
+            model=request.model,
+            llm_backend=llm_backend,
+        )
+        if model_error is not None:
+            return model_error
+
         pricing_error = self._validate_actor_pricing(request, llm_backend)
         if pricing_error is not None:
             return pricing_error
@@ -199,6 +207,7 @@ class ResourceCodec:
 
     async def _actor_fields_from_patch(
         self,
+        row_id: str,
         request: ActorPatchRequest,
     ) -> dict[str, Any] | JSONResponse:
         convenience_fields = frozenset(
@@ -209,7 +218,9 @@ class ResourceCodec:
             }
         )
         fields = _patch_fields(request, exclude=convenience_fields)
+        existing_actor = await self._repository.get(ActorORM, row_id)
 
+        selected_backend: LLMBackendRecord | None = None
         if request.capability_set_id is not msgspec.UNSET:
             capability_set = await self._existing_capability_set(request.capability_set_id)
             if isinstance(capability_set, JSONResponse):
@@ -222,6 +233,33 @@ class ResourceCodec:
             if isinstance(llm_backend, JSONResponse):
                 return llm_backend
             fields["llm_backend_id"] = llm_backend.id
+            selected_backend = llm_backend
+        if request.model is not msgspec.UNSET:
+            model = request.model.strip()
+            if not model:
+                return _error("validation_error", "actor model must be set", 400)
+            fields["model"] = model
+        if request.model is not msgspec.UNSET or request.llm_backend_id is not msgspec.UNSET:
+            if existing_actor is not None:
+                model = (
+                    fields["model"]
+                    if request.model is not msgspec.UNSET
+                    else existing_actor.model
+                )
+                if selected_backend is None:
+                    backend_result = await self._existing_llm_backend(
+                        existing_actor.llm_backend_id
+                    )
+                    if isinstance(backend_result, JSONResponse):
+                        return backend_result
+                    selected_backend = backend_result
+                model_error = _validate_actor_model(
+                    actor_name=existing_actor.name,
+                    model=str(model),
+                    llm_backend=selected_backend,
+                )
+                if model_error is not None:
+                    return model_error
         return fields
 
     # -- integration helpers --
@@ -310,7 +348,7 @@ class ResourceCodec:
         if not requires_pricing:
             return None
         model = request.model
-        if model and model not in llm_backend.model_configs:
+        if model not in llm_backend.model_configs:
             return _error(
                 "configuration_error",
                 f"actor {request.name!r}: USD budget requires configured model "
@@ -367,6 +405,24 @@ def _validate_llm_backend_record(
     if error is not None:
         return error
     return record
+
+
+def _validate_actor_model(
+    *,
+    actor_name: str,
+    model: str,
+    llm_backend: LLMBackendRecord,
+) -> JSONResponse | None:
+    if not model.strip():
+        return _error("validation_error", "actor model must be set", 400)
+    if model not in llm_backend.model_configs:
+        return _error(
+            "configuration_error",
+            f"actor {actor_name!r}: model {model!r} is not configured "
+            f"in backend {llm_backend.name!r}",
+            400,
+        )
+    return None
 
 
 def _validate_provider_identity(provider_identity: str) -> JSONResponse | None:

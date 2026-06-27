@@ -7,6 +7,7 @@ import keyword
 import re
 import sys
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import get_args, get_origin
 
@@ -14,39 +15,59 @@ import msgspec
 
 from yuubot.core.capabilities import AnyCapabilitySpec
 from yuubot.core.facade.client import render_client_module
+from yuubot.core.integrations.contracts import VisibleIntegrationSurface
 
 YEXT_PACKAGE = "yext"
+
+
+@dataclass(frozen=True)
+class _GeneratedCapability:
+    integration_id: str
+    capability: AnyCapabilitySpec
+    function_name: str
 
 
 def write_facade_package(
     root: Path,
     *,
-    capabilities: Iterable[AnyCapabilitySpec],
+    surfaces: Iterable[VisibleIntegrationSurface],
     package_name: str = YEXT_PACKAGE,
 ) -> None:
-    """Write a yext package that exposes async capability facade functions."""
+    """Write a yext package that exposes async capability facade functions.
+
+    Each ``VisibleIntegrationSurface`` contributes its declared capability
+    specs; the surface grouping is flattened here so the generated module
+    structure (one fn per capability, grouped by namespace) is unchanged.
+    """
 
     package = root / package_name
     package.mkdir(parents=True, exist_ok=True)
 
-    modules: dict[tuple[str, ...], list[AnyCapabilitySpec]] = {}
-    for capability in _unique_capabilities(capabilities):
-        modules.setdefault(_module_parts(capability), []).append(capability)
+    capability_refs: list[tuple[str, AnyCapabilitySpec]] = []
+    for surface in surfaces:
+        capability_refs.extend(
+            (surface.integration_id, capability)
+            for capability in surface.capabilities
+        )
+
+    modules: dict[tuple[str, ...], list[_GeneratedCapability]] = {}
+    for generated in _generated_capability_refs(capability_refs):
+        modules.setdefault(_module_parts(generated.capability), []).append(generated)
 
     root_exports = sorted(
         {
-            _function_name(capability)
+            generated.function_name
             for capabilities_for_module in modules.values()
-            for capability in capabilities_for_module
-            if _exports_at_package_root(capability)
+            for generated in capabilities_for_module
+            if _exports_at_package_root(generated.capability)
         }
     )
     module_exports = sorted(
         {
-            _module_parts(capability)[0]
+            _module_parts(generated.capability)[0]
             for capabilities_for_module in modules.values()
-            for capability in capabilities_for_module
-            if not _exports_at_package_root(capability)
+            for generated in capabilities_for_module
+            if not _exports_at_package_root(generated.capability)
         }
     )
     (package / "__init__.py").write_text(
@@ -111,12 +132,15 @@ def _render_package_init(root_exports: list[str], module_exports: list[str]) -> 
 
 
 def _render_module(
-    capabilities: list[AnyCapabilitySpec],
+    capabilities: list[_GeneratedCapability],
     *,
     package_name: str,
 ) -> str:
-    functions = "\n\n".join(_render_function(capability) for capability in capabilities)
-    exports = [_function_name(capability) for capability in capabilities]
+    functions = "\n\n".join(
+        _render_function(generated)
+        for generated in capabilities
+    )
+    exports = [generated.function_name for generated in capabilities]
     return f'''"""Generated integration capability facade."""
 
 from __future__ import annotations
@@ -131,19 +155,20 @@ _UNSET = object()
 '''
 
 
-def _render_function(capability: AnyCapabilitySpec) -> str:
-    function_name = _function_name(capability)
+def _render_function(generated: _GeneratedCapability) -> str:
+    capability = generated.capability
+    function_name = generated.function_name
     fields = _struct_fields(capability.input_type)
     doc = _function_doc(capability)
     if not fields:
         return f'''async def {function_name}(value: object = None, **payload: object) -> dict[str, object]:
     """{doc}"""
-    return await invoke({capability.id!r}, coerce_payload(value, payload))
+    return await invoke({capability.id!r}, coerce_payload(value, payload), integration_id={generated.integration_id!r})
 '''
     if not _fields_have_valid_parameter_names(fields):
         return f'''async def {function_name}(**payload: object) -> dict[str, object]:
     """{doc}"""
-    return await invoke({capability.id!r}, dict(payload))
+    return await invoke({capability.id!r}, dict(payload), integration_id={generated.integration_id!r})
 '''
     parameters = _render_parameters(fields)
     assignments = "\n".join(_render_payload_assignment(field) for field in fields)
@@ -151,7 +176,7 @@ def _render_function(capability: AnyCapabilitySpec) -> str:
     """{doc}"""
     data = dict(payload)
 {assignments}
-    return await invoke({capability.id!r}, data)
+    return await invoke({capability.id!r}, data, integration_id={generated.integration_id!r})
 '''
 
 
@@ -300,13 +325,38 @@ def _parents(root: Path, path: Path) -> Iterable[Path]:
         current = current.parent
 
 
-def _unique_capabilities(
-    capabilities: Iterable[AnyCapabilitySpec],
-) -> list[AnyCapabilitySpec]:
-    result: dict[str, AnyCapabilitySpec] = {}
-    for capability in capabilities:
-        result.setdefault(capability.id, capability)
-    return list(result.values())
+def _generated_capability_refs(
+    capabilities: Iterable[tuple[str, AnyCapabilitySpec]],
+) -> list[_GeneratedCapability]:
+    refs = list(capabilities)
+    counts: dict[str, int] = {}
+    for integration_id, capability in refs:
+        _ = integration_id
+        counts[capability.id] = counts.get(capability.id, 0) + 1
+    return [
+        _GeneratedCapability(
+            integration_id=integration_id,
+            capability=capability,
+            function_name=_generated_function_name(
+                integration_id,
+                capability,
+                duplicate=counts[capability.id] > 1,
+            ),
+        )
+        for integration_id, capability in refs
+    ]
+
+
+def _generated_function_name(
+    integration_id: str,
+    capability: AnyCapabilitySpec,
+    *,
+    duplicate: bool,
+) -> str:
+    base = _function_name(capability)
+    if not duplicate:
+        return base
+    return f"{base}__{_identifier(integration_id)}"
 
 
 def _indent(text: str, prefix: str) -> str:

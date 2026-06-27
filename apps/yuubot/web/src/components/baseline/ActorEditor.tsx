@@ -175,7 +175,7 @@ export function ActorEditor({
                       const id = e.target.value;
                       const b = backends.find((bk) => bk.id === id);
                       setState("backendId", id);
-                      setState("model", b?.recommended_model ?? Object.keys(b?.model_configs ?? {})[0] ?? "");
+                      setState("model", modelOptionsFor(b)[0] ?? "");
                     }}
                   >
                     <option value="">选择 LLM 供应商</option>
@@ -365,7 +365,7 @@ export function modelOptionsFor(backend?: LLMBackendResource): string[] {
   if (!backend) return [];
   return Array.from(
     new Set(
-      [backend.recommended_model, ...Object.keys(backend.model_configs ?? {})]
+      Object.keys(backend.model_configs ?? {})
         .map((m) => m?.trim())
         .filter(Boolean) as string[],
     ),

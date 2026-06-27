@@ -153,7 +153,6 @@ async def test_actor_persona_prompt_crud(resources: Resources, tmp_path: Path) -
                         "gpt-4": {"pricing": {}, "capabilities": {}},
                     },
                     "budget": {},
-                    "recommended_model": "gpt-4",
                 },
             )
             assert backend_resp.status_code == 201, backend_resp.text

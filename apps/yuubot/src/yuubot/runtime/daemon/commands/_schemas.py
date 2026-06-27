@@ -33,10 +33,10 @@ class ActorCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
     name: str
     capability_set_id: str
     llm_backend_id: str
+    model: str
     id: str = ""
     type: str = "simple_loop"
     persona_prompt: str = ""
-    model: str = ""
     config: dict[str, object] = msgspec.field(default_factory=dict)
     enabled: bool = True
     version: int = 1
@@ -95,7 +95,6 @@ class LLMBackendPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     model_configs: dict[str, ModelConfig] | msgspec.UnsetType = msgspec.UNSET
     budget: BudgetPolicy | msgspec.UnsetType = msgspec.UNSET
     provider_options: LLMProviderOptions | msgspec.UnsetType = msgspec.UNSET
-    recommended_model: str | msgspec.UnsetType = msgspec.UNSET
     default_generation_params: GenerationParams | msgspec.UnsetType = msgspec.UNSET
     version: int | msgspec.UnsetType = msgspec.UNSET
 

@@ -46,7 +46,7 @@ def _provision_facade(tmp_path: Path) -> ActorFacadeBinding:
         agent_name="venv-test-agent",
         session_id="s",
         mailbox_id="m",
-        capabilities=(),
+        surfaces=(),
         endpoint=FacadeEndpoint(host="127.0.0.1", port=_free_port(), token="t"),
     )
 

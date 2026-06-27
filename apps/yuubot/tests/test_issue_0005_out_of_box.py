@@ -92,16 +92,14 @@ async def test_openai_out_of_box_scenario(scenario_resources, tmp_path: Path) ->
                         }
                     },
                     "budget": {},
-                    "recommended_model": "gpt-4.1-mini",
                 },
             )
             assert backend_resp.status_code == 201, backend_resp.text
             backend = backend_resp.json()["data"]
 
             # Model config is user-maintained and persisted directly.
-            recommended_model = backend["recommended_model"]
-            assert recommended_model == "gpt-4.1-mini"
-            assert recommended_model in backend["model_configs"]
+            actor_model = "gpt-4.1-mini"
+            assert actor_model in backend["model_configs"]
             backend_id = backend["id"]
 
             # 4. Mint the two preset Actors bound to the new backend.
@@ -118,7 +116,7 @@ async def test_openai_out_of_box_scenario(scenario_resources, tmp_path: Path) ->
                         "persona_prompt": persona_prompts[persona_name],
                         "capability_set_id": capability_id,
                         "llm_backend_id": backend_id,
-                        "model": recommended_model,
+                        "model": actor_model,
                         "per_run_budget": {
                             "max_steps": 6,
                             "max_tokens": 8192,
@@ -170,3 +168,10 @@ def test_openai_provider_key_accepted_without_config_entry() -> None:
     assert yuullm.resolve_provider("openai").api_type == "openai-compatible"
     # Public provider-key builder used to construct the LLM ProviderPool.
     assert provider_key_for_backend(backend) == "openai"
+
+
+def test_custom_openai_provider_keys_are_builtin() -> None:
+    assert yuullm.resolve_provider("openai-chat-completion").api_type == (
+        "openai-chat-completion"
+    )
+    assert yuullm.resolve_provider("openai-compatible").api_type == "openai-compatible"

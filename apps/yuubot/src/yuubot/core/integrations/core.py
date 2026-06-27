@@ -19,15 +19,17 @@ from yuubot.core.capabilities import (
 )
 from yuubot.core.integrations.context import InvocationContext, bind_invocation_context
 from yuubot.core.integrations.contracts import (
+    IntegrationCapabilityRef,
     IntegrationFactory,
     IntegrationInstance,
     LocalIntegrationStorage,
+    VisibleIntegrationSurface,
 )
 from yuubot.core.integrations.registry import IntegrationFactoryRegistry
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.orm import from_orm
 from yuubot.resources.repository import ResourceRepository
-from yuubot.resources.records import ConversationRecord
+from yuubot.resources.records import ConversationRecord, IntegrationRecord
 from yuubot.resources.store.models import (
     ActorORM,
     CapabilitySetORM,
@@ -63,27 +65,21 @@ class IntegrationCore:
         default_factory=lambda: Path("~/.yuubot/integrations")
     )
     _instances: dict[str, IntegrationInstance] = field(default_factory=dict, init=False)
+    # Records (carrying ``name``) of the running instances, kept in lockstep
+    # with ``_instances`` so ``visible_integration_surfaces`` can resolve the
+    # integration kind / factory + record-derived ``integration_name`` without
+    # a repository round-trip (it runs synchronously at facade-bind time).
+    _instance_records: dict[str, IntegrationRecord] = field(
+        default_factory=dict, init=False
+    )
     _capabilities_index: dict[tuple[str, str], AnyCapability] = field(
         default_factory=dict,
         init=False,
     )
-    _capability_by_id: dict[str, AnyCapability] = field(
-        default_factory=dict, init=False
-    )
-    _integration_by_capability: dict[str, str] = field(default_factory=dict, init=False)
-    _enabled_capability_ids: Cached[set[str]] = field(init=False)
-    _owner_allowed: dict[str, Cached[set[str]]] = field(
+    _owner_allowed: dict[str, Cached[set[IntegrationCapabilityRef]]] = field(
         default_factory=dict, init=False
     )
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self._enabled_capability_ids = Cached(
-            loader=self._resolve_enabled_capability_ids
-        )
-
-    async def refresh_capabilities(self) -> None:
-        self._enabled_capability_ids.invalidate()
 
     def declared_capability_specs(self) -> list[AnyCapabilitySpec]:
         return self.factories.capability_specs()
@@ -91,9 +87,8 @@ class IntegrationCore:
     async def existing_instance_capabilities(self) -> list[CapabilityInstanceInfo]:
         """Return capabilities from ALL integration records (enabled + disabled).
 
-        Unlike _resolve_enabled_capability_ids() which only returns enabled,
-        this includes disabled instances so the admin form can show them
-        with a disabled badge.
+        This includes disabled instances so the admin form can show them with
+        a disabled badge.
         """
         records = await self.repository.list(IntegrationORM)
         result: list[CapabilityInstanceInfo] = []
@@ -118,7 +113,6 @@ class IntegrationCore:
 
     async def handle_resource_changed(self, event: ResourceChanged) -> None:
         if event.is_table("integrations"):
-            self._enabled_capability_ids.invalidate()
             await self.reconcile(event)
         if event.is_table("actors"):
             for actor_id in event.row_ids:
@@ -133,17 +127,23 @@ class IntegrationCore:
         actor_id: str,
         capability_id: str,
         payload: dict[str, object],
+        integration_id: str = "",
         context: InvocationContext | None = None,
         usage: object | None = None,
     ) -> msgspec.Struct:
         allowed = await self._get_owner_allowed(actor_id)
-        if capability_id not in allowed:
+        capability_ref = _resolve_requested_capability_ref(
+            allowed,
+            integration_id=integration_id,
+            capability_id=capability_id,
+        )
+        if capability_ref not in allowed:
             raise LookupError(
-                f"actor {actor_id} is not allowed to use {capability_id!r}"
+                f"actor {actor_id} is not allowed to use "
+                f"{_format_capability_ref(capability_ref)}"
             )
 
-        capability = self._find_capability(capability_id)
-        integration_id = self._integration_id_for(capability_id)
+        capability = self._find_capability(capability_ref)
         typed_payload = capability.decode_input(payload)
 
         context = bind_invocation_context(
@@ -183,10 +183,8 @@ class IntegrationCore:
             await instance.close()
             raise
         self._instances[integration_id] = instance
+        self._instance_records[integration_id] = record
         self._capabilities_index.update(capabilities)
-        for (intg_id, cap_id), capability in capabilities.items():
-            self._capability_by_id[cap_id] = capability
-            self._integration_by_capability[cap_id] = intg_id
 
     async def disable(self, integration_id: str) -> None:
         async with self._lock:
@@ -194,11 +192,10 @@ class IntegrationCore:
 
     async def _disable_locked(self, integration_id: str) -> None:
         instance = self._instances.pop(integration_id, None)
+        self._instance_records.pop(integration_id, None)
         for key in list(self._capabilities_index):
             if key[0] == integration_id:
                 self._capabilities_index.pop(key, None)
-                self._capability_by_id.pop(key[1], None)
-                self._integration_by_capability.pop(key[1], None)
         if instance is not None:
             await instance.close()
 
@@ -223,7 +220,6 @@ class IntegrationCore:
             await self._refresh_enabled_locked(event, enabled_ids)
             if event is not None and event.is_table("integrations"):
                 self._delete_removed_storage_locked(event)
-            self._enabled_capability_ids.invalidate()
 
     def running_integration_ids(self) -> list[str]:
         return sorted(self._instances)
@@ -234,34 +230,81 @@ class IntegrationCore:
         except KeyError as exc:
             raise LookupError(f"integration {integration_id!r} is not running") from exc
 
+    def visible_integration_surfaces(
+        self,
+        integration_ids: tuple[str, ...],
+    ) -> list[VisibleIntegrationSurface]:
+        """Read-models for selected + running integrations (§2.7.1).
+
+        Derivation rule: ``selected integration_ids ∩ enabled
+        IntegrationRecord ∩ running IntegrationInstance``. Each selected id
+        that is not currently running (or whose factory/record was removed)
+        simply contributes nothing — invoke-time authorisation already
+        enforces the same boundary, so an absent surface never corrupts the
+        facade: the actor sees neither its SDK imports nor its prompt.
+
+        Runs synchronously against the in-memory ``_instances`` /
+        ``_instance_records`` caches populated by ``_enable_locked``. Order
+        follows ``integration_ids`` (the CapabilitySet's declared selection
+        order) for stable prompt rendering.
+        """
+        surfaces: list[VisibleIntegrationSurface] = []
+        for integration_id in integration_ids:
+            if integration_id not in self._instances:
+                continue
+            record = self._instance_records.get(integration_id)
+            if record is None:
+                continue
+            try:
+                factory = self.factories.get(record.name)
+            except LookupError:
+                # Factory unregistered after the instance started (e.g. plugin
+                # removed) — surface nothing; reconcile() will tear it down.
+                continue
+            specs = tuple(factory.capability_specs())
+            surfaces.append(
+                VisibleIntegrationSurface(
+                    integration_id=integration_id,
+                    integration_name=record.name,
+                    sdk=factory.sdk_spec,
+                    capabilities=specs,
+                    capability_refs=tuple(
+                        IntegrationCapabilityRef(
+                            integration_id=integration_id,
+                            capability_id=spec.id,
+                        )
+                        for spec in specs
+                    ),
+                )
+            )
+        return surfaces
+
     def remove_actor_cache(self, actor_id: str) -> None:
         self._owner_allowed.pop(actor_id, None)
 
-    def _find_capability(self, capability_id: str) -> AnyCapability:
-        capability = self._capability_by_id.get(capability_id)
+    def _find_capability(
+        self,
+        capability_ref: IntegrationCapabilityRef,
+    ) -> AnyCapability:
+        capability = self._capabilities_index.get(
+            (capability_ref.integration_id, capability_ref.capability_id)
+        )
         if capability is None:
             raise LookupError(
-                f"capability {capability_id!r} is not provided by any integration"
+                f"capability {_format_capability_ref(capability_ref)} "
+                "is not provided by any running integration"
             )
         return capability
 
-    def _integration_id_for(self, capability_id: str) -> str:
-        integration_id = self._integration_by_capability.get(capability_id)
-        if integration_id is None:
-            raise LookupError(
-                f"capability {capability_id!r} is not provided by any integration"
-            )
-        return integration_id
-
-    async def _get_owner_allowed(self, owner_id: str) -> set[str]:
+    async def _get_owner_allowed(self, owner_id: str) -> set[IntegrationCapabilityRef]:
         cache = self._owner_allowed.get(owner_id)
         if cache is None:
             cache = Cached(loader=lambda oid=owner_id: self._load_owner_allowed(oid))
             self._owner_allowed[owner_id] = cache
         return await cache.get()
 
-    async def _load_owner_allowed(self, owner_id: str) -> set[str]:
-        """Resolve the set of integration capability_ids an owner may invoke.
+    async def _load_owner_allowed(self, owner_id: str) -> set[IntegrationCapabilityRef]:
+        """Resolve the integration capability refs an owner may invoke.
 
         CapabilitySets now declare selected integrations by
         ``integration_ids`` (``IntegrationRecord.id``), not capability ids.
@@ -277,7 +320,7 @@ class IntegrationCore:
         selected = set(capability_set.integration_ids)
         if not selected:
             return set()
-        result: set[str] = set()
+        result: set[IntegrationCapabilityRef] = set()
         records = await self.repository.list(IntegrationORM)
         for record in records:
             if record.id not in selected:
@@ -287,7 +330,12 @@ class IntegrationCore:
             except LookupError:
                 continue
             for spec in factory.capability_specs():
-                result.add(spec.id)
+                result.add(
+                    IntegrationCapabilityRef(
+                        integration_id=record.id,
+                        capability_id=spec.id,
+                    )
+                )
         return result
 
     async def _capability_set_for_owner(self, owner_id: str):
@@ -340,20 +388,6 @@ class IntegrationCore:
                 await self._disable_locked(integration_id)
             await self._enable_locked(integration_id)
 
-    async def _resolve_enabled_capability_ids(self) -> set[str]:
-        result: set[str] = set()
-        records = await self.repository.list(IntegrationORM)
-        for record in records:
-            if not record.enabled:
-                continue
-            try:
-                factory = self.factories.get(record.name)
-            except LookupError:
-                continue
-            for spec in factory.capability_specs():
-                result.add(spec.id)
-        return result
-
     def _storage_for(self, integration_id: str) -> LocalIntegrationStorage:
         data_dir = Path(self.integrations_root).expanduser() / integration_id
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -374,6 +408,43 @@ def _integration_refresh_ids(
     if event is None or not event.is_table("integrations"):
         return enabled_ids
     return enabled_ids.intersection(event.row_ids)
+
+
+def _resolve_requested_capability_ref(
+    allowed_refs: set[IntegrationCapabilityRef],
+    *,
+    integration_id: str,
+    capability_id: str,
+) -> IntegrationCapabilityRef:
+    if integration_id:
+        return IntegrationCapabilityRef(
+            integration_id=integration_id,
+            capability_id=capability_id,
+        )
+    matches = sorted(
+        (
+            ref for ref in allowed_refs
+            if ref.capability_id == capability_id
+        ),
+        key=lambda ref: ref.integration_id,
+    )
+    if not matches:
+        return IntegrationCapabilityRef(
+            integration_id="",
+            capability_id=capability_id,
+        )
+    if len(matches) == 1:
+        return matches[0]
+    choices = ", ".join(_format_capability_ref(ref) for ref in matches)
+    raise LookupError(
+        f"capability {capability_id!r} is ambiguous across integrations: {choices}"
+    )
+
+
+def _format_capability_ref(ref: IntegrationCapabilityRef) -> str:
+    if not ref.integration_id:
+        return ref.capability_id
+    return f"{ref.integration_id}:{ref.capability_id}"
 
 
 def _index_capabilities(

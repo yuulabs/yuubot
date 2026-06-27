@@ -21,7 +21,13 @@ import {
 } from "lucide-react";
 import { AppShell, useAppShellActions } from "@/components/baseline";
 import { useHealth, useResourceList } from "@/hooks/use-resources";
-import type { ActorResource } from "@/types/api";
+import type {
+  ActorIngressRuleResource,
+  ActorResource,
+  CapabilitySetResource,
+  IntegrationResource,
+  LLMBackendResource,
+} from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Nav model — aligned to demo-playground sidebar (运行时 / 系统).
@@ -36,7 +42,7 @@ type NavItem = {
 };
 type Crumb = {
   label: string;
-  to?: "/actors";
+  to?: string;
 };
 
 const NAV_ITEMS: readonly NavItem[] = [
@@ -53,26 +59,87 @@ const NAV_ITEMS: readonly NavItem[] = [
 
 function resolveCrumbs(
   pathname: string,
-  actors: ActorResource[],
+  resources: {
+    actors: ActorResource[];
+    backends: LLMBackendResource[];
+    capabilitySets: CapabilitySetResource[];
+    integrations: IntegrationResource[];
+    ingressRules: ActorIngressRuleResource[];
+  },
 ): { group: string; trail: Crumb[] } {
-  const actorMatch = pathname.match(/^\/actors\/([^/]+)(?:\/(edit))?$/);
-  if (actorMatch) {
-    const actorId = actorMatch[1] ?? "";
-    const actor = actors.find((item) => item.id === actorId);
+  if (pathname === "/actors/new") {
     return {
       group: "运行时",
       trail: [
         { label: "Actors", to: "/actors" },
-        { label: actor?.name ?? actorId },
-        ...(actorMatch[2] ? [{ label: "编辑" }] : []),
+        { label: "新建", to: "/actors/new" },
       ],
     };
   }
 
-  if (pathname === "/actors/new") {
+  const actorMatch = pathname.match(/^\/actors\/([^/]+)(?:\/(edit))?$/);
+  if (actorMatch) {
+    const actorId = actorMatch[1] ?? "";
+    const actor = resources.actors.find((item) => item.id === actorId);
     return {
       group: "运行时",
-      trail: [{ label: "Actors", to: "/actors" }, { label: "新建" }],
+      trail: [
+        { label: "Actors", to: "/actors" },
+        { label: actor?.name ?? actorId, to: `/actors/${actorId}` },
+        ...(actorMatch[2] ? [{ label: "编辑", to: `/actors/${actorId}/edit` }] : []),
+      ],
+    };
+  }
+
+  const providerMatch = pathname.match(/^\/providers\/([^/]+)$/);
+  if (providerMatch) {
+    const backendId = providerMatch[1] ?? "";
+    const backend = resources.backends.find((item) => item.id === backendId);
+    return {
+      group: "运行时",
+      trail: [
+        { label: "Providers", to: "/providers" },
+        { label: backend?.name ?? backendId, to: `/providers/${backendId}` },
+      ],
+    };
+  }
+
+  if (pathname === "/capability-sets/new") {
+    return {
+      group: "运行时",
+      trail: [
+        { label: "Capability Sets", to: "/capability-sets" },
+        { label: "新建", to: "/capability-sets/new" },
+      ],
+    };
+  }
+
+  const capabilitySetMatch = pathname.match(/^\/capability-sets\/([^/]+)\/edit$/);
+  if (capabilitySetMatch) {
+    const capabilitySetId = capabilitySetMatch[1] ?? "";
+    const capabilitySet = resources.capabilitySets.find((item) => item.id === capabilitySetId);
+    return {
+      group: "运行时",
+      trail: [
+        { label: "Capability Sets", to: "/capability-sets" },
+        {
+          label: capabilitySet?.name ?? capabilitySetId,
+          to: `/capability-sets/${capabilitySetId}/edit`,
+        },
+      ],
+    };
+  }
+
+  const integrationMatch = pathname.match(/^\/integrations\/([^/]+)$/);
+  if (integrationMatch) {
+    const integrationId = integrationMatch[1] ?? "";
+    const integration = resources.integrations.find((item) => item.id === integrationId);
+    return {
+      group: "运行时",
+      trail: [
+        { label: "Integrations", to: "/integrations" },
+        { label: integration?.name ?? integrationId, to: `/integrations/${integrationId}` },
+      ],
     };
   }
 
@@ -87,7 +154,7 @@ function resolveCrumbs(
     }
   }
   return best
-    ? { group: best.group, trail: [{ label: best.here }] }
+    ? { group: best.group, trail: [{ label: best.here, to: pathname }] }
     : { group: "系统", trail: [{ label: "—" }] };
 }
 
@@ -204,7 +271,17 @@ function Topbar() {
   const queryClient = useQueryClient();
   const { actions } = useAppShellActions();
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
-  const { group, trail } = resolveCrumbs(pathname, actors);
+  const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
+  const { data: capabilitySets = [] } = useResourceList<CapabilitySetResource>("capability-sets");
+  const { data: integrations = [] } = useResourceList<IntegrationResource>("integrations");
+  const { data: ingressRules = [] } = useResourceList<ActorIngressRuleResource>("ingress-rules");
+  const { group, trail } = resolveCrumbs(pathname, {
+    actors,
+    backends,
+    capabilitySets,
+    integrations,
+    ingressRules,
+  });
   if (pathname.startsWith("/admin/conversations/")) {
     return null;
   }
@@ -213,7 +290,6 @@ function Topbar() {
       <div className="topbar__crumbs">
         <span>{group}</span>
         {trail.map((crumb, index) => {
-          const isCurrent = index === trail.length - 1;
           const content = (
             <>
               <svg className="chev" viewBox="0 0 24 24">
@@ -222,18 +298,18 @@ function Topbar() {
               {crumb.label}
             </>
           );
-          return crumb.to && !isCurrent ? (
+          return crumb.to ? (
             <Link
               key={`${crumb.label}-${index}`}
-              to={crumb.to}
-              className="topbar__crumb-link"
+              to={crumb.to as "/actors"}
+              className={`topbar__crumb-link${index === trail.length - 1 ? " topbar__here" : ""}`}
             >
               {content}
             </Link>
           ) : (
             <span
               key={`${crumb.label}-${index}`}
-              className={isCurrent ? "topbar__here" : undefined}
+              className="topbar__here"
             >
               {content}
             </span>

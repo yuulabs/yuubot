@@ -157,12 +157,17 @@ def test_execute_python_derive_without_facade() -> None:
 
 
 def test_execute_python_derive_with_github_facade() -> None:
-    """derive() with a facade exposing github.* capabilities adds yext.github
+    """derive() with a facade exposing a github SDK surface adds yext.github
     to imports and expand_functions."""
     import msgspec
 
     from yuubot.core.capabilities import CapabilitySpec
     from yuubot.core.facade.workspace import ActorFacadeBinding
+    from yuubot.core.integrations.contracts import (
+        IntegrationCapabilityRef,
+        IntegrationSdkSpec,
+        VisibleIntegrationSurface,
+    )
 
     class _EmptyInput(msgspec.Struct):
         pass
@@ -185,7 +190,20 @@ def test_execute_python_derive_with_github_facade() -> None:
         agent_name="agent-1",
         session_id="session-1",
         mailbox_id="mailbox-1",
-        capabilities=(github_cap,),
+        integration_surfaces=(
+            VisibleIntegrationSurface(
+                integration_id="github-main",
+                integration_name="github",
+                sdk=IntegrationSdkSpec(import_paths=("yext.github",)),
+                capabilities=(github_cap,),
+                capability_refs=(
+                    IntegrationCapabilityRef(
+                        integration_id="github-main",
+                        capability_id=github_cap.id,
+                    ),
+                ),
+            ),
+        ),
         root=Path("/tmp/test-ws"),
         sys_path=["/tmp/test-ws/site-packages"],
         startup_code="# facade init\n",

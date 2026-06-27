@@ -424,7 +424,6 @@ async def _create_actor_bundle(
             id=f"{actor_id}-backend",
             name=f"{actor_id}-backend",
             provider_identity="openai",
-            recommended_model="gpt-4",
             model_configs={
                 "gpt-4": ModelConfig(
                     pricing=Pricing(),
@@ -450,7 +449,7 @@ async def _create_actor_bundle(
             persona_prompt="You are test.",
             capability_set_id=capability_set.id,
             llm_backend_id=backend.id,
-            model="",
+            model="gpt-4",
             per_run_budget=RunBudget(),
         ),
     )

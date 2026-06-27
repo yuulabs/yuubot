@@ -8,19 +8,27 @@ from typing import TypeVar
 import msgspec
 
 from yuubot.core.llm import BoundLLM
-from yuubot.core.validation import GenerationParams, validate_generation_params
+from yuubot.core.validation import (
+    ConfigurationError,
+    GenerationParams,
+    validate_generation_params,
+)
+from yuubot.resources.orm import from_orm
 from yuubot.resources.records import (
     ActorRecord,
     CapabilitySetRecord,
+    ConversationHistoryItemRecord,
     ConversationRecord,
     LLMBackendRecord,
     ResolvedActor,
+    ResolvedConversation,
     RunBudget,
 )
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.store.models import (
     ActorORM,
     CapabilitySetORM,
+    ConversationHistoryItemORM,
     ConversationORM,
     LLMBackendORM,
 )
@@ -117,12 +125,9 @@ async def load_conversation_agent_binding(
     *,
     workspace_path: Path | None = None,
 ) -> AgentBinding:
-    conversation = await repository.get(ConversationORM, conversation_id)
-    if conversation is None:
-        raise LookupError(f"conversation {conversation_id!r} does not exist")
-    return await conversation_agent_binding(
-        repository,
-        conversation,
+    resolved = await resolve_conversation(repository, conversation_id)
+    return agent_binding_from_resolved_conversation(
+        resolved,
         workspace_path=workspace_path,
     )
 
@@ -133,7 +138,52 @@ async def conversation_agent_binding(
     *,
     workspace_path: Path | None = None,
 ) -> AgentBinding:
-    resolved = await resolve_actor(repository, conversation.actor_id)
+    resolved = await resolve_conversation_record(repository, conversation)
+    return agent_binding_from_resolved_conversation(
+        resolved,
+        workspace_path=workspace_path,
+    )
+
+
+async def resolve_conversation(
+    repository: ResourceRepository,
+    conversation_id: str,
+) -> ResolvedConversation:
+    with repository.store.db.activate():
+        row = await ConversationORM.get_or_none(conversation_id=conversation_id)
+    conversation = None
+    if row is not None:
+        conversation = await from_orm(
+            row,
+            ConversationRecord,
+            secret_codec=repository.secret_codec,
+        )
+    if conversation is None:
+        raise LookupError(f"conversation {conversation_id!r} does not exist")
+    return await resolve_conversation_record(repository, conversation)
+
+
+async def resolve_conversation_record(
+    repository: ResourceRepository,
+    conversation: ConversationRecord,
+) -> ResolvedConversation:
+    resolved_actor = await resolve_actor(repository, conversation.actor_id)
+    history = await _load_history_items(repository, conversation.conversation_id)
+    return ResolvedConversation(
+        conversation=conversation,
+        actor=resolved_actor.actor,
+        capability_set=resolved_actor.capability_set,
+        llm_backend=resolved_actor.llm_backend,
+        history=history,
+    )
+
+
+def agent_binding_from_resolved_conversation(
+    resolved: ResolvedConversation,
+    *,
+    workspace_path: Path | None = None,
+) -> AgentBinding:
+    conversation = resolved.conversation
     return AgentBinding(
         owner_id=conversation.conversation_id,
         agent_name=f"conversation:{conversation.conversation_id}",
@@ -148,6 +198,26 @@ async def conversation_agent_binding(
         budget=resolved.actor.per_run_budget,
         workspace_path=workspace_path,
     )
+
+
+async def _load_history_items(
+    repository: ResourceRepository,
+    conversation_id: str,
+) -> tuple[ConversationHistoryItemRecord, ...]:
+    with repository.store.db.activate():
+        rows = await ConversationHistoryItemORM.filter(
+            conversation_id=conversation_id,
+        ).order_by("id")
+    records: list[ConversationHistoryItemRecord] = []
+    for row in rows:
+        records.append(
+            await from_orm(
+                row,
+                ConversationHistoryItemRecord,
+                secret_codec=repository.secret_codec,
+            )
+        )
+    return tuple(records)
 
 
 async def _active_actor(
@@ -186,6 +256,13 @@ def _bound_llm(
     backend: LLMBackendRecord,
     model: str,
 ) -> BoundLLM:
+    if not model:
+        raise ConfigurationError(f"agent {context_name!r}: actor model must be set")
+    if model not in backend.model_configs:
+        raise ConfigurationError(
+            f"agent {context_name!r}: model {model!r} is not configured "
+            f"in backend {backend.name!r}"
+        )
     generation_params = _merge_generation_params(
         backend.default_generation_params,
         generation_override,
@@ -196,7 +273,7 @@ def _bound_llm(
     )
     return BoundLLM(
         backend=backend,
-        model=model or backend.recommended_model,
+        model=model,
         generation_params=generation_params,
     )
 

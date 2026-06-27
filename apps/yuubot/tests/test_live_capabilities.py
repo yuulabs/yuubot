@@ -198,12 +198,11 @@ async def test_existing_instance_capabilities_skips_missing_factory(
 # ---------------------------------------------------------------------------
 
 
-async def test_visible_capabilities_filters_by_existing_instances(
+async def test_visible_surfaces_filter_by_running_selected_instances(
     resources: Resources,
     tmp_path: Path,
 ):
-    """_visible_capabilities only shows capabilities that have an existing
-    instance record, even if the CapabilitySet allows them."""
+    """Visible surfaces only include selected integration instances that run."""
     # Insert an echo integration record
     await resources.repository.insert(
         IntegrationORM,
@@ -218,7 +217,15 @@ async def test_visible_capabilities_filters_by_existing_instances(
     integrations = IntegrationCore(
         repository=resources.repository,
         factories=default_integration_factories(),
+        gateway=None,
     )
+    # Populate running instance state; visible surfaces are derived from
+    # selected integration_ids intersected with running instances.
+    from yuubot.core.gateway import Gateway
+    from yuubot.core.routing import RouteBindings
+
+    integrations.gateway = Gateway(routes=RouteBindings(rules=()))
+    await integrations.enable("echo-main")
     workspace = FacadeWorkspace(tmp_path / "facades")
     bridge = IntegrationInvokeBridge(integrations)
     factory = ActorPythonSessionFactory(
@@ -240,18 +247,23 @@ async def test_visible_capabilities_filters_by_existing_instances(
 
     binding = FakeBinding()  # type: ignore[assignment]
 
-    visible = await factory._visible_capabilities(binding)  # type: ignore[arg-type]
-    visible_ids = {c.id for c in visible}
+    visible = await factory._visible_surfaces(binding)  # type: ignore[arg-type]
+    visible_ids = {
+        ref.capability_id
+        for surface in visible
+        for ref in surface.capability_refs
+    }
 
     assert "echo.echo" in visible_ids
     assert "telegram.send" not in visible_ids  # no telegram instance exists
+    assert [surface.integration_id for surface in visible] == ["echo-main"]
 
 
-async def test_visible_capabilities_returns_empty_when_no_instances_match(
+async def test_visible_surfaces_return_empty_when_no_running_instances_match(
     resources: Resources,
     tmp_path: Path,
 ):
-    """Returns empty list when allowed capabilities have no existing instances."""
+    """Returns empty list when selected integrations are not running."""
     integrations = IntegrationCore(
         repository=resources.repository,
         factories=default_integration_factories(),
@@ -276,7 +288,7 @@ async def test_visible_capabilities_returns_empty_when_no_instances_match(
 
     binding = FakeBinding()  # type: ignore[assignment]
 
-    visible = await factory._visible_capabilities(binding)  # type: ignore[arg-type]
+    visible = await factory._visible_surfaces(binding)  # type: ignore[arg-type]
     assert visible == []
 
 

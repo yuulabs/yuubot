@@ -62,18 +62,33 @@ const providerPresets: ProviderPreset[] = [
     mark: "DS",
     note: "DeepSeek-V3 / R1，OpenAI 兼容。",
   },
+  {
     key: "openrouter",
     label: "OpenRouter API",
     baseUrl: "https://openrouter.ai/api/v1",
     mark: "OR",
     note: "聚合多模型，统一计费入口。",
   },
+  {
+    key: "openai-chat-completion",
+    label: "Custom Chat Completions",
+    baseUrl: "",
+    mark: "CC",
+    note: "自定义 OpenAI Chat Completions 兼容端点。",
+  },
+  {
+    key: "openai-compatible",
+    label: "Custom OpenAI Compatible",
+    baseUrl: "",
+    mark: "OC",
+    note: "自定义 OpenAI 兼容端点，需填写 Base URL。",
+  },
 ];
 
 // ---------------------------------------------------------------------------
-// Preset Actors offered after the FIRST backend create for OpenAI/DeepSeek.
-// The preset list + create payload live in @/lib/presets (shared with the
-// Actors page "update preset Actors" action).
+// Preset Actors are offered only after the backend has at least one configured
+// model, because Actor.model is required and the backend no longer owns a
+// selected model.
 // ---------------------------------------------------------------------------
 
 /** Preset keys that trigger the onboarding dialog after the first backend. */
@@ -114,8 +129,6 @@ function ProvidersPage() {
     monthlyUsd: "",
   });
   const [formError, setFormError] = useState("");
-  // Onboarding dialog state: holds the freshly-created backend whose
-  // recommended_model / id the preset Actors should bind to.
   const [onboardingBackend, setOnboardingBackend] = useState<LLMBackendResource | null>(null);
   const [onboardingBusy, setOnboardingBusy] = useState(false);
   const [onboardingError, setOnboardingError] = useState("");
@@ -160,12 +173,14 @@ function ProvidersPage() {
     e.preventDefault();
     if (!selectedPreset) return;
     setFormError("");
+    if (!selectedPreset.baseUrl && !form.baseUrl.trim()) {
+      setFormError("Custom providers require a Base URL.");
+      return;
+    }
     if (baseUrlWarning) {
       setFormError(baseUrlWarning);
       return;
     }
-    // First-backend detection is frontend-side: capture the count BEFORE the
-    // create call mutates the cache.
     const wasFirstBackend = backends.length === 0;
     const createdBackend = await createMutation.mutateAsync({
       name: form.name,
@@ -181,14 +196,17 @@ function ProvidersPage() {
         timeout: 60,
         max_retries: 2,
       },
-      recommended_model: "",
       default_generation_params: {
         max_tokens: 4096,
         temperature: 0.7,
       },
     });
     setSelectedKey(null);
-    if (wasFirstBackend && onboardingPresetKeys.has(selectedPreset.key)) {
+    if (
+      wasFirstBackend &&
+      onboardingPresetKeys.has(selectedPreset.key) &&
+      configuredModelNames(createdBackend).length > 0
+    ) {
       setOnboardingError("");
       setOnboardingBackend(createdBackend);
     }
@@ -244,7 +262,9 @@ function ProvidersPage() {
                 key={preset.key}
                 preset={preset}
                 connected={!!connected}
-                connectedModel={connected?.recommended_model}
+                configuredModelCount={
+                  connected ? configuredModelNames(connected).length : 0
+                }
                 onUse={() => selectPreset(preset.key)}
               />
             );
@@ -388,12 +408,12 @@ function ProvidersPage() {
 function PresetCard({
   preset,
   connected,
-  connectedModel,
+  configuredModelCount,
   onUse,
 }: {
   preset: ProviderPreset;
   connected: boolean;
-  connectedModel?: string;
+  configuredModelCount: number;
   onUse: () => void;
 }) {
   return (
@@ -403,7 +423,7 @@ function PresetCard({
         <div className="preset__meta">
           <div className="preset__name">{preset.label}</div>
           <div className="preset__badge">
-            {connected ? `已连接 / ${connectedModel || "—"}` : "预设"}
+            {connected ? `已连接 / ${configuredModelCount} models` : "预设"}
           </div>
         </div>
       </div>
@@ -432,14 +452,14 @@ function BackendCard({
 }) {
   const preset = providerPresets.find((p) => p.key === backendProviderKey(backend));
   const providerLabel = preset?.label ?? backend.provider_identity;
-  const missingPricing =
-    budgetRequiresPricing(backend) && !hasPricingForDefaultModel(backend);
+  const configuredModels = configuredModelNames(backend);
+  const missingModels = configuredModels.length === 0;
   const warning = providerBaseUrlWarning(
     backendProviderKey(backend),
     backend.provider_options?.base_url ?? "",
   );
-  const dotColor: DotColor = warning || missingPricing ? "amber" : "green";
-  const variant = warning || missingPricing ? "draft" : "connected";
+  const dotColor: DotColor = warning || missingModels ? "amber" : "green";
+  const variant = warning || missingModels ? "draft" : "connected";
 
   return (
     <LegendCard
@@ -462,17 +482,17 @@ function BackendCard({
           </div>
         )}
         <div className="flex justify-between">
-          <span className="text-muted-foreground">Recommended Model</span>
-          <code className="text-xs">{backend.recommended_model || "unset"}</code>
+          <span className="text-muted-foreground">Configured Models</span>
+          <code className="text-xs">{configuredModels.length}</code>
         </div>
         <div className="flex justify-between">
           <span className="text-muted-foreground">Daily Budget</span>
           <span>{formatUsd(backend.budget?.daily_usd)}</span>
         </div>
-        {(missingPricing || warning) && (
+        {(missingModels || warning) && (
           <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-            <span>{warning || "Set input/output pricing before using USD budgets."}</span>
+            <span>{warning || "Configure at least one model before creating Actors."}</span>
           </div>
         )}
         <div className="flex justify-between pt-2">
@@ -497,15 +517,8 @@ function BackendCard({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function budgetRequiresPricing(backend: LLMBackendResource): boolean {
-  return (backend.budget?.daily_usd ?? 0) > 0 || (backend.budget?.monthly_usd ?? 0) > 0;
-}
-
-function hasPricingForDefaultModel(backend: LLMBackendResource): boolean {
-  if (!backend.recommended_model) {
-    return true;
-  }
-  return backend.recommended_model in backend.model_configs;
+function configuredModelNames(backend: LLMBackendResource): string[] {
+  return Object.keys(backend.model_configs ?? {}).sort();
 }
 
 function backendProviderKey(backend: LLMBackendResource): string {

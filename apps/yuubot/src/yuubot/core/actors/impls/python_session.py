@@ -15,13 +15,13 @@ from yuuagents.python.runtime import PythonRuntime, ResolvedPythonRuntime
 from yuuagents.python.session import PythonSession
 
 from yuubot.core.bindings import AgentBinding
-from yuubot.core.capabilities import AnyCapabilitySpec
 from yuubot.core.facade import (
     ActorFacadeBinding,
     FacadeWorkspace,
     IntegrationInvokeBridge,
 )
 from yuubot.core.integrations import IntegrationCore
+from yuubot.core.integrations.contracts import VisibleIntegrationSurface
 
 
 @dataclass
@@ -82,7 +82,7 @@ class ActorPythonSessionFactory:
             agent_name=binding.agent_name,
             session_id=session_id,
             mailbox_id=mailbox_id,
-            capabilities=await self._visible_capabilities(binding),
+            surfaces=await self._visible_surfaces(binding),
             endpoint=self.bridge.endpoint,
         )
 
@@ -103,32 +103,22 @@ class ActorPythonSessionFactory:
     def cleanup_actor(self, actor_id: str) -> None:
         self.workspace.cleanup_actor(actor_id)
 
-    async def _visible_capabilities(
+    async def _visible_surfaces(
         self,
         binding: AgentBinding,
-    ) -> list[AnyCapabilitySpec]:
-        """Capabilities visible to this actor's facade.
+    ) -> list[VisibleIntegrationSurface]:
+        """Integration SDK surfaces visible to this actor's facade (§2.7.1).
 
         CapabilitySets declare selected integrations by ``integration_ids``
-        (``IntegrationRecord.id``). The visible facade modules derive from
-        the capabilities of those selected integration instances. Whether an
-        integration is actually running is enforced at invoke time by the
-        IntegrationCore authorisation boundary.
+        (``IntegrationRecord.id``). The visible SDK surfaces derive from the
+        selected integration instances that are currently running; whether an
+        integration is actually running is also enforced at invoke time by
+        the IntegrationCore authorisation boundary, so a non-running selection
+        contributes neither facade imports nor prompt content.
         """
-        selected = set(binding.capability_set.integration_ids)
-        if not selected:
-            return []
-        existing = await self.integrations.existing_instance_capabilities()
-        visible_ids = {
-            info.capability_id
-            for info in existing
-            if info.integration_id in selected
-        }
-        return [
-            capability
-            for capability in self.integrations.declared_capability_specs()
-            if capability.id in visible_ids
-        ]
+        return self.integrations.visible_integration_surfaces(
+            binding.capability_set.integration_ids
+        )
 
 
 @dataclass

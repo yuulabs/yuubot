@@ -39,6 +39,14 @@ test("providers.tsx references the provider presets model", () => {
   );
 });
 
+test("providers.tsx exposes custom OpenAI-compatible provider presets", () => {
+  assert.ok(
+    providersSrc.includes("openai-chat-completion") &&
+      providersSrc.includes("openai-compatible"),
+    "providers.tsx must expose custom endpoint presets for both OpenAI-compatible API types",
+  );
+});
+
 test("providers.tsx renders the connected-backends list header", () => {
   assert.ok(
     providersSrc.includes("<CrudHeader") || providersSrc.includes("connected"),

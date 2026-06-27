@@ -21,7 +21,11 @@ from yuubot.core.capabilities import (
 )
 from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.context import InvocationContext
-from yuubot.core.integrations.contracts import IntegrationStorage, ReactionKind
+from yuubot.core.integrations.contracts import (
+    IntegrationSdkSpec,
+    IntegrationStorage,
+    ReactionKind,
+)
 from yuubot.core.messages import IncomingMessage, MessageSource
 from yuubot.resources.records import IntegrationRecord
 
@@ -111,6 +115,15 @@ ECHO_SOURCE_PATH_CONVENTION = (
     "the same source path regardless of the specific conversation or channel."
 )
 
+ECHO_SDK_SPEC = IntegrationSdkSpec(
+    import_paths=("yext.echo",),
+    prompt_summary=(
+        "Echo integration: `yext.echo.echo(text)` returns the input text "
+        "verbatim. Use to verify facade wiring."
+    ),
+    doc_modules=("yext.echo",),
+)
+
 
 ECHO_CAPABILITY_SPEC = CapabilitySpec[EchoPayload, EchoPayload](
     id=ECHO_CAPABILITY_ID,
@@ -143,6 +156,10 @@ class EchoIntegrationFactory:
 
     def capability_specs(self) -> list[AnyCapabilitySpec]:
         return [ECHO_CAPABILITY_SPEC, ECHO_REPLY_CAPABILITY_SPEC]
+
+    @property
+    def sdk_spec(self) -> IntegrationSdkSpec:
+        return ECHO_SDK_SPEC
 
     async def create(
         self,
@@ -273,6 +290,7 @@ class EchoIntegration:
         await self.echo_contexts.put(
             {
                 "actor_id": context.actor_id,
+                "integration_id": context.integration_id,
                 "source_id": context.source_id,
                 "source_path": context.source_path,
                 "raw": context.raw,
@@ -289,6 +307,7 @@ class EchoIntegration:
         await self.reply_contexts.put(
             {
                 "actor_id": context.actor_id,
+                "integration_id": context.integration_id,
                 "source_id": context.source_id,
                 "source_path": context.source_path,
                 "raw": context.raw,

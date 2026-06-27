@@ -140,7 +140,6 @@ export interface LLMBackendResource extends Resource {
   model_configs: Record<string, ModelConfig>;
   budget: BudgetPolicy;
   provider_options?: LLMProviderOptions;
-  recommended_model?: string;
   default_generation_params?: GenerationParams;
 }
 
@@ -178,6 +177,7 @@ export interface ActorResource extends Resource {
   type: string;
   persona_prompt: string;
   capability_set_id: string;
+  capability_set?: CapabilitySetResource;
   llm_backend_id: string;
   model: string;
   per_run_budget?: {

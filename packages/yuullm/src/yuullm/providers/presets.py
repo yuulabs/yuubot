@@ -39,6 +39,18 @@ PROVIDER_PRESETS: dict[str, ProviderPreset] = {
         display_name="OpenRouter",
         default_base_url="https://openrouter.ai/api/v1",
     ),
+    "openai-chat-completion": ProviderPreset(
+        identity="openai-chat-completion",
+        api_type="openai-chat-completion",
+        display_name="OpenAI Chat Completions Compatible",
+        default_base_url="",
+    ),
+    "openai-compatible": ProviderPreset(
+        identity="openai-compatible",
+        api_type="openai-compatible",
+        display_name="OpenAI Compatible",
+        default_base_url="",
+    ),
 }
 
 

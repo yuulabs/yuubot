@@ -123,7 +123,7 @@ function SettingsPage() {
             <div>
               <p className="text-sm font-medium">Reset all data</p>
               <p className="text-xs text-muted-foreground">
-                Delete all resources, characters, actors, and configurations
+                Delete all resources, actors, and configurations
               </p>
             </div>
             <Button variant="destructive" size="sm" disabled>

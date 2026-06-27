@@ -245,9 +245,9 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     """Five-section system prompt contract: section order and content.
 
     Under the §2.7.1 CapabilitySet model the integration section (``# Integration
-    SDKs``) renders an interim placeholder: an empty line when no
-    ``integration_ids`` are selected, and a concise "import yext" hint
-    otherwise. Full per-integration ``IntegrationSdkSpec`` rendering is T5.
+    SDKs``) renders per-integration ``IntegrationSdkSpec.prompt_summary`` text
+    from visible integration surfaces. Selected ids alone are not enough; the
+    facade carries the selected + running surface read model.
 
     Contract checks:
     - Persona leads the prompt; ``# Persona\nBase prompt.`` is the prefix.
@@ -257,7 +257,7 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     - Section 2 documents the hand-written tool surface and workspace
       conventions; it MUST NOT duplicate the ``execute_python`` tool-spec
       description.
-    - Section 3 renders the integration placeholder (no legacy mechanical
+    - Section 3 renders the GitHub SDK summary (no legacy mechanical
       github id→module mapping text).
     - Section 4 includes the full AGENTS.md text and the freeze note.
     - Section 5 carries platform / datetime / timezone tokens.
@@ -282,7 +282,11 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     ).default_agent_binding()
     _write_agents_md(tmp_path, "__MARKER_AGENTS_V1__")
 
-    system = build_agent_definition(binding, mode="conversation").prompt.system
+    system = build_agent_definition(
+        binding,
+        facade=_facade(tmp_path, capabilities=(_github_capability(),)),
+        mode="conversation",
+    ).prompt.system
 
     _assert_section_order(system)
 
@@ -330,8 +334,9 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
         f"Section 2 duplicates execute_python tool-spec phrases: {leaked}"
     )
 
-    # Section 3 — interim integration SDK placeholder (T5 replaces this).
-    assert "yext" in section3, "integration SDK placeholder must mention yext"
+    # Section 3 — visible integration SDK prompt summary.
+    assert "## github" in section3
+    assert "yext.github" in section3, "GitHub SDK summary must mention yext.github"
     # Legacy mechanical id-to-module mapping text MUST NOT appear.
     assert "Map a capability id to yext by keeping the prefix" not in section3
     assert "Non-builtin capabilities are async Python facade functions" not in section3
@@ -446,15 +451,44 @@ class _CrashingPythonSession:
 
 
 def _facade(tmp_path, *, capabilities):
+    from yuubot.core.integrations.contracts import (
+        IntegrationCapabilityRef,
+        VisibleIntegrationSurface,
+    )
+
+    surfaces: tuple[VisibleIntegrationSurface, ...] = ()
+    github_caps = tuple(c for c in capabilities if c.id.startswith("github."))
+    if github_caps:
+        from yuubot.core.integrations.impls.github.integration import GITHUB_SDK_SPEC
+
+        surfaces = (
+            VisibleIntegrationSurface(
+                integration_id="github-main",
+                integration_name="github",
+                sdk=GITHUB_SDK_SPEC,
+                capabilities=github_caps,
+                capability_refs=tuple(
+                    IntegrationCapabilityRef(
+                        integration_id="github-main",
+                        capability_id=c.id,
+                    )
+                    for c in github_caps
+                ),
+            ),
+        )
     return ActorFacadeBinding(
         actor_id="actor-1",
         agent_name="actor-1",
         session_id="session-1",
         mailbox_id="actor:actor-1",
-        capabilities=tuple(capabilities),
+        integration_surfaces=surfaces,
         root=tmp_path,
         sys_path=[str(tmp_path)],
-        startup_code="import yb\nimport tim\nimport yext.github",
+        startup_code=(
+            "import yb\n"
+            "import tim\n"
+            "import facade_context as facade_context"
+        ),
         session_state={},
     )
 

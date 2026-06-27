@@ -23,11 +23,17 @@ from yuubot.core.facade.protocol import FacadeRpcRequest, FacadeRpcResponse
 from yb._client import request as _request
 
 
-async def invoke(capability_id: str, payload: dict[str, object]) -> dict[str, object]:
+async def invoke(
+    capability_id: str,
+    payload: dict[str, object],
+    *,
+    integration_id: str = "",
+) -> dict[str, object]:
     request = FacadeRpcRequest(
         token=_context.TOKEN,
         kind="invoke",
         actor_id=_context.ACTOR_ID,
+        integration_id=integration_id,
         capability_id=capability_id,
         payload=payload,
     )

@@ -20,7 +20,11 @@ from yuubot.core.capabilities import (
 )
 from yuubot.core.gateway import Gateway, IntegrationIngress
 from yuubot.core.integrations.context import InvocationContext
-from yuubot.core.integrations.contracts import IntegrationStorage, ReactionKind
+from yuubot.core.integrations.contracts import (
+    IntegrationSdkSpec,
+    IntegrationStorage,
+    ReactionKind,
+)
 from yuubot.core.messages import IncomingMessage
 from yuubot.resources.records import IntegrationRecord
 
@@ -278,6 +282,13 @@ class ExternalPluginFactory:
             )
             for fn in facade.functions
         ]
+
+    @property
+    def sdk_spec(self) -> IntegrationSdkSpec:
+        # External plugins do not ship a yext.* facade module callable from
+        # the agent kernel; their capabilities are invoked through the bridge.
+        # No SDK surface to expose in the system prompt or kernel imports.
+        return IntegrationSdkSpec()
 
     async def create(
         self,

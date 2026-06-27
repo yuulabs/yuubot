@@ -337,7 +337,6 @@ def _llm_backend_record(actor_id: str) -> LLMBackendRecord:
         id=f"{actor_id}-backend",
         name=f"{actor_id}-backend",
         provider_identity="openai",
-        recommended_model="gpt-4",
         model_configs={
             "gpt-4": ModelConfig(
                 pricing=Pricing(),
@@ -371,7 +370,7 @@ def _actor_payload(actor_id: str) -> dict[str, object]:
         "persona_prompt": "You are a smoke-test actor.",
         "capability_set_id": f"{actor_id}-capabilities",
         "llm_backend_id": f"{actor_id}-backend",
-        "model": "",
+        "model": "gpt-4",
         "generation_override": {},
         "per_run_budget": _record_payload(RunBudget(max_steps=4)),
     }

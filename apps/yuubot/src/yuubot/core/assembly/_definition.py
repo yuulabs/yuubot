@@ -38,7 +38,7 @@ def build_agent_definition(
         budget=binding.budget.to_budget_config(),
         tools=tools,
         prompt=PromptDefinition(
-            system=_system_prompt(binding, mode),
+            system=_system_prompt(binding, mode, facade),
         ),
     )
 

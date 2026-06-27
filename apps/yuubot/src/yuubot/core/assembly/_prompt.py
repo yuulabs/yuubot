@@ -9,7 +9,7 @@ Renders a five-section system prompt contract:
     <tool-surface prose + workspace conventions + optional IM-mode guidance>
 
     # Integration SDKs
-    <integration SDK usage guidance when any integration_ids are selected;
+    <per-integration SDK prompt summaries for selected + running integrations;
      default line otherwise>
 
     # AGENTS.md Context
@@ -23,11 +23,10 @@ exists as a code-only insertion point immediately before AGENTS.md Context;
 it returns ``""`` today and the assembled prompt MUST NOT contain a
 ``# Extension Section`` header.
 
-Integration SDK rendering is interim: T3/T4 only knows that integrations are
-selected (``CapabilitySet.integration_ids`` → ``IntegrationRecord.id``) and
-renders a concise placeholder. T5 replaces this with full
-``IntegrationSdkSpec``-based rendering (short summary + import paths +
-representative examples per selected, enabled, running integration).
+The ``# Integration SDKs`` section renders each visible
+``VisibleIntegrationSurface``'s ``sdk.prompt_summary`` under a per-integration
+sub-header (design §2.7.1, invariant 9): short per-integration summaries with
+representative examples, not a mechanical expansion of every function schema.
 """
 
 from __future__ import annotations
@@ -38,6 +37,7 @@ from pathlib import Path
 from typing import Literal
 
 from yuubot.core.bindings import AgentBinding
+from yuubot.core.facade import ActorFacadeBinding
 
 from ._constants import IM_MODE_SYSTEM_GUIDANCE
 
@@ -58,15 +58,12 @@ _AGENTS_MD_FREEZE_NOTE = (
 )
 
 _NO_INTEGRATION_SDKS = "No integration SDKs configured."
-_INTEGRATION_SDKS_PLACEHOLDER = (
-    "Integration SDKs configured for this actor. Import the `yext` package to "
-    "access them."
-)
 
 
 def _system_prompt(
     binding: AgentBinding,
     mode: Literal["im", "conversation"],
+    facade: ActorFacadeBinding | None = None,
 ) -> str:
     # Pair each visible header with its rendered body. Extension fragments
     # carry an empty header: the body is ``""`` today and the extension zone
@@ -74,7 +71,7 @@ def _system_prompt(
     sections: list[tuple[str, str]] = [
         ("Persona", _render_persona(binding)),
         ("System Instructions", _render_system_instructions(binding, mode)),
-        ("Integration SDKs", _render_integration_sections(binding)),
+        ("Integration SDKs", _render_integration_sections(binding, facade)),
         ("", _render_extension_fragments()),
         ("AGENTS.md Context", _render_agents_md_context(binding.workspace_path)),
         ("Real-Time Data", _render_realtime()),
@@ -199,18 +196,36 @@ def _file_delivery_bullets(
     return bullets
 
 
-def _render_integration_sections(binding: AgentBinding) -> str:
-    """Render the Integration SDKs section.
+def _render_integration_sections(
+    binding: AgentBinding,
+    facade: ActorFacadeBinding | None = None,
+) -> str:
+    """Render the ``# Integration SDKs`` section (§2.7.1, invariant 9).
 
-    Interim (T3/T4): ``CapabilitySet.integration_ids`` selects integration
-    instances by ``IntegrationRecord.id``. We cannot derive per-integration
-    SDK prose from ids alone here, so render a concise placeholder when any
-    integration is selected and the empty default otherwise. T5 replaces this
-    with full ``IntegrationSdkSpec``-based rendering.
+    Each visible ``VisibleIntegrationSurface`` (selected ∩ running, derived at
+    facade-bind time and carried on the facade) with a non-empty
+    ``sdk.prompt_summary`` is rendered under a ``## {integration_name}``
+    sub-header. Surfaces without a prompt summary (e.g. inbound-only kinds)
+    contribute nothing. When the facade is absent or no surface has a summary,
+    the section renders the empty default.
     """
-    if not binding.capability_set.integration_ids:
+    _ = binding
+    if facade is None:
         return _NO_INTEGRATION_SDKS
-    return _INTEGRATION_SDKS_PLACEHOLDER
+    sub_sections: list[str] = []
+    for surface in facade.integration_surfaces:
+        summary = surface.sdk.prompt_summary.strip()
+        if not summary:
+            continue
+        header = f"{surface.integration_name} ({surface.integration_id})"
+        imports = ", ".join(surface.sdk.import_paths)
+        instance_line = f"- Integration id: `{surface.integration_id}`"
+        if imports:
+            instance_line += f"\n- Import: `{imports}`"
+        sub_sections.append(f"## {header}\n{instance_line}\n{summary}")
+    if not sub_sections:
+        return _NO_INTEGRATION_SDKS
+    return "\n\n".join(sub_sections)
 
 
 def _render_extension_fragments() -> str:

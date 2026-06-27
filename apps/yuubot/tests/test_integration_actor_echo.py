@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from yuubot.core.actors import (
     ActorFactoryRegistry,
     ActorManager,
@@ -15,6 +17,7 @@ from yuubot.core.integrations import (
     IntegrationFactoryRegistry,
 )
 from yuubot.core.integrations.impls.echo import (
+    ECHO_CAPABILITY_ID,
     ECHO_INTEGRATION_NAME,
     EchoPayload,
     EchoIntegrationFactory,
@@ -62,7 +65,6 @@ async def test_test_integration_message_reaches_echo_actor(
         gateway=gateway,
         integrations_root=tmp_path / "data" / "integrations",
     )
-    await integrations.refresh_capabilities()
     await integrations.enable(integration.id)
 
     python_sessions = ActorPythonSessionFactory.in_directory(
@@ -107,14 +109,64 @@ async def test_test_integration_message_reaches_echo_actor(
         await integrations.disable_all()
 
 
+async def test_integration_invoke_requires_integration_id_when_capability_ambiguous(
+    resources: Resources,
+    tmp_path,
+):
+    repository = resources.repository
+    actor = await _create_actor_bundle(
+        repository,
+        "echo-actor",
+        integration_ids=("echo-a", "echo-b"),
+    )
+    await _create_test_integration(repository, "channels/a", integration_id="echo-a")
+    await _create_test_integration(repository, "channels/b", integration_id="echo-b")
+
+    gateway = Gateway(routes=await load_route_bindings(repository))
+    integration_factory = EchoIntegrationFactory()
+    integration_factories = IntegrationFactoryRegistry()
+    integration_factories.register(integration_factory)
+    integrations = IntegrationCore(
+        repository=repository,
+        factories=integration_factories,
+        gateway=gateway,
+        integrations_root=tmp_path / "data" / "integrations",
+    )
+    await integrations.enable_all()
+    try:
+        with pytest.raises(LookupError, match="ambiguous"):
+            await integrations.invoke(
+                actor_id=actor.id,
+                capability_id=ECHO_CAPABILITY_ID,
+                payload={"value": "ambiguous"},
+            )
+
+        result = await integrations.invoke(
+            actor_id=actor.id,
+            integration_id="echo-b",
+            capability_id=ECHO_CAPABILITY_ID,
+            payload={"value": "selected"},
+        )
+
+        assert result == EchoPayload(value="selected")
+        echo_b = integration_factory.instance("echo-b")
+        assert await echo_b.next_echo_call() == EchoPayload(value="selected")
+        context = await echo_b.next_echo_context()
+        assert context["integration_id"] == "echo-b"
+    finally:
+        await integrations.disable_all()
+
+
 async def _create_test_integration(
     repository: ResourceRepository,
     source_path: str,
+    *,
+    integration_id: str = "test-integration",
 ) -> IntegrationRecord:
     return await repository.insert(
         IntegrationORM,
         IntegrationRecord(
-            id="test-integration",
+            id=integration_id,
             name=ECHO_INTEGRATION_NAME,
             config={"source_path": source_path},
         ),
@@ -141,6 +193,8 @@ async def _create_actor_ingress_rule(
 async def _create_actor_bundle(
     repository: ResourceRepository,
     actor_id: str,
+    *,
+    integration_ids: tuple[str, ...] = ("test-integration",),
 ) -> ActorRecord:
     backend = await _create_llm_backend(repository, f"{actor_id}-backend")
     capability_set = await repository.insert(
@@ -148,7 +202,7 @@ async def _create_actor_bundle(
         CapabilitySetRecord(
             id=f"{actor_id}-capabilities",
             name=f"{actor_id}-capabilities",
-            integration_ids=("test-integration",),
+            integration_ids=integration_ids,
         ),
     )
     return await repository.insert(
@@ -160,7 +214,7 @@ async def _create_actor_bundle(
             persona_prompt="You echo messages.",
             capability_set_id=capability_set.id,
             llm_backend_id=backend.id,
-            model="",
+            model="gpt-4",
         ),
     )
 
@@ -175,7 +229,6 @@ async def _create_llm_backend(
             id=backend_id,
             name=backend_id,
             provider_identity="openai",
-            recommended_model="gpt-4",
             model_configs={
                 "gpt-4": ModelConfig(
                     pricing=Pricing(),

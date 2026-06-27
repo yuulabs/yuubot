@@ -336,7 +336,6 @@ async def _create_llm_backend(
             "model_configs": _model_configs_payload(model, pricing_entries),
             "budget": {"daily_usd": daily_budget},
             "provider_options": {"base_url": "http://llm.test/v1"},
-            "recommended_model": model,
         },
     )
     return _created(response)

@@ -43,6 +43,15 @@ test("__root.tsx carries the seven core nav links", () => {
   }
 });
 
+test("__root.tsx keeps current breadcrumb entries clickable", () => {
+  assert.ok(
+    rootSrc.includes("return crumb.to ?") &&
+      rootSrc.includes("topbar__crumb-link") &&
+      !rootSrc.includes("crumb.to && !isCurrent"),
+    "topbar crumbs with a route target must render as links even for the current page",
+  );
+});
+
 test("__root.tsx surfaces a runner footer (daemon / Runner)", () => {
   assert.ok(
     /daemon|Runner/.test(rootSrc),

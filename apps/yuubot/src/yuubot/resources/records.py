@@ -53,7 +53,6 @@ class LLMBackendRecord(msgspec.Struct):
     provider_options: LLMProviderOptions = msgspec.field(
         default_factory=LLMProviderOptions
     )
-    recommended_model: str = ""
     default_generation_params: GenerationParams = msgspec.field(
         default_factory=GenerationParams
     )
@@ -65,8 +64,9 @@ class LLMBackendRecord(msgspec.Struct):
 class IntegrationRecord(msgspec.Struct):
     """DB-persisted configuration for an integration.
 
-    ``name`` identifies both the integration kind (e.g. ``"echo"``, ``"qq"``)
-    and this record; per-kind aliases belong in ``config``.
+    ``id`` is the integration instance identity. ``name`` is the integration
+    kind (e.g. ``"echo"``, ``"github"``); multiple instances may share the
+    same kind and carry different per-instance ``config``.
     """
 
     name: str
@@ -219,3 +219,30 @@ class ConversationHistoryItemRecord(msgspec.Struct):
     item_kind: str = ""
     item_json: str = ""
     created_at: datetime | None = None
+
+
+class ResolvedConversation(msgspec.Struct, frozen=True):
+    """Turn-time conversation read model.
+
+    Storage keeps the live actor reference and conversation-owned metadata.
+    This read model hydrates the actor refs for one turn and carries the
+    already-frozen conversation history prefix/items.
+    """
+
+    conversation: ConversationRecord
+    actor: ActorRecord
+    capability_set: CapabilitySetRecord
+    llm_backend: LLMBackendRecord
+    history: tuple[ConversationHistoryItemRecord, ...] = ()
+
+    @property
+    def model(self) -> str:
+        return self.actor.model
+
+    @property
+    def persona_prompt(self) -> str:
+        return self.actor.persona_prompt
+
+    @property
+    def per_run_budget(self) -> RunBudget:
+        return self.actor.per_run_budget

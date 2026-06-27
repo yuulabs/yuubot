@@ -326,7 +326,6 @@ def make_llm_backend_record(
         id=backend_id,
         name=backend_id,
         provider_identity=provider,
-        recommended_model=model,
         model_configs={
             model: ModelConfig(
                 pricing=Pricing(),
@@ -360,9 +359,11 @@ def make_actor_record(
     llm_backend: LLMBackendRecord,
     capability_set: CapabilitySetRecord | None = None,
     actor_type: str = "simple_loop",
+    model: str = "",
     max_steps: int = 4,
 ) -> ActorRecord:
     cap_set = capability_set or make_capability_set_record(actor_id)
+    selected_model = model or next(iter(llm_backend.model_configs))
     return ActorRecord(
         id=actor_id,
         name=actor_id,
@@ -370,7 +371,7 @@ def make_actor_record(
         persona_prompt=persona_prompt,
         capability_set_id=cap_set.id,
         llm_backend_id=llm_backend.id,
-        model="",
+        model=selected_model,
         per_run_budget=RunBudget(max_steps=max_steps),
     )
 

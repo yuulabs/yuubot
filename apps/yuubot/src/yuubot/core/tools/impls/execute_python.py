@@ -8,8 +8,7 @@ It also owns the system-layer derivation (``derive``) of the full
 ``PythonRuntime`` config from the assembly ``ToolDeriveContext`` + the actor
 facade binding (§6.6). The derivation logic previously lived in the retired
 ``core/assembly/_tools.py`` private helpers (``_python_tool_runtime``,
-``_facade_imports``, ``_facade_expand_functions``,
-``_handwritten_external_modules``, ``_python_session_state``).
+``_facade_imports``, ``_facade_expand_functions``).
 """
 
 from __future__ import annotations
@@ -95,12 +94,17 @@ class ExecutePythonToolFactory:
         ``config.python`` ← context.venv_python, ``config.cwd`` ←
         context.workspace_path, ``config.sys_path`` / ``config.startup_code``
         ← facade, ``imports`` ← system facade + visible integration SDK
-        (yext.*), ``state`` ← context.identity, ``expand_functions`` ←
-        system facade + per-module ``.*``.
+        (yext.*) derived from ``facade.integration_surfaces``, ``state`` ←
+        context.identity, ``expand_functions`` ← system facade + per-module
+        ``.*`` for each surfaced import path.
         """
         facade = context.facade
         startup_code = _build_startup_code(facade)
-        imports = _build_imports(facade)
+        import_modules = _visible_sdk_modules(facade)
+        imports = (
+            *_FACADE_IMPORTS,
+            *(PythonImport(module=module) for module in sorted(import_modules)),
+        )
         state = {
             "actor_id": context.actor_id,
             "agent_name": context.agent_name,
@@ -116,7 +120,7 @@ class ExecutePythonToolFactory:
             ),
             imports=imports,
             state=state,
-            expand_functions=_build_expand_functions(facade),
+            expand_functions=_build_expand_functions(import_modules),
         )
 
     def tool_class(self) -> type[Tool[Any, Any]]:
@@ -132,44 +136,29 @@ def _build_startup_code(facade: ActorFacadeBinding | None) -> str:
     return code
 
 
-def _build_imports(facade: ActorFacadeBinding | None) -> tuple[PythonImport, ...]:
-    """System facade (yb/tim) + integration facade (yext.*) modules.
-
-    ``yext.*`` modules are derived from the facade's visible capabilities:
-    any ``github.*`` capability exposes the hand-written ``yext.github``
-    facade module (preserving the previous ``_handwritten_external_modules``
-    behaviour). T5 replaces this with ``VisibleIntegrationSurface.sdk``.
-    """
-    modules = _handwritten_external_modules(facade)
-    return (
-        *_FACADE_IMPORTS,
-        *(PythonImport(module=module) for module in sorted(modules)),
-    )
-
-
-def _build_expand_functions(
-    facade: ActorFacadeBinding | None,
-) -> tuple[str, ...]:
-    """Default expansion globs for the system facade + integration modules."""
-    modules = _handwritten_external_modules(facade)
-    return (
-        *_FACADE_EXPAND_FUNCTIONS,
-        *(f"{module}.*" for module in sorted(modules)),
-    )
-
-
-def _handwritten_external_modules(
+def _visible_sdk_modules(
     facade: ActorFacadeBinding | None,
 ) -> set[str]:
-    """yext modules surfaced by the facade's visible capabilities.
+    """``yext.*`` modules surfaced by the facade's visible integration SDKs.
 
-    Today only the GitHub facade is hand-written: any ``github.*``
-    capability on the facade exposes ``yext.github``.
+    Each ``VisibleIntegrationSurface`` declares its callable SDK via
+    ``sdk.import_paths`` (e.g. ``("yext.github",)``); the union over all
+    selected + running surfaces is exactly the set of integration facade
+    modules the kernel may import. Integrations without a callable facade
+    (e.g. inbound-only IM kinds) declare an empty ``import_paths`` tuple and
+    therefore contribute nothing — the actor never sees a SDK it cannot use.
     """
     modules: set[str] = set()
     if facade is None:
         return modules
-    for capability in facade.capabilities:
-        if capability.id.startswith("github."):
-            modules.add("yext.github")
+    for surface in facade.integration_surfaces:
+        modules.update(surface.sdk.import_paths)
     return modules
+
+
+def _build_expand_functions(import_modules: set[str]) -> tuple[str, ...]:
+    """Default expansion globs for the system facade + integration modules."""
+    return (
+        *_FACADE_EXPAND_FUNCTIONS,
+        *(f"{module}.*" for module in sorted(import_modules)),
+    )

@@ -329,7 +329,7 @@ async def test_provider_models_endpoint_reports_missing_backend(
     assert response.json()["detail"] == "llm backend not found"
 
 
-async def test_provider_validate_reports_recommended_model_and_capabilities(
+async def test_provider_validate_reports_live_models(
     resources: Resources,
     yuubot_config: BootstrapConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -340,7 +340,6 @@ async def test_provider_validate_reports_recommended_model_and_capabilities(
             id="provider-main",
             name="provider-main",
             provider_identity="deepseek",
-            recommended_model="deepseek-chat",
             model_configs={
                 "deepseek-chat": ModelConfig(
                     pricing=Pricing(),
@@ -372,19 +371,10 @@ async def test_provider_validate_reports_recommended_model_and_capabilities(
         "data": {
             "valid": True,
             "detail": "",
-            "recommended_model_valid": True,
             "models": [
                 {"id": "deepseek-chat", "displayName": "DeepSeek Chat"},
                 {"id": "deepseek-reasoner"},
             ],
-            "capabilities": {
-                "chat": True,
-                "vision": False,
-                "tool_calling": True,
-                "reasoning": False,
-                "embedding": False,
-                "structured_output": False,
-            },
         },
     }
 
@@ -460,6 +450,12 @@ class SecretIntegrationFactory:
 
     def capability_specs(self):
         return []
+
+    @property
+    def sdk_spec(self):
+        from yuubot.core.integrations.contracts import IntegrationSdkSpec
+
+        return IntegrationSdkSpec()
 
     async def create(
         self,

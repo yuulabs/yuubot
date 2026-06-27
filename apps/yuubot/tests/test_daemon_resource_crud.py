@@ -199,7 +199,6 @@ def _backend_payload(
             }
         },
         "budget": {},
-        "recommended_model": model,
     }
 
 
@@ -213,7 +212,6 @@ def _backend_record(
         id=backend_id,
         name=backend_id,
         provider_identity=provider_identity,
-        recommended_model=model,
         model_configs={
             model: ModelConfig(
                 pricing=Pricing(
@@ -269,7 +267,6 @@ async def test_create_llm_backend_preserves_model_configs(
         assert resp.status_code == 201, resp.text
         data = resp.json()["data"]
         assert data["provider_identity"] == "openai"
-        assert data["recommended_model"] == "gpt-4"
         assert data["model_configs"]["gpt-4"]["pricing"] == {
             "input_per_million": 1.25,
             "cached_input_per_million": 0.25,
@@ -301,7 +298,6 @@ async def test_create_deepseek_llm_backend_uses_provider_identity(
         assert resp.status_code == 201, resp.text
         data = resp.json()["data"]
         assert data["provider_identity"] == "deepseek"
-        assert data["recommended_model"] == "deepseek-chat"
         assert set(data["model_configs"]) == {"deepseek-chat"}
     finally:
         await runtime.services.stop()
@@ -411,7 +407,7 @@ async def test_create_actor_validates_referenced_resources(
                     "persona_prompt": "test",
                     "capability_set_id": "missing-capability-set",
                     "llm_backend_id": "missing-backend",
-                    "model": "",
+                    "model": "gpt-4",
                 },
             )
         assert resp.status_code == 400, resp.text
@@ -457,6 +453,7 @@ async def test_create_actor_accepts_typed_simplified_request(
                     "persona_prompt": "test",
                     "capability_set_id": capability_set.id,
                     "llm_backend_id": backend.id,
+                    "model": "gpt-4",
                     "per_run_budget": {"max_steps": 3},
                 },
             )
@@ -465,7 +462,56 @@ async def test_create_actor_accepts_typed_simplified_request(
         assert body["data"]["persona_prompt"] == "test"
         assert body["data"]["capability_set_id"] == "cap-simple"
         assert body["data"]["llm_backend_id"] == "backend-simple"
+        assert body["data"]["model"] == "gpt-4"
         assert body["data"]["per_run_budget"]["max_steps"] == 3
+    finally:
+        await runtime.services.stop()
+
+
+async def test_update_actor_rejects_unconfigured_model(
+    resources: Resources, tmp_path: Path
+) -> None:
+    from yuubot.resources.records import ActorRecord, CapabilitySetRecord
+    from yuubot.resources.store.models import (
+        ActorORM,
+        CapabilitySetORM,
+        LLMBackendORM,
+    )
+
+    backend = await resources.repository.insert(
+        LLMBackendORM,
+        _backend_record("backend-model-check"),
+    )
+    capability_set = await resources.repository.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(id="cap-model-check", name="cap-model-check"),
+    )
+    await resources.repository.insert(
+        ActorORM,
+        ActorRecord(
+            id="actor-model-check",
+            name="actor-model-check",
+            type="fake",
+            persona_prompt="test",
+            capability_set_id=capability_set.id,
+            llm_backend_id=backend.id,
+            model="gpt-4",
+        ),
+    )
+
+    runtime = _build_runtime(resources, tmp_path)
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            resp = await client.put(
+                "/api/resources/actors/actor-model-check",
+                headers=HEADERS,
+                json={"model": "missing-model"},
+            )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["code"] == "configuration_error"
+        assert "model 'missing-model' is not configured" in body["detail"]
     finally:
         await runtime.services.stop()
 
@@ -501,7 +547,7 @@ async def test_delete_referenced_llm_backend_returns_conflict(
             persona_prompt="test",
             capability_set_id=capability_set.id,
             llm_backend_id=backend.id,
-            model="",
+            model="gpt-4",
         ),
     )
 
@@ -535,12 +581,12 @@ async def test_update_llm_backend(resources: Resources, tmp_path: Path) -> None:
             resp = await client.put(
                 "/api/resources/llm-backends/backend-u",
                 headers=HEADERS,
-                json={"recommended_model": "gpt-4o"},
+                json={"default_generation_params": {"temperature": 0.2}},
             )
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["status"] == "ok"
-        assert body["data"]["recommended_model"] == "gpt-4o"
+        assert body["data"]["default_generation_params"]["temperature"] == 0.2
     finally:
         await runtime.services.stop()
 

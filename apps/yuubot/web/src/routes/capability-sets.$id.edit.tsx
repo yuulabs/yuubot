@@ -1,12 +1,8 @@
 // capability-sets.$id.edit.tsx — `/capability-sets/$id/edit` editor (ISSUE-0007 S5).
 //
 // Edit-state Capability Set editor: same demo-aligned body as the new editor
-// (editor__hero + editor__cols with 基本 + 能力 CapTree + rail) but prefilled
-// from the existing Capability Set, calling `useUpdateResource` on save and
-// exposing the danger zone (delete) in the rail.
-//
-// CapTree is provided by S1 (`components/baseline/CapTree`); this route only
-// assembles `groups` from `useLiveCapabilities()` and feeds them in.
+// (editor__hero + editor__cols with 基本 + flat integration selection + rail)
+// but prefilled from the existing Capability Set.
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
@@ -41,7 +37,7 @@ interface CapGroup {
   }[];
 }
 
-/** Group live capabilities by integration source (CapTree groups contract). */
+/** Group live capabilities by integration instance (selection value = id). */
 function groupByIntegration(caps: LiveCapability[]): CapGroup[] {
   const bySource = new Map<string, LiveCapability[]>();
   for (const c of caps) {
@@ -185,7 +181,7 @@ function CapabilitySetEditPage() {
               />
             </Field>
             <div className="hero__meta">
-              <span className="kv"><b>已选</b> <code>{selectedIds.length}</code> 项能力</span>
+              <span className="kv"><b>已选</b> <code>{selectedIds.length}</code> 个集成</span>
               <span className="kv"><b>ID</b> <code>{cs.id}</code></span>
             </div>
           </div>
@@ -226,7 +222,7 @@ function CapabilitySetEditPage() {
             </LegendCard>
 
             <LegendCard dotColor="green" legend="能力">
-              <p className="card__lead">按来源分组，可整组勾选。展开查看具体能力。</p>
+              <p className="card__lead">按集成实例选择；选中后该实例的全部 SDK 能力对 Actor 可见。</p>
               <CapTree
                 groups={capGroups}
                 selectedIds={selectedIds}

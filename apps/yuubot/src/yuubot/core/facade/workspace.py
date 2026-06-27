@@ -13,6 +13,7 @@ from pathlib import Path
 
 from yuubot.core.capabilities import AnyCapabilitySpec
 from yuubot.core.facade.context import FACADE_CONTEXT_MODULE, render_context_module
+from yuubot.core.integrations.contracts import VisibleIntegrationSurface
 
 YEXT_PACKAGE = "yext"
 
@@ -32,7 +33,7 @@ class ActorFacadeBinding:
     agent_name: str
     session_id: str
     mailbox_id: str
-    capabilities: tuple[AnyCapabilitySpec, ...]
+    integration_surfaces: tuple[VisibleIntegrationSurface, ...]
     root: Path
     sys_path: list[str]
     startup_code: str
@@ -47,7 +48,10 @@ class FacadeWorkspace:
     root: Path
     package_name: str = YEXT_PACKAGE
 
-    def generate_catalog(self, capabilities: Iterable[AnyCapabilitySpec]) -> Path:
+    def generate_catalog(
+        self,
+        capabilities: Iterable[AnyCapabilitySpec],
+    ) -> Path:
         _ = tuple(capabilities)
         catalog_root = self.root / "catalog"
         _replace_dir(catalog_root)
@@ -60,14 +64,14 @@ class FacadeWorkspace:
         agent_name: str,
         session_id: str,
         mailbox_id: str,
-        capabilities: Iterable[AnyCapabilitySpec],
+        surfaces: Iterable[VisibleIntegrationSurface],
         endpoint: FacadeEndpoint,
     ) -> ActorFacadeBinding:
         from yuubot.core.actors.workspace import safe_actor_path_id
 
         path_id = safe_actor_path_id(actor_id)
         actor_root = self.root / "actors" / path_id
-        visible_capabilities = tuple(capabilities)
+        visible_surfaces = tuple(surfaces)
 
         actor_root.mkdir(parents=True, exist_ok=True)
         (actor_root / f"{FACADE_CONTEXT_MODULE}.py").write_text(
@@ -88,18 +92,22 @@ class FacadeWorkspace:
         if daemon_src is not None:
             sys_path.append(str(daemon_src))
         sys_path.append(str(actor_root))
+        # The system facade (yb/tim) + per-integration facade context is the
+        # kernel bootstrap; integration ``yext.*`` modules are derived from
+        # each visible surface's ``sdk.import_paths`` by
+        # ``ExecutePythonToolFactory.derive`` (§6.6), so do NOT hardcode any
+        # integration import here.
         return ActorFacadeBinding(
             actor_id=actor_id,
             agent_name=agent_name,
             session_id=session_id,
             mailbox_id=mailbox_id,
-            capabilities=visible_capabilities,
+            integration_surfaces=visible_surfaces,
             root=actor_root,
             sys_path=sys_path,
             startup_code=(
                 "import yb\n"
                 "import tim\n"
-                f"import {self.package_name}.github\n"
                 f"import {FACADE_CONTEXT_MODULE} as facade_context"
             ),
             session_state={
@@ -190,9 +198,11 @@ def _resolve_daemon_facade_src() -> Path | None:
     The facade source (``yb``, ``tim``, ``yext``, ``yuubot``) lives at
     ``apps/yuubot/src`` and is exposed in the daemon process only via the
     editable ``.pth`` — the isolated actor venv does not have it. The kernel
-    bootstrap runs ``import yb; import tim; import yext.github`` (the facade
-    ``startup_code``), so the binding's ``sys_path`` must include this dir so
-    those modules import from the same source the daemon runs.
+    bootstrap runs ``import yb; import tim; import facade_context`` (the facade
+    ``startup_code``); integration ``yext.*`` modules are imported by the agent
+    on demand or surfaced through ``PythonRuntime.imports``. The binding's
+    ``sys_path`` must include this dir so those modules import from the same
+    source the daemon runs.
 
     Resolution uses the daemon's own editably-imported ``yb``: its ``__file__``
     sits at ``apps/yuubot/src/yb/<...>.py``, so ``parent.parent`` is

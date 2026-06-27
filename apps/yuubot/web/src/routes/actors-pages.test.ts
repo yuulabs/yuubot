@@ -50,14 +50,12 @@ test("actors.$id.tsx no longer inlines the edit form (no Textarea system_prompt 
   assert.ok(!/useUpdateResource/.test(src), "detail must not call useUpdateResource (edit moved out)");
 });
 
-test("actors.new.tsx exists and drives the dual create call (Character then Actor)", () => {
+test("actors.new.tsx exists and creates an Actor with inline persona", () => {
   const src = read("actors.new.tsx");
   assert.ok(src.includes("<form"), "editor must render a <form>");
   assert.ok(
-    src.includes("createCharacter") ||
-      /useCreateResource<CharacterResource>/.test(src) ||
-      /useCreateResource\([^)]*characters/.test(src),
-    "editor must reference createCharacter / characters create hook",
+    src.includes("persona_prompt") || src.includes("systemPrompt"),
+    "editor must carry inline persona_prompt state",
   );
   assert.ok(
     src.includes("createActor") ||
@@ -89,8 +87,8 @@ test("actor editor labels match the create/detail contract", () => {
   assert.ok(combined.includes("actorType"), "Actor editor state must carry actorType");
   assert.ok(combined.includes("LLM 供应商"), "Actor pages must label provider selection as LLM 供应商");
   assert.ok(
-    combined.includes("Character Persona"),
-    "Actor pages must expose Character Persona",
+    combined.includes("Persona"),
+    "Actor pages must expose Persona",
   );
   const oldAgentLabel = ["Agent", "规格"].join(" ");
   const oldProviderLabel = ["LLM", "角色"].join(" ");

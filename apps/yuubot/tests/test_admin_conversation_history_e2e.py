@@ -96,7 +96,6 @@ async def _create_llm_backend(
             },
             "budget": {"daily_usd": 0},
             "provider_options": {"base_url": "http://llm.test/v1"},
-            "recommended_model": "gpt-4o",
         },
         headers=_headers(config),
     )

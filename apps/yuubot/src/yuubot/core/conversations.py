@@ -13,6 +13,7 @@ from pathlib import Path
 
 import msgspec
 import yuullm
+from tortoise import Model
 from yuuagents import Agent, Budget, ProviderPoolSessionFactory
 from yuuagents.core.eventbus import RuntimeEvent
 
@@ -22,7 +23,11 @@ from yuubot.core.assembly._history_codec import (
     decode_prompt_item,
     encode_prompt_item,
 )
-from yuubot.core.bindings import AgentBinding, conversation_agent_binding
+from yuubot.core.bindings import (
+    AgentBinding,
+    agent_binding_from_resolved_conversation,
+    resolve_conversation_record,
+)
 from yuubot.core.conversation_events import (
     ConversationFrontendEvent,
     ConversationSSEHeartbeat,
@@ -63,8 +68,9 @@ def _conversation_sort_key(record: ConversationRecord) -> tuple[float, str]:
 class ConversationSendBinding:
     """Binding fields carried on the first send request body.
 
-    ``actor_id`` is required on first send; the remaining fields default
-    from the actor's ``default_*`` records when omitted.
+    ``actor_id`` is required on first send. Other fields are retained as
+    request-shape compatibility for callers, but actor-owned configuration is
+    resolved from the actor live reference.
     """
 
     conversation_id: str
@@ -311,7 +317,7 @@ class ConversationStore:
             records = [await self._record_from_row(r) for r in rows]
         return sorted(records, key=_conversation_sort_key, reverse=True)
 
-    async def _record_from_row(self, row: ConversationORM) -> ConversationRecord:
+    async def _record_from_row(self, row: Model) -> ConversationRecord:
         return await from_orm(
             row,
             ConversationRecord,
@@ -836,16 +842,12 @@ class ConversationManager:
         runtime = self._runtimes.get(conversation.conversation_id)
         if runtime is not None:
             return runtime
-        binding = await conversation_agent_binding(
-            self.repository,
-            conversation,
-        )
+        resolved = await resolve_conversation_record(self.repository, conversation)
         workspace_path = self._resolve_workspace_path(
-            binding.capability_set.workspace_path
+            resolved.capability_set.workspace_path
         )
-        binding = await conversation_agent_binding(
-            self.repository,
-            conversation,
+        binding = agent_binding_from_resolved_conversation(
+            resolved,
             workspace_path=workspace_path,
         )
         facade = None

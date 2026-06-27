@@ -128,6 +128,7 @@ class IntegrationInvokeBridge:
 
         output = await self.integrations.invoke(
             actor_id=request.actor_id,
+            integration_id=request.integration_id,
             capability_id=request.capability_id,
             payload=request.payload,
             context=InvocationContext(actor_id=request.actor_id),

@@ -104,20 +104,30 @@ class GitHubFile:
 class GitHubRepo:
     owner: str = ""
     name: str = ""
+    integration_id: str = ""
 
     @property
     def issues(self) -> "GitHubIssues":
-        return GitHubIssues(owner=self.owner, repo=self.name)
+        return GitHubIssues(
+            owner=self.owner,
+            repo=self.name,
+            integration_id=self.integration_id,
+        )
 
     @property
     def files(self) -> "GitHubFiles":
-        return GitHubFiles(owner=self.owner, repo=self.name)
+        return GitHubFiles(
+            owner=self.owner,
+            repo=self.name,
+            integration_id=self.integration_id,
+        )
 
 
 @dataclass(frozen=True)
 class GitHubIssues:
     owner: str = ""
     repo: str = ""
+    integration_id: str = ""
 
     async def list_recent(
         self,
@@ -133,6 +143,7 @@ class GitHubIssues:
                 "state": state,
                 "per_page": limit,
             },
+            integration_id=self.integration_id,
         )
         issues = result.get("issues", [])
         if not isinstance(issues, list):
@@ -152,6 +163,7 @@ class GitHubIssues:
                 "repo": self.repo,
                 "issue_number": number,
             },
+            integration_id=self.integration_id,
         )
         payload = _require_object(result.get("issue"))
         issue = GitHubIssue.from_payload(payload)
@@ -169,6 +181,7 @@ class GitHubIssues:
 class GitHubFiles:
     owner: str = ""
     repo: str = ""
+    integration_id: str = ""
 
     async def read(
         self,
@@ -186,6 +199,7 @@ class GitHubFiles:
                 "path": path,
                 "ref": ref,
             },
+            integration_id=self.integration_id,
         )
         file = GitHubFile.from_payload(result, max_chars=max_chars)
         if mime == "application/json":
@@ -193,23 +207,30 @@ class GitHubFiles:
         return file.text(max_chars=max_chars)
 
 
-def repo(owner: str = "", name: str = "", /) -> GitHubRepo:
+def repo(owner: str = "", name: str = "", /, *, integration_id: str = "") -> GitHubRepo:
     """Return a repository facade.
 
     Empty owner/name values intentionally flow to the integration so configured
     defaults are honored and missing defaults return a bridge error message.
+    Pass ``integration_id`` when more than one GitHub integration is visible.
     """
 
-    return GitHubRepo(owner=owner, name=name)
+    return GitHubRepo(owner=owner, name=name, integration_id=integration_id)
 
 
-async def _invoke(capability_id: str, payload: dict[str, object]) -> dict[str, object]:
+async def _invoke(
+    capability_id: str,
+    payload: dict[str, object],
+    *,
+    integration_id: str = "",
+) -> dict[str, object]:
     actor = _context.actor_context()
     bridge = _context.bridge_context()
     response = await _request(
         FacadeRpcRequest(
             token=bridge.token,
             actor_id=actor.actor_id,
+            integration_id=integration_id,
             agent_name=actor.agent_name,
             session_id=actor.session_id,
             mailbox_id=actor.mailbox_id,

@@ -178,12 +178,12 @@ class TestRouteBindings:
         await repository.update(
             LLMBackendORM,
             backend.id,
-            recommended_model="gpt-4.1",
+            budget=BudgetPolicy(monthly_usd=12.0),
         )
 
         refreshed = await load_actor_binding(repository, actor.id)
 
-        assert refreshed.resolved.llm_backend.recommended_model == "gpt-4.1"
+        assert refreshed.resolved.llm_backend.budget.monthly_usd == 12.0
 
     async def test_gateway_no_mailbox_for_unknown_actor(self):
         gateway = Gateway(
@@ -276,7 +276,6 @@ async def _create_llm_backend(
         id=name,
         name=name,
         provider_identity="openai",
-        recommended_model="gpt-4",
         model_configs={
             "gpt-4": ModelConfig(
                 pricing=Pricing(),
@@ -306,7 +305,7 @@ async def _create_actor(
         persona_prompt=f"You are {name}",
         capability_set_id=capability_set.id,
         llm_backend_id=backend.id,
-        model="",
+        model="gpt-4",
         per_run_budget=RunBudget(),
     )
     return await repository.insert(ActorORM, record)

@@ -14,7 +14,7 @@ from yuubot.core.integrations.core import IntegrationCore
 
 
 async def test_github_facade_reaches_integration_bridge() -> None:
-    requests: list[tuple[str, dict[str, object]]] = []
+    requests: list[tuple[str, str, dict[str, object]]] = []
     bridge = IntegrationInvokeBridge(cast(IntegrationCore, _FakeIntegrationCore(requests)))
     await bridge.start()
     endpoint = bridge.endpoint
@@ -35,11 +35,14 @@ async def test_github_facade_reaches_integration_bridge() -> None:
     try:
         import yext.github
 
-        issues = await yext.github.repo("yuulabs", "yuubot").issues.list_recent(
-            limit=5
+        repo = yext.github.repo(
+            "yuulabs",
+            "yuubot",
+            integration_id="github-secondary",
         )
+        issues = await repo.issues.list_recent(limit=5)
         issue = issues["#11111"]
-        content = await yext.github.repo("yuulabs", "yuubot").files.read(
+        content = await repo.files.read(
             "README.md",
             ref="main",
             max_chars=8,
@@ -50,6 +53,7 @@ async def test_github_facade_reaches_integration_bridge() -> None:
 
     assert requests == [
         (
+            "github-secondary",
             "github.issue.list",
             {
                 "owner": "yuulabs",
@@ -59,6 +63,7 @@ async def test_github_facade_reaches_integration_bridge() -> None:
             },
         ),
         (
+            "github-secondary",
             "github.file.read",
             {
                 "owner": "yuulabs",
@@ -106,7 +111,7 @@ async def test_github_facade_missing_repo_returns_bridge_error() -> None:
 
 
 class _FakeIntegrationCore:
-    def __init__(self, requests: list[tuple[str, dict[str, object]]]) -> None:
+    def __init__(self, requests: list[tuple[str, str, dict[str, object]]]) -> None:
         self.requests = requests
 
     async def invoke(
@@ -116,11 +121,12 @@ class _FakeIntegrationCore:
         capability_id: str,
         payload: dict[str, object],
         context: object,
+        integration_id: str = "",
     ) -> object:
         _ = actor_id, context
         if not payload["owner"] or not payload["repo"]:
             raise ValueError("owner and repo are required for GitHub capability calls")
-        self.requests.append((capability_id, dict(payload)))
+        self.requests.append((integration_id, capability_id, dict(payload)))
         if capability_id == "github.issue.list":
             return _StructResult(
                 issues=[

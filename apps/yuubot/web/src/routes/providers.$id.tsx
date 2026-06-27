@@ -6,7 +6,7 @@ import {
   useDeleteResource,
   useUpdateResource,
 } from "@/hooks/use-resources";
-import type { LLMBackendResource, ModelConfig, Pricing } from "@/types/api";
+import type { LLMBackendResource, ModelCapabilities, ModelConfig } from "@/types/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,10 +32,17 @@ export const Route = createFileRoute("/providers/$id")({
   component: ProviderDetailPage,
 });
 
-interface PricingEntryForm {
+interface ModelConfigForm {
   model: string;
   input_per_million: string;
+  cached_input_per_million: string;
   output_per_million: string;
+  chat: boolean;
+  vision: boolean;
+  tool_calling: boolean;
+  reasoning: boolean;
+  embedding: boolean;
+  structured_output: boolean;
 }
 
 function ProviderDetailPage() {
@@ -49,11 +56,10 @@ function ProviderDetailPage() {
 
   const [name, setName] = useState(backend?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(backend?.provider_options?.base_url ?? "");
-  const [model, setModel] = useState(backend?.recommended_model ?? "");
   const [dailyBudget, setDailyBudget] = useState(
     backend?.budget?.daily_usd?.toString() ?? "",
   );
-  const [pricingEntries, setPricingEntries] = useState<PricingEntryForm[]>(
+  const [modelConfigRows, setModelConfigRows] = useState<ModelConfigForm[]>(
     modelConfigsToForm(backend?.model_configs ?? {}),
   );
   const [modelApiKey, setModelApiKey] = useState("");
@@ -70,9 +76,8 @@ function ProviderDetailPage() {
     if (backend) {
       setName(backend.name);
       setBaseUrl(backend.provider_options?.base_url ?? "");
-      setModel(backend.recommended_model ?? "");
       setDailyBudget(backend.budget?.daily_usd?.toString() ?? "");
-      setPricingEntries(modelConfigsToForm(backend.model_configs ?? {}));
+      setModelConfigRows(modelConfigsToForm(backend.model_configs ?? {}));
       setProviderModels([]);
       setProviderValidation(null);
       setModelFetchError("");
@@ -116,23 +121,13 @@ function ProviderDetailPage() {
   };
 
   const handleSave = async () => {
-    const normalizedPricing = normalizePricingEntries(pricingEntries);
-    const modelNames = mergeModelOptions(
-      providerModels,
-      backend.models?.names ?? [],
-      normalizedPricing.map((entry) => entry.model),
-      [model],
-    ).map((option) => option.id);
+    const modelConfigs = formRowsToModelConfigs(modelConfigRows);
     const budget = {
       ...backend.budget,
       daily_usd: parseOptionalUsd(dailyBudget),
     };
-    if (budgetRequiresPricing(budget) && !model.trim()) {
-      setSaveError("Select a default model before enabling a USD budget.");
-      return;
-    }
-    if (budgetRequiresPricing(budget) && !hasPricingForModel(normalizedPricing, model)) {
-      setSaveError("Daily USD budget needs pricing for the default model.");
+    if (budgetRequiresPricing(budget) && Object.keys(modelConfigs).length === 0) {
+      setSaveError("Configure at least one model before enabling a USD budget.");
       return;
     }
     if (baseUrlWarning) {
@@ -145,58 +140,55 @@ function ProviderDetailPage() {
       data: {
         name,
         budget,
-        pricing: { entries: normalizedPricing },
-        models: { names: modelNames },
-        provider_options: { ...backend.provider_options, base_url: baseUrl, api_key: modelApiKey || backend.provider_options?.api_key || "" },
-        default_model: model,
+        model_configs: modelConfigs,
+        provider_options: {
+          ...backend.provider_options,
+          base_url: baseUrl,
+          api_key: modelApiKey || backend.provider_options?.api_key || "",
+        },
       },
     });
   };
 
-  const updatePricingEntry = (
+  const updateModelConfigRow = (
     index: number,
-    field: keyof PricingEntryForm,
-    value: string,
+    field: keyof ModelConfigForm,
+    value: string | boolean,
   ) => {
-    setPricingEntries((entries) =>
+    setModelConfigRows((entries) =>
       entries.map((entry, i) =>
         i === index ? { ...entry, [field]: value } : entry,
       ),
     );
   };
 
-  const addPricingEntry = () => {
+  const addModelConfigRow = () => {
     const pricedModels = new Set(
-      pricingEntries.map((entry) => entry.model).filter(Boolean),
+      modelConfigRows.map((entry) => entry.model).filter(Boolean),
     );
     const nextModel =
       modelOptions.find((option) => !pricedModels.has(option.id))?.id ??
       modelOptions[0]?.id ??
       "";
-    setPricingEntries((entries) => [
+    setModelConfigRows((entries) => [
       ...entries,
-      {
-        model: nextModel,
-        input_per_million: "",
-        output_per_million: "",
-      },
+      emptyModelConfigForm(nextModel),
     ]);
   };
 
-  const removePricingEntry = (index: number) => {
-    setPricingEntries((entries) => entries.filter((_, i) => i !== index));
+  const removeModelConfigRow = (index: number) => {
+    setModelConfigRows((entries) => entries.filter((_, i) => i !== index));
   };
 
-  const normalizedPricing = normalizePricingEntries(pricingEntries);
+  const normalizedModelConfigs = formRowsToModelConfigs(modelConfigRows);
   const modelOptions = mergeModelOptions(
     providerModels,
-    backend.models?.names ?? [],
-    pricingEntries.map((entry) => entry.model),
-    [backend.default_model, model],
+    Object.keys(backend.model_configs ?? {}),
+    modelConfigRows.map((entry) => entry.model),
   );
   const missingPricing =
     budgetRequiresPricing({ ...backend.budget, daily_usd: parseOptionalUsd(dailyBudget) }) &&
-    !hasPricingForModel(normalizedPricing, model);
+    Object.keys(normalizedModelConfigs).length === 0;
 
   return (
     <div className="space-y-6 p-6">
@@ -213,7 +205,7 @@ function ProviderDetailPage() {
           </div>
         </div>
         <Badge variant={missingPricing ? "destructive" : "default"}>
-          {missingPricing ? "pricing missing" : "active"}
+          {missingPricing ? "models missing" : "active"}
         </Badge>
       </div>
 
@@ -229,9 +221,9 @@ function ProviderDetailPage() {
                   <TableCell className="font-medium">Name</TableCell>
                   <TableCell>{backend.name}</TableCell>
                 </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Provider</TableCell>
-                  <TableCell><code>{backend.yuuagents_provider ?? "unknown"}</code></TableCell>
+	                <TableRow>
+	                  <TableCell className="font-medium">Provider</TableCell>
+	                  <TableCell><code>{backend.provider_identity}</code></TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell className="font-medium">Base URL</TableCell>
@@ -239,10 +231,10 @@ function ProviderDetailPage() {
                     {backend.provider_options?.base_url ?? "default"}
                   </TableCell>
                 </TableRow>
-                <TableRow>
-                  <TableCell className="font-medium">Default Model</TableCell>
-                  <TableCell><code>{backend.default_model ?? "unset"}</code></TableCell>
-                </TableRow>
+	                <TableRow>
+	                  <TableCell className="font-medium">Configured Models</TableCell>
+	                  <TableCell><code>{Object.keys(backend.model_configs ?? {}).length}</code></TableCell>
+	                </TableRow>
                 <TableRow>
                   <TableCell className="font-medium">Daily Budget</TableCell>
                   <TableCell>{formatUsd(backend.budget?.daily_usd)}</TableCell>
@@ -314,16 +306,10 @@ function ProviderDetailPage() {
                     {providerValidation.valid ? "valid" : "failed"}
                   </Badge>
                 </div>
-                <div className="mt-1 flex items-center justify-between gap-2">
-                  <span>Default model</span>
-                  <Badge
-                    variant={
-                      providerValidation.default_model_valid ? "default" : "destructive"
-                    }
-                  >
-                    {providerValidation.default_model_valid ? "valid" : "missing"}
-                  </Badge>
-                </div>
+	                <div className="mt-1 flex items-center justify-between gap-2">
+	                  <span>Live models</span>
+	                  <Badge variant="outline">{providerValidation.models.length}</Badge>
+	                </div>
                 {providerValidation.detail && (
                   <p className="mt-2 text-destructive">{providerValidation.detail}</p>
                 )}
@@ -340,15 +326,6 @@ function ProviderDetailPage() {
                 No provider models loaded yet.
               </p>
             )}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Default Model</label>
-              <ModelSelect
-                value={model}
-                models={modelOptions}
-                placeholder="Select model"
-                onValueChange={setModel}
-              />
-            </div>
             <div className="space-y-1.5">
               <label className="text-xs font-medium">Daily Budget ($)</label>
               <Input
@@ -386,8 +363,8 @@ function ProviderDetailPage() {
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
-              <span>Model Pricing</span>
-              <Button variant="outline" size="xs" onClick={addPricingEntry}>
+	              <span>Model Configs</span>
+	              <Button variant="outline" size="xs" onClick={addModelConfigRow}>
                 <Plus className="size-3.5" />
                 Add
               </Button>
@@ -398,75 +375,111 @@ function ProviderDetailPage() {
               <div className="flex gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
                 <span>
-                  The default model needs input/output pricing while USD budget is enabled.
+	                  Add at least one configured model while USD budget is enabled.
                 </span>
               </div>
             )}
             <div className="rounded-md border">
               <Table>
                 <TableBody>
-                  {pricingEntries.map((entry, index) => (
-                    <TableRow key={index}>
+	                  {modelConfigRows.map((entry, index) => (
+	                    <TableRow key={index}>
                       <TableCell>
                         <ModelSelect
                           value={entry.model}
                           models={modelOptions}
-                          placeholder="model name"
-                          onValueChange={(value) =>
-                            updatePricingEntry(index, "model", value)
-                          }
-                        />
-                      </TableCell>
+	                          placeholder="model name"
+	                          onValueChange={(value) =>
+	                            updateModelConfigRow(index, "model", value)
+	                          }
+	                        />
+	                      </TableCell>
                       <TableCell>
                         <Input
                           type="number"
                           min="0"
                           step="0.000001"
                           value={entry.input_per_million ?? ""}
-                          onChange={(e) =>
-                            updatePricingEntry(
-                              index,
-                              "input_per_million",
-                              e.target.value,
-                            )
-                          }
-                          placeholder="input $/1M"
-                        />
-                      </TableCell>
-                      <TableCell>
+	                          onChange={(e) =>
+	                            updateModelConfigRow(
+	                              index,
+	                              "input_per_million",
+	                              e.target.value,
+	                            )
+	                          }
+	                          placeholder="input $/1M"
+	                        />
+	                      </TableCell>
+	                      <TableCell>
+	                        <Input
+	                          type="number"
+	                          min="0"
+	                          step="0.000001"
+	                          value={entry.cached_input_per_million ?? ""}
+	                          onChange={(e) =>
+	                            updateModelConfigRow(
+	                              index,
+	                              "cached_input_per_million",
+	                              e.target.value,
+	                            )
+	                          }
+	                          placeholder="cached $/1M"
+	                        />
+	                      </TableCell>
+	                      <TableCell>
                         <Input
                           type="number"
                           min="0"
                           step="0.000001"
                           value={entry.output_per_million ?? ""}
-                          onChange={(e) =>
-                            updatePricingEntry(
-                              index,
-                              "output_per_million",
-                              e.target.value,
+	                          onChange={(e) =>
+	                            updateModelConfigRow(
+	                              index,
+	                              "output_per_million",
+	                              e.target.value,
                             )
                           }
                           placeholder="output $/1M"
                         />
                       </TableCell>
-                      <TableCell className="w-10">
+                      <TableCell>
+                        <div className="grid grid-cols-2 gap-1 text-xs">
+                          {MODEL_CAPABILITY_FIELDS.map((field) => (
+                            <label key={field.key} className="flex items-center gap-1">
+                              <input
+                                type="checkbox"
+                                checked={entry[field.key]}
+                                onChange={(event) =>
+                                  updateModelConfigRow(
+                                    index,
+                                    field.key,
+                                    event.target.checked,
+                                  )
+                                }
+                              />
+                              {field.label}
+                            </label>
+                          ))}
+                        </div>
+                      </TableCell>
+	                      <TableCell className="w-10">
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          onClick={() => removePricingEntry(index)}
+	                          onClick={() => removeModelConfigRow(index)}
                         >
                           <Trash2 className="size-3.5 text-destructive" />
                         </Button>
                       </TableCell>
                     </TableRow>
                   ))}
-                  {pricingEntries.length === 0 && (
+	                  {modelConfigRows.length === 0 && (
                     <TableRow>
                       <TableCell
-                        colSpan={4}
+	                        colSpan={6}
                         className="py-6 text-center text-sm text-muted-foreground"
                       >
-                        No pricing entries configured.
+	                        No model configs saved.
                       </TableCell>
                     </TableRow>
                   )}
@@ -474,7 +487,7 @@ function ProviderDetailPage() {
               </Table>
             </div>
             <p className="text-xs text-muted-foreground">
-              Prices are stored as USD per 1M tokens and are required for budgeted models.
+	              Models shown by refresh are candidates only. Saving writes configured models into model_configs.
             </p>
           </CardContent>
         </Card>
@@ -483,22 +496,94 @@ function ProviderDetailPage() {
   );
 }
 
-function pricingEntriesToForm(entries: PricingEntry[]): PricingEntryForm[] {
-  return entries.map((entry) => ({
-    model: entry.model,
-    input_per_million: String(entry.input_per_million ?? ""),
-    output_per_million: String(entry.output_per_million ?? ""),
-  }));
+const MODEL_CAPABILITY_FIELDS: Array<{
+  key: Exclude<keyof ModelConfigForm, "model" | `${string}_per_million`>;
+  label: string;
+}> = [
+  { key: "chat", label: "chat" },
+  { key: "vision", label: "vision" },
+  { key: "tool_calling", label: "tools" },
+  { key: "reasoning", label: "reasoning" },
+  { key: "embedding", label: "embed" },
+  { key: "structured_output", label: "schema" },
+];
+
+function modelConfigsToForm(
+  modelConfigs: Record<string, ModelConfig>,
+): ModelConfigForm[] {
+  return Object.entries(modelConfigs)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([model, config]) => {
+      const pricing = config.pricing ?? {};
+      const capabilities = { ...defaultCapabilities(), ...config.capabilities };
+      return {
+        model,
+        input_per_million: String(pricing.input_per_million ?? ""),
+        cached_input_per_million: String(pricing.cached_input_per_million ?? ""),
+        output_per_million: String(pricing.output_per_million ?? ""),
+        chat: capabilities.chat ?? true,
+        vision: capabilities.vision ?? false,
+        tool_calling: capabilities.tool_calling ?? false,
+        reasoning: capabilities.reasoning ?? false,
+        embedding: capabilities.embedding ?? false,
+        structured_output: capabilities.structured_output ?? false,
+      };
+    });
 }
 
-function normalizePricingEntries(entries: PricingEntryForm[]): PricingEntry[] {
-  return entries
-    .filter((entry) => entry.model.trim())
-    .map((entry) => ({
-      model: entry.model.trim(),
-      input_per_million: Number(entry.input_per_million) || 0,
-      output_per_million: Number(entry.output_per_million) || 0,
-    }));
+function formRowsToModelConfigs(
+  entries: ModelConfigForm[],
+): Record<string, ModelConfig> {
+  return Object.fromEntries(
+    entries
+      .filter((entry) => entry.model.trim())
+      .map((entry) => [
+        entry.model.trim(),
+        {
+          pricing: {
+            input_per_million: Number(entry.input_per_million) || 0,
+            cached_input_per_million:
+              Number(entry.cached_input_per_million) || 0,
+            output_per_million: Number(entry.output_per_million) || 0,
+          },
+          capabilities: {
+            chat: entry.chat,
+            vision: entry.vision,
+            tool_calling: entry.tool_calling,
+            reasoning: entry.reasoning,
+            embedding: entry.embedding,
+            structured_output: entry.structured_output,
+          },
+        },
+      ]),
+  );
+}
+
+function emptyModelConfigForm(model: string): ModelConfigForm {
+  const capabilities = defaultCapabilities();
+  return {
+    model,
+    input_per_million: "",
+    cached_input_per_million: "",
+    output_per_million: "",
+    chat: capabilities.chat ?? true,
+    vision: capabilities.vision ?? false,
+    tool_calling: capabilities.tool_calling ?? false,
+    reasoning: capabilities.reasoning ?? false,
+    embedding: capabilities.embedding ?? false,
+    structured_output: capabilities.structured_output ?? false,
+  };
+}
+
+function defaultCapabilities(): ModelCapabilities {
+  return {
+    chat: true,
+    vision: false,
+    tool_calling: false,
+    reasoning: false,
+    embedding: false,
+    structured_output: false,
+  };
 }
 
 function ModelSelect({
@@ -599,12 +684,8 @@ function budgetRequiresPricing(budget: { daily_usd?: number | null; monthly_usd?
   return (budget.daily_usd ?? 0) > 0 || (budget.monthly_usd ?? 0) > 0;
 }
 
-function hasPricingForModel(entries: PricingEntry[], model: string): boolean {
-  return entries.some((entry) => entry.model === model.trim());
-}
-
 function backendProviderKey(backend: LLMBackendResource): string {
-  return backend.provider_options?.provider_name || backend.yuuagents_provider;
+  return backend.provider_identity;
 }
 
 function formatUsd(value: number | null | undefined): string {

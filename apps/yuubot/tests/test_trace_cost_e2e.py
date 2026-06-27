@@ -158,7 +158,7 @@ async def test_pricing_check_raises_when_budget_set_without_pricing(
         )
         with pytest.raises(
             ConfigurationError,
-            match="USD budget requires configured model",
+            match="model .+ is not configured",
         ):
             _check_pricing_for_budget(binding.default_agent_binding())
     finally:
@@ -197,7 +197,7 @@ async def test_pricing_check_raises_when_backend_budget_set_without_pricing(
         )
         with pytest.raises(
             ConfigurationError,
-            match="USD budget requires configured model",
+            match="model .+ is not configured",
         ):
             _check_pricing_for_budget(binding.default_agent_binding())
     finally:
