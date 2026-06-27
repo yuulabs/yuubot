@@ -163,8 +163,9 @@ def test_bind_actor_is_idempotent(tmp_path: Path) -> None:
     venv_python = Path(first.venv_python)
     venv_mtime_before = venv_python.stat().st_mtime_ns
 
-    pyproject = first.root / "pyproject.toml"
-    uv_lock = first.root / "uv.lock"
+    env_root = Path(first.venv_python).parents[2]
+    pyproject = env_root / "pyproject.toml"
+    uv_lock = env_root / "uv.lock"
     assert pyproject.exists()
     assert uv_lock.exists(), "first bind must have run uv sync (which writes uv.lock)"
     original_pyproject = pyproject.read_text(encoding="utf-8")
@@ -221,8 +222,9 @@ def test_bind_actor_resyncs_when_pyproject_drifts(tmp_path: Path) -> None:
     assert first.venv_python is not None
     venv_python = Path(first.venv_python)
 
-    pyproject = first.root / "pyproject.toml"
-    uv_lock = first.root / "uv.lock"
+    env_root = Path(first.venv_python).parents[2]
+    pyproject = env_root / "pyproject.toml"
+    uv_lock = env_root / "uv.lock"
     assert pyproject.exists()
     desired_pyproject = pyproject.read_text(encoding="utf-8")
     assert '"msgspec"' in desired_pyproject
@@ -258,3 +260,61 @@ def test_bind_actor_resyncs_when_pyproject_drifts(tmp_path: Path) -> None:
     assert '"legacy-facade-dep"' not in restored
     # And uv sync ran (drift path) → uv.lock recreated.
     assert uv_lock.exists(), "drifted re-bind must re-run uv sync (writes uv.lock)"
+
+
+def test_bind_actor_reuses_actor_environment_across_conversations(
+    tmp_path: Path,
+) -> None:
+    ws = FacadeWorkspace(root=tmp_path, package_name="yext")
+    endpoint = FacadeEndpoint(host="127.0.0.1", port=1, token="t")
+
+    first = ws.bind_actor(
+        actor_id="conversation-1",
+        env_owner_id="actor-1",
+        agent_name="conversation:1",
+        session_id="s1",
+        mailbox_id="m1",
+        surfaces=(),
+        endpoint=endpoint,
+    )
+    assert first.venv_python is not None
+    uv_lock = Path(first.venv_python).parents[2] / "uv.lock"
+    assert uv_lock.exists()
+    uv_lock.unlink()
+
+    second = ws.bind_actor(
+        actor_id="conversation-2",
+        env_owner_id="actor-1",
+        agent_name="conversation:2",
+        session_id="s2",
+        mailbox_id="m2",
+        surfaces=(),
+        endpoint=endpoint,
+    )
+
+    assert second.root != first.root
+    assert second.venv_python == first.venv_python
+    assert not uv_lock.exists(), "second conversation must reuse actor venv"
+
+
+def test_provision_actor_environment_warms_bind_actor_env(tmp_path: Path) -> None:
+    ws = FacadeWorkspace(root=tmp_path, package_name="yext")
+
+    venv_python = ws.provision_actor_environment("actor-1")
+    assert Path(venv_python).exists()
+    uv_lock = Path(venv_python).parents[2] / "uv.lock"
+    assert uv_lock.exists()
+    uv_lock.unlink()
+
+    binding = ws.bind_actor(
+        actor_id="conversation-1",
+        env_owner_id="actor-1",
+        agent_name="conversation:1",
+        session_id="s1",
+        mailbox_id="m1",
+        surfaces=(),
+        endpoint=FacadeEndpoint(host="127.0.0.1", port=1, token="t"),
+    )
+
+    assert binding.venv_python == venv_python
+    assert not uv_lock.exists(), "pre-warmed actor env must make bind cheap"

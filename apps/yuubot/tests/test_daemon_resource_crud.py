@@ -277,6 +277,52 @@ async def test_create_llm_backend_preserves_model_configs(
         await runtime.services.stop()
 
 
+async def test_create_llm_backend_seeds_builtin_model_configs_when_empty(
+    resources: Resources, tmp_path: Path
+) -> None:
+    runtime = _build_runtime(resources, tmp_path)
+    await runtime.services.start()
+    try:
+        async with _client(runtime) as client:
+            deepseek_resp = await client.post(
+                "/api/resources/llm-backends",
+                headers=HEADERS,
+                json={
+                    **_backend_payload(
+                        name="deepseek-builtin",
+                        provider_identity="deepseek",
+                    ),
+                    "model_configs": {},
+                },
+            )
+            openai_resp = await client.post(
+                "/api/resources/llm-backends",
+                headers=HEADERS,
+                json={
+                    **_backend_payload(name="openai-builtin"),
+                    "model_configs": {},
+                },
+            )
+        assert deepseek_resp.status_code == 201, deepseek_resp.text
+        assert openai_resp.status_code == 201, openai_resp.text
+        deepseek_models = deepseek_resp.json()["data"]["model_configs"]
+        openai_models = openai_resp.json()["data"]["model_configs"]
+        assert set(deepseek_models) == {"deepseek-v4-flash", "deepseek-v4-pro"}
+        assert deepseek_models["deepseek-v4-flash"]["pricing"] == {
+            "input_per_million": 0.14,
+            "cached_input_per_million": 0.0028,
+            "output_per_million": 0.28,
+        }
+        assert set(openai_models) == {"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
+        assert openai_models["gpt-5.4-mini"]["pricing"] == {
+            "input_per_million": 0.75,
+            "cached_input_per_million": 0.075,
+            "output_per_million": 4.5,
+        }
+    finally:
+        await runtime.services.stop()
+
+
 async def test_create_deepseek_llm_backend_uses_provider_identity(
     resources: Resources, tmp_path: Path
 ) -> None:

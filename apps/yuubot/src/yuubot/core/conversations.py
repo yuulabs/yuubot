@@ -5,14 +5,15 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 import msgspec
 import yuullm
+import yuutrace
 from tortoise import Model
 from yuuagents import Agent, Budget, ProviderPoolSessionFactory
 from yuuagents.core.eventbus import RuntimeEvent
@@ -246,6 +247,31 @@ def _tool_calls(value: object) -> tuple[dict[str, object], ...]:
     return tuple(result)
 
 
+@dataclass(frozen=True)
+class ConversationTimingSpan:
+    span: yuutrace.TraceSpan
+
+    def attrs(self, **fields: object) -> None:
+        self.span.attrs(**{f"yuubot.{key}": value for key, value in fields.items()})
+
+
+@contextmanager
+def _conversation_timing_span(
+    name: str,
+    stage: str,
+    *,
+    conversation_id: str,
+    **fields: object,
+) -> Iterator[ConversationTimingSpan]:
+    attrs = {
+        "yuubot.stage": stage,
+        "yuubot.conversation_id": conversation_id,
+        **{f"yuubot.{key}": value for key, value in fields.items()},
+    }
+    with yuutrace.trace_span(name, attrs) as span:
+        yield ConversationTimingSpan(span)
+
+
 def _conversation_title_from_first_turn(
     user_message: yuullm.Message,
     assistant_message: yuullm.Message,
@@ -447,12 +473,16 @@ class ConversationManager:
     store: ConversationStore
     repository: ResourceRepository
     python_sessions: ActorPythonSessionFactory
-    llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None]
+    llm_session_factory_factory: Callable[
+        [AgentBinding], ProviderPoolSessionFactory | None
+    ]
     trace_context: YuubotTraceContextProvider | None = None
     workspace_root: Path = field(
         default_factory=lambda: Path("~/.yuubot/workspace").expanduser()
     )
-    _runtimes: dict[str, YuuAgentsActorRuntime] = field(default_factory=dict, init=False)
+    _runtimes: dict[str, YuuAgentsActorRuntime] = field(
+        default_factory=dict, init=False
+    )
     _agent_to_conversation: dict[str, str] = field(default_factory=dict, init=False)
     _observed_runtimes: dict[str, int] = field(default_factory=dict, init=False)
     _subscribers: dict[
@@ -469,7 +499,9 @@ class ConversationManager:
     # does arrive, ``send_message`` defensively awaits the existing task
     # before starting a new one (no server-side queue is needed — the input
     # box itself is the buffer).
-    _in_flight_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict, init=False)
+    _in_flight_tasks: dict[str, asyncio.Task[None]] = field(
+        default_factory=dict, init=False
+    )
     # Per-conversation cancel event. ``cancel_turn`` sets the event AND calls
     # ``task.cancel()``; the agent loop checks it once at the top of each
     # ``while not agent.done`` iteration as a single-point safety net (closes
@@ -501,40 +533,87 @@ class ConversationManager:
         The turn itself runs on a background task — the method returns
         before the turn completes, mirroring the prior 202 semantics.
         """
-        exists = await self.store.conversation_exists(conversation_id)
+        with _conversation_timing_span(
+            "conversation.send",
+            "conversation_exists",
+            conversation_id=conversation_id,
+        ) as timing:
+            exists = await self.store.conversation_exists(conversation_id)
+            timing.attrs(exists=exists)
         if exists:
-            conversation = await self._require_conversation(conversation_id)
-            self._check_subsequent_send_binding(conversation, binding)
-        else:
-            conversation = await self._create_first_send_conversation(
+            with _conversation_timing_span(
+                "conversation.send",
+                "existing_conversation_loaded",
                 conversation_id=conversation_id,
-                binding=binding,
-            )
+            ):
+                conversation = await self._require_conversation(conversation_id)
+                self._check_subsequent_send_binding(conversation, binding)
+        else:
+            with _conversation_timing_span(
+                "conversation.send",
+                "first_send_conversation_created",
+                conversation_id=conversation_id,
+            ):
+                conversation = await self._create_first_send_conversation(
+                    conversation_id=conversation_id,
+                    binding=binding,
+                )
 
-        runtime = await self._runtime_for(conversation)
+        runtime_cached = conversation_id in self._runtimes
+        with _conversation_timing_span(
+            "conversation.send",
+            "runtime_ready",
+            conversation_id=conversation_id,
+            runtime_cached=runtime_cached,
+        ):
+            runtime = await self._runtime_for(conversation)
 
         # Cache hit on the in-memory agent short-circuits the DB history
         # read on the hot path. Cache miss (restart / idle expiry) and
         # first-send both branch inside runtime.ensure_conversation_agent.
-        if exists and runtime.conversation_agents.get(conversation_id) is None:
-            history = await self.store.history(conversation_id)
-        else:
-            history = []
+        with _conversation_timing_span(
+            "conversation.send",
+            "history_loaded",
+            conversation_id=conversation_id,
+        ) as timing:
+            if exists and runtime.conversation_agents.get(conversation_id) is None:
+                history = await self.store.history(conversation_id)
+            else:
+                history = []
+            timing.attrs(history_count=len(history))
 
-        agent = await runtime.ensure_conversation_agent(conversation_id, history)
+        with _conversation_timing_span(
+            "conversation.send",
+            "conversation_agent_ready",
+            conversation_id=conversation_id,
+        ) as timing:
+            agent = await runtime.ensure_conversation_agent(conversation_id, history)
+            timing.attrs(agent_id=_agent_id(agent))
         self._agent_to_conversation[_agent_id(agent)] = conversation_id
 
         # Persist the freshly-built prompt prefix on the first-send path
         # (prefix lives inside agent.history now). Persisted before the
         # user Message so ordering stays [tool_specs?, system, user, ...].
         if not exists:
-            prefix = list(agent.history)
-            if prefix:
-                await self.store.append_history_items(conversation_id, prefix)
+            with _conversation_timing_span(
+                "conversation.send",
+                "first_send_prefix_persisted",
+                conversation_id=conversation_id,
+            ) as timing:
+                prefix = list(agent.history)
+                if prefix:
+                    await self.store.append_history_items(conversation_id, prefix)
+                timing.attrs(prefix_count=len(prefix))
 
         message_id = message_id or uuid.uuid4().hex
         user_message = yuullm.user(text)
-        await self.store.append_history_item(conversation_id, user_message)
+        with _conversation_timing_span(
+            "conversation.send",
+            "user_message_persisted",
+            conversation_id=conversation_id,
+            message_id=message_id,
+        ):
+            await self.store.append_history_item(conversation_id, user_message)
 
         # Defensive: if a previous turn task is somehow still live (the
         # frontend contract replaces Send with Stop during generation, so
@@ -544,14 +623,24 @@ class ConversationManager:
         # queue is needed.
         existing = self._in_flight_tasks.get(conversation_id)
         if existing is not None and not existing.done():
-            with suppress(asyncio.CancelledError, Exception):
-                await existing
+            with _conversation_timing_span(
+                "conversation.send",
+                "existing_turn_waited",
+                conversation_id=conversation_id,
+            ):
+                with suppress(asyncio.CancelledError, Exception):
+                    await existing
 
-        self._start_turn_task(
+        with _conversation_timing_span(
+            "conversation.send",
+            "turn_task_started",
             conversation_id=conversation_id,
-            runtime=runtime,
-            message=user_message,
-        )
+        ):
+            self._start_turn_task(
+                conversation_id=conversation_id,
+                runtime=runtime,
+                message=user_message,
+            )
         return conversation, message_id
 
     def _check_subsequent_send_binding(
@@ -574,7 +663,7 @@ class ConversationManager:
         if binding is None or not binding.actor_id.strip():
             raise LookupError(
                 f"first send for conversation {conversation_id!r} requires actor_id"
-        )
+            )
         actor = await self._active_actor(binding.actor_id.strip())
         await self._require_capability_set(actor.capability_set_id)
         await self._require_llm_backend(actor.llm_backend_id)
@@ -756,7 +845,9 @@ class ConversationManager:
         HTTP hop or middlebox from closing the connection, long enough
         to be negligible overhead (default 25s).
         """
-        queue: asyncio.Queue[ConversationFrontendEvent | ConversationSSEHeartbeat] = asyncio.Queue()
+        queue: asyncio.Queue[ConversationFrontendEvent | ConversationSSEHeartbeat] = (
+            asyncio.Queue()
+        )
         subscribers = self._subscribers.setdefault(conversation_id, set())
         subscribers.add(queue)
         try:
@@ -809,7 +900,9 @@ class ConversationManager:
             raise LookupError(f"active actor {actor_id!r} does not exist")
         return actor
 
-    async def _require_capability_set(self, capability_set_id: str) -> CapabilitySetRecord:
+    async def _require_capability_set(
+        self, capability_set_id: str
+    ) -> CapabilitySetRecord:
         capability_set = await self.repository.get(CapabilitySetORM, capability_set_id)
         if capability_set is None:
             raise LookupError(f"capability set {capability_set_id!r} does not exist")
@@ -838,42 +931,73 @@ class ConversationManager:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    async def _runtime_for(self, conversation: ConversationRecord) -> YuuAgentsActorRuntime:
+    async def _runtime_for(
+        self, conversation: ConversationRecord
+    ) -> YuuAgentsActorRuntime:
         runtime = self._runtimes.get(conversation.conversation_id)
         if runtime is not None:
-            return runtime
-        resolved = await resolve_conversation_record(self.repository, conversation)
-        workspace_path = self._resolve_workspace_path(
-            resolved.capability_set.workspace_path
-        )
-        binding = agent_binding_from_resolved_conversation(
-            resolved,
-            workspace_path=workspace_path,
-        )
-        facade = None
-        if binding.workspace_path is not None:
-            facade = await self.python_sessions.bind_facade(
-                binding,
-                mailbox_id=f"conversation:{conversation.conversation_id}",
-            )
-        llm_session_factory = self.llm_session_factory_factory(binding)
-        runtime = start_yuuagents_actor(
-            binding,
-            facade=facade,
-            llm_session_factory=llm_session_factory,
-            trace_context=self.trace_context,
-        )
-        self._runtimes[conversation.conversation_id] = runtime
-        self._observe_runtime(conversation.conversation_id, runtime)
-
-        # Inject real conversation_id into trace context so spans link
-        # to yuubot conversation records (not synthetic uuid5).
-        if self.trace_context is not None:
-            definition_name = runtime.conversation_definition.name
-            self.trace_context.register(
-                f"{definition_name}:conversation:{conversation.conversation_id}",
-                model=binding.llm.model,
+            with _conversation_timing_span(
+                "conversation.runtime",
+                "runtime_cache_hit",
                 conversation_id=conversation.conversation_id,
+            ):
+                pass
+            return runtime
+
+        with _conversation_timing_span(
+            "conversation.runtime",
+            "runtime_created",
+            conversation_id=conversation.conversation_id,
+        ) as timing:
+            resolved = await resolve_conversation_record(self.repository, conversation)
+            workspace_path = self._resolve_workspace_path(
+                resolved.capability_set.workspace_path
+            )
+            binding = agent_binding_from_resolved_conversation(
+                resolved,
+                workspace_path=workspace_path,
+            )
+            facade = None
+            if binding.workspace_path is not None:
+                with _conversation_timing_span(
+                    "conversation.runtime",
+                    "facade_bound",
+                    conversation_id=conversation.conversation_id,
+                    actor_id=binding.actor.id,
+                    owner_id=binding.owner_id,
+                ) as facade_timing:
+                    facade = await self.python_sessions.bind_facade(
+                        binding,
+                        mailbox_id=f"conversation:{conversation.conversation_id}",
+                    )
+                    facade_timing.attrs(
+                        facade_root=str(facade.root),
+                        venv_python=facade.venv_python or "",
+                    )
+            llm_session_factory = self.llm_session_factory_factory(binding)
+            runtime = start_yuuagents_actor(
+                binding,
+                facade=facade,
+                llm_session_factory=llm_session_factory,
+                trace_context=self.trace_context,
+            )
+            self._runtimes[conversation.conversation_id] = runtime
+            self._observe_runtime(conversation.conversation_id, runtime)
+
+            # Inject real conversation_id into trace context so spans link
+            # to yuubot conversation records (not synthetic uuid5).
+            if self.trace_context is not None:
+                definition_name = runtime.conversation_definition.name
+                self.trace_context.register(
+                    f"{definition_name}:conversation:{conversation.conversation_id}",
+                    model=binding.llm.model,
+                    conversation_id=conversation.conversation_id,
+                )
+            timing.attrs(
+                actor_id=binding.actor.id,
+                owner_id=binding.owner_id,
+                workspace_path=str(workspace_path) if workspace_path else "",
+                facade_required=facade is not None,
             )
 
         return runtime
@@ -976,7 +1100,6 @@ class ConversationManager:
         if runtime is None:
             return None
         return runtime.budget_for_agent(agent_id)
-
 
     async def _handle_llm_finished(
         self,

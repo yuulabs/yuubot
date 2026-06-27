@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { providerBaseUrlWarning } from "@/provider-models";
+import { defaultModelConfigsForProvider } from "@/lib/provider-model-configs";
 import { PRESET_ACTORS, presetActorCreatePayload } from "@/lib/presets";
 import {
   PageShell,
@@ -185,7 +186,7 @@ function ProvidersPage() {
     const createdBackend = await createMutation.mutateAsync({
       name: form.name,
       provider_identity: selectedPreset.key,
-      model_configs: {},
+      model_configs: defaultModelConfigsForProvider(selectedPreset.key),
       budget: {
         daily_usd: parseOptionalUsd(form.dailyUsd),
         monthly_usd: parseOptionalUsd(form.monthlyUsd),

@@ -31,6 +31,7 @@ Initialization::
 Low-level::
 
     current_span() -> Span
+    trace_span(name, attributes=None)
     add_event(name, attributes)
 """
 
@@ -75,7 +76,7 @@ from .init import (
 from .memory import MemoryTraceStore
 
 # -- Low-level -------------------------------------------------------------
-from .span import NoActiveSpanError, add_event, current_span
+from .span import NoActiveSpanError, TraceSpan, add_event, current_span, trace_span
 
 __all__ = [
     # Types
@@ -111,6 +112,8 @@ __all__ = [
     "MemoryTraceStore",
     # Low-level
     "current_span",
+    "trace_span",
     "add_event",
     "NoActiveSpanError",
+    "TraceSpan",
 ]

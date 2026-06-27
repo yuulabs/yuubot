@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -22,6 +25,8 @@ from yuubot.core.facade import (
 )
 from yuubot.core.integrations import IntegrationCore
 from yuubot.core.integrations.contracts import VisibleIntegrationSurface
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +72,24 @@ class ActorPythonSessionFactory:
         await self.bridge.stop()
         self._started = False
 
+    async def prepare_facade_environment(self, actor_id: str) -> str:
+        if not self._started:
+            await self.start()
+        started_at = time.perf_counter()
+        venv_python = await asyncio.to_thread(
+            self.workspace.provision_actor_environment,
+            actor_id,
+        )
+        logger.info(
+            "facade_environment_timing",
+            extra={
+                "actor_id": actor_id,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "venv_python": venv_python,
+            },
+        )
+        return venv_python
+
     async def bind_facade(
         self,
         binding: AgentBinding,
@@ -77,14 +100,31 @@ class ActorPythonSessionFactory:
             await self.start()
         owner_id = binding.owner_id
         session_id = f"{owner_id}-{uuid4()}"
-        return self.workspace.bind_actor(
+        surfaces = await self._visible_surfaces(binding)
+        started_at = time.perf_counter()
+        facade = await asyncio.to_thread(
+            self.workspace.bind_actor,
             actor_id=owner_id,
+            env_owner_id=binding.actor.id,
             agent_name=binding.agent_name,
             session_id=session_id,
             mailbox_id=mailbox_id,
-            surfaces=await self._visible_surfaces(binding),
+            surfaces=surfaces,
             endpoint=self.bridge.endpoint,
         )
+        logger.info(
+            "facade_binding_timing",
+            extra={
+                "owner_id": owner_id,
+                "actor_id": binding.actor.id,
+                "mailbox_id": mailbox_id,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "facade_root": str(facade.root),
+                "venv_python": facade.venv_python or "",
+                "visible_surface_count": len(surfaces),
+            },
+        )
+        return facade
 
     async def create(self, binding: AgentBinding) -> "ExecutePythonSession":
         facade = await self.bind_facade(

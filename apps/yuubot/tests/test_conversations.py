@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -11,7 +13,10 @@ import yuullm
 from yuuagents.core.eventbus import EventBus, RuntimeEvent
 
 from yuubot.core.assembly._runtime import YuuAgentsActorRuntime
-from yuubot.core.conversation_events import ConversationFrontendEvent, ConversationSSEHeartbeat
+from yuubot.core.conversation_events import (
+    ConversationFrontendEvent,
+    ConversationSSEHeartbeat,
+)
 from yuubot.core.conversations import (
     ConversationBindingConflict,
     ConversationManager,
@@ -91,12 +96,14 @@ async def test_handle_tool_result_persists_canonical_tool_message() -> None:
     assert [event.event_type for event in result] == ["transcript_delta"]
     payload = result[0].as_dict()
     assert payload["conversation_id"] == "conv-1"
-    assert payload["deltas"] == [{
-        "type": "tool_result",
-        "tool_call_id": "call_abc",
-        "tool_name": "echo.echo",
-        "text_delta": "echoed: hello",
-    }]
+    assert payload["deltas"] == [
+        {
+            "type": "tool_result",
+            "tool_call_id": "call_abc",
+            "tool_name": "echo.echo",
+            "text_delta": "echoed: hello",
+        }
+    ]
 
 
 async def test_handle_tool_result_failed_status_persists_canonical_message() -> None:
@@ -132,16 +139,20 @@ async def test_handle_tool_result_failed_status_persists_canonical_message() -> 
     assert persisted_item.role == "tool"
     assert persisted_item.content[0]["type"] == "tool_result"
     assert persisted_item.content[0]["tool_call_id"] == "call_xyz"
-    assert persisted_item.content[0]["content"] == "Tool nonexistent.tool is not available"
+    assert (
+        persisted_item.content[0]["content"] == "Tool nonexistent.tool is not available"
+    )
 
     assert result is not None
     assert result[0].event_type == "transcript_delta"
-    assert result[0].as_dict()["deltas"] == [{
-        "type": "tool_result",
-        "tool_call_id": "call_xyz",
-        "tool_name": "nonexistent.tool",
-        "text_delta": "Tool nonexistent.tool is not available",
-    }]
+    assert result[0].as_dict()["deltas"] == [
+        {
+            "type": "tool_result",
+            "tool_call_id": "call_xyz",
+            "tool_name": "nonexistent.tool",
+            "text_delta": "Tool nonexistent.tool is not available",
+        }
+    ]
 
 
 async def test_turn_completed_emits_named_event_and_keeps_stream_open() -> None:
@@ -271,7 +282,91 @@ async def test_send_message_returns_before_turn_completes() -> None:
     await asyncio.wait_for(started.wait(), timeout=1)
 
     release.set()
-    await asyncio.wait_for(asyncio.gather(*manager._in_flight_tasks.values()), timeout=1)
+    await asyncio.wait_for(
+        asyncio.gather(*manager._in_flight_tasks.values()), timeout=1
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_message_records_runtime_setup_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = MagicMock()
+    store.conversation_exists = AsyncMock(return_value=True)
+    store.append_history_item = AsyncMock()
+    store.append_history_items = AsyncMock()
+    store.get_conversation = AsyncMock(return_value=MagicMock())
+    store.history = AsyncMock(return_value=[])
+
+    manager = ConversationManager(
+        store=store,
+        repository=MagicMock(),
+        python_sessions=MagicMock(),
+        llm_session_factory_factory=MagicMock(),
+    )
+
+    runtime = MagicMock()
+    fake_agent = MagicMock(id="agent-1")
+    runtime.conversation_agents = {}
+    runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
+    runtime.handle_conversation_message = AsyncMock()
+
+    async def slow_runtime_for(_conversation: object) -> MagicMock:
+        await asyncio.sleep(0.01)
+        return runtime
+
+    class FakeTraceSpan:
+        def __init__(self, attributes: Mapping[str, object] | None) -> None:
+            self.attributes = dict(attributes or {})
+
+        def attrs(self, **attributes: object) -> None:
+            self.attributes.update(attributes)
+
+    spans: list[tuple[str, dict[str, object]]] = []
+
+    @contextmanager
+    def trace_span(
+        name: str,
+        attributes: Mapping[str, object] | None = None,
+    ) -> Iterator[FakeTraceSpan]:
+        span = FakeTraceSpan(attributes)
+        spans.append((name, span.attributes))
+        yield span
+
+    monkeypatch.setattr("yuubot.core.conversations.yuutrace.trace_span", trace_span)
+
+    with (
+        patch.object(
+            manager,
+            "_require_conversation",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+        patch.object(
+            manager, "_runtime_for", new=AsyncMock(side_effect=slow_runtime_for)
+        ),
+    ):
+        await manager.send_message(
+            conversation_id="conversation-1",
+            text="hello",
+            message_id="message-1",
+        )
+
+    runtime_spans = [
+        attrs
+        for name, attrs in spans
+        if name == "conversation.send" and attrs["yuubot.stage"] == "runtime_ready"
+    ]
+    assert runtime_spans == [
+        {
+            "yuubot.stage": "runtime_ready",
+            "yuubot.conversation_id": "conversation-1",
+            "yuubot.runtime_cached": False,
+        }
+    ]
+
+    await asyncio.wait_for(
+        asyncio.gather(*manager._in_flight_tasks.values()), timeout=1
+    )
 
 
 async def test_first_send_persists_prefix_and_user_message() -> None:
@@ -408,8 +503,12 @@ async def test_delete_conversation_stops_turn_drops_cache_and_deletes_rows() -> 
     manager._observed_runtimes["conv-1"] = 123
 
     with (
-        patch.object(manager, "cancel_turn", new=AsyncMock(return_value={"cancelled": False})) as cancel,
-        patch.object(manager, "drop_cached_conversation_agent", return_value=True) as drop,
+        patch.object(
+            manager, "cancel_turn", new=AsyncMock(return_value={"cancelled": False})
+        ) as cancel,
+        patch.object(
+            manager, "drop_cached_conversation_agent", return_value=True
+        ) as drop,
     ):
         deleted = await manager.delete_conversation("conv-1")
 

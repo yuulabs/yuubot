@@ -18,6 +18,7 @@ from tortoise import Model
 from yuubot.core.validation import GenerationParams
 from yuubot.core.secrets import wrap_config_secrets
 from yuubot.core.tools import ToolRegistry
+from yuubot.resources.builtin_model_configs import default_model_configs_for_provider
 from yuubot.resources.records import (
     ActorIngressRuleRecord,
     ActorRecord,
@@ -404,6 +405,10 @@ def _validate_llm_backend_record(
     error = _validate_provider_identity(record.provider_identity)
     if error is not None:
         return error
+    if not record.model_configs:
+        record.model_configs = default_model_configs_for_provider(
+            record.provider_identity
+        )
     return record
 
 

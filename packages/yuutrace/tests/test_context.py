@@ -94,6 +94,36 @@ def test_unconfigured_recording_skips_validation_and_serialization() -> None:
     assert len(caught) == 1
 
 
+def test_trace_span_records_short_lived_span() -> None:
+    exporter = _make_exporter()
+
+    with ytrace.trace_span(
+        "conversation.send",
+        {
+            "yuubot.stage": "runtime_ready",
+            "yuubot.unsupported": object(),
+        },
+    ) as span:
+        span.attrs(
+            **{
+                "yuubot.conversation_id": "conversation-1",
+                "yuubot.history_count": 2,
+                "yuubot.ignored": object(),
+            }
+        )
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    recorded = spans[0]
+    assert recorded.name == "conversation.send"
+    assert recorded.attributes["yuubot.stage"] == "runtime_ready"
+    assert recorded.attributes["yuubot.conversation_id"] == "conversation-1"
+    assert recorded.attributes["yuubot.history_count"] == 2
+    assert "yuubot.unsupported" not in recorded.attributes
+    assert "yuubot.ignored" not in recorded.attributes
+    assert recorded.start_time <= recorded.end_time
+
+
 def test_explicit_disable_is_noop_without_warning() -> None:
     exporter = _make_exporter()
     ytrace.disable()
@@ -242,19 +272,25 @@ def test_entity_context_records_immediate_entity_spans() -> None:
             parent_id="agent-1",
             tool_call_id="tc-1",
         )
-        entity.flush([
-            {
-                "type": "process",
-                "block_id": 0,
-                "content": "alpha",
-                "stream": "output",
-            }
-        ])
+        entity.flush(
+            [
+                {
+                    "type": "process",
+                    "block_id": 0,
+                    "content": "alpha",
+                    "stream": "output",
+                }
+            ]
+        )
         entity.end("completed")
 
     spans = exporter.get_finished_spans()
     entity_spans = [span for span in spans if span.name.startswith("entity")]
-    assert [span.name for span in entity_spans] == ["entity", "entity.chunk", "entity.end"]
+    assert [span.name for span in entity_spans] == [
+        "entity",
+        "entity.chunk",
+        "entity.end",
+    ]
     assert entity_spans[0].attributes["yuu.entity.id"] == "task-1"
     assert entity_spans[0].attributes["yuu.entity.type"] == "bash"
     assert entity_spans[0].attributes["yuu.entity.parent_id"] == "agent-1"
@@ -533,7 +569,14 @@ def test_system_prompt_recorded() -> None:
         chat.system("You are helpful.", tools=[{"name": "search"}])
 
     spans = exporter.get_finished_spans()
-    system_turn = next((s for s in spans if s.name == "turn" and s.attributes.get("yuu.turn.role") == "system"), None)
+    system_turn = next(
+        (
+            s
+            for s in spans
+            if s.name == "turn" and s.attributes.get("yuu.turn.role") == "system"
+        ),
+        None,
+    )
     assert system_turn is not None, "expected a 'system' turn span"
     items = json.loads(system_turn.attributes.get("yuu.turn.items", "[]"))
     assert items == [{"type": "text", "text": "You are helpful."}]
@@ -547,7 +590,9 @@ def test_init_memory(_fresh_tracer_provider) -> None:
     store = ytrace.init_memory()
 
     conv_id = uuid.uuid4()
-    with ytrace.conversation(id=conv_id, agent="test-agent", model="test-model") as chat:
+    with ytrace.conversation(
+        id=conv_id, agent="test-agent", model="test-model"
+    ) as chat:
         chat.user("hello")
         with chat.tools() as tools:
             with tools.tool(name="echo", call_id="tc_1", input={"msg": "hi"}) as ts:

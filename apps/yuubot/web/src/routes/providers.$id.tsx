@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, ArrowLeft, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import {
   useResourceList,
   useDeleteResource,
@@ -27,6 +27,11 @@ import {
   type ProviderModelOption,
   type ProviderValidationResult,
 } from "@/provider-models";
+import {
+  defaultModelConfigsForProvider,
+  hasDefaultModelConfigs,
+  PROVIDER_MODEL_PRICE_SOURCE,
+} from "@/lib/provider-model-configs";
 
 export const Route = createFileRoute("/providers/$id")({
   component: ProviderDetailPage,
@@ -180,9 +185,20 @@ function ProviderDetailPage() {
     setModelConfigRows((entries) => entries.filter((_, i) => i !== index));
   };
 
+  const restoreDefaultModelConfigs = () => {
+    setModelConfigRows(
+      modelConfigsToForm(defaultModelConfigsForProvider(backendProviderKey(backend))),
+    );
+  };
+
+  const providerDefaultModelConfigs = defaultModelConfigsForProvider(
+    backendProviderKey(backend),
+  );
+  const hasProviderDefaults = hasDefaultModelConfigs(backendProviderKey(backend));
   const normalizedModelConfigs = formRowsToModelConfigs(modelConfigRows);
   const modelOptions = mergeModelOptions(
     providerModels,
+    Object.keys(providerDefaultModelConfigs),
     Object.keys(backend.model_configs ?? {}),
     modelConfigRows.map((entry) => entry.model),
   );
@@ -362,13 +378,26 @@ function ProviderDetailPage() {
 
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-	              <span>Model Configs</span>
-	              <Button variant="outline" size="xs" onClick={addModelConfigRow}>
-                <Plus className="size-3.5" />
-                Add
-              </Button>
-            </CardTitle>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <CardTitle>Model Configs</CardTitle>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Pricing is USD per 1M tokens. Capabilities control what Actors can safely assume.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {hasProviderDefaults && (
+                  <Button variant="outline" size="xs" onClick={restoreDefaultModelConfigs}>
+                    <RotateCcw className="size-3.5" />
+                    Restore presets
+                  </Button>
+                )}
+                <Button variant="outline" size="xs" onClick={addModelConfigRow}>
+                  <Plus className="size-3.5" />
+                  Add
+                </Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="space-y-3">
             {missingPricing && (
@@ -379,115 +408,27 @@ function ProviderDetailPage() {
                 </span>
               </div>
             )}
-            <div className="rounded-md border">
-              <Table>
-                <TableBody>
-	                  {modelConfigRows.map((entry, index) => (
-	                    <TableRow key={index}>
-                      <TableCell>
-                        <ModelSelect
-                          value={entry.model}
-                          models={modelOptions}
-	                          placeholder="model name"
-	                          onValueChange={(value) =>
-	                            updateModelConfigRow(index, "model", value)
-	                          }
-	                        />
-	                      </TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.000001"
-                          value={entry.input_per_million ?? ""}
-	                          onChange={(e) =>
-	                            updateModelConfigRow(
-	                              index,
-	                              "input_per_million",
-	                              e.target.value,
-	                            )
-	                          }
-	                          placeholder="input $/1M"
-	                        />
-	                      </TableCell>
-	                      <TableCell>
-	                        <Input
-	                          type="number"
-	                          min="0"
-	                          step="0.000001"
-	                          value={entry.cached_input_per_million ?? ""}
-	                          onChange={(e) =>
-	                            updateModelConfigRow(
-	                              index,
-	                              "cached_input_per_million",
-	                              e.target.value,
-	                            )
-	                          }
-	                          placeholder="cached $/1M"
-	                        />
-	                      </TableCell>
-	                      <TableCell>
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.000001"
-                          value={entry.output_per_million ?? ""}
-	                          onChange={(e) =>
-	                            updateModelConfigRow(
-	                              index,
-	                              "output_per_million",
-	                              e.target.value,
-                            )
-                          }
-                          placeholder="output $/1M"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <div className="grid grid-cols-2 gap-1 text-xs">
-                          {MODEL_CAPABILITY_FIELDS.map((field) => (
-                            <label key={field.key} className="flex items-center gap-1">
-                              <input
-                                type="checkbox"
-                                checked={entry[field.key]}
-                                onChange={(event) =>
-                                  updateModelConfigRow(
-                                    index,
-                                    field.key,
-                                    event.target.checked,
-                                  )
-                                }
-                              />
-                              {field.label}
-                            </label>
-                          ))}
-                        </div>
-                      </TableCell>
-	                      <TableCell className="w-10">
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-	                          onClick={() => removeModelConfigRow(index)}
-                        >
-                          <Trash2 className="size-3.5 text-destructive" />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-	                  {modelConfigRows.length === 0 && (
-                    <TableRow>
-                      <TableCell
-	                        colSpan={6}
-                        className="py-6 text-center text-sm text-muted-foreground"
-                      >
-	                        No model configs saved.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
+            <div className="model-config-list">
+              {modelConfigRows.map((entry, index) => (
+                <ModelConfigEditor
+                  key={index}
+                  entry={entry}
+                  index={index}
+                  modelOptions={modelOptions}
+                  onUpdate={updateModelConfigRow}
+                  onRemove={removeModelConfigRow}
+                />
+              ))}
+              {modelConfigRows.length === 0 && (
+                <div className="model-config-empty">
+                  No model configs saved.
+                </div>
+              )}
             </div>
             <p className="text-xs text-muted-foreground">
-	              Models shown by refresh are candidates only. Saving writes configured models into model_configs.
+              Models shown by refresh are candidates only. Saving writes configured models into model_configs.
+              {" "}
+              {hasProviderDefaults ? PROVIDER_MODEL_PRICE_SOURCE : ""}
             </p>
           </CardContent>
         </Card>
@@ -506,6 +447,96 @@ const MODEL_CAPABILITY_FIELDS: Array<{
   { key: "reasoning", label: "reasoning" },
   { key: "embedding", label: "embed" },
   { key: "structured_output", label: "schema" },
+];
+
+function ModelConfigEditor({
+  entry,
+  index,
+  modelOptions,
+  onUpdate,
+  onRemove,
+}: {
+  entry: ModelConfigForm;
+  index: number;
+  modelOptions: ProviderModelOption[];
+  onUpdate: (
+    index: number,
+    field: keyof ModelConfigForm,
+    value: string | boolean,
+  ) => void;
+  onRemove: (index: number) => void;
+}) {
+  return (
+    <div className="model-config-card">
+      <div className="model-config-card__head">
+        <div className="min-w-0 flex-1">
+          <label className="model-config-card__label">Model</label>
+          <ModelSelect
+            value={entry.model}
+            models={modelOptions}
+            placeholder="model name"
+            onValueChange={(value) => onUpdate(index, "model", value)}
+          />
+        </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => onRemove(index)}
+          aria-label={`Remove ${entry.model || "model config"}`}
+        >
+          <Trash2 className="size-3.5 text-destructive" />
+        </Button>
+      </div>
+
+      <div className="model-config-card__pricing">
+        {MODEL_PRICE_FIELDS.map((field) => (
+          <label key={field.key} className="model-price-field">
+            <span>{field.label}</span>
+            <Input
+              type="number"
+              min="0"
+              step="0.000001"
+              value={entry[field.key] ?? ""}
+              onChange={(event) => onUpdate(index, field.key, event.target.value)}
+              placeholder={field.placeholder}
+            />
+          </label>
+        ))}
+      </div>
+
+      <div className="model-config-card__caps" aria-label="Model capabilities">
+        {MODEL_CAPABILITY_FIELDS.map((field) => (
+          <label
+            key={field.key}
+            className={`model-cap-chip ${entry[field.key] ? "is-on" : ""}`}
+          >
+            <input
+              type="checkbox"
+              checked={entry[field.key]}
+              onChange={(event) =>
+                onUpdate(index, field.key, event.target.checked)
+              }
+            />
+            {field.label}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const MODEL_PRICE_FIELDS: Array<{
+  key: Extract<keyof ModelConfigForm, `${string}_per_million`>;
+  label: string;
+  placeholder: string;
+}> = [
+  { key: "input_per_million", label: "Input", placeholder: "input $/1M" },
+  {
+    key: "cached_input_per_million",
+    label: "Cached input",
+    placeholder: "cached $/1M",
+  },
+  { key: "output_per_million", label: "Output", placeholder: "output $/1M" },
 ];
 
 function modelConfigsToForm(

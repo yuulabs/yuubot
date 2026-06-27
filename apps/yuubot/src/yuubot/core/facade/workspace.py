@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -57,10 +58,17 @@ class FacadeWorkspace:
         _replace_dir(catalog_root)
         return catalog_root
 
+    def provision_actor_environment(self, actor_id: str) -> str:
+        from yuubot.core.actors.workspace import safe_actor_path_id
+
+        env_root = self.root / "envs" / safe_actor_path_id(actor_id)
+        return _provision_workspace_venv(env_root)
+
     def bind_actor(
         self,
         *,
         actor_id: str,
+        env_owner_id: str | None = None,
         agent_name: str,
         session_id: str,
         mailbox_id: str,
@@ -71,6 +79,8 @@ class FacadeWorkspace:
 
         path_id = safe_actor_path_id(actor_id)
         actor_root = self.root / "actors" / path_id
+        env_path_id = safe_actor_path_id(env_owner_id or actor_id)
+        env_root = self.root / "envs" / env_path_id
         visible_surfaces = tuple(surfaces)
 
         actor_root.mkdir(parents=True, exist_ok=True)
@@ -86,7 +96,7 @@ class FacadeWorkspace:
             ),
             encoding="utf-8",
         )
-        venv_python = _provision_workspace_venv(actor_root)
+        venv_python = _provision_workspace_venv(env_root)
         daemon_src = _resolve_daemon_facade_src()
         sys_path: list[str] = []
         if daemon_src is not None:
@@ -165,13 +175,24 @@ def _provision_workspace_venv(actor_root: Path) -> str:
 
     template_content = _read_actor_pyproject_template()
 
-    if (
+    cached = (
         venv_python.exists()
         and pyproject.exists()
         and pyproject.read_text(encoding="utf-8") == template_content
-    ):
+    )
+    if cached:
+        logger.info(
+            "facade_venv_provisioning",
+            extra={
+                "stage": "cache_hit",
+                "env_root": str(actor_root),
+                "venv_python": str(venv_python),
+            },
+        )
         return str(venv_python)
 
+    started_at = time.perf_counter()
+    actor_root.mkdir(parents=True, exist_ok=True)
     pyproject.write_text(template_content, encoding="utf-8")
 
     result = subprocess.run(
@@ -189,6 +210,15 @@ def _provision_workspace_venv(actor_root: Path) -> str:
         raise RuntimeError(
             f"uv sync did not produce {venv_python} in {actor_root}"
         )
+    logger.info(
+        "facade_venv_provisioning",
+        extra={
+            "stage": "cache_miss",
+            "env_root": str(actor_root),
+            "venv_python": str(venv_python),
+            "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        },
+    )
     return str(venv_python)
 
 

@@ -68,6 +68,19 @@ Frontend (Admin UI):
 cd apps/yuubot/web && pnpm install && pnpm run build   # also done by `ybot dev`
 ```
 
+## Codex Sandbox Verification
+
+Codex tool sandboxing can distort behavior for code paths that combine
+`asyncio`, background threads, `sqlite3`/`aiosqlite`, file locks, subprocesses,
+or event-loop wakeups. A hang or timeout observed only inside a restricted
+Codex command is not sufficient evidence for a yuubot runtime bug.
+
+Before opening a roadmap blocker, changing dependencies, replacing storage
+backends, or documenting an environment failure from such a reproduction,
+re-run the minimal reproducer and the relevant targeted test in an unrestricted
+shell/full-access Codex session. Record both command lines and whether the
+restricted and unrestricted results differ.
+
 ## Triage Protocol
 
 ### Artifact Map (where the truth lives)

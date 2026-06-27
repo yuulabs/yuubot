@@ -65,6 +65,7 @@ class SimpleLoopActor(Actor):
     async def start(self) -> None:
         agent_binding = self._default_agent_binding()
         self._agent_binding = agent_binding
+        await self.python_sessions.prepare_facade_environment(self.actor_id)
         if self.trace_context is not None:
             self.trace_context.register(
                 self.binding.actor_name,
@@ -222,6 +223,7 @@ class SimpleLoopActor(Actor):
         )
         agent_binding = self._default_agent_binding()
         self._agent_binding = agent_binding
+        await self.python_sessions.prepare_facade_environment(self.actor_id)
         if self.trace_context is not None:
             self.trace_context.register(
                 self.binding.actor_name,
