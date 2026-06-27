@@ -1,10 +1,13 @@
 ---
 id: ISSUE-0005
 slug: out-of-box-conversation-for-common-providers
-status: in-progress
+status: implemented
 milestone: M-02
 priority: P1
 estimated_work_hours: 4
+cycle_hours: 29.6
+implemented_by: HEAD
+regression_test: manual: user confirmed M-02 complete
 ---
 
 # ISSUE-0005: Out-of-Box Conversation for Common Providers
