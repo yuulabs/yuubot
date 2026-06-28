@@ -20,3 +20,15 @@ uv run pytest
 uv run ruff check src tests
 uv run ty check
 ```
+
+Deployment maintenance commands for installs created by
+`scripts/deploy-server.sh`:
+
+```bash
+uv run ybot deploy shutdown
+uv run ybot deploy uninstall
+uv run ybot deploy uninstall --remove-data
+```
+
+These commands use `sudo` automatically when they need to manage systemd,
+Caddy, `/etc/yuubot`, or `/var/lib/yuubot`.

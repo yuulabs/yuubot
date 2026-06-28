@@ -140,6 +140,14 @@ uv run ybot --config config.yaml dev
 systemd、通过 Caddy 提供 HTTPS + Basic Auth，并把 yuubot 仅绑定到本机端口。
 详见 [docs/server-deploy.md](docs/server-deploy.md)。
 
+部署后的维护命令：
+
+```bash
+uv run ybot deploy shutdown                 # 停止当前运行的 yuubot 服务
+uv run ybot deploy uninstall                # 卸载 systemd/Caddy/配置，保留数据
+uv run ybot deploy uninstall --remove-data  # 同时删除数据库、日志和工作区
+```
+
 ## 常见问题
 
 **`secrets.master_key must be 32 bytes base64`**

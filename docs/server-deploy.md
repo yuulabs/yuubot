@@ -110,3 +110,34 @@ git pull
 The script keeps existing config and secrets by default.
 If `/etc/caddy/conf.d/yuubot.caddy` already exists, it also keeps the existing
 Caddy domain and Basic Auth hash unless you choose to reconfigure it.
+
+## Shutdown and uninstall
+
+Stop the currently running deployed services without removing files:
+
+```bash
+uv run ybot deploy shutdown
+```
+
+Uninstall the deployed system services and deployment config:
+
+```bash
+uv run ybot deploy uninstall
+```
+
+This stops and disables `yuubot-daemon.service` and `yuubot-admin.service`,
+removes their unit files, removes `/etc/yuubot`, removes the yuubot Caddy site
+file, and reloads systemd/Caddy where available. It preserves `/var/lib/yuubot`
+by default so the database, traces, logs, actor workspaces, and integration
+workspaces can be reused by a future install.
+
+To remove all yuubot runtime data as well:
+
+```bash
+uv run ybot deploy uninstall --remove-data
+```
+
+With the default install paths, `--remove-data` also deletes `/var/lib/yuubot`,
+including `yuubot.db`, `traces.db`, logs, generated facades, plugins, and
+workspaces. This is the full no-residue cleanup path for a deployment installed
+by `scripts/deploy-server.sh`.

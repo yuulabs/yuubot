@@ -97,11 +97,52 @@ def dev(ctx: click.Context) -> None:
     raise SystemExit(_run_dev(ctx.obj["config_path"]))
 
 
+@cli.group("deploy")
+def deploy() -> None:
+    """Manage a server deployment installed by scripts/deploy-server.sh."""
+
+
+@deploy.command("shutdown")
+def deploy_shutdown() -> None:
+    """Stop the running yuubot systemd services."""
+    _shutdown_deployment()
+    click.echo("stopped yuubot deployment services")
+
+
+@deploy.command("uninstall")
+@click.option(
+    "--remove-data",
+    is_flag=True,
+    help="Also remove the configured data directory, including databases and logs.",
+)
+def deploy_uninstall(remove_data: bool) -> None:
+    """Uninstall yuubot system services and deployment config."""
+    paths = _uninstall_deployment(remove_data=remove_data)
+    click.echo("uninstalled yuubot deployment services and config")
+    if remove_data:
+        click.echo(f"removed data directory: {paths.data_dir}")
+    else:
+        click.echo(f"preserved data directory: {paths.data_dir}")
+
+
 @dataclass(frozen=True)
 class DevChild:
     name: str
     process: DevProcess
     health_url: str
+
+
+@dataclass(frozen=True)
+class DeployPaths:
+    config_dir: Path
+    data_dir: Path
+    caddy_site_file: Path
+
+
+DEPLOY_SYSTEMD_UNITS = ("yuubot-admin.service", "yuubot-daemon.service")
+DEPLOY_SYSTEMD_UNIT_FILES = tuple(
+    Path("/etc/systemd/system") / unit for unit in DEPLOY_SYSTEMD_UNITS
+)
 
 
 class _DevRestartRequested(Exception):
@@ -144,6 +185,95 @@ def _load_config_or_raise_click(config_path: str | None) -> BootstrapConfig:
         return load_bootstrap_config(config_path)
     except BootstrapConfigError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+def _deployment_paths() -> DeployPaths:
+    config_dir = Path(os.environ.get("YUUBOT_CONFIG_DIR", "/etc/yuubot"))
+    data_dir = Path(os.environ.get("YUU_DATA_DIR", "/var/lib/yuubot"))
+    caddy_conf_dir = Path(os.environ.get("YUUBOT_CADDY_CONF_DIR", "/etc/caddy/conf.d"))
+    caddy_site_file = Path(
+        os.environ.get("YUUBOT_CADDY_SITE_FILE", str(caddy_conf_dir / "yuubot.caddy"))
+    )
+    return DeployPaths(
+        config_dir=config_dir,
+        data_dir=data_dir,
+        caddy_site_file=caddy_site_file,
+    )
+
+
+def _shutdown_deployment(
+    *,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    runner = runner or _run_deploy_command
+    _run_privileged(["systemctl", "stop", *DEPLOY_SYSTEMD_UNITS], runner=runner)
+
+
+def _uninstall_deployment(
+    *,
+    remove_data: bool,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> DeployPaths:
+    runner = runner or _run_deploy_command
+    paths = _deployment_paths()
+
+    _shutdown_deployment(runner=runner)
+    _run_privileged(
+        ["systemctl", "disable", *DEPLOY_SYSTEMD_UNITS],
+        runner=runner,
+        allow_failure=True,
+    )
+    _run_privileged(
+        ["rm", "-f", *(str(path) for path in DEPLOY_SYSTEMD_UNIT_FILES)],
+        runner=runner,
+    )
+    _run_privileged(["systemctl", "daemon-reload"], runner=runner)
+    _run_privileged(
+        ["systemctl", "reset-failed", *DEPLOY_SYSTEMD_UNITS],
+        runner=runner,
+        allow_failure=True,
+    )
+
+    _run_privileged(["rm", "-f", str(paths.caddy_site_file)], runner=runner)
+    _run_privileged(
+        ["systemctl", "reload", "caddy"],
+        runner=runner,
+        allow_failure=True,
+    )
+    _run_privileged(["rm", "-rf", str(paths.config_dir)], runner=runner)
+
+    if remove_data:
+        _run_privileged(["rm", "-rf", str(paths.data_dir)], runner=runner)
+
+    return paths
+
+
+def _run_privileged(
+    argv: list[str],
+    *,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    allow_failure: bool = False,
+) -> None:
+    command = argv if _is_root() else ["sudo", *argv]
+    result = runner(command)
+    if result.returncode == 0:
+        return
+    detail = (result.stderr or result.stdout).strip()
+    message = f"command failed: {' '.join(command)}"
+    if detail:
+        message = f"{message}\n{detail}"
+    if allow_failure:
+        click.echo(f"warning: {message}", err=True)
+        return
+    raise click.ClickException(message)
+
+
+def _is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _run_deploy_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, capture_output=True, text=True)
 
 
 def _run_dev(
