@@ -1171,6 +1171,41 @@ textarea.input { resize: vertical; min-height: 56px; }
     linear-gradient(180deg, rgba(0, 216, 255, .08), rgba(255, 236, 0, .08)),
     var(--bg);
 }
+.chat__quick-new {
+  position: fixed;
+  right: clamp(var(--sp-4), 3vw, var(--sp-8));
+  bottom: calc(var(--sp-5) + env(safe-area-inset-bottom));
+  z-index: 30;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--navy);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--navy);
+  box-shadow: var(--shadow-hi);
+  transition: transform .12s, box-shadow .12s, background .12s;
+}
+.chat__quick-new:hover {
+  transform: translateY(-1px);
+  background: var(--cyan-deep);
+  box-shadow: var(--focus-ring), var(--shadow-hi);
+}
+.chat__quick-new:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+  transform: none;
+}
+.chat__quick-new svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .composer {
   display: flex; gap: var(--sp-2); align-items: flex-end;
   background: var(--surface); border: 1px solid var(--border-hi);
@@ -2762,6 +2797,7 @@ body::before {
 
 .chat--focus .chat__composer {
   padding-inline: clamp(var(--sp-4), 12vw, 180px);
+  padding-right: clamp(72px, 12vw, 180px);
 }
 
 .chat--history-collapsed {

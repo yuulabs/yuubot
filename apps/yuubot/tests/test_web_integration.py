@@ -207,6 +207,71 @@ async def test_read_fetches_html_via_http_client() -> None:
     assert page.text == "Hello"
 
 
+async def test_read_requests_identity_encoding_to_avoid_decoder_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Accept-Encoding"] == "identity"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<p>Hello</p>",
+        )
+
+    integration = _integration(handler)
+
+    page = await integration.invoke_read(
+        WebReadInput(url="https://example.test/page"),
+        InvocationContext(actor_id="actor"),
+    )
+    await integration.close()
+
+    assert page.text == "Hello"
+
+
+async def test_factory_allows_missing_tavily_key_but_search_requires_it(
+    tmp_path: Path,
+) -> None:
+    factory = WebIntegrationFactory()
+    record = IntegrationRecord(id="web-main", name="web", config={})
+    instance = await factory.create(
+        record,
+        gateway=Gateway(RouteBindings(rules=[])),
+        storage=LocalIntegrationStorage(tmp_path),
+    )
+    await instance.close()
+
+    integration = WebIntegration(
+        client=WebClient(
+            http=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(
+                        200,
+                        headers={"content-type": "text/html"},
+                        content=b"<p>Hello</p>",
+                    )
+                ),
+                follow_redirects=True,
+            ),
+            tavily_base_url="https://api.tavily.test",
+            tavily_api_key="",
+            max_read_bytes=1_000_000,
+            max_read_chars=80_000,
+            max_download_bytes=1_000_000,
+        )
+    )
+    page = await integration.invoke_read(
+        WebReadInput(url="https://example.test/page"),
+        InvocationContext(actor_id="actor"),
+    )
+    assert page.text == "Hello"
+
+    with pytest.raises(ValueError, match="web.search requires a Tavily API key"):
+        await integration.invoke_search(
+            WebSearchInput(query="recent model release"),
+            InvocationContext(actor_id="actor"),
+        )
+    await integration.close()
+
+
 async def test_factory_declares_capabilities_and_admin_schema(tmp_path: Path) -> None:
     factory = WebIntegrationFactory()
 

@@ -61,6 +61,26 @@ test("admin.conversations.$conversationId.tsx filters history rail by the active
   );
 });
 
+test("admin.conversations.$conversationId.tsx exposes an actor-scoped quick new conversation action", () => {
+  assert.ok(convoSrc.includes("chat__quick-new"),
+    "conversation page must render the fixed quick-new action");
+  assert.ok(convoSrc.includes('aria-label="新对话"'),
+    "quick-new action must be accessible by label");
+  assert.ok(convoSrc.includes("newConversationId") && convoSrc.includes("`actor-${actorId}`"),
+    "quick-new action must route to the actor-bound draft");
+});
+
+test("admin.conversations.$conversationId.tsx only auto-scrolls while near the bottom", () => {
+  assert.ok(convoSrc.includes("shouldAutoScrollRef"),
+    "conversation page must track whether auto-scroll should remain enabled");
+  assert.ok(convoSrc.includes("distanceFromBottom"),
+    "scroll handler must compute the user's distance from the bottom");
+  assert.ok(convoSrc.includes("distanceFromBottom < 96"),
+    "auto-scroll should be disabled once the user scrolls away from the bottom");
+  assert.ok(convoSrc.includes("!shouldAutoScrollRef.current"),
+    "display item updates must not force-scroll while the user is reading history");
+});
+
 test("actors.tsx row action links to the actor-bound draft route", () => {
   assert.ok(actorsListSrc.includes("/admin/conversations/actor-${actor.id}") ||
     actorsListSrc.includes("`actor-${actor.id}`"),

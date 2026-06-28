@@ -95,7 +95,7 @@ class WebClient:
 
     async def search(self, *, query: str, max_results: int) -> list[SearchResult]:
         if not self.tavily_api_key:
-            raise ValueError("web integration is not connected")
+            raise ValueError("web.search requires a Tavily API key")
         response = await self.http.post(
             f"{self.tavily_base_url}/search",
             headers={"Authorization": f"Bearer {self.tavily_api_key}"},
@@ -184,7 +184,11 @@ class WebClient:
     async def _get_limited(self, url: str, *, max_bytes: int) -> httpx.Response:
         chunks: list[bytes] = []
         total = 0
-        async with self.http.stream("GET", url) as response:
+        async with self.http.stream(
+            "GET",
+            url,
+            headers={"Accept-Encoding": "identity"},
+        ) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes():
                 total += len(chunk)

@@ -134,6 +134,12 @@ uv run ybot --config config.yaml dev
 ~/.yuubot/workspace/actors/<id>/   Actor 工作区
 ```
 
+## 服务器部署
+
+公网单机部署可以使用 `scripts/deploy-server.sh`：它会安装依赖、配置
+systemd、通过 Caddy 提供 HTTPS + Basic Auth，并把 yuubot 仅绑定到本机端口。
+详见 [docs/server-deploy.md](docs/server-deploy.md)。
+
 ## 常见问题
 
 **`secrets.master_key must be 32 bytes base64`**

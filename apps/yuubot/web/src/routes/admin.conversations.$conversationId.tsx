@@ -489,6 +489,8 @@ function AdminConversationPage() {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   const sseRef = useRef<EventSource | null>(null);
   const sendingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -652,6 +654,7 @@ function AdminConversationPage() {
     setActorLocked(isActorDraft);
     setTotalCost(0);
     setLoadingHistory(true);
+    shouldAutoScrollRef.current = true;
 
     if (isDraft) {
       // Draft route: no backend row exists yet. Render empty UI and wait for
@@ -732,8 +735,20 @@ function AdminConversationPage() {
   }, [conversationId, conversationMetadata, actorId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!shouldAutoScrollRef.current) {
+      return;
+    }
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [displayItems]);
+
+  const handleConversationScroll = () => {
+    const node = scrollRef.current;
+    if (node === null) {
+      return;
+    }
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    shouldAutoScrollRef.current = distanceFromBottom < 96;
+  };
 
   const handleStop = async () => {
     // Stop = POST /cancel. The backend's `cancel_turn` sets the cancel event
@@ -920,6 +935,7 @@ function AdminConversationPage() {
     capabilitySets.find((item) => item.id === actor?.capability_set_id);
   const workspacePath = actorCapabilitySet?.workspace_path;
   const workspaceUrl = workspaceHref(workspacePath);
+  const newConversationId = actorId ? `actor-${actorId}` : "new";
 
   return (
     <div className="view view--conversations">
@@ -970,7 +986,7 @@ function AdminConversationPage() {
             </div>
           </header>
 
-          <div className="chat__scroll">
+          <div ref={scrollRef} className="chat__scroll" onScroll={handleConversationScroll}>
             {loadingHistory && <p className="chat__empty-mini">正在读取对话...</p>}
             {!loadingHistory && displayItems.length === 0 && (
               <div className="chat__empty">
@@ -1119,6 +1135,21 @@ function AdminConversationPage() {
               )}
             </div>
           </form>
+          {actorId ? (
+            <Link
+              to="/admin/conversations/$conversationId"
+              params={{ conversationId: newConversationId }}
+              className="chat__quick-new"
+              aria-label="新对话"
+              title="新对话"
+            >
+              <Plus />
+            </Link>
+          ) : (
+            <button type="button" className="chat__quick-new" aria-label="新对话" title="新对话" disabled>
+              <Plus />
+            </button>
+          )}
         </div>
       </div>
 
