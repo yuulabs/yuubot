@@ -60,6 +60,18 @@ def _schedule_db_path(
     return None
 
 
+def _agent_supports_vision(
+    agent: Agent,
+    model_configs: dict[str, ModelConfig] | None,
+) -> bool:
+    if model_configs is None:
+        return False
+    config = model_configs.get(agent.llm.model)
+    if config is None:
+        return False
+    return config.capabilities.vision
+
+
 @dataclass
 class YuuAgentsActorRuntime:
     """Orchestrates agent lifecycles within a single yuuagents Stage.
@@ -469,6 +481,9 @@ class YuuAgentsActorRuntime:
                                     tool_call_id=tc.id,
                                     eventbus=self.stage.eventbus,
                                     entity_log=agent.log,
+                                    supports_vision=_agent_supports_vision(
+                                        agent, model_configs
+                                    ),
                                 )
                                 try:
                                     yt = await self.stage.runtime.submit_tool_call(

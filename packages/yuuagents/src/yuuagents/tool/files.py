@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import mimetypes
 from pathlib import Path
 from typing import Any, ClassVar
@@ -75,9 +74,7 @@ class WorkspaceFiles:
                 f"file is too large to read: {size} bytes > {self.max_read_bytes}"
             )
         mime_type = mimetypes.guess_type(path.name)[0] or ""
-        data = path.read_bytes()
         if mime_type.startswith("image/"):
-            encoded = base64.b64encode(data).decode("ascii")
             return [
                 {
                     "type": "text",
@@ -86,10 +83,11 @@ class WorkspaceFiles:
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:{mime_type};base64,{encoded}",
+                        "url": path.as_uri(),
                     },
                 },
             ]
+        data = path.read_bytes()
         return data.decode("utf-8")
 
     def edit(self, *, raw_path: str, old_string: str, new_string: str) -> str:
@@ -140,8 +138,11 @@ class ReadTool(Tool[ReadParams, yuullm.ToolOutput]):
     async def create_coro(
         self, task: ToolCallTask, context: ToolContext
     ) -> yuullm.ToolOutput:
-        _ = context
         params = ReadParams.model_validate(task.tool_call_params.params)
+        path = self._files.resolve_path(params.path)
+        mime_type = mimetypes.guess_type(path.name)[0] or ""
+        if mime_type.startswith("image/") and context.supports_vision is False:
+            return "You cannot read images."
         return self._files.read(params.path)
 
     async def cancel(self, task: ToolCallTask, reason: str) -> None:

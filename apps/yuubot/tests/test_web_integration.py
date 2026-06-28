@@ -156,7 +156,7 @@ async def test_download_saves_under_actor_workspace_and_read_tool_reads_image(
     read_output = files.read(output.path)
     assert isinstance(read_output, list)
     assert yuullm.is_image_item(read_output[1])
-    assert read_output[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert read_output[1]["image_url"]["url"] == (workspace / output.path).as_uri()
 
 
 async def test_download_rejects_traversal_and_absolute_filenames(tmp_path: Path) -> None:

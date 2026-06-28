@@ -109,6 +109,13 @@ def deploy_shutdown() -> None:
     click.echo("stopped yuubot deployment services")
 
 
+@deploy.command("start")
+def deploy_start() -> None:
+    """Start yuubot systemd services after a shutdown."""
+    _start_deployment()
+    click.echo("started yuubot deployment services")
+
+
 @deploy.command("uninstall")
 @click.option(
     "--remove-data",
@@ -207,6 +214,17 @@ def _shutdown_deployment(
 ) -> None:
     runner = runner or _run_deploy_command
     _run_privileged(["systemctl", "stop", *DEPLOY_SYSTEMD_UNITS], runner=runner)
+
+
+def _start_deployment(
+    *,
+    runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    runner = runner or _run_deploy_command
+    _run_privileged(
+        ["systemctl", "start", "yuubot-daemon.service", "yuubot-admin.service"],
+        runner=runner,
+    )
 
 
 def _uninstall_deployment(

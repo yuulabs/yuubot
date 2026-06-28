@@ -44,6 +44,7 @@ from ._content import (
     split_assistant_items,
     tool_result_items,
 )
+from ._image_cache import image_url_for_provider
 
 
 class AnthropicMessagesProvider:
@@ -226,7 +227,9 @@ class AnthropicMessagesProvider:
                             if is_text_item(block):
                                 anthropic_blocks.append(to_plain_dict(block))
                             elif is_image_item(block):
-                                url = block["image_url"].get("url", "")
+                                url = image_url_for_provider(
+                                    block["image_url"].get("url", "")
+                                )
                                 if url.startswith("data:"):
                                     header, _, b64 = url.partition(",")
                                     media_type = header.split(":")[1].split(";")[0]

@@ -152,3 +152,4 @@ class ToolContext:
     eventbus: Any  # EventBus — avoid circular import
     entity_log: EntityLog
     task_id: str | None = None  # backfilled by runtime after Task creation
+    supports_vision: bool | None = None

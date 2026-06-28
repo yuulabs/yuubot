@@ -12,6 +12,7 @@ from ._content import (
     split_assistant_items,
     tool_result_items,
 )
+from ._image_cache import image_url_for_provider
 
 
 def convert_openai_chat_messages(
@@ -24,7 +25,7 @@ def convert_openai_chat_messages(
             result.append(
                 {
                     "role": message.role,
-                    "content": content_blocks(
+                    "content": _openai_content_blocks(
                         items, preserve_cache_control=preserve_cache_control
                     ),
                     **message.provider_extra,
@@ -37,7 +38,7 @@ def convert_openai_chat_messages(
                 **message.provider_extra,
             }
             if content:
-                entry["content"] = content_blocks(
+                entry["content"] = _openai_content_blocks(
                     content, preserve_cache_control=preserve_cache_control
                 )
             if tool_calls:
@@ -83,4 +84,25 @@ def openai_tool_result_content(
 ) -> str | list[dict[str, Any]]:
     if isinstance(content, str):
         return content
-    return content_blocks(content, preserve_cache_control=preserve_cache_control)
+    return _openai_content_blocks(content, preserve_cache_control=preserve_cache_control)
+
+
+def _openai_content_blocks(
+    content: Content, *, preserve_cache_control: bool
+) -> list[dict[str, Any]]:
+    blocks = content_blocks(content, preserve_cache_control=preserve_cache_control)
+    return [_normalize_openai_image_block(block) for block in blocks]
+
+
+def _normalize_openai_image_block(block: dict[str, Any]) -> dict[str, Any]:
+    if block.get("type") != "image_url":
+        return block
+    image_url = block.get("image_url")
+    if not isinstance(image_url, dict):
+        return block
+    url = image_url.get("url")
+    if not isinstance(url, str):
+        return block
+    normalized = dict(block)
+    normalized["image_url"] = {**image_url, "url": image_url_for_provider(url)}
+    return normalized

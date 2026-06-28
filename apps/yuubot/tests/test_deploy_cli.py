@@ -34,6 +34,24 @@ def test_deploy_shutdown_stops_systemd_units(monkeypatch) -> None:
     ]
 
 
+def test_deploy_start_starts_daemon_then_admin(monkeypatch) -> None:
+    calls = _capture_deploy_commands(monkeypatch)
+
+    result = click.testing.CliRunner().invoke(cli, ["deploy", "start"])
+
+    assert result.exit_code == 0
+    assert calls == [
+        [
+            "sudo",
+            "systemctl",
+            "start",
+            "yuubot-daemon.service",
+            "yuubot-admin.service",
+        ]
+    ]
+    assert "started yuubot deployment services" in result.output
+
+
 def test_deploy_uninstall_preserves_data_by_default(monkeypatch) -> None:
     calls = _capture_deploy_commands(monkeypatch)
     monkeypatch.setenv("YUUBOT_CONFIG_DIR", "/tmp/yuubot-config")

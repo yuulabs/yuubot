@@ -8,7 +8,9 @@ import yuullm
 
 from yuuagents.agent.actor import _render_task_result
 from yuuagents.core.task import Owner, OwnerType, Task, TaskStatus
-from yuuagents.tool.files import FileToolConfig, WorkspaceFiles
+from yuuagents.obs.entitylog import EntityLog
+from yuuagents.tool.files import FileToolConfig, ReadParams, ReadTool, WorkspaceFiles
+from yuuagents.tool.primitives import ToolCallParams, ToolCallTask, ToolContext
 
 
 def test_workspace_files_read_text(tmp_path: Path) -> None:
@@ -35,7 +37,38 @@ def test_workspace_files_read_image_as_multimodal_content(tmp_path: Path) -> Non
     assert result[0]["type"] == "text"
     assert result[1]["type"] == "image_url"
     assert yuullm.is_image_item(result[1])
-    assert result[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert result[1]["image_url"]["url"] == (tmp_path / "pixel.png").as_uri()
+
+
+@pytest.mark.asyncio
+async def test_read_tool_rejects_image_without_vision(tmp_path: Path) -> None:
+    (tmp_path / "pixel.png").write_bytes(b"png")
+    tool = ReadTool.from_startup(
+        None,
+        FileToolConfig(workspace_root=str(tmp_path)),
+    )
+
+    result = await tool.create_coro(
+        ToolCallTask(
+            id="task-1",
+            owner=Owner(type=OwnerType.AGENT, id="agent-1"),
+            status=TaskStatus.PENDING,
+            tool_call_params=ToolCallParams(
+                tool_call_id="call-1",
+                tool_name="read",
+                params=ReadParams(path="pixel.png"),
+            ),
+        ),
+        ToolContext(
+            agent_id="agent-1",
+            tool_call_id="call-1",
+            eventbus=None,
+            entity_log=EntityLog(),
+            supports_vision=False,
+        ),
+    )
+
+    assert result == "You cannot read images."
 
 
 def test_workspace_files_edit_requires_exactly_one_match(tmp_path: Path) -> None:

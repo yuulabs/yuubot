@@ -275,18 +275,14 @@ export async function getConversationMessages(
 /**
  * Stop the in-flight turn for a conversation (POST /cancel).
  *
- * The daemon's `ConversationManager.cancel_turn` sets the cancel event (a
- * single-point safety trip so a CancelledError lands even if the loop is
- * between awaits), calls `task.cancel()`, and then **awaits the task** so
- * the HTTP response returns only after the loop's CancelledError handler
- * has completed (flush_entitylog + cancel_inflight_tool_calls + synthesize
- * `[cancelled]` tool_results) and the loop's own exit path has emitted
- * `agent.turn_completed`. The HTTP response itself is the "stop receipt"
- * the frontend waits for.
+ * The daemon's `ConversationManager.cancel_turn` sets the cancel event,
+ * calls `task.cancel()`, and waits briefly for cleanup. If a provider SDK or
+ * tool does not cooperate with cancellation, the HTTP stop receipt still
+ * returns with `pending: true`.
  *
  * Returns `{ cancelled }`. `cancelled` is `true` when a turn task was
- * actually signalled and awaited to completion; `false` when there was no
- * live task to cancel. No `drained` field — the per-conversation pending
+ * actually signalled; `false` when there was no live task to cancel. No
+ * `drained` field — the per-conversation pending
  * queue mechanism is gone (the input box itself is the buffer; a send while
  * generating is not reachable from the UI because the Send button is
  * replaced by the Stop button during generation).

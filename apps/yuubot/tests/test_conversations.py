@@ -588,7 +588,7 @@ async def test_cancel_turn_returns_false_when_idle() -> None:
     a payload with ``cancelled=False`` and no ``drained`` field."""
     manager = manager_with_store()
     result = await manager.cancel_turn("conv-idle")
-    assert result == {"cancelled": False}
+    assert result == {"cancelled": False, "pending": False}
 
 
 async def test_cancel_turn_awaits_task_and_returns_receipt() -> None:
@@ -698,6 +698,7 @@ async def test_cancel_turn_awaits_task_and_returns_receipt() -> None:
 
     # (2) Return shape: {cancelled: True} and NO ``drained`` field.
     assert result["cancelled"] is True
+    assert result["pending"] is False
     assert "drained" not in result
 
     # (3) CancelledError propagated into the mock runtime's
@@ -725,13 +726,43 @@ async def test_cancel_turn_awaits_task_and_returns_receipt() -> None:
     await subscription.aclose()
 
 
-async def test_send_during_inflight_awaits_existing_task() -> None:
+async def test_cancel_turn_returns_receipt_when_task_cleanup_hangs() -> None:
+    manager = manager_with_store()
+    started = asyncio.Event()
+    never = asyncio.Event()
+
+    async def stuck_turn() -> None:
+        started.set()
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            await never.wait()
+
+    task = asyncio.create_task(stuck_turn())
+    manager._in_flight_tasks["conv-1"] = task
+    manager._cancel_events["conv-1"] = asyncio.Event()
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    with patch(
+        "yuubot.core.conversations.manager._STOP_RECEIPT_TIMEOUT_S",
+        0.01,
+    ):
+        result = await asyncio.wait_for(manager.cancel_turn("conv-1"), timeout=1)
+
+    assert result == {"cancelled": True, "pending": True}
+    assert not task.done()
+    task.cancel()
+    manager._in_flight_tasks.pop("conv-1", None)
+    manager._cancel_events.pop("conv-1", None)
+    never.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_send_during_inflight_rejects_new_turn() -> None:
     """A second ``send_message`` while a turn is in flight does NOT enqueue
-    (the queue mechanism is gone). It defensively awaits the existing
-    in-flight task to completion, then starts a new turn task. Exactly one
-    in-flight task remains at the end (the second one, still in flight).
-    Two user messages were persisted. No ``queue.appended`` SSE event was
-    emitted."""
+    (the queue mechanism is gone). It rejects the new send instead of
+    waiting indefinitely behind a stuck provider/tool cleanup."""
     record = MagicMock()
     record.message_id = "message-1"
 
@@ -756,11 +787,7 @@ async def test_send_during_inflight_awaits_existing_task() -> None:
     runtime.conversation_agents = {}  # cache miss path
     runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
 
-    # Each call to handle_conversation_message waits on its own release event.
-    # The first call blocks until release_events[0] is set; the second blocks
-    # on release_events[1] (never set within the test — the second turn stays
-    # in flight, which is what the assertions check).
-    release_events: list[asyncio.Event] = []
+    release = asyncio.Event()
 
     async def handle_conversation_message(
         conversation_id: str,
@@ -768,9 +795,7 @@ async def test_send_during_inflight_awaits_existing_task() -> None:
         cancel_event: asyncio.Event | None = None,
     ) -> None:
         _ = conversation_id, message, cancel_event
-        rel = asyncio.Event()
-        release_events.append(rel)
-        await rel.wait()
+        await release.wait()
 
     runtime.handle_conversation_message = handle_conversation_message
 
@@ -785,8 +810,7 @@ async def test_send_during_inflight_awaits_existing_task() -> None:
         ),
         patch.object(manager, "_runtime_for", new=AsyncMock(return_value=runtime)),
     ):
-        # First send: starts turn #1; handle_conversation_message is now
-        # blocked on release_events[0].
+        # First send: starts turn #1; handle_conversation_message is blocked.
         first_result = await manager.send_message(
             conversation_id="conv-1",
             text="first",
@@ -796,51 +820,33 @@ async def test_send_during_inflight_awaits_existing_task() -> None:
         assert len(manager._in_flight_tasks) == 1
         first_task = manager._in_flight_tasks["conv-1"]
 
-        # Second send while the first turn is still in flight. The defensive
-        # path: send_message awaits the first task, then starts a new one.
-        async def second_send() -> tuple[object, str]:
-            # Yield enough times to let send_message reach ``await existing``
-            # before we unblock the first task.
-            fut = asyncio.ensure_future(
-                manager.send_message(
-                    conversation_id="conv-1",
-                    text="second",
-                    message_id="message-2",
-                ),
+        with pytest.raises(RuntimeError, match="still stopping"):
+            await manager.send_message(
+                conversation_id="conv-1",
+                text="second",
+                message_id="message-2",
             )
-            for _ in range(5):
-                await asyncio.sleep(0)
-            # Unblock the first turn task so the defensive ``await existing``
-            # in send_message can complete.
-            release_events[0].set()
-            return await asyncio.wait_for(fut, timeout=2)
 
-        second_result = await asyncio.wait_for(second_send(), timeout=3)
-        assert second_result[1] == "message-2"
-
-    # (1) The first turn task completed before the second send_message
-    # returned (defensive await).
-    assert first_task.done() is True
-
-    # (2) Exactly one in-flight task remains — the second one, still blocked
-    # on release_events[1] (never set within the test).
+    # (1) The original turn remains in-flight; the second send did not wait
+    # behind it or start a competing turn.
+    assert first_task.done() is False
     assert len(manager._in_flight_tasks) == 1
-    assert "conv-1" in manager._in_flight_tasks
-    second_task = manager._in_flight_tasks["conv-1"]
-    assert second_task is not first_task
+    assert manager._in_flight_tasks["conv-1"] is first_task
 
-    # (3) Two user messages were persisted (one per send_message).
-    assert store.append_history_item.call_count == 2
+    # (2) The rejected second send is caught before persisting another user
+    # message.
+    assert store.append_history_item.call_count == 1
 
-    # (4) No ``queue.appended`` event was emitted (the queue mechanism is
+    # (3) No ``queue.appended`` event was emitted (the queue mechanism is
     # gone — send_message started a real turn task, not an enqueue).
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(subscription.__anext__(), timeout=0.2)
 
-    # Tear down the second turn task to avoid leaking a pending task.
-    second_task.cancel()
+    # Tear down the first turn task to avoid leaking a pending task.
+    first_task.cancel()
+    release.set()
     with pytest.raises(asyncio.CancelledError):
-        await second_task
+        await first_task
     manager._in_flight_tasks.pop("conv-1", None)
     manager._cancel_events.pop("conv-1", None)
     await subscription.aclose()
@@ -977,6 +983,7 @@ async def test_cancel_turn_persists_partial_assistant_to_db() -> None:
     # cancel_turn awaited the cancelled task (the loop's CancelledError
     # handler ran, including the new llm.finished emit).
     assert result["cancelled"] is True
+    assert result["pending"] is False
     assert "conv-1" not in manager._in_flight_tasks
 
     # store.append_history_item was called twice: once for the user Message

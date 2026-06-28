@@ -717,12 +717,14 @@ def make_cancel_conversation_turn_handler(
         except LookupError as exc:
             return error_response(str(exc), status_code=404)
         cancelled = bool(result.get("cancelled"))
+        pending = bool(result.get("pending"))
         return JSONResponse(
             {
                 "status": "cancelled" if cancelled else "idle",
                 "data": {
                     "conversation_id": conversation_id,
                     "cancelled": cancelled,
+                    "pending": pending,
                 },
             },
             status_code=200,

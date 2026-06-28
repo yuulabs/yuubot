@@ -751,18 +751,22 @@ function AdminConversationPage() {
   };
 
   const handleStop = async () => {
-    // Stop = POST /cancel. The backend's `cancel_turn` sets the cancel event
-    // (single-point safety trip) + cancels the task + AWAITS the task. The
-    // HTTP response is the "stop receipt" — it returns only after the loop's
-    // CancelledError handler has completed (flush + cancel tools + synthesize
-    // `[cancelled]` results) and `agent.turn_completed` has emitted via the
-    // loop's normal exit path (the existing `turn_completed` SSE handler flips
-    // `isSending` off). We only need to clear `isStopping` so the button
-    // reverts to whatever `isSending` says.
+    // Stop = POST /cancel. The backend returns a bounded stop receipt even
+    // if a provider SDK or tool does not cooperate with cancellation.
     if (!isSending || isStopping) return;
     setIsStopping(true);
     try {
-      await cancelConversationTurn(conversationId);
+      const receipt = await cancelConversationTurn(conversationId);
+      if (receipt.cancelled) {
+        const completedTurnKey = activeTurnKeyRef.current;
+        if (completedTurnKey) {
+          setDisplayItems((prev) => markLiveTurnCompleted(prev, completedTurnKey));
+        }
+        activeTurnKeyRef.current = "";
+        currentAssistantItemKeyRef.current = "";
+        sendingRef.current = false;
+        setIsSending(false);
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to stop the turn");
     } finally {

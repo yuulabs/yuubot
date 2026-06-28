@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
-from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import yuullm
@@ -43,6 +41,10 @@ async def send_message(
     The turn itself runs on a background task — the method returns
     before the turn completes, mirroring the prior 202 semantics.
     """
+    existing = manager._in_flight_tasks.get(conversation_id)
+    if existing is not None and not existing.done():
+        raise RuntimeError("conversation turn is still stopping")
+
     with _conversation_timing_span(
         "conversation.send",
         "conversation_exists",
@@ -128,22 +130,6 @@ async def send_message(
         message_id=message_id,
     ):
         await manager.store.append_history_item(conversation_id, user_message)
-
-    # Defensive: if a previous turn task is somehow still live (the
-    # frontend contract replaces Send with Stop during generation, so
-    # this path is not normally reachable), wait for it before starting
-    # a new one. Avoids two concurrent turn tasks racing on the same
-    # agent/history. The input box itself is the buffer — no server-side
-    # queue is needed.
-    existing = manager._in_flight_tasks.get(conversation_id)
-    if existing is not None and not existing.done():
-        with _conversation_timing_span(
-            "conversation.send",
-            "existing_turn_waited",
-            conversation_id=conversation_id,
-        ):
-            with suppress(asyncio.CancelledError, Exception):
-                await existing
 
     with _conversation_timing_span(
         "conversation.send",

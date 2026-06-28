@@ -25,6 +25,7 @@ Deployment maintenance commands for installs created by
 `scripts/deploy-server.sh`:
 
 ```bash
+uv run ybot deploy start
 uv run ybot deploy shutdown
 uv run ybot deploy uninstall
 uv run ybot deploy uninstall --remove-data

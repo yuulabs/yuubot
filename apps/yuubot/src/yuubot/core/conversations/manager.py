@@ -56,6 +56,9 @@ from .uploads import (
 )
 
 
+_STOP_RECEIPT_TIMEOUT_S = 2.0
+
+
 @dataclass
 class ConversationManager:
     store: ConversationStore
@@ -219,18 +222,18 @@ class ConversationManager:
         loop-exit path. ``cancel_turn`` itself does NOT synthesise
         ``turn_completed`` — the loop is the sole emitter.
 
-        Awaits the cancelled task before returning — the HTTP response is
-        the "stop receipt" the frontend waits for (the button transitions
-        from "stopping" back to "Send" only after the CancelledError handler
-        has completed and the loop has emitted ``turn_completed``).
+        Waits briefly for the cancelled task to finish. If the provider SDK
+        or a tool does not cooperate with cancellation, the HTTP stop receipt
+        still returns and the task remains in-flight until its own cleanup
+        eventually finishes.
 
-        Returns ``{"cancelled": bool}`` — ``True`` when a turn task was
-        actually signalled and awaited to completion, ``False`` when there
-        was no live task to cancel.
+        Returns ``{"cancelled": bool, "pending": bool}`` — ``pending`` means
+        the cancellation was signalled but cleanup had not completed before
+        the stop receipt timeout.
         """
         task = self._in_flight_tasks.get(conversation_id)
         if task is None or task.done():
-            return {"cancelled": False}
+            return {"cancelled": False, "pending": False}
 
         # Single-point safety trip: the loop checks ``cancel_event.is_set()``
         # once at the top of each iteration; if true it raises
@@ -246,24 +249,22 @@ class ConversationManager:
         # completing task; we report ``cancelled=False`` in that case.
         scheduled = task.cancel()
         if not scheduled:
-            return {"cancelled": False}
+            return {"cancelled": False, "pending": False}
 
-        # Await the task so the CancelledError handler completes (flush +
-        # cancel tools + synthesise [cancelled] tool_results) before the
-        # HTTP response returns. This is the "stop receipt" the frontend
-        # waits for. The loop's own exit path emits ``agent.turn_completed``
-        # → SSE ``turn_completed``; ``cancel_turn`` does NOT synthesise it.
         try:
-            await task
+            await asyncio.wait_for(asyncio.shield(task), timeout=_STOP_RECEIPT_TIMEOUT_S)
+            pending = False
+        except TimeoutError:
+            pending = True
         except asyncio.CancelledError:
-            pass
+            pending = False
         except Exception:
             # Loop's error path already emitted an error SSE event; suppress
             # so the HTTP receipt still returns 200 (the frontend drops
             # ``isSending`` via the error SSE or ``turn_completed``).
-            pass
+            pending = False
 
-        return {"cancelled": True}
+        return {"cancelled": True, "pending": pending}
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         exists = await self.store.conversation_exists(conversation_id)

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 from typing import Any
 
 import yuullm
+from yuullm.providers import _image_cache
 from yuullm.providers.anthropic import AnthropicMessagesProvider
 from yuullm.providers.openai import OpenAIChatCompletionProvider
 from yuullm.providers.openrouter import OpenRouterProvider
@@ -162,6 +164,51 @@ async def test_openai_provider_sends_all_content_blocks_to_sdk() -> None:
             "content": [{"type": "text", "text": "done"}],
         },
     ]
+
+
+async def test_openai_provider_converts_file_image_urls_at_provider_boundary(
+    tmp_path,
+) -> None:
+    client = _FakeOpenAIClient()
+    provider = OpenAIChatCompletionProvider(api_key="test")
+    provider._client = client
+    image_path = tmp_path / "pixel.png"
+    image_path.write_bytes(b"image-bytes")
+
+    await provider.stream(
+        [
+            yuullm.tool(
+                "call_1",
+                [
+                    {"type": "text", "text": "image"},
+                    {"type": "image_url", "image_url": {"url": image_path.as_uri()}},
+                ],
+            )
+        ],
+        model="gpt-test",
+    )
+
+    assert client.completions.kwargs is not None
+    content = client.completions.kwargs["messages"][0]["content"]
+    assert content[1]["image_url"]["url"] == (
+        "data:image/png;base64," + base64.b64encode(b"image-bytes").decode("ascii")
+    )
+
+
+def test_file_image_cache_is_lru_bounded(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(_image_cache, "_MAX_CACHE_BYTES", 80)
+    _image_cache._file_image_cache.clear()
+    _image_cache._file_image_cache_bytes = 0
+    first = tmp_path / "first.png"
+    second = tmp_path / "second.png"
+    first.write_bytes(b"a" * 20)
+    second.write_bytes(b"b" * 20)
+
+    _image_cache.image_url_for_provider(first.as_uri())
+    _image_cache.image_url_for_provider(second.as_uri())
+
+    assert len(_image_cache._file_image_cache) == 1
+    assert next(iter(_image_cache._file_image_cache))[0] == second.as_uri()
 
 
 async def test_openrouter_provider_preserves_cache_control_in_sdk_payload() -> None:

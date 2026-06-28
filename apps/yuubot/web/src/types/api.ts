@@ -324,6 +324,7 @@ export interface CancelTurnResponse {
   data: {
     conversation_id: string;
     cancelled: boolean;
+    pending?: boolean;
   };
 }
 
