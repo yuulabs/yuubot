@@ -20,6 +20,7 @@ import type {
   LiveCapability,
   LiveCapabilitiesResponse,
   ActorSkillsView,
+  PresetActor,
   SkillInfo,
   ResourceType,
   SingleResponse,
@@ -138,6 +139,11 @@ export async function getLiveCapabilities(): Promise<LiveCapability[]> {
     `${BASE}/live-capabilities`,
   );
   return res.capabilities;
+}
+
+export async function getPresetActors(): Promise<PresetActor[]> {
+  const res = await request<ListResponse<PresetActor>>(`${BASE}/preset-actors`);
+  return res.data;
 }
 
 export async function getActorSkills(actorId: string): Promise<ActorSkillsView> {

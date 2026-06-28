@@ -33,16 +33,12 @@ def build_default_resource_type_registry(
     registry.register(
         "integrations",
         IntegrationORM,
-        lifecycle_realm="integrations",
-        has_lifecycle=True,
         lifecycle_handler=integration_lifecycle_handler,
     )
     registry.register("capability-sets", CapabilitySetORM)
     registry.register(
         "actors",
         ActorORM,
-        lifecycle_realm="actors",
-        has_lifecycle=True,
         lifecycle_handler=actor_lifecycle_handler,
     )
     registry.register("ingress-rules", ActorIngressRuleORM)

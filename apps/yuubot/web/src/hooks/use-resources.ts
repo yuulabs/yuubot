@@ -12,6 +12,7 @@ import {
   getHealth,
   getIntegrationKinds,
   getLiveCapabilities,
+  getPresetActors,
   listResources,
   setResourceEnabled,
   updateResource,
@@ -27,6 +28,7 @@ export const resourceKeys = {
   health: () => ["health"] as const,
   integrationKinds: () => ["integration-kinds"] as const,
   liveCapabilities: () => ["live-capabilities"] as const,
+  presetActors: () => ["preset-actors"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -67,6 +69,14 @@ export function useLiveCapabilities() {
     queryKey: resourceKeys.liveCapabilities(),
     queryFn: getLiveCapabilities,
     staleTime: 30_000, // 30s — reflects integration create/disable/enable
+  });
+}
+
+export function usePresetActors() {
+  return useQuery({
+    queryKey: resourceKeys.presetActors(),
+    queryFn: getPresetActors,
+    staleTime: 60_000,
   });
 }
 

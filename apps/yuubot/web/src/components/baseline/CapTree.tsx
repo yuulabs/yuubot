@@ -19,12 +19,14 @@ interface CapTreeProps {
   groups: CapGroup[];
   selectedIds: string[];
   onChange: (selectedIds: string[]) => void;
+  disabled?: boolean;
 }
 
-export function CapTree({ groups, selectedIds, onChange }: CapTreeProps) {
+export function CapTree({ groups, selectedIds, onChange, disabled = false }: CapTreeProps) {
   const selected = new Set(selectedIds);
 
   const toggle = (id: string) => {
+    if (disabled) return;
     const next = new Set(selected);
     if (next.has(id)) next.delete(id);
     else next.add(id);
@@ -45,8 +47,9 @@ export function CapTree({ groups, selectedIds, onChange }: CapTreeProps) {
               <span
                 role="checkbox"
                 aria-checked={checked}
-                tabIndex={0}
-                className={`cap-group__cb${checked ? " is-checked" : ""}`}
+                aria-disabled={disabled}
+                tabIndex={disabled ? -1 : 0}
+                className={`cap-group__cb${checked ? " is-checked" : ""}${disabled ? " opacity-50" : ""}`}
                 onClick={(e: MouseEvent) => {
                   e.stopPropagation();
                   toggle(g.sourceId);

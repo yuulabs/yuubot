@@ -40,7 +40,6 @@ from yuubot.runtime.plugin._process import (
     allocate_port,
     plugin_python,
     plugin_token,
-    process_env,
     run_subprocess,
     wait_for_plugin_health,
 )
@@ -72,7 +71,6 @@ __all__ = [
     "load_external_plugin_manifest",
     "plugin_python",
     "plugin_token",
-    "process_env",
     "run_subprocess",
     "wait_for_plugin_health",
 ]

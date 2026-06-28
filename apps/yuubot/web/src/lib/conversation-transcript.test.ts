@@ -10,6 +10,7 @@ import {
   toolDisplay,
   type RenderBlock,
 } from "./conversation-transcript.ts";
+import { extractToolPath as extractToolPathFromArgs } from "./tool-renderers.ts";
 import type { ConversationSSEEvent } from "../types/api.ts";
 
 test("toolDisplay renders live bare tool arguments", () => {
@@ -174,4 +175,15 @@ test("markToolBlocksCompleted completes live tool groups with results", () => {
     "completed",
     "running",
   ]);
+});
+
+test("extractToolPath reads direct and wrapped path tool args", () => {
+  assert.equal(
+    extractToolPathFromArgs(JSON.stringify({ path: "src/main.py" })),
+    "src/main.py",
+  );
+  assert.equal(
+    extractToolPathFromArgs(JSON.stringify({ arguments: { path: "README.md" } })),
+    "README.md",
+  );
 });

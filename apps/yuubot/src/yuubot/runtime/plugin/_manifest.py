@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import functools
-from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 import msgspec
 import yaml
@@ -123,10 +121,6 @@ def _capability_id(namespace: str, function_name: str) -> str:
     return f"{namespace}.{function_name}"
 
 
-def _struct_type_name(plugin_name: str, function_name: str) -> str:
-    return "".join(part.capitalize() for part in (plugin_name, function_name, "Input"))
-
-
 def _input_struct(
     plugin_name: str,
     function: ExternalPluginFunctionSpec,
@@ -145,7 +139,9 @@ def _build_input_struct(
     param_schema: tuple[tuple[str, str], ...],
 ) -> type[msgspec.Struct]:
     fields = [(name, _schema_type_from_kind(kind)) for name, kind in param_schema]
-    type_name = _struct_type_name(plugin_name, function_name)
+    type_name = "".join(
+        part.capitalize() for part in (plugin_name, function_name, "Input")
+    )
     return msgspec.defstruct(
         type_name,
         fields,
@@ -155,21 +151,21 @@ def _build_input_struct(
     )
 
 
-def _schema_type(schema: Mapping[str, object]) -> type:
-    return _schema_type_from_kind(cast(str, schema.get("type", "object")))
+_SCHEMA_TYPES = {
+    "str": str,
+    "string": str,
+    "int": int,
+    "integer": int,
+    "float": float,
+    "number": float,
+    "bool": bool,
+    "boolean": bool,
+    "list": list,
+    "array": list,
+    "dict": dict,
+    "object": dict,
+}
 
 
 def _schema_type_from_kind(kind: str) -> type:
-    if kind in {"str", "string"}:
-        return str
-    if kind in {"int", "integer"}:
-        return int
-    if kind in {"float", "number"}:
-        return float
-    if kind in {"bool", "boolean"}:
-        return bool
-    if kind in {"list", "array"}:
-        return list
-    if kind in {"dict", "object"}:
-        return dict
-    return object
+    return _SCHEMA_TYPES.get(kind, object)

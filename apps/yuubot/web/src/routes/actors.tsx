@@ -18,7 +18,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { Edit3, Eye, MessageSquare, MoreVertical, RefreshCw, Trash2 } from "lucide-react";
-import { useCreateResource, useDeleteResource, useResourceList } from "@/hooks/use-resources";
+import { useCreateResource, useDeleteResource, usePresetActors, useResourceList } from "@/hooks/use-resources";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,7 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { PRESET_ACTORS, presetActorCreatePayload } from "@/lib/presets";
+import { presetActorCreatePayload } from "@/lib/presets";
 import { workspaceHref } from "@/lib/workspace";
 import type {
   ActorResource,
@@ -51,6 +51,10 @@ export const Route = createFileRoute("/actors")({
 type StatusFilter = "all" | "running" | "stopped";
 type Layout = "grid" | "list";
 
+function normalizedActorName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 function ActorsRoute() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   if (pathname !== "/actors") {
@@ -64,6 +68,7 @@ function ActorsBrowsePage() {
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: capabilitySets = [] } =
     useResourceList<CapabilitySetResource>("capability-sets");
+  const { data: presetActors = [] } = usePresetActors();
   const createActorMutation = useCreateResource<ActorResource>("actors");
 
   const [query, setQuery] = useState("");
@@ -80,12 +85,12 @@ function ActorsBrowsePage() {
   const [syncResult, setSyncResult] = useState("");
 
   const existingActorNames = useMemo(
-    () => new Set(actors.map((a) => a.name)),
+    () => new Set(actors.map((a) => normalizedActorName(a.name))),
     [actors],
   );
   const missingPresets = useMemo(
-    () => PRESET_ACTORS.filter((p) => !existingActorNames.has(p.actorName)),
-    [existingActorNames],
+    () => presetActors.filter((p) => !existingActorNames.has(normalizedActorName(p.actor_name))),
+    [existingActorNames, presetActors],
   );
 
   // Push the "新建 Actor" primary action into the shell topbar.
@@ -156,8 +161,8 @@ function ActorsBrowsePage() {
     try {
       let created = 0;
       let skipped = 0;
-      for (const preset of PRESET_ACTORS) {
-        if (existingActorNames.has(preset.actorName)) {
+      for (const preset of presetActors) {
+        if (existingActorNames.has(normalizedActorName(preset.actor_name))) {
           skipped += 1;
           continue;
         }
@@ -189,7 +194,7 @@ function ActorsBrowsePage() {
             variant="outline"
             onClick={openSyncDialog}
             disabled={backends.length === 0}
-            title={backends.length === 0 ? "请先在 Providers 页创建一个 backend" : "创建或检查预设 Actor (general / shiori)"}
+            title={backends.length === 0 ? "请先在 Providers 页创建一个 backend" : "创建或检查预设 Actor (General / Shiori)"}
           >
             <RefreshCw size={14} />
             <span>更新预设 Actor</span>
@@ -244,7 +249,7 @@ function ActorsBrowsePage() {
           <DialogHeader>
             <DialogTitle>更新预设 Actor</DialogTitle>
             <DialogDescription>
-              将预设 Actor（general / shiori）绑定到一个 LLM backend。已存在的同名 Actor 会跳过。
+              将预设 Actor（General / Shiori）绑定到一个 LLM backend。已存在的同名 Actor 会跳过。
             </DialogDescription>
           </DialogHeader>
           {syncError && <p className="text-xs text-destructive">{syncError}</p>}

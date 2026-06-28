@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import httpx
+from starlette.applications import Starlette
+from starlette.routing import Route
+
 from yuubot.bootstrap.config import BootstrapConfig
 from yuubot.process import open_resources
 from yuubot.resources import builtin_presets
 from yuubot.resources.store.models import ActorORM, CapabilitySetORM
 from yuubot.resources.store.resource import Store
+from yuubot.runtime.daemon.handlers import make_preset_actors_handler
 
 GENERAL_CAPABILITY_ID = "builtin-capability-general"
 SHIORI_CAPABILITY_ID = "builtin-capability-shiori"
@@ -31,10 +36,12 @@ async def test_open_resources_seeds_preset_capability_sets(
     general = by_id[GENERAL_CAPABILITY_ID]
     assert general.name == "general"
     assert general.workspace_path == "general"
+    assert general.integration_ids == (builtin_presets.ALL_INTEGRATIONS_SENTINEL,)
 
     shiori = by_id[SHIORI_CAPABILITY_ID]
     assert shiori.name == "shiori"
     assert shiori.workspace_path == "shiori"
+    assert shiori.integration_ids == (builtin_presets.ALL_INTEGRATIONS_SENTINEL,)
 
 
 async def test_open_resources_seeds_exactly_two_preset_capability_sets(
@@ -77,7 +84,7 @@ async def test_open_resources_does_not_seed_actors(
     assert actors == ()
 
 
-def test_builtin_persona_prompts_are_code_constants() -> None:
+def test_builtin_persona_prompts_are_loaded_from_package_files() -> None:
     prompts = builtin_presets.BUILTIN_PERSONA_PROMPTS
 
     assert prompts["general"] == builtin_presets.GENERAL_PERSONA_PROMPT
@@ -85,3 +92,26 @@ def test_builtin_persona_prompts_are_code_constants() -> None:
     assert prompts["general"] == "You are a helpful assistant."
     assert "汐织" in prompts["shiori"]
     assert "Scenario Communication" in prompts["shiori"]
+
+
+async def test_preset_actors_endpoint_returns_named_file_backed_prompts() -> None:
+    app = Starlette(
+        routes=[
+            Route("/api/preset-actors", make_preset_actors_handler(), methods=("GET",))
+        ]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/api/preset-actors")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [item["actor_name"] for item in data] == ["General", "Shiori"]
+    assert [item["capability_set_id"] for item in data] == [
+        GENERAL_CAPABILITY_ID,
+        SHIORI_CAPABILITY_ID,
+    ]
+    assert data[0]["persona_prompt"] == builtin_presets.GENERAL_PERSONA_PROMPT
+    assert data[1]["persona_prompt"] == builtin_presets.SHIORI_PERSONA_PROMPT

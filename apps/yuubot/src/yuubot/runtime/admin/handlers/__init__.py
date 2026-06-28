@@ -34,6 +34,7 @@ from yuubot.runtime.admin.handlers._provider_admin import (
 from yuubot.runtime.admin.handlers._proxy import (
     make_proxy_daemon_actor_skills_handler,
     make_proxy_daemon_conversations_handler,
+    make_proxy_daemon_preset_actors_handler,
     make_proxy_daemon_resource_handler,
 )
 from yuubot.runtime.admin.handlers._types import DaemonClient, DaemonResponse
@@ -53,6 +54,7 @@ __all__ = [
     "make_provider_models_handler",
     "make_proxy_daemon_actor_skills_handler",
     "make_proxy_daemon_conversations_handler",
+    "make_proxy_daemon_preset_actors_handler",
     "make_proxy_daemon_resource_handler",
     "make_reveal_integration_secret_handler",
     "make_serve_spa_handler",

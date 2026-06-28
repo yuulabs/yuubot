@@ -36,6 +36,14 @@ export const Route = createFileRoute("/capability-sets")({
   component: CapabilitySetsPage,
 });
 
+const ALL_INTEGRATIONS_SENTINEL = "*";
+
+function integrationSelectionLabel(cs: CapabilitySetResource): string | number {
+  return cs.integration_ids.includes(ALL_INTEGRATIONS_SENTINEL)
+    ? "全部"
+    : cs.integration_ids.length;
+}
+
 function CapabilitySetsPage() {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -112,7 +120,7 @@ function CapabilitySetsPage() {
               {
                 key: "caps",
                 label: "能力",
-                render: (cs) => cs.integration_ids.length,
+                render: integrationSelectionLabel,
               },
               {
                 key: "ws",

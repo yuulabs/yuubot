@@ -7,39 +7,23 @@ not stored in the registry.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Protocol
 
 from tortoise import Model
 
 from yuubot.resources.events import ResourceChanged
 
 
-class ResourceRefreshHandler(Protocol):
-    """A callable that handles a ResourceChanged event for a specific table."""
-
-    async def __call__(self, event: ResourceChanged) -> list[str]: ...
-
-
-class LifecycleHandler(Protocol):
-    """A callable that handles enable/disable lifecycle for a resource type.
-
-    Called by ``ResourceService.set_enabled`` when a resource has lifecycle
-    behavior.  Receives the row ID and the enabled/disabled label, returns
-    a list of action strings.
-    """
-
-    async def __call__(self, row_id: str, label: str) -> list[str]: ...
+ResourceRefreshHandler = Callable[[ResourceChanged], Awaitable[list[str]]]
+LifecycleHandler = Callable[[str, str], Awaitable[list[str]]]
 
 
 @dataclass
 class ResourceTypeDescriptor:
     """Metadata about a resource type, including its lifecycle behavior."""
 
-    slug: str
     orm_type: type[Model]
-    lifecycle_realm: str = ""
-    has_lifecycle: bool = False
     lifecycle_handler: LifecycleHandler | None = None
 
 
@@ -65,18 +49,13 @@ class ResourceTypeRegistry:
         slug: str,
         orm_type: type[Model],
         *,
-        lifecycle_realm: str = "",
-        has_lifecycle: bool = False,
         lifecycle_handler: LifecycleHandler | None = None,
     ) -> None:
         """Associate a URL slug with its ORM model class and lifecycle metadata."""
         if slug in self._descriptors:
             raise ValueError(f"slug {slug!r} is already registered")
         descriptor = ResourceTypeDescriptor(
-            slug=slug,
             orm_type=orm_type,
-            lifecycle_realm=lifecycle_realm,
-            has_lifecycle=has_lifecycle,
             lifecycle_handler=lifecycle_handler,
         )
         self._descriptors[slug] = descriptor

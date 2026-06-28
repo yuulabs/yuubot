@@ -65,6 +65,12 @@ export interface IntegrationKind {
   }>;
 }
 
+export interface PresetActor {
+  actor_name: string;
+  persona_prompt: string;
+  capability_set_id: string;
+}
+
 // ---------------------------------------------------------------------------
 // Resource type literals (matches daemon URL slugs)
 // ---------------------------------------------------------------------------

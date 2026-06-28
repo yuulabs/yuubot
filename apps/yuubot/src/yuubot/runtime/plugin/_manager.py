@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -48,7 +49,6 @@ from ._process import (
     allocate_port,
     plugin_python,
     plugin_token,
-    process_env,
     wait_for_plugin_health,
 )
 
@@ -136,7 +136,7 @@ class ExternalPluginManager:
             str(port),
             cwd=plugin_dir,
             env={
-                **process_env(),
+                **os.environ,
                 "YUUBOT_DATA_DIR": str(storage.data_dir),
                 "YUUBOT_INGEST_URL": (
                     f"http://{self.daemon_host}:{self.daemon_port}/ingest"
@@ -267,21 +267,7 @@ class ExternalPluginFactory:
         )
 
     def capability_specs(self) -> list[AnyCapabilitySpec]:
-        facade = self.manifest.facade
-        if facade is None:
-            return []
-        return [
-            CapabilitySpec(
-                id=_capability_id(facade.namespace, fn.name),
-                name=fn.name,
-                description=fn.description,
-                input_type=_input_struct(self.manifest.name, fn),
-                output_type=ExternalPluginResult,
-                namespace=facade.namespace,
-                effect=fn.effect,
-            )
-            for fn in facade.functions
-        ]
+        return _capability_specs(self.manifest)
 
     @property
     def sdk_spec(self) -> IntegrationSdkSpec:
@@ -328,18 +314,12 @@ class ExternalPluginIntegration:
             return []
         return [
             Capability(
-                spec=CapabilitySpec(
-                    id=_capability_id(facade.namespace, fn.name),
-                    name=fn.name,
-                    description=fn.description,
-                    input_type=_input_struct(self.manifest.name, fn),
-                    output_type=ExternalPluginResult,
-                    namespace=facade.namespace,
-                    effect=fn.effect,
-                ),
+                spec=spec,
                 invoke=self._invoke_function(fn.name),
             )
-            for fn in facade.functions
+            for fn, spec in zip(
+                facade.functions, _capability_specs(self.manifest), strict=True
+            )
         ]
 
     async def emit_payload(
@@ -398,3 +378,21 @@ class ExternalPluginIntegration:
             return ExternalPluginResult(value=result)
 
         return invoke
+
+
+def _capability_specs(manifest: ExternalPluginManifest) -> list[AnyCapabilitySpec]:
+    facade = manifest.facade
+    if facade is None:
+        return []
+    return [
+        CapabilitySpec(
+            id=_capability_id(facade.namespace, fn.name),
+            name=fn.name,
+            description=fn.description,
+            input_type=_input_struct(manifest.name, fn),
+            output_type=ExternalPluginResult,
+            namespace=facade.namespace,
+            effect=fn.effect,
+        )
+        for fn in facade.functions
+    ]

@@ -69,6 +69,14 @@ export interface EditArgs {
   new_string: string;
 }
 
+export function extractToolPath(toolArgs: string): string | null {
+  const parsed = parseToolArgs(toolArgs);
+  if (isPlainObject(parsed) && typeof parsed.path === "string" && parsed.path.trim()) {
+    return parsed.path;
+  }
+  return null;
+}
+
 /**
  * Parse the args envelope of an `edit` tool call.
  *

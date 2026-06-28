@@ -71,6 +71,7 @@ from yuubot.runtime.daemon.handlers import (
     make_list_conversations_handler,
     make_model_history_handler,
     make_plugin_ingest_handler,
+    make_preset_actors_handler,
     make_refresh_handler,
     make_send_conversation_message_handler,
     make_status_handler,
@@ -289,14 +290,10 @@ def _integration_lifecycle_handler(
     """Create a lifecycle handler for integration enable/disable."""
 
     async def handle(row_id: str, label: str) -> list[str]:
-        await integrations.reconcile(
-            ResourceChanged(
-                table="integrations",
-                action="updated",
-                row_ids=(row_id,),
-                changed_fields=("enabled",),
-            )
-        )
+        if label == "enable":
+            await integrations.enable(row_id)
+        else:
+            await integrations.disable(row_id)
         return [f"integration.{label}d"]
 
     return handle
@@ -406,6 +403,11 @@ def build_daemon_asgi_app(
                 gateway,
                 trace_service,
             ),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/preset-actors",
+            make_preset_actors_handler(),
             methods=("GET",),
         ),
         Route(

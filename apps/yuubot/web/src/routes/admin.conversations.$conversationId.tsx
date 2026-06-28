@@ -24,6 +24,7 @@ import type {
 } from "@/types/api";
 import {
   extractBashCommand,
+  extractToolPath,
   parseEditArgs,
   renderSimpleDiff,
   stripAnsi,
@@ -115,6 +116,24 @@ function PythonCodeBlock({ code }: { code: string }) {
  */
 type ToolRenderer = (block: RenderBlock) => ReactElement | null;
 
+function WorkspacePathLink({
+  path,
+  workspacePath,
+}: {
+  path: string;
+  workspacePath?: string | null;
+}) {
+  const href = workspaceHref(workspacePath, path);
+  if (!href) {
+    return <span>{path}</span>;
+  }
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+      {path}
+    </a>
+  );
+}
+
 function BashRenderer(block: RenderBlock): ReactElement {
   const display = toolDisplay(block);
   const isRunning = !block.toolResult;
@@ -173,7 +192,7 @@ function diffLinePrefix(kind: DiffLine["kind"]): string {
   return " ";
 }
 
-function EditRenderer(block: RenderBlock): ReactElement | null {
+function EditRenderer(block: RenderBlock, workspacePath?: string | null): ReactElement | null {
   const args: EditArgs | null = parseEditArgs(block.toolArgs ?? "");
   if (args === null) {
     return null;
@@ -196,7 +215,7 @@ function EditRenderer(block: RenderBlock): ReactElement | null {
         className="mb-2 break-all font-mono text-[11px] text-muted-foreground"
         title={args.path}
       >
-        {args.path}
+        <WorkspacePathLink path={args.path} workspacePath={workspacePath} />
       </div>
       {isRunning && <PendingToolBanner toolName="edit" />}
       <pre className="max-h-96 overflow-auto rounded-md border border-slate-700 bg-slate-950 p-3 font-mono text-[12px] leading-5 shadow-inner">
@@ -215,7 +234,6 @@ function EditRenderer(block: RenderBlock): ReactElement | null {
 
 const toolRendererRegistry: Record<string, ToolRenderer> = {
   bash: BashRenderer,
-  edit: EditRenderer,
 };
 
 export const Route = createFileRoute("/admin/conversations/$conversationId")({
@@ -340,7 +358,15 @@ function PendingToolBanner({ toolName }: { toolName: string | undefined }) {
   );
 }
 
-function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStreaming: boolean }) {
+function MessageBlockView({
+  block,
+  isStreaming,
+  workspacePath,
+}: {
+  block: RenderBlock;
+  isStreaming: boolean;
+  workspacePath?: string | null;
+}) {
   if (block.type === "thinking") {
     return <ThinkingBlock content={block.content} isStreaming={isStreaming} />;
   }
@@ -348,6 +374,7 @@ function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStream
     const display = toolDisplay(block);
     const isExecutePython = display.name === "execute_python" || display.name.endsWith(".execute_python");
     const isRunning = !block.toolResult;
+    const toolPath = extractToolPath(block.toolArgs ?? "");
     if (isExecutePython) {
       return (
         <div className="rounded-md border border-border/70 bg-background/70 p-3 text-xs shadow-sm">
@@ -372,6 +399,12 @@ function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStream
           </div>
         </div>
       );
+    }
+    if (display.name === "edit") {
+      const rendered = EditRenderer(block, workspacePath);
+      if (rendered !== null) {
+        return rendered;
+      }
     }
     const renderer = toolRendererRegistry[display.name];
     if (renderer) {
@@ -398,6 +431,11 @@ function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStream
               <SquareTerminal className="size-3.5" />
               <span>tool call</span>
             </div>
+            {toolPath && (
+              <div className="mb-2 break-all font-mono text-[11px] text-muted-foreground">
+                <WorkspacePathLink path={toolPath} workspacePath={workspacePath} />
+              </div>
+            )}
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
               {display.argsText}
             </pre>
@@ -455,7 +493,7 @@ function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStream
       </pre>
     );
   }
-  return <MarkdownRenderer content={block.content} />;
+  return <MarkdownRenderer content={block.content} workspacePath={workspacePath} />;
 }
 
 function AdminConversationPage() {
@@ -1012,7 +1050,12 @@ function AdminConversationPage() {
                   <div className="msg__meta">{item.role === "user" ? "You" : actor?.name ?? "Actor"}</div>
                   <div className="msg__bubble">
                   {item.blocks.map((block) => (
-                    <MessageBlockView key={block.key} block={block} isStreaming={itemIsStreaming} />
+                    <MessageBlockView
+                      key={block.key}
+                      block={block}
+                      isStreaming={itemIsStreaming}
+                      workspacePath={workspacePath}
+                    />
                   ))}
                   </div>
                 </div>

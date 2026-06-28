@@ -26,6 +26,8 @@ export const Route = createFileRoute("/capability-sets/new")({
   component: CapabilitySetNewPage,
 });
 
+const ALL_INTEGRATIONS_SENTINEL = "*";
+
 interface CapGroup {
   sourceId: string;
   sourceName: string;
@@ -74,6 +76,7 @@ function CapabilitySetNewPage() {
   const [rolloverEnabled, setRolloverEnabled] = useState(false);
   const [idleTimeout, setIdleTimeout] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [allIntegrations, setAllIntegrations] = useState(true);
 
   const capGroups = useMemo(
     () => groupByIntegration(liveCapabilities),
@@ -87,7 +90,7 @@ function CapabilitySetNewPage() {
     await createMutation.mutateAsync({
       name,
       description,
-      integration_ids: selectedIds,
+      integration_ids: allIntegrations ? [ALL_INTEGRATIONS_SENTINEL] : selectedIds,
       workspace_path: workspacePath,
       loop_policy: {
         rollover_enabled: rolloverEnabled,
@@ -139,7 +142,7 @@ function CapabilitySetNewPage() {
               />
             </Field>
             <div className="hero__meta">
-              <span className="kv"><b>已选</b> <code>{selectedIds.length}</code> 个集成</span>
+              <span className="kv"><b>已选</b> <code>{allIntegrations ? "全部" : selectedIds.length}</code> 个集成</span>
               <span className="kv"><b>ID</b> <code>—</code></span>
             </div>
           </div>
@@ -181,10 +184,20 @@ function CapabilitySetNewPage() {
 
             <LegendCard dotColor="green" legend="能力">
               <p className="card__lead">按集成实例选择；选中后该实例的全部 SDK 能力对 Actor 可见。</p>
+              <label className="mb-3 flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={allIntegrations}
+                  onChange={(e) => setAllIntegrations(e.target.checked)}
+                  className="size-4 rounded border-input"
+                />
+                全部 integrations
+              </label>
               <CapTree
                 groups={capGroups}
                 selectedIds={selectedIds}
                 onChange={setSelectedIds}
+                disabled={allIntegrations}
               />
             </LegendCard>
           </div>

@@ -32,6 +32,7 @@ from yuubot.runtime.admin.handlers import (
     make_provider_models_handler,
     make_proxy_daemon_actor_skills_handler,
     make_proxy_daemon_conversations_handler,
+    make_proxy_daemon_preset_actors_handler,
     make_proxy_daemon_resource_handler,
     make_reveal_integration_secret_handler,
     make_serve_spa_handler,
@@ -180,6 +181,14 @@ def build_admin_asgi_app(
                 _request_daemon_fn=_request_daemon,
             ),
             methods=("GET", "POST", "DELETE"),
+        ),
+        Route(
+            "/api/preset-actors",
+            make_proxy_daemon_preset_actors_handler(
+                daemon=daemon,
+                _request_daemon_fn=_request_daemon,
+            ),
+            methods=("GET",),
         ),
         Route(
             "/api/actors/{actor_id}/skills",

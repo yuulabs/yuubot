@@ -31,6 +31,7 @@ from yuubot.resources.events import ResourceChanged
 from yuubot.resources.orm import from_orm
 from yuubot.resources.repository import ResourceRepository
 from yuubot.resources.records import ConversationRecord, IntegrationRecord
+from yuubot.resources.builtin_presets import ALL_INTEGRATIONS_SENTINEL
 from yuubot.resources.store.models import (
     ActorORM,
     CapabilitySetORM,
@@ -264,8 +265,11 @@ class IntegrationCore:
         follows ``integration_ids`` (the CapabilitySet's declared selection
         order) for stable prompt rendering.
         """
+        selected_ids = self.running_integration_ids() if _selects_all(
+            integration_ids
+        ) else list(integration_ids)
         surfaces: list[VisibleIntegrationSurface] = []
-        for integration_id in integration_ids:
+        for integration_id in selected_ids:
             if integration_id not in self._instances:
                 continue
             record = self._instance_records.get(integration_id)
@@ -336,10 +340,11 @@ class IntegrationCore:
         selected = set(capability_set.integration_ids)
         if not selected:
             return set()
+        allows_all = ALL_INTEGRATIONS_SENTINEL in selected
         result: set[IntegrationCapabilityRef] = set()
         records = await self.repository.list(IntegrationORM)
         for record in records:
-            if record.id not in selected:
+            if not allows_all and record.id not in selected:
                 continue
             try:
                 factory = self.factories.get(record.name)
@@ -430,6 +435,10 @@ def _integration_refresh_ids(
     if event is None or not event.is_table("integrations"):
         return enabled_ids
     return enabled_ids.intersection(event.row_ids)
+
+
+def _selects_all(integration_ids: tuple[str, ...]) -> bool:
+    return ALL_INTEGRATIONS_SENTINEL in integration_ids
 
 
 def _resolve_requested_capability_ref(

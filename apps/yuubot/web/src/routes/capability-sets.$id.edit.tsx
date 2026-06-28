@@ -27,6 +27,8 @@ export const Route = createFileRoute("/capability-sets/$id/edit")({
   component: CapabilitySetEditPage,
 });
 
+const ALL_INTEGRATIONS_SENTINEL = "*";
+
 interface CapGroup {
   sourceId: string;
   sourceName: string;
@@ -80,6 +82,7 @@ function CapabilitySetEditPage() {
   const [rolloverEnabled, setRolloverEnabled] = useState(false);
   const [idleTimeout, setIdleTimeout] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [allIntegrations, setAllIntegrations] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   // Prefill once the resource lands.
@@ -94,7 +97,9 @@ function CapabilitySetEditPage() {
           ? String(cs.loop_policy.idle_timeout_s)
           : "",
       );
-      setSelectedIds(cs.integration_ids ?? []);
+      const integrationIds = cs.integration_ids ?? [];
+      setAllIntegrations(integrationIds.includes(ALL_INTEGRATIONS_SENTINEL));
+      setSelectedIds(integrationIds.filter((item) => item !== ALL_INTEGRATIONS_SENTINEL));
       setHydrated(true);
     }
   }, [cs, hydrated]);
@@ -113,7 +118,7 @@ function CapabilitySetEditPage() {
       data: {
         name,
         description,
-        integration_ids: selectedIds,
+        integration_ids: allIntegrations ? [ALL_INTEGRATIONS_SENTINEL] : selectedIds,
         workspace_path: workspacePath,
         loop_policy: {
           rollover_enabled: rolloverEnabled,
@@ -181,7 +186,7 @@ function CapabilitySetEditPage() {
               />
             </Field>
             <div className="hero__meta">
-              <span className="kv"><b>已选</b> <code>{selectedIds.length}</code> 个集成</span>
+              <span className="kv"><b>已选</b> <code>{allIntegrations ? "全部" : selectedIds.length}</code> 个集成</span>
               <span className="kv"><b>ID</b> <code>{cs.id}</code></span>
             </div>
           </div>
@@ -223,10 +228,20 @@ function CapabilitySetEditPage() {
 
             <LegendCard dotColor="green" legend="能力">
               <p className="card__lead">按集成实例选择；选中后该实例的全部 SDK 能力对 Actor 可见。</p>
+              <label className="mb-3 flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={allIntegrations}
+                  onChange={(e) => setAllIntegrations(e.target.checked)}
+                  className="size-4 rounded border-input"
+                />
+                全部 integrations
+              </label>
               <CapTree
                 groups={capGroups}
                 selectedIds={selectedIds}
                 onChange={setSelectedIds}
+                disabled={allIntegrations}
               />
             </LegendCard>
           </div>

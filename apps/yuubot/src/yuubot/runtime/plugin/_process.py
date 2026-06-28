@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import secrets
 import socket
 import subprocess
@@ -69,10 +68,6 @@ def plugin_python(plugin_dir: Path) -> Path:
     if python.exists():
         return python
     return Path(sys.executable)
-
-
-def process_env() -> dict[str, str]:
-    return dict(os.environ)
 
 
 def plugin_token(record: IntegrationRecord) -> str:

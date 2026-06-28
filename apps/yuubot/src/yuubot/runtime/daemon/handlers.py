@@ -34,6 +34,7 @@ from yuubot.resources.records import ConversationRecord
 from yuubot.core.integrations import IntegrationCore
 from yuubot.core.skills import actor_skills_view, delete_local_skill, import_global_skill
 from yuubot.core.validation import ConfigurationError
+from yuubot.resources.builtin_presets import BUILTIN_PRESET_ACTORS
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.registry import EventDrivenRefreshDispatcher
 from yuubot.resources.root import Resources
@@ -308,6 +309,25 @@ def make_status_handler(
         return JSONResponse(body)
 
     return status
+
+
+def make_preset_actors_handler():
+    async def preset_actors(_: Request) -> JSONResponse:
+        return JSONResponse(
+            {
+                "status": "ok",
+                "data": [
+                    {
+                        "actor_name": preset.actor_name,
+                        "persona_prompt": preset.persona_prompt,
+                        "capability_set_id": preset.capability_set_id,
+                    }
+                    for preset in BUILTIN_PRESET_ACTORS
+                ],
+            }
+        )
+
+    return preset_actors
 
 
 def make_refresh_handler(

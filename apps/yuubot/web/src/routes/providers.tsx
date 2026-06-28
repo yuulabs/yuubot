@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { AlertTriangle, Trash2 } from "lucide-react";
-import { useResourceList, useCreateResource, useDeleteResource } from "@/hooks/use-resources";
+import { useResourceList, useCreateResource, useDeleteResource, usePresetActors } from "@/hooks/use-resources";
 import type { ActorResource, LLMBackendResource } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { providerBaseUrlWarning } from "@/provider-models";
 import { defaultModelConfigsForProvider } from "@/lib/provider-model-configs";
-import { PRESET_ACTORS, presetActorCreatePayload } from "@/lib/presets";
+import { presetActorCreatePayload } from "@/lib/presets";
 import {
   PageShell,
   LegendCard,
@@ -103,6 +103,10 @@ function parseOptionalUsd(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function normalizedActorName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 export const Route = createFileRoute("/providers")({
   component: ProvidersPage,
 });
@@ -117,6 +121,7 @@ function ProvidersPage() {
   });
   const { data: backends = [], isLoading, error } = useResourceList<LLMBackendResource>("llm-backends");
   const { data: existingActors = [] } = useResourceList<ActorResource>("actors");
+  const { data: presetActors = [] } = usePresetActors();
   const createMutation = useCreateResource<LLMBackendResource>("llm-backends");
   const createActorMutation = useCreateResource<ActorResource>("actors");
   const deleteMutation = useDeleteResource("llm-backends");
@@ -218,8 +223,9 @@ function ProvidersPage() {
     setOnboardingBusy(true);
     setOnboardingError("");
     try {
-      for (const preset of PRESET_ACTORS) {
-        const exists = existingActors.some((a) => a.name === preset.actorName);
+      const existingActorNames = new Set(existingActors.map((a) => normalizedActorName(a.name)));
+      for (const preset of presetActors) {
+        const exists = existingActorNames.has(normalizedActorName(preset.actor_name));
         if (exists) continue;
         await createActorMutation.mutateAsync(
           presetActorCreatePayload(preset, onboardingBackend),

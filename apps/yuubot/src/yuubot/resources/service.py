@@ -9,7 +9,6 @@ from __future__ import annotations
 
 
 from dataclasses import dataclass
-from typing import cast
 
 import msgspec
 from tortoise import Model
@@ -105,10 +104,7 @@ class ResourceService:
             return None, [], []
 
         descriptor = self.type_registry.get_descriptor(orm_type)
-        if descriptor is None or not descriptor.has_lifecycle:
-            return updated, [], []
-
-        handler = descriptor.lifecycle_handler
+        handler = descriptor.lifecycle_handler if descriptor is not None else None
         if handler is None:
             return updated, [], []
 
@@ -118,14 +114,14 @@ class ResourceService:
     async def _reconcile(
         self,
         table: str,
-        action: str,
+        action: ResourceAction,
         row_id: str,
         changed_fields: tuple[str, ...] = (),
     ) -> tuple[list[str], list[str]]:
         """Dispatch a ResourceChanged event through the refresh dispatcher."""
         event = ResourceChanged(
             table=table,
-            action=cast(ResourceAction, action),
+            action=action,
             row_ids=(row_id,),
             changed_fields=changed_fields,
         )

@@ -231,9 +231,7 @@ async def open_resources(
         store = await create_store(config.database)
     else:
         store = await open_store(config.database, layout=layout, migrate=migrate)
-    resources = await Resources.from_store(
-        store, secret_codec=SecretCodec(config.secrets.master_key)
-    )
+    resources = Resources(store, secret_codec=SecretCodec(config.secrets.master_key))
     # Seeding belongs to the schema-bootstrap step: only the process that owns
     # migration (the daemon) seeds preset records. The admin opens resources
     # with migrate=False and reads what the daemon already seeded.

@@ -71,7 +71,7 @@ cd apps/yuubot/web && pnpm install && pnpm run build   # also done by `ybot dev`
 ## Codex Sandbox Blocker
 
 Codex tool sandboxing can distort behavior for code paths that combine
-`asyncio`, background threads, `sqlite3`/`aiosqlite`, `pytest`. If you find it unreasonably hanging, ask the user to approve FULL-ACCESS Mode and rerun it.
+`asyncio`, background threads, `sqlite3`/`aiosqlite`, `pytest`. If you find it hanging, stop and ask the user to approve FULL-ACCESS Mode and rerun it. This is a known codex BUG. Don't try to solve it by yourself.
 
 ## Triage Protocol
 

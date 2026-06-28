@@ -94,8 +94,15 @@ def _system_prompt(
 def _render_persona(binding: AgentBinding) -> str:
     return binding.actor.persona_prompt.strip()
 
+execute_python_prompt="""
+execute_python is your default tool for orchestrating multiple tool calls at once and writing smart code.
+It's basically a jupyter notebook (living in an async loop & you can reuse the variables before your final response).
+You can freely use asyncio.gather to run multiple tool calls concurrently, and you can use the results of those calls in your code.
+Filter possiblely large results to only the relevant data you need, and avoid printing large outputs to the console.
+"""
 
 def _render_system_instructions(
+        
     binding: AgentBinding,
     mode: Literal["im", "conversation"],
 ) -> str:
@@ -105,8 +112,7 @@ def _render_system_instructions(
         "- read / edit / write: structured file surfaces; prefer them over bash "
         "for file operations; do not bypass them with bash to mutate files.",
         "- execute_python: integration-call surface. Integration calls go "
-        "through execute_python. Do NOT call github.* capability ids as "
-        "top-level tools unless they also appear under Tools.",
+        "through execute_python." + execute_python_prompt
     ]
     if binding.workspace_path:
         workspace_url_segment = binding.capability_set.workspace_path.strip() or None

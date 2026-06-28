@@ -25,11 +25,13 @@ from yuubot.core.integrations.impls.github import (
 from yuubot.core.secrets import Secret
 from yuubot.resources.records import (
     CapabilitySetRecord,
+    ActorRecord,
     IntegrationRecord,
     LoopPolicy,
 )
 from yuubot.resources.root import Resources
-from yuubot.resources.store.models import IntegrationORM
+from yuubot.resources.store.models import ActorORM, CapabilitySetORM, IntegrationORM
+from yuubot.resources.builtin_presets import ALL_INTEGRATIONS_SENTINEL
 from yuubot.runtime.admin import DaemonClient, build_admin_asgi_app
 
 
@@ -290,6 +292,99 @@ async def test_visible_surfaces_return_empty_when_no_running_instances_match(
 
     visible = await factory._visible_surfaces(binding)  # type: ignore[arg-type]
     assert visible == []
+
+
+async def test_visible_surfaces_all_sentinel_uses_running_instances(
+    resources: Resources,
+    tmp_path: Path,
+):
+    await resources.repository.insert(
+        IntegrationORM,
+        IntegrationRecord(
+            id="echo-main",
+            name="echo",
+            config={"source_path": "channels/test"},
+            enabled=True,
+        ),
+    )
+
+    from yuubot.core.gateway import Gateway
+    from yuubot.core.routing import RouteBindings
+
+    integrations = IntegrationCore(
+        repository=resources.repository,
+        factories=default_integration_factories(),
+        gateway=Gateway(routes=RouteBindings(rules=())),
+    )
+    await integrations.enable("echo-main")
+    workspace = FacadeWorkspace(tmp_path / "facades")
+    bridge = IntegrationInvokeBridge(integrations)
+    factory = ActorPythonSessionFactory(
+        integrations=integrations,
+        workspace=workspace,
+        bridge=bridge,
+    )
+
+    cap_set = CapabilitySetRecord(
+        id="test-cs",
+        name="Test CS",
+        integration_ids=(ALL_INTEGRATIONS_SENTINEL,),
+        loop_policy=LoopPolicy(),
+    )
+
+    class FakeBinding:
+        capability_set = cap_set
+
+    binding = FakeBinding()  # type: ignore[assignment]
+    visible = await factory._visible_surfaces(binding)  # type: ignore[arg-type]
+
+    assert [surface.integration_id for surface in visible] == ["echo-main"]
+
+
+async def test_owner_allowed_all_sentinel_authorizes_existing_records(
+    resources: Resources,
+):
+    await resources.repository.insert(
+        IntegrationORM,
+        IntegrationRecord(
+            id="echo-main",
+            name="echo",
+            config={"source_path": "channels/test"},
+            enabled=True,
+        ),
+    )
+    await resources.repository.insert(
+        CapabilitySetORM,
+        CapabilitySetRecord(
+            id="test-cs",
+            name="Test CS",
+            integration_ids=(ALL_INTEGRATIONS_SENTINEL,),
+            loop_policy=LoopPolicy(),
+        ),
+    )
+    await resources.repository.insert(
+        ActorORM,
+        ActorRecord(
+            id="actor-1",
+            name="Actor",
+            type="simple_loop",
+            persona_prompt="",
+            capability_set_id="test-cs",
+            llm_backend_id="backend",
+            model="model",
+            enabled=True,
+        ),
+    )
+
+    integrations = IntegrationCore(
+        repository=resources.repository,
+        factories=default_integration_factories(),
+    )
+    allowed = await integrations._load_owner_allowed("actor-1")
+
+    allowed_ids = {(ref.integration_id, ref.capability_id) for ref in allowed}
+    assert ("echo-main", "echo.echo") in allowed_ids
+    assert ("echo-main", "echo.reply") in allowed_ids
 
 
 # ---------------------------------------------------------------------------
