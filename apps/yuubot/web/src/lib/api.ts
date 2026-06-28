@@ -147,6 +147,12 @@ export async function getActorSkills(actorId: string): Promise<ActorSkillsView> 
   return res.data;
 }
 
+export async function updateService(): Promise<void> {
+  await request<{ status: string; detail?: string }>(`${BASE}/admin/update`, {
+    method: "POST",
+  });
+}
+
 export async function importActorSkill(
   actorId: string,
   name: string,

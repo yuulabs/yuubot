@@ -67,8 +67,8 @@ function ActorDetailPage() {
     backendId: "",
     model: "",
     capabilitySetId: "",
-    maxTokens: "8192",
-    maxSteps: "6",
+    maxTokens: "",
+    maxSteps: "",
     enabled: true,
     skillScope: "global_and_local",
   });
@@ -96,8 +96,12 @@ function ActorDetailPage() {
       backendId: actor.llm_backend_id ?? "",
       model: actor.model ?? "",
       capabilitySetId: actor.capability_set_id ?? "",
-      maxTokens: String(actor.per_run_budget?.max_tokens ?? 8192),
-      maxSteps: String(actor.per_run_budget?.max_steps ?? 6),
+      maxTokens: actor.per_run_budget?.max_tokens
+        ? String(actor.per_run_budget.max_tokens)
+        : "",
+      maxSteps: actor.per_run_budget?.max_steps
+        ? String(actor.per_run_budget.max_steps)
+        : "",
       enabled: actor.enabled ?? true,
       skillScope: actor.skill_scope ?? "global_and_local",
     });

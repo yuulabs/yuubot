@@ -319,13 +319,15 @@ class AnthropicMessagesProvider:
 
         system_blocks, rest = self._extract_system(messages)
         api_messages = self._convert_messages(rest)
+        max_tokens = kwargs.pop("max_tokens", None)
 
         create_kwargs: dict = {
             "model": model,
             "messages": api_messages,
-            "max_tokens": kwargs.pop("max_tokens", 8192),
             **kwargs,
         }
+        if max_tokens is not None:
+            create_kwargs["max_tokens"] = max_tokens
         if system_blocks is not None:
             create_kwargs["system"] = system_blocks
         if tools:

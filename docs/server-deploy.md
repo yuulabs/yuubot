@@ -58,6 +58,48 @@ sudo systemctl status yuubot-daemon yuubot-admin caddy
 sudo journalctl -u yuubot-daemon -u yuubot-admin -f
 ```
 
+Logs written by the app:
+
+```bash
+sudo tail -300 /var/lib/yuubot/yuubot/logs/daemon.log
+sudo tail -300 /var/lib/yuubot/yuubot/logs/admin.log
+```
+
+Systemd unit and environment checks:
+
+```bash
+sudo systemctl cat yuubot-daemon
+sudo systemctl cat yuubot-admin
+sudo grep -n "YUU_DAEMON_SECRET" /etc/yuubot/yuubot.env
+sudo grep -n "daemon_secret" /etc/yuubot/config.yaml
+UV_DIR="$(dirname "$(command -v uv)")"
+sudo -u "$(id -un)" env PATH="$UV_DIR:$PATH" uv --version
+```
+
+HTTP checks from the server:
+
+```bash
+curl -i http://127.0.0.1:8780/healthz
+curl -i http://127.0.0.1:8781/healthz
+
+SECRET="$(sudo sed -n 's/^YUU_DAEMON_SECRET=//p' /etc/yuubot/yuubot.env)"
+curl -i \
+  -X POST \
+  http://127.0.0.1:8780/api/admin/conversations/<conversation-id>/messages \
+  -H "content-type: application/json" \
+  -H "X-Daemon-Secret: $SECRET" \
+  --data '{"text":"test"}'
+```
+
+Trace and database inspection:
+
+```bash
+sqlite3 -readonly /var/lib/yuubot/yuubot/traces.db \
+  "select name,status_code,start_time_unix_nano from spans order by start_time_unix_nano desc limit 20;"
+
+sqlite3 -readonly /var/lib/yuubot/yuubot/yuubot.db ".tables"
+```
+
 To deploy a new commit:
 
 ```bash

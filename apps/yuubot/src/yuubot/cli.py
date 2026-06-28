@@ -104,6 +104,15 @@ class DevChild:
     health_url: str
 
 
+class _DevRestartRequested(Exception):
+    """Raised by the dev supervisor signal handler to restart child services."""
+
+
+class _DevRestart:
+    pass
+
+
+DEV_RESTART = _DevRestart()
 DEV_SHUTDOWN_TIMEOUT_S = 5.0
 DEV_FORCE_SIGNAL = signal.Signals(getattr(signal, "SIGKILL", signal.SIGTERM))
 WEB_BUILD_INPUT_FILES = (
@@ -147,6 +156,29 @@ def _run_dev(
     poll_interval_s: float = 0.1,
 ) -> int:
     """Run daemon/admin children and fail fast when startup health fails."""
+    while True:
+        code = _run_dev_once(
+            config_path,
+            popen=popen,
+            health_probe=health_probe,
+            startup_timeout_s=startup_timeout_s,
+            shutdown_timeout_s=shutdown_timeout_s,
+            poll_interval_s=poll_interval_s,
+        )
+        if code is not DEV_RESTART:
+            return code
+
+
+def _run_dev_once(
+    config_path: str | None,
+    *,
+    popen: Callable[[list[str]], DevProcess] | None = None,
+    health_probe: Callable[[str], bool] | None = None,
+    startup_timeout_s: float = 15.0,
+    shutdown_timeout_s: float = DEV_SHUTDOWN_TIMEOUT_S,
+    poll_interval_s: float = 0.1,
+) -> int | _DevRestart:
+    """Run one daemon/admin generation; SIGHUP requests a fresh generation."""
     config = _load_config_or_raise_click(config_path)
     popen = popen or _popen_dev_child
     health_probe = health_probe or _health_probe
@@ -173,7 +205,13 @@ def _run_dev(
     def _sigterm_to_keyboard_interrupt(signum: int, frame: object) -> None:
         raise KeyboardInterrupt
 
+    def _sighup_to_restart(signum: int, frame: object) -> None:
+        raise _DevRestartRequested
+
     previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    previous_sighup = None
+    if hasattr(signal, "SIGHUP"):
+        previous_sighup = signal.signal(signal.SIGHUP, _sighup_to_restart)
 
     try:
         healthy = set[str]()
@@ -203,16 +241,21 @@ def _run_dev(
                 if code is not None:
                     return code
             time.sleep(poll_interval_s)
+    except _DevRestartRequested:
+        return DEV_RESTART
     except KeyboardInterrupt:
         return 130
     finally:
         _shutdown_dev_children(children, timeout_s=shutdown_timeout_s)
         signal.signal(signal.SIGTERM, previous_sigterm)
+        if previous_sighup is not None:
+            signal.signal(signal.SIGHUP, previous_sighup)
 
 
 def _popen_dev_child(argv: list[str]) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         argv,
+        env={**os.environ, "YUUBOT_DEV_SUPERVISOR_PID": str(os.getpid())},
         start_new_session=os.name != "nt",
     )
 

@@ -126,7 +126,7 @@ function ProvidersPage() {
     name: "",
     baseUrl: "",
     apiKey: "",
-    dailyUsd: "2.00",
+    dailyUsd: "",
     monthlyUsd: "",
   });
   const [formError, setFormError] = useState("");
@@ -163,10 +163,7 @@ function ProvidersPage() {
     const preset = providerPresets.find((p) => p.key === key);
     if (!preset) return;
     setSelectedKey(key);
-    // OpenAI and DeepSeek get theseeded onboarding budget default; other
-    // presets keep editable budget fields but start blank (unlimited).
-    const seededBudget = onboardingPresetKeys.has(preset.key) ? "2.00" : "";
-    setForm({ name: `${key}-main`, baseUrl: preset.baseUrl, apiKey: "", dailyUsd: seededBudget, monthlyUsd: "" });
+    setForm({ name: `${key}-main`, baseUrl: preset.baseUrl, apiKey: "", dailyUsd: "", monthlyUsd: "" });
     setFormError("");
   };
 
@@ -198,7 +195,7 @@ function ProvidersPage() {
         max_retries: 2,
       },
       default_generation_params: {
-        max_tokens: 4096,
+        max_tokens: null,
         temperature: 0.7,
       },
     });

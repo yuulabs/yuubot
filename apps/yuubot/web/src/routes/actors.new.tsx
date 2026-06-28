@@ -35,8 +35,8 @@ const DRAFT: ActorEditorState = {
   backendId: "",
   model: "",
   capabilitySetId: "",
-  maxTokens: "8192",
-  maxSteps: "6",
+  maxTokens: "",
+  maxSteps: "",
   enabled: true,
   skillScope: "global_and_local",
 };

@@ -8,11 +8,12 @@
 // test) and consumes useHealth for the runner footer.
 import { createRootRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowRightToLine,
   Box,
+  Download,
   LayoutGrid,
   Plug,
   RefreshCw,
@@ -21,6 +22,7 @@ import {
 } from "lucide-react";
 import { AppShell, useAppShellActions } from "@/components/baseline";
 import { useHealth, useResourceList } from "@/hooks/use-resources";
+import { updateService } from "@/lib/api";
 import type {
   ActorIngressRuleResource,
   ActorResource,
@@ -268,6 +270,7 @@ function Sidebar({ daemon, status }: { daemon?: string; status?: string }) {
 function Topbar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const queryClient = useQueryClient();
+  const [updating, setUpdating] = useState(false);
   const { actions } = useAppShellActions();
   const { data: actors = [] } = useResourceList<ActorResource>("actors");
   const { data: backends = [] } = useResourceList<LLMBackendResource>("llm-backends");
@@ -284,6 +287,19 @@ function Topbar() {
   if (pathname.startsWith("/admin/conversations/")) {
     return null;
   }
+  const handleUpdate = async () => {
+    if (updating) {
+      return;
+    }
+    setUpdating(true);
+    try {
+      await updateService();
+      window.setTimeout(() => window.location.reload(), 3000);
+    } catch (error) {
+      setUpdating(false);
+      window.alert(error instanceof Error ? error.message : "更新失败");
+    }
+  };
   return (
     <header className="topbar">
       <div className="topbar__crumbs">
@@ -316,6 +332,16 @@ function Topbar() {
         })}
       </div>
       <div className="topbar__actions">
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={handleUpdate}
+          disabled={updating}
+          aria-label="更新并重启"
+        >
+          <Download size={15} />
+          <span>{updating ? "更新中..." : "更新"}</span>
+        </button>
         <button
           type="button"
           className="btn btn--ghost"

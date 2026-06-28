@@ -17,6 +17,10 @@ from yuubot.runtime.admin.handlers._meta import (
     make_serve_spa_handler,
     make_tool_kinds_handler,
 )
+from yuubot.runtime.admin.handlers._maintenance import (
+    MaintenanceCommandResult,
+    make_update_service_handler,
+)
 from yuubot.runtime.admin.handlers._plugin_admin import (
     make_install_plugin_handler,
     make_list_plugins_handler,
@@ -38,6 +42,7 @@ __all__ = [
     "AdminConfig",
     "DaemonClient",
     "DaemonResponse",
+    "MaintenanceCommandResult",
     "_create_provider_model_client",
     "_request_daemon",
     "make_admin_health_handler",
@@ -53,5 +58,6 @@ __all__ = [
     "make_serve_spa_handler",
     "make_tool_kinds_handler",
     "make_uninstall_plugin_handler",
+    "make_update_service_handler",
     "make_validate_provider_handler",
 ]

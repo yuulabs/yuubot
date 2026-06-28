@@ -193,8 +193,10 @@ install_app_dependencies() {
 
 install_systemd_units() {
     info "Installing systemd units"
-    local uv_path
+    local uv_path uv_dir service_path
     uv_path="$(command -v uv)"
+    uv_dir="$(dirname "$uv_path")"
+    service_path="$uv_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
     sudo_write /etc/systemd/system/yuubot-daemon.service 0644 <<EOF
 [Unit]
@@ -208,6 +210,7 @@ User=$SERVICE_USER
 Group=$SERVICE_GROUP
 WorkingDirectory=$REPO_ROOT
 EnvironmentFile=$ENV_FILE
+Environment="PATH=$service_path"
 ExecStart=$uv_path run ybot --config $CONFIG_FILE daemon
 Restart=on-failure
 RestartSec=5
@@ -229,6 +232,7 @@ User=$SERVICE_USER
 Group=$SERVICE_GROUP
 WorkingDirectory=$REPO_ROOT
 EnvironmentFile=$ENV_FILE
+Environment="PATH=$service_path"
 ExecStart=$uv_path run ybot --config $CONFIG_FILE admin
 Restart=on-failure
 RestartSec=5

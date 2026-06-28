@@ -37,6 +37,7 @@ from yuubot.runtime.admin.handlers import (
     make_serve_spa_handler,
     make_tool_kinds_handler,
     make_uninstall_plugin_handler,
+    make_update_service_handler,
     make_validate_provider_handler,
 )
 from yuubot.runtime.admin.workspace_browser import make_workspace_handler
@@ -241,6 +242,11 @@ def build_admin_asgi_app(
                 integration_factories=integration_factories,
             ),
             methods=["GET"],
+        ),
+        Route(
+            "/api/admin/update",
+            make_update_service_handler(),
+            methods=("POST",),
         ),
         Route(
             "/api/plugins",
