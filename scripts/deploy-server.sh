@@ -82,7 +82,10 @@ install_node_and_pnpm() {
     fi
     info "Enabling pnpm through corepack"
     if need_cmd corepack; then
-        corepack enable
+        if ! corepack enable; then
+            info "Retrying corepack enable with sudo"
+            sudo corepack enable
+        fi
         corepack prepare pnpm@10.12.1 --activate
     elif ! need_cmd pnpm; then
         die "corepack or pnpm is required"
