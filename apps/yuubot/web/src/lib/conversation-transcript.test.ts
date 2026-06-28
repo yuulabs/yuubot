@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   appendRenderBlocks,
+  historyItemsFromMessages,
   markToolBlocksCompleted,
   rememberConversationSseEvent,
   renderBlocksFromEvent,
@@ -66,6 +67,45 @@ test("live tool call deltas render the bash command after grouping", () => {
 
   const [group] = appendRenderBlocks([], blocks);
   assert.equal(group?.type, "tool_group");
+  assert.equal(toolDisplay(group).argsText, JSON.stringify({ command: "ls -la" }, null, 2));
+});
+
+test("persisted tool messages render the same grouped bash shape as live deltas", () => {
+  const items = historyItemsFromMessages([
+    {
+      id: 1,
+      conversation_id: "conversation",
+      message_id: "assistant-1",
+      role: "assistant",
+      raw_content: JSON.stringify([{
+        type: "tool_call",
+        id: "tool-1",
+        name: "bash",
+        arguments: JSON.stringify({ command: "ls -la" }),
+      }]),
+      metadata: {},
+      timestamp: 1,
+    },
+    {
+      id: 2,
+      conversation_id: "conversation",
+      message_id: "tool-1",
+      role: "tool",
+      raw_content: JSON.stringify([{
+        type: "tool_result",
+        tool_call_id: "tool-1",
+        content: "ok\n",
+      }]),
+      metadata: {},
+      timestamp: 2,
+    },
+  ]);
+
+  assert.equal(items.length, 1);
+  const [group] = items[0].blocks;
+  assert.equal(group?.type, "tool_group");
+  assert.equal(group?.toolName, "bash");
+  assert.equal(group?.toolResult, "ok\n");
   assert.equal(toolDisplay(group).argsText, JSON.stringify({ command: "ls -la" }, null, 2));
 });
 

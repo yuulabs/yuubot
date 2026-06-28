@@ -187,6 +187,20 @@ export interface ActorResource extends Resource {
   };
   generation_override?: GenerationParams;
   config?: Record<string, unknown>;
+  skill_scope?: "local_only" | "global_and_local";
+}
+
+export interface SkillInfo {
+  name: string;
+  source: "global" | "local" | string;
+  path: string;
+  content?: string;
+}
+
+export interface ActorSkillsView {
+  global_skills: SkillInfo[];
+  local_skills: SkillInfo[];
+  loaded_skills: SkillInfo[];
 }
 
 export interface ActorIngressRuleResource extends Resource {

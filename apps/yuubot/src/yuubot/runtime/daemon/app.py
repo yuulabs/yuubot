@@ -60,10 +60,13 @@ from yuubot.runtime.daemon.handlers import (
     _configuration_error_response,  # noqa: F401  # re-exported for compat
     _sse_event,  # noqa: F401  # re-exported for tests
     make_cancel_conversation_turn_handler,
+    make_actor_skills_handler,
     make_conversation_events_handler,
     make_conversation_messages_handler,
     make_delete_conversation_handler,
+    make_delete_actor_skill_handler,
     make_get_conversation_handler,
+    make_import_actor_skill_handler,
     make_health_handler,
     make_list_conversations_handler,
     make_model_history_handler,
@@ -235,6 +238,9 @@ class YuubotDaemon:
     workspace_root: Path = field(
         default_factory=lambda: Path("~/.yuubot/workspace").expanduser()
     )
+    global_skills_path: Path = field(
+        default_factory=lambda: Path("~/.yuubot/skills").expanduser()
+    )
 
     async def start(self) -> None:
         await self.services.start()
@@ -263,6 +269,7 @@ class YuubotDaemon:
             llm_session_factory_factory=self.llm_session_factory_factory,
             trace_context=self.trace_context,
             workspace_root=self.workspace_root,
+            global_skills_path=self.global_skills_path,
         )
 
     async def serve(self) -> None:
@@ -327,6 +334,7 @@ def build_daemon_asgi_app(
     llm_session_factory_factory: Callable[[AgentBinding], ProviderPoolSessionFactory | None],
     trace_context: YuubotTraceContextProvider | None = None,
     workspace_root: Path | None = None,
+    global_skills_path: Path | None = None,
 ) -> Starlette:
     """Construct the daemon ASGI application.
 
@@ -351,6 +359,7 @@ def build_daemon_asgi_app(
         llm_session_factory_factory=llm_session_factory_factory,
         trace_context=trace_context,
         workspace_root=workspace_root or Path("~/.yuubot/workspace").expanduser(),
+        global_skills_path=global_skills_path,
     )
 
     resource_service = ResourceService(
@@ -403,6 +412,32 @@ def build_daemon_asgi_app(
             "/api/admin/refresh",
             make_refresh_handler(refresh),
             methods=("POST",),
+        ),
+        Route(
+            "/api/actors/{actor_id}/skills",
+            make_actor_skills_handler(
+                resources,
+                global_skills_path=global_skills_path or Path("~/.yuubot/skills").expanduser(),
+                workspace_root=workspace_root or Path("~/.yuubot/workspace").expanduser(),
+            ),
+            methods=("GET",),
+        ),
+        Route(
+            "/api/actors/{actor_id}/skills/import",
+            make_import_actor_skill_handler(
+                resources,
+                global_skills_path=global_skills_path or Path("~/.yuubot/skills").expanduser(),
+                workspace_root=workspace_root or Path("~/.yuubot/workspace").expanduser(),
+            ),
+            methods=("POST",),
+        ),
+        Route(
+            "/api/actors/{actor_id}/skills/{skill_name}",
+            make_delete_actor_skill_handler(
+                resources,
+                workspace_root=workspace_root or Path("~/.yuubot/workspace").expanduser(),
+            ),
+            methods=("DELETE",),
         ),
         Route(
             "/api/admin/conversations",
@@ -495,6 +530,7 @@ async def build_daemon(
         factories=components.integration_factories,
         gateway=gateway,
         integrations_root=layout.integrations_root,
+        workspace_resolver=ActorWorkspaceResolver(layout.workspace_root),
     )
 
     from yuubot.core.assembly._tools import set_assembly_tool_registry
@@ -511,6 +547,7 @@ async def build_daemon(
         ),
         gateway=gateway,
         workspace_resolver=ActorWorkspaceResolver(layout.workspace_root),
+        global_skills_path=layout.skills_dir,
     )
 
     async def schedule_for_actor(
@@ -584,4 +621,5 @@ async def build_daemon(
         trace_context=components.trace_context,
         tool_factories=components.tool_factories,
         workspace_root=layout.workspace_root,
+        global_skills_path=layout.skills_dir,
     )

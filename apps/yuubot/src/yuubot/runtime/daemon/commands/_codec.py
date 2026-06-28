@@ -200,6 +200,7 @@ class ResourceCodec:
             config=request.config,
             enabled=request.enabled,
             version=request.version,
+            skill_scope=request.skill_scope,
             generation_override=_value_or(
                 request.generation_override, GenerationParams()
             ),

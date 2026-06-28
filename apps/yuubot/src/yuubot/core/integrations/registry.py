@@ -120,9 +120,11 @@ def default_integration_factories() -> IntegrationFactoryRegistry:
     from yuubot.core.integrations.impls.test_im.integration import (
         TestImIntegrationFactory,
     )
+    from yuubot.core.integrations.impls.web import WebIntegrationFactory
 
     registry = IntegrationFactoryRegistry()
     registry.register(EchoIntegrationFactory())
     registry.register(GitHubIntegrationFactory())
+    registry.register(WebIntegrationFactory())
     registry.register(TestImIntegrationFactory())
     return registry

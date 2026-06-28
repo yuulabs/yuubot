@@ -39,6 +39,7 @@ from yuubot.resources.records import (
     Pricing,
     ResolvedActor,
     RunBudget,
+    SkillScope,
     ToolSelection,
 )
 from yuubot.resources.repository import ResourceRepository
@@ -361,6 +362,7 @@ def make_actor_record(
     actor_type: str = "simple_loop",
     model: str = "",
     max_steps: int = 4,
+    skill_scope: SkillScope = "global_and_local",
 ) -> ActorRecord:
     cap_set = capability_set or make_capability_set_record(actor_id)
     selected_model = model or next(iter(llm_backend.model_configs))
@@ -373,6 +375,7 @@ def make_actor_record(
         llm_backend_id=llm_backend.id,
         model=selected_model,
         per_run_budget=RunBudget(max_steps=max_steps),
+        skill_scope=skill_scope,
     )
 
 
@@ -382,6 +385,7 @@ def make_actor_binding(
     capability_set: CapabilitySetRecord,
     llm_backend: LLMBackendRecord,
     workspace_path: Path | None = None,
+    global_skills_path: Path | None = None,
 ) -> ActorBinding:
     return ActorBinding(
         resolved=ResolvedActor(
@@ -390,6 +394,7 @@ def make_actor_binding(
             llm_backend=llm_backend,
         ),
         workspace_path=workspace_path,
+        global_skills_path=global_skills_path,
     )
 
 
@@ -681,6 +686,7 @@ def build_resource_daemon_runtime(
         factories=integration_factories,
         gateway=gateway,
         integrations_root=workspace_root / "data" / "integrations",
+        workspace_resolver=ActorWorkspaceResolver(workspace_root / "workspaces"),
     )
     routes = RouteBindingService(repository=resources.repository, gateway=gateway)
     services = ServiceHost.from_iterable(

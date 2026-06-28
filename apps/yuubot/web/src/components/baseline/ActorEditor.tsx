@@ -34,6 +34,7 @@ export interface ActorEditorState {
   maxTokens: string;
   maxSteps: string;
   enabled: boolean;
+  skillScope: "local_only" | "global_and_local";
 }
 
 export interface ActorEditorProps {
@@ -156,6 +157,24 @@ export function ActorEditor({
                   {actorTypeOptions.map((type) => (
                     <option key={type} value={type}>{type}</option>
                   ))}
+                </select>
+              )}
+            </Field>
+            <Field label="Skill Scope" hint="选择此 Actor 启动时加载哪些 filesystem skills。">
+              {readOnly ? (
+                <ReadOnlyValue>
+                  {state.skillScope === "local_only" ? "local_only" : "global_and_local"}
+                </ReadOnlyValue>
+              ) : (
+                <select
+                  className="input"
+                  value={state.skillScope}
+                  onChange={(e) =>
+                    setState("skillScope", e.target.value as ActorEditorState["skillScope"])
+                  }
+                >
+                  <option value="global_and_local">global_and_local</option>
+                  <option value="local_only">local_only</option>
                 </select>
               )}
             </Field>

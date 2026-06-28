@@ -220,6 +220,8 @@ class SimpleLoopActor(Actor):
         self.binding = await load_actor_binding(
             self.repository,
             self.actor_id,
+            workspace_path=self.binding.workspace_path,
+            global_skills_path=self.binding.global_skills_path,
         )
         agent_binding = self._default_agent_binding()
         self._agent_binding = agent_binding

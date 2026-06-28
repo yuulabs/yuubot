@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 
 import msgspec
@@ -19,6 +20,7 @@ import yuullm
 
 from yuubot.bootstrap.config import ServerConfig
 from yuubot.core.actors import ActorManager
+from yuubot.core.actors.workspace import ActorWorkspaceResolver
 from yuubot.core.assembly._history_codec import decode_prompt_item
 from yuubot.core.conversation_events import ConversationSSEHeartbeat
 from yuubot.core.conversations import (
@@ -30,11 +32,12 @@ from yuubot.core.conversations import (
 )
 from yuubot.resources.records import ConversationRecord
 from yuubot.core.integrations import IntegrationCore
+from yuubot.core.skills import actor_skills_view, delete_local_skill, import_global_skill
 from yuubot.core.validation import ConfigurationError
 from yuubot.resources.events import ResourceChanged
 from yuubot.resources.registry import EventDrivenRefreshDispatcher
 from yuubot.resources.root import Resources
-from yuubot.resources.store.models import ActorIngressRuleORM, IntegrationORM
+from yuubot.resources.store.models import ActorIngressRuleORM, ActorORM, IntegrationORM
 from yuubot.runtime.http_utils import error_response
 from yuubot.runtime.plugin_manager import (
     ExternalPluginInboundMessage,
@@ -63,6 +66,10 @@ class ConversationMessageRequest(msgspec.Struct, forbid_unknown_fields=False):
     llm_backend_id: str = ""
     model: str = ""
     uploads: list[ConversationUploadedFile] = msgspec.field(default_factory=list)
+
+
+class SkillImportRequest(msgspec.Struct, forbid_unknown_fields=True):
+    name: str
 
 
 # --
@@ -325,6 +332,90 @@ def make_refresh_handler(
         )
 
     return refresh_resources
+
+
+def make_actor_skills_handler(
+    resources: Resources,
+    *,
+    global_skills_path: Path,
+    workspace_root: Path,
+):
+    resolver = ActorWorkspaceResolver(workspace_root)
+
+    async def actor_skills(request: Request) -> JSONResponse:
+        actor_id = request.path_params["actor_id"]
+        actor = await resources.repository.get(ActorORM, actor_id)
+        if actor is None:
+            return error_response("actor does not exist", status_code=404)
+        view = actor_skills_view(
+            global_root=global_skills_path,
+            actor_workspace=resolver.resolve(actor_id),
+            scope=actor.skill_scope,
+        )
+        return JSONResponse({"status": "ok", "data": msgspec.to_builtins(view)})
+
+    return actor_skills
+
+
+def make_import_actor_skill_handler(
+    resources: Resources,
+    *,
+    global_skills_path: Path,
+    workspace_root: Path,
+):
+    resolver = ActorWorkspaceResolver(workspace_root)
+
+    async def import_actor_skill(request: Request) -> JSONResponse:
+        actor_id = request.path_params["actor_id"]
+        actor = await resources.repository.get(ActorORM, actor_id)
+        if actor is None:
+            return error_response("actor does not exist", status_code=404)
+        try:
+            payload = await request.json()
+            import_request = msgspec.convert(
+                payload,
+                type=SkillImportRequest,
+                strict=False,
+            )
+            skill = import_global_skill(
+                global_root=global_skills_path,
+                actor_workspace=resolver.resolve(actor_id),
+                skill_name=import_request.name,
+            )
+        except (json.JSONDecodeError, ValueError, msgspec.ValidationError, msgspec.DecodeError) as exc:
+            return error_response(str(exc), status_code=400)
+        except LookupError as exc:
+            return error_response(str(exc), status_code=404)
+        return JSONResponse({"status": "ok", "data": msgspec.to_builtins(skill)})
+
+    return import_actor_skill
+
+
+def make_delete_actor_skill_handler(
+    resources: Resources,
+    *,
+    workspace_root: Path,
+):
+    resolver = ActorWorkspaceResolver(workspace_root)
+
+    async def delete_actor_skill(request: Request) -> JSONResponse:
+        actor_id = request.path_params["actor_id"]
+        skill_name = request.path_params["skill_name"]
+        actor = await resources.repository.get(ActorORM, actor_id)
+        if actor is None:
+            return error_response("actor does not exist", status_code=404)
+        try:
+            deleted = delete_local_skill(
+                actor_workspace=resolver.resolve(actor_id),
+                skill_name=skill_name,
+            )
+        except ValueError as exc:
+            return error_response(str(exc), status_code=400)
+        if not deleted:
+            return error_response("local skill does not exist", status_code=404)
+        return JSONResponse({"status": "ok"})
+
+    return delete_actor_skill
 
 
 def make_plugin_ingest_handler(

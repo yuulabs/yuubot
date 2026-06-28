@@ -65,6 +65,7 @@ ActorORM = resource_model(
         "persona_prompt": text(),
         "capability_set_id": char(),
         "llm_backend_id": char(),
+        "skill_scope": char(),
     },
 )
 

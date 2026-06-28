@@ -1,7 +1,7 @@
 ---
 id: ISSUE-0015
 slug: skills-v1-global-local-loading
-status: approved
+status: completed
 milestone: M-03
 priority: P1
 estimated_work_hours: unknown
@@ -46,5 +46,4 @@ yuubot 需要一种低成本方式扩展 agent 能力。复杂 skill market / re
 
 - 复杂 marketplace / registry / dependency solver。
 - per-conversation skill 临时开关。
-- 全局 skill 删除入口；可另排管理页。
 - workspace web editor；见 ISSUE-0019。

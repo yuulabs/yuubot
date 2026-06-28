@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { ArrowLeft, ExternalLink, Github } from "lucide-react";
+import { ArrowLeft, ExternalLink, Github, Globe } from "lucide-react";
 import {
   useResourceList,
   useSetResourceEnabled,
@@ -26,11 +26,19 @@ function IntegrationDetailPage() {
   const [pat, setPat] = useState("");
   const [defaultOwner, setDefaultOwner] = useState("");
   const [defaultRepo, setDefaultRepo] = useState("");
+  const [tavilyKey, setTavilyKey] = useState("");
+  const [tavilyBaseUrl, setTavilyBaseUrl] = useState("");
+  const [webTimeout, setWebTimeout] = useState("");
+  const [webUserAgent, setWebUserAgent] = useState("");
+  const [webMaxReadBytes, setWebMaxReadBytes] = useState("");
+  const [webMaxReadChars, setWebMaxReadChars] = useState("");
+  const [webMaxDownloadBytes, setWebMaxDownloadBytes] = useState("");
   const [saveError, setSaveError] = useState("");
   const [runtimeError, setRuntimeError] = useState("");
 
   const integration = integrations.find((i) => i.id === id);
   const isGitHub = integration?.name === "github";
+  const isWeb = integration?.name === "web";
 
   useEffect(() => {
     if (!isGitHub) return;
@@ -40,6 +48,35 @@ function IntegrationDetailPage() {
     integration?.config?.default_owner,
     integration?.config?.default_repo,
     isGitHub,
+  ]);
+
+  useEffect(() => {
+    if (!isWeb) return;
+    setTavilyBaseUrl(
+      stringConfigValue(integration?.config?.tavily_base_url) ||
+        "https://api.tavily.com",
+    );
+    setWebTimeout(numberConfigValue(integration?.config?.timeout_s, 30));
+    setWebUserAgent(
+      stringConfigValue(integration?.config?.user_agent) || "yuubot/0.1",
+    );
+    setWebMaxReadBytes(
+      numberConfigValue(integration?.config?.max_read_bytes, 2_000_000),
+    );
+    setWebMaxReadChars(
+      numberConfigValue(integration?.config?.max_read_chars, 80_000),
+    );
+    setWebMaxDownloadBytes(
+      numberConfigValue(integration?.config?.max_download_bytes, 10_000_000),
+    );
+  }, [
+    integration?.config?.max_download_bytes,
+    integration?.config?.max_read_bytes,
+    integration?.config?.max_read_chars,
+    integration?.config?.tavily_base_url,
+    integration?.config?.timeout_s,
+    integration?.config?.user_agent,
+    isWeb,
   ]);
 
   if (!integration) {
@@ -99,7 +136,54 @@ function IntegrationDetailPage() {
       },
     );
   };
+
+  const handleWebSave = () => {
+    const config = {
+      ...configWithoutSecret(integration.config, "api_key"),
+      tavily_base_url: tavilyBaseUrl.trim() || "https://api.tavily.com",
+      timeout_s: numericInputValue(webTimeout, 30),
+      user_agent: webUserAgent.trim() || "yuubot/0.1",
+      max_read_bytes: numericInputValue(webMaxReadBytes, 2_000_000),
+      max_read_chars: numericInputValue(webMaxReadChars, 80_000),
+      max_download_bytes: numericInputValue(webMaxDownloadBytes, 10_000_000),
+      ...(tavilyKey.trim() ? { api_key: tavilyKey.trim() } : {}),
+    };
+    setSaveError("");
+    const patch: Pick<IntegrationResource, "config"> = { config };
+    updateMutation.mutate(
+      {
+        id: integration.id,
+        data: patch,
+      },
+      {
+        onSuccess: (updated) => {
+          setTavilyKey("");
+          setTavilyBaseUrl(
+            stringConfigValue(updated.config?.tavily_base_url) ||
+              "https://api.tavily.com",
+          );
+          setWebTimeout(numberConfigValue(updated.config?.timeout_s, 30));
+          setWebUserAgent(
+            stringConfigValue(updated.config?.user_agent) || "yuubot/0.1",
+          );
+          setWebMaxReadBytes(
+            numberConfigValue(updated.config?.max_read_bytes, 2_000_000),
+          );
+          setWebMaxReadChars(
+            numberConfigValue(updated.config?.max_read_chars, 80_000),
+          );
+          setWebMaxDownloadBytes(
+            numberConfigValue(updated.config?.max_download_bytes, 10_000_000),
+          );
+        },
+        onError: (error) => {
+          setSaveError(error instanceof Error ? error.message : "Save failed");
+        },
+      },
+    );
+  };
   const isGitHubConnected = isGitHub && hasSecretValue(integration.config?.access_token);
+  const isWebConnected = isWeb && hasSecretValue(integration.config?.api_key);
 
   return (
     <div className="space-y-6 p-6">
@@ -202,6 +286,118 @@ function IntegrationDetailPage() {
               </div>
             ) : null}
 
+            {isWeb ? (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                  <span className="text-muted-foreground">Tavily authorization</span>
+                  <Badge variant={isWebConnected ? "default" : "secondary"}>
+                    {isWebConnected ? "connected" : "not connected"}
+                  </Badge>
+                </div>
+                <div className="space-y-3 rounded-md border p-3 text-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium">Tavily API key</p>
+                      <p className="mt-1 text-muted-foreground">
+                        Used by web.search. web.read and web.download use the
+                        fetch settings below.
+                      </p>
+                    </div>
+                    <Button variant="ghost" size="icon-sm" asChild>
+                      <a
+                        href="https://app.tavily.com/home"
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label="Open Tavily dashboard"
+                      >
+                        <ExternalLink className="size-4" />
+                      </a>
+                    </Button>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium">API key</label>
+                    <Input
+                      type="password"
+                      value={tavilyKey}
+                      onChange={(event) => setTavilyKey(event.target.value)}
+                      placeholder={
+                        isWebConnected
+                          ? "Leave blank to keep the current key"
+                          : "Paste Tavily API key"
+                      }
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium">Tavily base URL</label>
+                      <Input
+                        value={tavilyBaseUrl}
+                        onChange={(event) => setTavilyBaseUrl(event.target.value)}
+                        placeholder="https://api.tavily.com"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium">Timeout seconds</label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={webTimeout}
+                        onChange={(event) => setWebTimeout(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium">User agent</label>
+                    <Input
+                      value={webUserAgent}
+                      onChange={(event) => setWebUserAgent(event.target.value)}
+                      placeholder="yuubot/0.1"
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium">Read bytes</label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={webMaxReadBytes}
+                        onChange={(event) => setWebMaxReadBytes(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium">Read chars</label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={webMaxReadChars}
+                        onChange={(event) => setWebMaxReadChars(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium">Download bytes</label>
+                      <Input
+                        type="number"
+                        min="1"
+                        value={webMaxDownloadBytes}
+                        onChange={(event) => setWebMaxDownloadBytes(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                  {saveError ? (
+                    <p className="text-xs text-destructive">{saveError}</p>
+                  ) : null}
+                  <Button
+                    className="w-full"
+                    onClick={handleWebSave}
+                    disabled={updateMutation.isPending}
+                  >
+                    <Globe className="mr-2 size-4" />
+                    {updateMutation.isPending ? "Saving..." : "Save web settings"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+
             {integration.config && Object.keys(integration.config).length > 0 ? (
               <Table>
                 <TableBody>
@@ -283,9 +479,28 @@ function stringConfigValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function numberConfigValue(value: unknown, fallback: number): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : String(fallback);
+}
+
+function numericInputValue(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function configWithoutAccessToken(
   config: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  const { access_token: _accessToken, ...rest } = config ?? {};
+  return configWithoutSecret(config, "access_token");
+}
+
+function configWithoutSecret(
+  config: Record<string, unknown> | undefined,
+  key: string,
+): Record<string, unknown> {
+  const rest = { ...(config ?? {}) };
+  delete rest[key];
   return rest;
 }

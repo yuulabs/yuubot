@@ -6,20 +6,49 @@
  */
 
 /**
- * Extract the bash command string from a tool args JSON envelope.
+ * Parse a tool args JSON envelope into the user-facing args payload.
  *
- * `toolArgs` is expected to be a JSON string like `{"command":"ls -la"}`.
+ * Live SSE deltas usually pass bare args such as `{"command":"ls -la"}`.
+ * Persisted history may pass wrappers such as
+ * `{"arguments":"{\"command\":\"ls -la\"}"}` or
+ * `{"arguments":{"command":"ls -la"}}`. Renderers should consume this helper
+ * so live and history paths share the same normalization.
+ */
+export function parseToolArgs(toolArgs: string): unknown {
+  const parsed = parseJson(toolArgs);
+  if (!isPlainObject(parsed)) {
+    return parsed;
+  }
+
+  const wrappedArgs = parsed.arguments ?? parsed.args ?? parsed.input;
+  if (wrappedArgs === undefined) {
+    return parsed;
+  }
+  return typeof wrappedArgs === "string" ? parseJson(wrappedArgs) : wrappedArgs;
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+/**
+ * Extract the bash command string from normalized tool args.
+ *
  * Returns the raw string if parsing fails or the `command` field is absent
  * (lets the UI degrade to showing the raw envelope rather than nothing).
  */
 export function extractBashCommand(toolArgs: string): string {
-  try {
-    const parsed = JSON.parse(toolArgs);
-    if (parsed && typeof parsed.command === "string") {
-      return parsed.command;
-    }
-  } catch {
-    /* fall through to raw */
+  const parsed = parseToolArgs(toolArgs);
+  if (isPlainObject(parsed) && typeof parsed.command === "string") {
+    return parsed.command;
   }
   return toolArgs;
 }
@@ -48,22 +77,18 @@ export interface EditArgs {
  * side-by-side renderer when this returns null.
  */
 export function parseEditArgs(toolArgs: string): EditArgs | null {
-  try {
-    const parsed = JSON.parse(toolArgs);
-    if (
-      parsed
-      && typeof parsed.path === "string"
-      && typeof parsed.old_string === "string"
-      && typeof parsed.new_string === "string"
-    ) {
-      return {
-        path: parsed.path,
-        old_string: parsed.old_string,
-        new_string: parsed.new_string,
-      };
-    }
-  } catch {
-    /* fall through */
+  const parsed = parseToolArgs(toolArgs);
+  if (
+    isPlainObject(parsed)
+    && typeof parsed.path === "string"
+    && typeof parsed.old_string === "string"
+    && typeof parsed.new_string === "string"
+  ) {
+    return {
+      path: parsed.path,
+      old_string: parsed.old_string,
+      new_string: parsed.new_string,
+    };
   }
   return null;
 }

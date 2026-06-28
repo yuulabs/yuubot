@@ -30,8 +30,8 @@ export interface LLMBackendLike {
 
 /**
  * Build the Actor create payload that binds a preset Actor to a backend.
- * `max_usd` is non-zero so the daemon's pricing guard is actually exercised
- * (budget=0 silently disables the guard); matches the onboarding contract.
+ * Preset Actors start without per-run limits; users can add limits later from
+ * the Actor editor.
  */
 export function presetActorCreatePayload(
   preset: PresetActor,
@@ -45,7 +45,7 @@ export function presetActorCreatePayload(
     model: firstConfiguredModel(backend),
     capability_set_id: preset.capabilitySetId,
     llm_backend_id: backend.id,
-    per_run_budget: { max_steps: 6, max_tokens: 8192, max_usd: 2.0 },
+    per_run_budget: {},
   };
 }
 

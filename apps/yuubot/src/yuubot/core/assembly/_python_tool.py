@@ -91,9 +91,13 @@ class ExecutePythonTool(Tool[ExecutePythonParams, str]):
         ``.venv`` interpreter is reused). Safe to call when no session was
         ever started — the no-op close path mirrors the crash-reset behaviour.
         """
+        await self.close_session()
+
+    async def close_session(self) -> bool:
+        """Close the current kernel session and return whether one existed."""
         session = self._session
         if session is None:
-            return
+            return False
         self._session = None
         try:
             await session.close()
@@ -101,6 +105,7 @@ class ExecutePythonTool(Tool[ExecutePythonParams, str]):
             # Tolerate close errors — the handle is already dropped, and the
             # crash-reset path in ``create_coro`` is equally tolerant.
             pass
+        return True
 
     async def _get_session(self, agent_id: str) -> PythonSession:
         if self._session is not None:

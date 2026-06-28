@@ -17,6 +17,7 @@ from yuubot.resources.records import (
     LoopPolicy,
     ModelConfig,
     RunBudget,
+    SkillScope,
     ToolSelection,
 )
 
@@ -40,6 +41,7 @@ class ActorCreateRequest(msgspec.Struct, forbid_unknown_fields=True):
     config: dict[str, object] = msgspec.field(default_factory=dict)
     enabled: bool = True
     version: int = 1
+    skill_scope: SkillScope = "global_and_local"
     generation_override: GenerationParams | msgspec.UnsetType = msgspec.UNSET
     per_run_budget: RunBudget | msgspec.UnsetType = msgspec.UNSET
     created_at: datetime | None | msgspec.UnsetType = msgspec.UNSET
@@ -56,6 +58,7 @@ class ActorPatchRequest(msgspec.Struct, forbid_unknown_fields=True):
     model: str | msgspec.UnsetType = msgspec.UNSET
     config: dict[str, object] | msgspec.UnsetType = msgspec.UNSET
     enabled: bool | msgspec.UnsetType = msgspec.UNSET
+    skill_scope: SkillScope | msgspec.UnsetType = msgspec.UNSET
     generation_override: GenerationParams | msgspec.UnsetType = msgspec.UNSET
     per_run_budget: RunBudget | msgspec.UnsetType = msgspec.UNSET
 

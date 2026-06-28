@@ -1,7 +1,7 @@
 ---
 id: ISSUE-0012
 slug: file-upload-workspace-ingest
-status: approved
+status: completed
 milestone: M-03
 priority: P1
 estimated_work_hours: unknown

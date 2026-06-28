@@ -4,6 +4,7 @@ import type {
   ConversationSSEEvent,
   TranscriptDelta,
 } from "@/types/api";
+import { parseToolArgs } from "./tool-renderers.ts";
 
 export type ConversationBlockType =
   | "thinking"
@@ -62,17 +63,7 @@ function toolDisplayArgs(toolArgs: string | undefined): unknown {
   if (!toolArgs) {
     return undefined;
   }
-  const raw = parseJsonMaybe(toolArgs);
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return raw;
-  }
-
-  const source = raw as Record<string, unknown>;
-  const wrappedArgs = source.arguments ?? source.args ?? source.input;
-  if (wrappedArgs === undefined) {
-    return source;
-  }
-  return typeof wrappedArgs === "string" ? parseJsonMaybe(wrappedArgs) : wrappedArgs;
+  return parseToolArgs(toolArgs);
 }
 
 /** Extract human-readable text from a raw block dict without dropping unknown content. */
@@ -120,11 +111,22 @@ export function renderBlockFromRaw(
     key,
     type,
     content: extractBlockText(source),
-    toolArgs: type === "tool_call" ? JSON.stringify(source, null, 2) : undefined,
+    toolArgs: type === "tool_call" ? toolArgsText(source) : undefined,
     toolCallId: toolCallId(source, type),
     toolName: toolName(source),
     toolStatus: toolStatus(source),
   };
+}
+
+function toolArgsText(source: Record<string, unknown>): string {
+  const args = source.arguments ?? source.args ?? source.input;
+  if (typeof args === "string") {
+    return args;
+  }
+  if (args !== undefined) {
+    return JSON.stringify(args, null, 2);
+  }
+  return JSON.stringify(source, null, 2);
 }
 
 export function rawBlockSource(block: unknown): Record<string, unknown> {

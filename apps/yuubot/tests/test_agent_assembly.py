@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import cast
 
 import msgspec
+import yuullm
+from yuuagents import AgentDefinition, EventBus, MailBox, Runtime, Stage, ToolRegistry
+from yuuagents.agent.agent import Agent
 from yuuagents.core.task import Owner, OwnerType
 from yuuagents.obs import EntityLog
 from yuuagents.python.runtime import PythonRuntime
@@ -19,6 +22,7 @@ from tests.helpers import (
 )
 from yuubot.core.assembly._python_tool import ExecutePythonParams, ExecutePythonTool
 from yuubot.core.assembly import build_agent_definition
+from yuubot.core.assembly._runtime import YuuAgentsActorRuntime
 from yuubot.core.facade import ActorFacadeBinding
 from yuubot.resources.records import ToolSelection
 
@@ -136,6 +140,21 @@ def test_execute_python_tool_renders_plain_text_result() -> None:
     assert "output=" not in result
 
 
+async def test_execute_python_tool_close_session_reports_whether_kernel_existed() -> None:
+    tool = ExecutePythonTool(
+        runtime=None,
+        config=PythonRuntime(state={"agent_name": "actor-1"}),
+    )
+    assert await tool.close_session() is False
+
+    session = _CrashingPythonSession()
+    tool._session = cast(PythonSession, session)
+
+    assert await tool.close_session() is True
+    assert session.closed
+    assert tool._session is None
+
+
 async def test_execute_python_tool_reports_crash_and_resets_session() -> None:
     tool = ExecutePythonTool(
         runtime=None,
@@ -168,6 +187,64 @@ async def test_execute_python_tool_reports_crash_and_resets_session() -> None:
     assert "The Python session was reset" in result
     assert session.closed
     assert tool._session is None
+
+
+async def test_actor_runtime_closes_python_kernel_and_notifies_next_user_message() -> None:
+    eventbus = EventBus()
+    registry = ToolRegistry()
+    runtime = Runtime(registry=registry, eventbus=eventbus)
+    stage = Stage(mailbox=MailBox(), eventbus=eventbus, runtime=runtime)
+    actor_runtime = YuuAgentsActorRuntime(
+        stage=stage,
+        definitions={},
+        conversation_definition=AgentDefinition(),
+    )
+    tool = ExecutePythonTool(
+        runtime=None,
+        config=PythonRuntime(state={"agent_name": "actor-1"}),
+    )
+    session = _CrashingPythonSession()
+    tool._session = cast(PythonSession, session)
+    registry.register(tool.definition, tool)
+
+    agent = cast(Agent, _AgentStub(id="agent-1", name="actor-1"))
+
+    await actor_runtime._close_agent_python_kernel(agent)
+    message = actor_runtime._with_python_reset_notice(agent, yuullm.user("hello"))
+
+    assert session.closed
+    assert tool._session is None
+    rendered = yuullm.render_message_text(message)
+    assert "Your Python kernel has been reset" in rendered
+    assert "hello" in rendered
+    assert actor_runtime._with_python_reset_notice(
+        agent,
+        yuullm.user("again"),
+    ) == yuullm.user("again")
+
+
+def test_system_prompt_explains_python_kernel_response_lifetime(tmp_path: Path) -> None:
+    llm_backend = make_llm_backend_record("actor-1")
+    actor = make_actor_record(
+        "actor-1",
+        llm_backend=llm_backend,
+    )
+    binding = make_actor_binding(
+        actor,
+        capability_set=make_capability_set_record(
+            "actor-1",
+            tools=(ToolSelection("execute_python"),),
+        ),
+        llm_backend=llm_backend,
+        workspace_path=tmp_path,
+    ).default_agent_binding()
+
+    system = build_agent_definition(binding, mode="conversation").prompt.system
+    section2 = _section_body(system, "# System Instructions", "# Integration SDKs")
+
+    assert "Before you send your final response" in section2
+    assert "After you send your final response" in section2
+    assert "Workspace files are preserved across kernel resets" in section2
 
 
 def test_builtin_capabilities_create_file_tool_configs(tmp_path: Path) -> None:
@@ -304,6 +381,11 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     section3 = _section_body(
         system,
         "# Integration SDKs",
+        "# Skills",
+    )
+    section_skills = _section_body(
+        system,
+        "# Skills",
         "# AGENTS.md Context",
     )
     section4 = _section_body(
@@ -343,6 +425,7 @@ def test_integration_capability_prompt_explains_yext_usage(tmp_path: Path) -> No
     assert "Map a capability id to yext by keeping the prefix" not in section3
     assert "Non-builtin capabilities are async Python facade functions" not in section3
     assert "github.issue.list -> await yext.github.issue.list(" not in section3
+    assert section_skills == "No skills loaded."
 
     # Section 4 — AGENTS.md context + freeze note.
     assert "__MARKER_AGENTS_V1__" in section4, "AGENTS.md marker missing from Section 4"
@@ -386,13 +469,116 @@ def test_integration_sdk_section_empty_when_no_integrations(tmp_path: Path) -> N
 
     system = build_agent_definition(binding, mode="conversation").prompt.system
 
-    section3 = _section_body(system, "# Integration SDKs", "# AGENTS.md Context")
+    section3 = _section_body(system, "# Integration SDKs", "# Skills")
     assert section3 == "No integration SDKs configured."
+
+
+def test_system_prompt_loads_local_and_global_skills_with_local_override(tmp_path: Path) -> None:
+    """Skill discovery lists metadata only and keeps local-over-global precedence."""
+    llm_backend = make_llm_backend_record("llm-1")
+    actor = make_actor_record(
+        "actor-1",
+        persona_prompt="Base prompt.",
+        llm_backend=llm_backend,
+        skill_scope="global_and_local",
+    )
+    workspace = tmp_path / "workspace"
+    global_skills = tmp_path / "global-skills"
+    _write_skill(
+        global_skills,
+        "shared",
+        "global shared skill",
+        "GLOBAL_SHOULD_NOT_RENDER",
+    )
+    _write_skill(
+        global_skills,
+        "global-only",
+        "global-only skill",
+        "GLOBAL_ONLY_BODY_SHOULD_NOT_RENDER",
+    )
+    _write_skill(
+        workspace / ".agents" / "skills",
+        "shared",
+        "local shared skill",
+        "LOCAL_BODY_SHOULD_NOT_RENDER",
+    )
+    ignored = global_skills / "not-a-skill"
+    ignored.mkdir(parents=True)
+    (ignored / "README.md").write_text("ignored", encoding="utf-8")
+    binding = make_actor_binding(
+        actor,
+        capability_set=make_capability_set_record("actor-1"),
+        llm_backend=llm_backend,
+        workspace_path=workspace,
+        global_skills_path=global_skills,
+    ).default_agent_binding()
+
+    system = build_agent_definition(binding, mode="conversation").prompt.system
+    skills = _section_body(system, "# Skills", "# AGENTS.md Context")
+
+    assert "`global-only` (global): global-only skill" in skills
+    assert "`shared` (local): local shared skill" in skills
+    assert "Path:" in skills
+    assert "description:" not in skills
+    assert "GLOBAL_ONLY_BODY_SHOULD_NOT_RENDER" not in skills
+    assert "LOCAL_BODY_SHOULD_NOT_RENDER" not in skills
+    assert "GLOBAL_SHOULD_NOT_RENDER" not in skills
+    assert "global shared skill" not in skills
+    assert "not-a-skill" not in skills
+
+
+def test_system_prompt_local_only_skips_global_skills(tmp_path: Path) -> None:
+    """Actors scoped to local skills do not advertise global skill metadata."""
+    llm_backend = make_llm_backend_record("llm-1")
+    actor = make_actor_record(
+        "actor-1",
+        persona_prompt="Base prompt.",
+        llm_backend=llm_backend,
+        skill_scope="local_only",
+    )
+    workspace = tmp_path / "workspace"
+    global_skills = tmp_path / "global-skills"
+    _write_skill(
+        global_skills,
+        "global-only",
+        "global-only skill",
+        "GLOBAL_ONLY_BODY_SHOULD_NOT_RENDER",
+    )
+    _write_skill(
+        workspace / ".agents" / "skills",
+        "local-only",
+        "local-only skill",
+        "LOCAL_ONLY_BODY_SHOULD_NOT_RENDER",
+    )
+    binding = make_actor_binding(
+        actor,
+        capability_set=make_capability_set_record("actor-1"),
+        llm_backend=llm_backend,
+        workspace_path=workspace,
+        global_skills_path=global_skills,
+    ).default_agent_binding()
+
+    system = build_agent_definition(binding, mode="conversation").prompt.system
+    skills = _section_body(system, "# Skills", "# AGENTS.md Context")
+
+    assert "`local-only` (local): local-only skill" in skills
+    assert "LOCAL_ONLY_BODY_SHOULD_NOT_RENDER" not in skills
+    assert "global-only skill" not in skills
+    assert "GLOBAL_ONLY_BODY_SHOULD_NOT_RENDER" not in skills
 
 
 def _write_agents_md(workspace: Path, text: str) -> None:
     """Write the marker AGENTS.md at the workspace root (used by Red tests)."""
     (workspace / "AGENTS.md").write_text(text, encoding="utf-8")
+
+
+def _write_skill(root: Path, name: str, description: str, body: str) -> None:
+    skill_dir = root / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}",
+        encoding="utf-8",
+    )
 
 
 def _section_body(system: str, start_header: str, next_header: str) -> str:
@@ -417,6 +603,7 @@ def _assert_section_order(system: str) -> None:
         "# Persona",
         "# System Instructions",
         "# Integration SDKs",
+        "# Skills",
         "# AGENTS.md Context",
         "# Real-Time Data",
     )
@@ -450,6 +637,12 @@ class _CrashingPythonSession:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _AgentStub:
+    def __init__(self, *, id: str, name: str) -> None:
+        self.id = id
+        self.name = name
 
 
 def _facade(tmp_path, *, capabilities):

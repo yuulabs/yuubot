@@ -22,9 +22,7 @@ const presetsSrc = readFileSync(
 
 // Stable seeded preset ids the preset Actor create calls MUST reference.
 const STABLE_PRESET_IDS = [
-  "builtin-character-general",
   "builtin-capability-general",
-  "builtin-character-shiori",
   "builtin-capability-shiori",
 ] as const;
 
@@ -72,7 +70,7 @@ test("actors.tsx surfaces a backend picker in the sync dialog", () => {
   );
 });
 
-test("@/lib/presets references all four stable seeded preset ids", () => {
+test("@/lib/presets references all stable seeded preset ids", () => {
   for (const id of STABLE_PRESET_IDS) {
     assert.ok(
       presetsSrc.includes(id),
@@ -81,17 +79,14 @@ test("@/lib/presets references all four stable seeded preset ids", () => {
   }
 });
 
-test("@/lib/presets builds the create payload with backend bind + non-zero budget", () => {
+test("@/lib/presets builds the create payload with backend bind + no budget limits", () => {
   assert.ok(
-    presetsSrc.includes("default_llm_backend_id"),
-    "@/lib/presets must set default_llm_backend_id on the preset Actor payload",
+    presetsSrc.includes("llm_backend_id"),
+    "@/lib/presets must set llm_backend_id on the preset Actor payload",
   );
   assert.ok(
-    presetsSrc.includes("default_budget"),
-    "@/lib/presets must set default_budget on the preset Actor payload",
+    presetsSrc.includes("per_run_budget: {}"),
+    "@/lib/presets must leave preset Actor per_run_budget unlimited",
   );
-  assert.ok(
-    presetsSrc.includes("max_usd") && presetsSrc.includes("2.0"),
-    "@/lib/presets must default the preset Actor budget max_usd to 2.0",
-  );
+  assert.ok(!presetsSrc.includes("max_usd: 2.0"));
 });

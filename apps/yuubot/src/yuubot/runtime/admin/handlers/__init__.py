@@ -28,6 +28,7 @@ from yuubot.runtime.admin.handlers._provider_admin import (
     make_validate_provider_handler,
 )
 from yuubot.runtime.admin.handlers._proxy import (
+    make_proxy_daemon_actor_skills_handler,
     make_proxy_daemon_conversations_handler,
     make_proxy_daemon_resource_handler,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "make_list_plugins_handler",
     "make_live_capabilities_handler",
     "make_provider_models_handler",
+    "make_proxy_daemon_actor_skills_handler",
     "make_proxy_daemon_conversations_handler",
     "make_proxy_daemon_resource_handler",
     "make_reveal_integration_secret_handler",

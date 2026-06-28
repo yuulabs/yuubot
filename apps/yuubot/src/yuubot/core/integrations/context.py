@@ -25,6 +25,7 @@ class InvocationContext(msgspec.Struct):
     """Framework-populated context for a single capability invocation."""
 
     actor_id: str
+    workspace_path: str = ""
     source_id: str = ""
     source_path: str = ""
     integration_id: str = ""
@@ -81,6 +82,7 @@ def bind_invocation_context(
         )
     return InvocationContext(
         actor_id=context.actor_id or actor_id,
+        workspace_path=context.workspace_path,
         source_id=context.source_id,
         source_path=context.source_path,
         integration_id=context.integration_id or integration_id,

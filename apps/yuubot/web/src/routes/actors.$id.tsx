@@ -9,6 +9,7 @@
 // by actor_id, each row linking to the conversation view route.
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useDeleteResource,
   useLiveCapabilities,
@@ -22,7 +23,12 @@ import type {
   ConversationListItem,
   LLMBackendResource,
 } from "@/types/api";
-import { listConversations } from "@/lib/api";
+import {
+  deleteActorSkill,
+  getActorSkills,
+  importActorSkill,
+  listConversations,
+} from "@/lib/api";
 import { workspaceHref } from "@/lib/workspace";
 import {
   Empty,
@@ -50,6 +56,7 @@ function ActorDetailPage() {
   const { data: liveCaps } = useLiveCapabilities();
   const updateActorMutation = useUpdateResource<ActorResource>("actors");
   const deleteMutation = useDeleteResource("actors");
+  const queryClient = useQueryClient();
 
   const actor = actors.find((a) => a.id === id);
   const [state, setStateRaw] = useState<ActorEditorState>({
@@ -63,6 +70,7 @@ function ActorDetailPage() {
     maxTokens: "8192",
     maxSteps: "6",
     enabled: true,
+    skillScope: "global_and_local",
   });
   const [error, setError] = useState("");
   const [hydratedActorKey, setHydratedActorKey] = useState("");
@@ -91,6 +99,7 @@ function ActorDetailPage() {
       maxTokens: String(actor.per_run_budget?.max_tokens ?? 8192),
       maxSteps: String(actor.per_run_budget?.max_steps ?? 6),
       enabled: actor.enabled ?? true,
+      skillScope: actor.skill_scope ?? "global_and_local",
     });
     setHydratedActorKey(actorSnapshotKey);
     setError("");
@@ -99,6 +108,24 @@ function ActorDetailPage() {
   const selectedBackend = backends.find((b) => b.id === state.backendId);
   const modelOptions = useMemo(() => modelOptionsFor(selectedBackend), [selectedBackend]);
   const isPending = updateActorMutation.isPending || deleteMutation.isPending;
+  const skillsQueryKey = ["actor-skills", id] as const;
+  const { data: skillsView } = useQuery({
+    queryKey: skillsQueryKey,
+    queryFn: () => getActorSkills(id),
+    enabled: Boolean(actor),
+  });
+  const importSkillMutation = useMutation({
+    mutationFn: (name: string) => importActorSkill(id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: skillsQueryKey });
+    },
+  });
+  const deleteSkillMutation = useMutation({
+    mutationFn: (name: string) => deleteActorSkill(id, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: skillsQueryKey });
+    },
+  });
 
   // Inject save + conversation actions into the shell topbar.
   const { setActions } = useAppShellActions();
@@ -202,6 +229,7 @@ function ActorDetailPage() {
           capability_set_id: state.capabilitySetId,
           per_run_budget: budget,
           enabled: state.enabled,
+          skill_scope: state.skillScope,
         },
       });
     } catch {
@@ -318,6 +346,45 @@ function ActorDetailPage() {
               </LegendCard>
 
               <LegendCard
+                legend="Skills"
+                dotColor="indigo"
+                lead="全局 skills 可导入到该 Actor 的本地 workspace；同名时本地覆盖全局。"
+                as="div"
+              >
+                <div className="grid-2">
+                  <SkillList
+                    title="Loaded"
+                    names={(skillsView?.loaded_skills ?? []).map((skill) => `${skill.name} (${skill.source})`)}
+                  />
+                  <SkillList
+                    title="Local"
+                    names={(skillsView?.local_skills ?? []).map((skill) => skill.name)}
+                    onDelete={(name) => deleteSkillMutation.mutate(name)}
+                  />
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <b>Global</b>
+                  {(skillsView?.global_skills ?? []).length === 0 ? (
+                    <p className="page-sub">暂无全局 skills。</p>
+                  ) : (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                      {(skillsView?.global_skills ?? []).map((skill) => (
+                        <button
+                          key={skill.name}
+                          type="button"
+                          className="btn btn--ghost"
+                          disabled={importSkillMutation.isPending}
+                          onClick={() => importSkillMutation.mutate(skill.name)}
+                        >
+                          导入 {skill.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </LegendCard>
+
+              <LegendCard
                 legend="能力（Capabilities）"
                 dotColor="green"
                 lead="Actor 通过其 Capability Set 获得可调用的能力。"
@@ -389,6 +456,45 @@ function convTime(c: ConversationListItem): number {
   if (!v) return 0;
   const t = new Date(v).getTime();
   return Number.isNaN(t) ? 0 : t;
+}
+
+function SkillList({
+  title,
+  names,
+  onDelete,
+}: {
+  title: string;
+  names: string[];
+  onDelete?: (name: string) => void;
+}) {
+  return (
+    <div>
+      <b>{title}</b>
+      {names.length === 0 ? (
+        <p className="page-sub">-</p>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+          {names.map((name) => {
+            const rawName = name.split(" ", 1)[0] ?? name;
+            return onDelete ? (
+              <button
+                key={name}
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => onDelete(rawName)}
+              >
+                删除 {name}
+              </button>
+            ) : (
+              <StatusPill key={name} variant="default" dot={false}>
+                {name}
+              </StatusPill>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function shortConversationId(value: string): string {

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import msgspec
 
@@ -11,6 +11,7 @@ from yuubot.core.validation import GenerationParams, LLMProviderOptions
 
 
 ConfigT = TypeVar("ConfigT", bound=msgspec.Struct)
+SkillScope = Literal["local_only", "global_and_local"]
 
 
 class ModelCapabilities(msgspec.Struct):
@@ -151,6 +152,7 @@ class ActorRecord(msgspec.Struct):
         default_factory=GenerationParams
     )
     per_run_budget: RunBudget = msgspec.field(default_factory=RunBudget)
+    skill_scope: SkillScope = "global_and_local"
     id: str = ""
     type: str = "simple_loop"
     config: dict[str, object] = msgspec.field(default_factory=dict)

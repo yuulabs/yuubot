@@ -21,7 +21,6 @@ from yuubot.core.conversations import (
     ConversationBindingConflict,
     ConversationManager,
     ConversationSendBinding,
-    _conversation_title_from_first_turn,
 )
 
 
@@ -237,6 +236,7 @@ async def test_send_message_returns_before_turn_completes() -> None:
     )
 
     runtime = MagicMock()
+    runtime.idle_timeout_s = 0.0
     fake_agent = MagicMock(id="agent-1")
     runtime.conversation_agents = {}  # cache miss path
     runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
@@ -306,6 +306,7 @@ async def test_send_message_records_runtime_setup_span(
     )
 
     runtime = MagicMock()
+    runtime.idle_timeout_s = 0.0
     fake_agent = MagicMock(id="agent-1")
     runtime.conversation_agents = {}
     runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
@@ -333,7 +334,10 @@ async def test_send_message_records_runtime_setup_span(
         spans.append((name, span.attributes))
         yield span
 
-    monkeypatch.setattr("yuubot.core.conversations.yuutrace.trace_span", trace_span)
+    monkeypatch.setattr(
+        "yuubot.core.conversations.timing.yuutrace.trace_span",
+        trace_span,
+    )
 
     with (
         patch.object(
@@ -396,6 +400,7 @@ async def test_first_send_persists_prefix_and_user_message() -> None:
     fake_agent.history = [prefix_message]
 
     runtime = MagicMock()
+    runtime.idle_timeout_s = 0.0
     runtime.conversation_agents = {}
     runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
 
@@ -470,24 +475,6 @@ async def test_subsequent_send_with_conflicting_actor_returns_conflict() -> None
     store.append_history_item.assert_not_called()
 
 
-def test_conversation_title_uses_first_user_message() -> None:
-    title = _conversation_title_from_first_turn(
-        yuullm.user("  hello   title\nfrom user  "),
-        yuullm.assistant("assistant fallback"),
-    )
-
-    assert title == "hello title from user"
-
-
-def test_conversation_title_truncates_long_text() -> None:
-    title = _conversation_title_from_first_turn(
-        yuullm.user("x" * 120),
-        yuullm.assistant("assistant fallback"),
-    )
-
-    assert title == ("x" * 77) + "..."
-
-
 async def test_delete_conversation_stops_turn_drops_cache_and_deletes_rows() -> None:
     store = MagicMock()
     store.conversation_exists = AsyncMock(return_value=True)
@@ -507,17 +494,79 @@ async def test_delete_conversation_stops_turn_drops_cache_and_deletes_rows() -> 
             manager, "cancel_turn", new=AsyncMock(return_value={"cancelled": False})
         ) as cancel,
         patch.object(
-            manager, "drop_cached_conversation_agent", return_value=True
+            manager,
+            "drop_cached_conversation_agent",
+            new=AsyncMock(return_value=True),
         ) as drop,
     ):
         deleted = await manager.delete_conversation("conv-1")
 
     assert deleted is True
     cancel.assert_awaited_once_with("conv-1")
-    drop.assert_called_once_with("conv-1")
+    drop.assert_awaited_once_with("conv-1")
     store.delete_conversation.assert_awaited_once_with("conv-1")
     assert "agent-1" not in manager._agent_to_conversation
     assert "conv-1" not in manager._observed_runtimes
+
+
+async def test_drop_cached_conversation_agent_closes_runtime_and_indexes() -> None:
+    manager = manager_with_store()
+    runtime = MagicMock()
+    runtime.idle_timeout_s = 0.0
+    runtime.close = AsyncMock()
+
+    manager._runtimes["conv-1"] = runtime
+    manager._agent_to_conversation["agent-1"] = "conv-1"
+    manager._observed_runtimes["conv-1"] = id(runtime)
+    manager._cancel_events["conv-1"] = asyncio.Event()
+    manager._sse_projector._sequence_by_conversation["conv-1"] = 3
+    manager._sse_projector.project_runtime_event(
+        "conv-1",
+        RuntimeEvent(
+            name="output.chunk",
+            agent_id="agent-1",
+            agent_name="test-agent",
+            data={
+                "parent_id": "call-1",
+                "tool_name": "execute_python",
+                "blocks": [{"type": "text", "text": "stdout"}],
+            },
+            timestamp=1234567890.0,
+        ),
+    )
+
+    dropped = await manager.drop_cached_conversation_agent("conv-1")
+
+    assert dropped is True
+    runtime.close.assert_awaited_once()
+    assert "conv-1" not in manager._runtimes
+    assert "agent-1" not in manager._agent_to_conversation
+    assert "conv-1" not in manager._observed_runtimes
+    assert "conv-1" not in manager._cancel_events
+    assert "conv-1" not in manager._sse_projector._sequence_by_conversation
+    assert manager._sse_projector._tool_result_text_by_key == {}
+
+
+async def test_conversation_runtime_expires_with_runtime_idle_timeout() -> None:
+    manager = manager_with_store()
+    runtime = MagicMock()
+    runtime.idle_timeout_s = 0.01
+    runtime.close = AsyncMock()
+
+    manager._runtimes["conv-1"] = runtime
+    manager._agent_to_conversation["agent-1"] = "conv-1"
+    manager._observed_runtimes["conv-1"] = id(runtime)
+    manager._sse_projector._sequence_by_conversation["conv-1"] = 1
+
+    manager._touch_runtime_expiry("conv-1", runtime)
+    await asyncio.sleep(0.05)
+
+    runtime.close.assert_awaited_once()
+    assert "conv-1" not in manager._runtimes
+    assert "agent-1" not in manager._agent_to_conversation
+    assert "conv-1" not in manager._observed_runtimes
+    assert "conv-1" not in manager._runtime_expiry_tasks
+    assert "conv-1" not in manager._sse_projector._sequence_by_conversation
 
 
 def manager_with_store() -> ConversationManager:
@@ -571,6 +620,7 @@ async def test_cancel_turn_awaits_task_and_returns_receipt() -> None:
     manager._agent_to_conversation["agent-1"] = "conv-1"
 
     runtime = MagicMock()
+    runtime.idle_timeout_s = 0.0
     fake_agent = MagicMock(id="agent-1")
     runtime.conversation_agents = {}  # cache miss path
     runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
@@ -701,6 +751,7 @@ async def test_send_during_inflight_awaits_existing_task() -> None:
     manager._agent_to_conversation["agent-1"] = "conv-1"
 
     runtime = MagicMock()
+    runtime.idle_timeout_s = 0.0
     fake_agent = MagicMock(id="agent-1")
     runtime.conversation_agents = {}  # cache miss path
     runtime.ensure_conversation_agent = AsyncMock(return_value=fake_agent)
@@ -830,6 +881,7 @@ async def test_cancel_turn_persists_partial_assistant_to_db() -> None:
     manager._agent_to_conversation["agent-1"] = "conv-1"
 
     runtime = MagicMock()
+    runtime.idle_timeout_s = 0.0
     fake_agent = MagicMock(id="agent-1", name="test-agent")
     # ``agent.llm.model`` is referenced when building the llm.finished payload.
     fake_agent.llm = MagicMock(model="test-model")

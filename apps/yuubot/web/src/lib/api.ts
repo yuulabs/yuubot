@@ -19,6 +19,8 @@ import type {
   ListResponse,
   LiveCapability,
   LiveCapabilitiesResponse,
+  ActorSkillsView,
+  SkillInfo,
   ResourceType,
   SingleResponse,
   ErrorResponse,
@@ -136,6 +138,34 @@ export async function getLiveCapabilities(): Promise<LiveCapability[]> {
     `${BASE}/live-capabilities`,
   );
   return res.capabilities;
+}
+
+export async function getActorSkills(actorId: string): Promise<ActorSkillsView> {
+  const res = await request<SingleResponse<ActorSkillsView>>(
+    `${BASE}/actors/${actorId}/skills`,
+  );
+  return res.data;
+}
+
+export async function importActorSkill(
+  actorId: string,
+  name: string,
+): Promise<SkillInfo> {
+  const res = await request<SingleResponse<SkillInfo>>(
+    `${BASE}/actors/${actorId}/skills/import`,
+    { method: "POST", body: JSON.stringify({ name }) },
+  );
+  return res.data;
+}
+
+export async function deleteActorSkill(
+  actorId: string,
+  name: string,
+): Promise<void> {
+  await request<void>(
+    `${BASE}/actors/${actorId}/skills/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
 }
 
 // ---------------------------------------------------------------------------

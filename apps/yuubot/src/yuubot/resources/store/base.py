@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tortoise.context import TortoiseContext, _current_context
+from tortoise.exceptions import OperationalError
 from tortoise.transactions import in_transaction
 
 
@@ -64,6 +65,21 @@ class DB:
 
     async def _migrate_orm(self) -> None:
         await self._ctx.generate_schemas(safe=True)
+        await self._ensure_actor_skill_scope_column()
+
+    async def _ensure_actor_skill_scope_column(self) -> None:
+        connection_name = self._ctx.default_connection
+        if connection_name is None:
+            raise RuntimeError("database default connection is not initialized")
+        connection = self._ctx.connections.get(connection_name)
+        try:
+            await connection.execute_script(
+                "ALTER TABLE actors ADD COLUMN skill_scope VARCHAR(255) "
+                "NOT NULL DEFAULT 'global_and_local';"
+            )
+        except OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
     async def _close_orm(self) -> None:
         await self._ctx.close_connections()

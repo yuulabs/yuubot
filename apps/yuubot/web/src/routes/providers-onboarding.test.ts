@@ -24,7 +24,7 @@ test("providers.tsx ships the onboarding dialog description verbatim", () => {
 });
 
 test("providers.tsx sources preset ids from the shared @/lib/presets module", () => {
-  // The four stable seeded preset ids now live in @/lib/presets (covered by
+  // The stable seeded preset ids now live in @/lib/presets (covered by
   // actors-update-presets.test). providers.tsx must import from there rather
   // than re-declaring the ids inline.
   assert.ok(
@@ -57,9 +57,9 @@ test("providers.tsx sends editable daily_usd and monthly_usd budget fields", () 
 });
 
 test("providers.tsx binds created Actors to the new backend via the shared payload helper", () => {
-  // The concrete binding fields (default_llm_backend_id / default_budget /
-  // max_usd=2.0) live in @/lib/presets (covered by actors-update-presets.test);
-  // providers.tsx must route through that helper so the binding is shared.
+  // The concrete binding fields live in @/lib/presets (covered by
+  // actors-update-presets.test); providers.tsx must route through that helper
+  // so the binding is shared.
   assert.ok(
     providersSrc.includes("presetActorCreatePayload"),
     "providers.tsx must build preset Actor payloads via presetActorCreatePayload",

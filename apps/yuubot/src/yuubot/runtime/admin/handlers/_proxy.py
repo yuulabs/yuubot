@@ -77,3 +77,33 @@ def make_proxy_daemon_conversations_handler(
         )
 
     return proxy_daemon_conversations
+
+
+def make_proxy_daemon_actor_skills_handler(
+    *,
+    daemon: DaemonClient,
+    _request_daemon_fn: RequestDaemonFn | None = None,
+):
+    _req = _request_daemon_fn if _request_daemon_fn is not None else _request_daemon
+
+    async def proxy_daemon_actor_skills(request: Request) -> Response:
+        body = await request.body()
+        actor_id = request.path_params["actor_id"]
+        daemon_path = f"/api/actors/{actor_id}/skills"
+        path = request.path_params.get("path")
+        if path:
+            daemon_path += "/" + path
+        response = await _req(
+            daemon,
+            daemon_path,
+            method=request.method,
+            body=body,
+            content_type=request.headers.get("content-type", "application/json"),
+        )
+        return Response(
+            response.body,
+            status_code=response.status_code,
+            media_type=response.content_type,
+        )
+
+    return proxy_daemon_actor_skills

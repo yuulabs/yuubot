@@ -8,6 +8,7 @@ from typing import TypeVar
 import msgspec
 
 from yuubot.core.llm import BoundLLM
+from yuubot.core.skills import SkillInfo, loaded_skills
 from yuubot.core.validation import (
     ConfigurationError,
     GenerationParams,
@@ -39,6 +40,7 @@ class ActorBinding(msgspec.Struct):
 
     resolved: ResolvedActor
     workspace_path: Path | None = None
+    global_skills_path: Path | None = None
 
     @property
     def actor(self) -> ActorRecord:
@@ -72,6 +74,12 @@ class ActorBinding(msgspec.Struct):
             ),
             budget=self.actor.per_run_budget,
             workspace_path=workspace_path or self.workspace_path,
+            skills=loaded_skills(
+                global_root=self.global_skills_path or Path(""),
+                actor_workspace=workspace_path or self.workspace_path,
+                scope=self.actor.skill_scope,
+                include_content=False,
+            ),
         )
 
 
@@ -85,6 +93,7 @@ class AgentBinding(msgspec.Struct):
     llm: BoundLLM
     budget: RunBudget
     workspace_path: Path | None = None
+    skills: tuple[SkillInfo, ...] = ()
 
     def require_workspace_path(self) -> Path:
         if self.workspace_path is None:
@@ -97,11 +106,13 @@ async def load_actor_binding(
     actor_id: str,
     *,
     workspace_path: Path | None = None,
+    global_skills_path: Path | None = None,
 ) -> ActorBinding:
     resolved = await resolve_actor(repository, actor_id)
     return ActorBinding(
         resolved=resolved,
         workspace_path=workspace_path,
+        global_skills_path=global_skills_path,
     )
 
 
@@ -182,6 +193,7 @@ def agent_binding_from_resolved_conversation(
     resolved: ResolvedConversation,
     *,
     workspace_path: Path | None = None,
+    global_skills_path: Path | None = None,
 ) -> AgentBinding:
     conversation = resolved.conversation
     return AgentBinding(
@@ -197,6 +209,12 @@ def agent_binding_from_resolved_conversation(
         ),
         budget=resolved.actor.per_run_budget,
         workspace_path=workspace_path,
+        skills=loaded_skills(
+            global_root=global_skills_path or Path(""),
+            actor_workspace=workspace_path,
+            scope=resolved.actor.skill_scope,
+            include_content=False,
+        ),
     )
 
 

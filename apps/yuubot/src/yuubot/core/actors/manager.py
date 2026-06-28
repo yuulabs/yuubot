@@ -25,6 +25,7 @@ class ActorManager:
     factories: ActorFactoryRegistry
     gateway: Gateway
     workspace_resolver: ActorWorkspaceResolver
+    global_skills_path: Path | None = None
     _actors: dict[str, Actor] = field(default_factory=dict, init=False)
     _actor_workspaces: dict[str, Path] = field(default_factory=dict, init=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
@@ -41,6 +42,7 @@ class ActorManager:
             self.repository,
             actor_id,
             workspace_path=workspace_path,
+            global_skills_path=self.global_skills_path,
         )
         actor = await self._create_actor(binding)
         try:

@@ -37,6 +37,8 @@ from yuuagents.tool.primitives import ToolResult
 from yuubot.core.costing import calculate_cost
 from yuubot.resources.records import ModelConfig
 
+from ._constants import PYTHON_PROVIDER_KEY
+from ._python_tool import ExecutePythonTool
 from ._rollover import (
     _agent_needs_rollover,
     _compacted_history,
@@ -86,6 +88,7 @@ class YuuAgentsActorRuntime:
     _idle_expiry_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
     _agent_budgets: dict[str, Budget] = field(default_factory=dict)
     _schedule_store: dict[str, dict[str, object]] = field(default_factory=dict)
+    _python_kernel_reset_agents: set[str] = field(default_factory=set)
 
     # ── Public API ───────────────────────────────────────────────
 
@@ -153,6 +156,7 @@ class YuuAgentsActorRuntime:
         cancel_event: asyncio.Event | None = None,
     ) -> Agent:
         agent = await self.ensure_conversation_agent(conversation_id, [])
+        message = self._with_python_reset_notice(agent, message)
         agent.append(message)
         await self._run_agent_turn(
             agent,
@@ -207,9 +211,10 @@ class YuuAgentsActorRuntime:
         job_id = str(payload.get("job_id", ""))
         cron = str(payload.get("cron", ""))
         actions = payload.get("actions", ())
+        action_list = list(actions) if isinstance(actions, tuple | list) else []
         self._schedule_store[job_id] = {
             "cron": cron,
-            "actions": list(actions) if isinstance(actions, tuple | list) else list(actions),
+            "actions": action_list,
             "once": bool(payload.get("once", False)),
         }
         return f"Created cron job {job_id}: {cron}"
@@ -242,6 +247,7 @@ class YuuAgentsActorRuntime:
         if agent is None:
             return None
         if message is not None:
+            message = self._with_python_reset_notice(agent, message)
             agent.append(message)
         await self._run_agent_turn(agent)
         return agent
@@ -279,6 +285,7 @@ class YuuAgentsActorRuntime:
         message: yuullm.Message | None,
     ) -> Agent:
         if message is not None:
+            message = self._with_python_reset_notice(agent, message)
             agent.append(message)
         await self._run_agent_turn(agent)
         return agent
@@ -525,6 +532,7 @@ class YuuAgentsActorRuntime:
                     await self._rollover_if_needed(agent, budget)
 
                 self._touch_agent(agent)
+                await self._close_agent_python_kernel(agent)
 
                 # ``agent.turn_completed`` is the sole turn-end signal. The
                 # natural-done path emits it directly; the cancel break-out
@@ -538,6 +546,47 @@ class YuuAgentsActorRuntime:
                         "agent_name": agent.name,
                     },
                 )
+
+    async def _close_agent_python_kernel(self, agent: Agent) -> None:
+        try:
+            _definition, tool = self.stage.runtime.registry.resolve(PYTHON_PROVIDER_KEY)
+        except KeyError:
+            return
+        if not isinstance(tool, ExecutePythonTool):
+            return
+        closed = await tool.close_session()
+        if closed:
+            self._python_kernel_reset_agents.add(agent.id)
+
+    def _with_python_reset_notice(
+        self,
+        agent: Agent,
+        message: yuullm.Message,
+    ) -> yuullm.Message:
+        if agent.id not in self._python_kernel_reset_agents:
+            return message
+        self._python_kernel_reset_agents.remove(agent.id)
+        if message.role != "user":
+            return message
+        return yuullm.Message(
+            role="user",
+            content=[
+                typecast(
+                    yuullm.TextItem,
+                    {
+                        "type": "text",
+                        "text": (
+                            "[system] Your Python kernel has been reset. Python "
+                            "variables, imports, open files, background tasks, "
+                            "and in-memory objects from your previous response "
+                            "are gone. Workspace files are preserved."
+                        ),
+                    },
+                ),
+                *message.content,
+            ],
+            provider_extra=dict(message.provider_extra),
+        )
 
     async def _cancel_inflight_tool_calls(self, agent: Agent) -> None:
         """Cancel running tool tasks and synthesize ``[cancelled]`` results.

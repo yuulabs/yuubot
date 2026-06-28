@@ -110,6 +110,70 @@ async def test_github_facade_missing_repo_returns_bridge_error() -> None:
         await bridge.stop()
 
 
+async def test_web_facade_reaches_integration_bridge() -> None:
+    requests: list[tuple[str, str, dict[str, object]]] = []
+    bridge = IntegrationInvokeBridge(cast(IntegrationCore, _FakeIntegrationCore(requests)))
+    await bridge.start()
+    endpoint = bridge.endpoint
+    context_mod = types.ModuleType(FACADE_CONTEXT_MODULE)
+    context_mod.__dict__.update(
+        {
+            "ACTOR_ID": "actor-1",
+            "AGENT_NAME": "agent-1",
+            "SESSION_ID": "session-1",
+            "MAILBOX_ID": "actor:actor-1",
+            "HOST": endpoint.host,
+            "PORT": endpoint.port,
+            "TOKEN": endpoint.token,
+            "TIMEOUT_S": 5.0,
+        }
+    )
+    sys.modules[FACADE_CONTEXT_MODULE] = context_mod
+    try:
+        import yext.web
+
+        results = await yext.web.search(
+            "site:example.test topic",
+            max_results=2,
+            integration_id="web-main",
+        )
+        page = await yext.web.read(results[0].url, max_chars=7, integration_id="web-main")
+        asset = await yext.web.download(
+            page.image_urls[0],
+            filename="pixel",
+            max_bytes=100,
+            integration_id="web-main",
+        )
+    finally:
+        sys.modules.pop(FACADE_CONTEXT_MODULE, None)
+        await bridge.stop()
+
+    assert requests == [
+        (
+            "web-main",
+            "web.search",
+            {"query": "site:example.test topic", "max_results": 2},
+        ),
+        (
+            "web-main",
+            "web.read",
+            {"url": "https://example.test/page", "max_chars": 7},
+        ),
+        (
+            "web-main",
+            "web.download",
+            {
+                "url": "https://example.test/pixel.png",
+                "filename": "pixel",
+                "max_bytes": 100,
+            },
+        ),
+    ]
+    assert str(results[0]) == "Example [https://example.test/page] - Snippet"
+    assert page.text == "content"
+    assert asset.path == "downloads/web/pixel.png"
+
+
 class _FakeIntegrationCore:
     def __init__(self, requests: list[tuple[str, str, dict[str, object]]]) -> None:
         self.requests = requests
@@ -124,7 +188,9 @@ class _FakeIntegrationCore:
         integration_id: str = "",
     ) -> object:
         _ = actor_id, context
-        if not payload["owner"] or not payload["repo"]:
+        if capability_id.startswith("github.") and (
+            not payload["owner"] or not payload["repo"]
+        ):
             raise ValueError("owner and repo are required for GitHub capability calls")
         self.requests.append((integration_id, capability_id, dict(payload)))
         if capability_id == "github.issue.list":
@@ -148,6 +214,54 @@ class _FakeIntegrationCore:
                 content="README content",
                 encoding="utf-8",
             )
+        if capability_id == "web.search":
+            return _WebSearchResult(
+                results=[
+                    {
+                        "url": "https://example.test/page",
+                        "title": "Example",
+                        "snippet": "Snippet",
+                        "score": 0.8,
+                        "citation": {
+                            "url": "https://example.test/page",
+                            "canonical_url": "https://example.test/page",
+                            "title": "Example",
+                            "source": "tavily",
+                            "fetched_at": "2026-06-28T00:00:00+00:00",
+                        },
+                    }
+                ]
+            )
+        if capability_id == "web.read":
+            return _WebReadResult(
+                url="https://example.test/page",
+                canonical_url="https://example.test/page",
+                title="Example",
+                text="content",
+                links=["https://example.test/next"],
+                image_urls=["https://example.test/pixel.png"],
+                citation={
+                    "url": "https://example.test/page",
+                    "canonical_url": "https://example.test/page",
+                    "title": "Example",
+                    "source": "web",
+                    "fetched_at": "2026-06-28T00:00:00+00:00",
+                },
+            )
+        if capability_id == "web.download":
+            return _WebDownloadResult(
+                path="downloads/web/pixel.png",
+                url="https://example.test/pixel.png",
+                content_type="image/png",
+                bytes=68,
+                sha256="abc123",
+                citation={
+                    "url": "https://example.test/pixel.png",
+                    "canonical_url": "https://example.test/pixel.png",
+                    "source": "web",
+                    "fetched_at": "2026-06-28T00:00:00+00:00",
+                },
+            )
         raise LookupError(capability_id)
 
 
@@ -161,3 +275,26 @@ class _FileResult(msgspec.Struct):
     sha: str
     content: str
     encoding: str
+
+
+class _WebSearchResult(msgspec.Struct):
+    results: list[dict[str, object]]
+
+
+class _WebReadResult(msgspec.Struct):
+    url: str
+    canonical_url: str
+    title: str
+    text: str
+    links: list[str]
+    image_urls: list[str]
+    citation: dict[str, object]
+
+
+class _WebDownloadResult(msgspec.Struct):
+    path: str
+    url: str
+    content_type: str
+    bytes: int
+    sha256: str
+    citation: dict[str, object]

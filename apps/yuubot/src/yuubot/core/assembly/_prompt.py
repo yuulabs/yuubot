@@ -12,6 +12,9 @@ Renders a five-section system prompt contract:
     <per-integration SDK prompt summaries for selected + running integrations;
      default line otherwise>
 
+    # Skills
+    <available skill names and descriptions, local overriding global by name>
+
     # AGENTS.md Context
     <full AGENTS.md text + freeze note when present; default line otherwise>
 
@@ -47,6 +50,7 @@ SECTION_HEADERS: tuple[str, ...] = (
     "Persona",
     "System Instructions",
     "Integration SDKs",
+    "Skills",
     "AGENTS.md Context",
     "Real-Time Data",
 )
@@ -72,6 +76,7 @@ def _system_prompt(
         ("Persona", _render_persona(binding)),
         ("System Instructions", _render_system_instructions(binding, mode)),
         ("Integration SDKs", _render_integration_sections(binding, facade)),
+        ("Skills", _render_skills(binding)),
         ("", _render_extension_fragments()),
         ("AGENTS.md Context", _render_agents_md_context(binding.workspace_path)),
         ("Real-Time Data", _render_realtime()),
@@ -137,6 +142,10 @@ def _workspace_bullets(
         "",
         "Python execution environment:",
         "- execute_python runs in the workspace's isolated .venv; `pd`, `np`, `plt` are pre-imported there — use them directly.",
+        "- Before you send your final response, execute_python calls share the same Python kernel, so variables, imports, and in-memory objects may be reused across those calls.",
+        "- After you send your final response, the Python kernel may be stopped. Do not rely on Python variables, imports, open files, background tasks, or in-memory objects being available in a later response.",
+        "- Persist anything important to workspace files before your final response. Workspace files are preserved across kernel resets.",
+        "- If the Python kernel has been reset before you handle a user message, the system will tell you in that user message.",
         "- To check what is installed: run `uv pip list` (via bash) — it lists the workspace .venv packages.",
         "- To add a package: run `uv add <pkg>` (via bash, in the workspace). Do NOT use `pip install` (it bypasses uv cache isolation).",
         "- After `uv add`/`uv remove`, call the `restart_kernel` tool so the next execute_python starts a fresh kernel in the same .venv and picks up the change.",
@@ -227,6 +236,21 @@ def _render_integration_sections(
     if not sub_sections:
         return _NO_INTEGRATION_SDKS
     return "\n\n".join(sub_sections)
+
+
+def _render_skills(binding: AgentBinding) -> str:
+    if not binding.skills:
+        return "No skills loaded."
+    sections: list[str] = []
+    for skill in binding.skills:
+        source = "local" if skill.source == "local" else "global"
+        line = f"- `{skill.name}` ({source})"
+        description = skill.description.strip()
+        if description:
+            line += f": {description}"
+        line += f"\n  Path: `{skill.path}/SKILL.md`"
+        sections.append(line)
+    return "\n\n".join(sections) or "No skills loaded."
 
 
 def _render_extension_fragments() -> str:

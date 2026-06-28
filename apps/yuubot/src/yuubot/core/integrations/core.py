@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,7 +39,10 @@ from yuubot.resources.store.models import (
 )
 
 if TYPE_CHECKING:
+    from yuubot.core.actors.workspace import ActorWorkspaceResolver
     from yuubot.core.gateway import Gateway
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -64,6 +68,7 @@ class IntegrationCore:
     integrations_root: Path = field(
         default_factory=lambda: Path("~/.yuubot/integrations")
     )
+    workspace_resolver: ActorWorkspaceResolver | None = None
     _instances: dict[str, IntegrationInstance] = field(default_factory=dict, init=False)
     # Records (carrying ``name``) of the running instances, kept in lockstep
     # with ``_instances`` so ``visible_integration_surfaces`` can resolve the
@@ -153,6 +158,17 @@ class IntegrationCore:
             capability_id=capability_id,
             usage=usage,
         )
+        if self.workspace_resolver is not None and not context.workspace_path:
+            context = InvocationContext(
+                actor_id=context.actor_id,
+                workspace_path=str(self.workspace_resolver.resolve(actor_id)),
+                source_id=context.source_id,
+                source_path=context.source_path,
+                integration_id=context.integration_id,
+                capability_id=context.capability_id,
+                usage=context.usage,
+                raw=context.raw,
+            )
         return await capability.invoke(typed_payload, context)
 
     async def enable(self, integration_id: str) -> None:
@@ -204,7 +220,7 @@ class IntegrationCore:
             records = await self.repository.list(IntegrationORM)
             for record in records:
                 if record.enabled:
-                    await self._enable_locked(record.id)
+                    await self._try_enable_locked(record.id)
 
     async def disable_all(self) -> None:
         async with self._lock:
@@ -386,7 +402,13 @@ class IntegrationCore:
         for integration_id in sorted(_integration_refresh_ids(event, enabled_ids)):
             if integration_id in self._instances and event is not None:
                 await self._disable_locked(integration_id)
+            await self._try_enable_locked(integration_id)
+
+    async def _try_enable_locked(self, integration_id: str) -> None:
+        try:
             await self._enable_locked(integration_id)
+        except Exception:
+            logger.exception("failed to enable integration %s", integration_id)
 
     def _storage_for(self, integration_id: str) -> LocalIntegrationStorage:
         data_dir = Path(self.integrations_root).expanduser() / integration_id

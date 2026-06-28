@@ -9,7 +9,7 @@ issue survives through the same API the Admin UI uses, end to end:
       -> Admin creates an OpenAI LLMBackend with only preset metadata + api_key
         -> daemon fills the built-in model catalogue and pricing
       -> Admin mints preset Actors (general, shiori) bound to that backend
-        -> Actor creation passes USD pricing validation (max_usd == 2.0)
+        -> Actor creation leaves per-run budget limits disabled
       -> both Actors are visible and point at the created backend
 
 The OpenAI runtime provider key (``"openai"``) is the design-flagged risk: it
@@ -117,16 +117,16 @@ async def test_openai_out_of_box_scenario(scenario_resources, tmp_path: Path) ->
                         "capability_set_id": capability_id,
                         "llm_backend_id": backend_id,
                         "model": actor_model,
-                        "per_run_budget": {
-                            "max_steps": 6,
-                            "max_tokens": 8192,
-                            "max_usd": 2.0,
-                        },
+                        "per_run_budget": {},
                     },
                 )
                 assert actor_resp.status_code == 201, actor_resp.text
                 actor = actor_resp.json()["data"]
-                assert actor["per_run_budget"]["max_usd"] == 2.0
+                assert actor["per_run_budget"] == {
+                    "max_steps": 0,
+                    "max_tokens": 0,
+                    "max_usd": 0.0,
+                }
                 created_actor_ids.append(actor["id"])
 
             # 5. Both Actors visible and point at the created backend.

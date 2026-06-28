@@ -38,6 +38,7 @@ const DRAFT: ActorEditorState = {
   maxTokens: "8192",
   maxSteps: "6",
   enabled: true,
+  skillScope: "global_and_local",
 };
 
 function ActorsNewPage() {
@@ -93,6 +94,7 @@ function ActorsNewPage() {
         llm_backend_id: state.backendId,
         capability_set_id: state.capabilitySetId,
         per_run_budget: budget,
+        skill_scope: state.skillScope,
       });
       navigate({ to: "/actors/$id", params: { id: created.id } });
     } catch {
