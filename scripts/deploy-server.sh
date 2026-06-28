@@ -172,7 +172,11 @@ install_app_dependencies() {
     info "Building Admin UI"
     (
         cd "$REPO_ROOT/apps/yuubot/web"
-        pnpm install --frozen-lockfile
+        if [[ -f pnpm-lock.yaml ]]; then
+            pnpm install --frozen-lockfile
+        else
+            pnpm install --no-frozen-lockfile
+        fi
         pnpm run build
     )
 
