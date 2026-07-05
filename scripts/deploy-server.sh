@@ -8,8 +8,7 @@ CONFIG_DIR="${YUUBOT_CONFIG_DIR:-/etc/yuubot}"
 CONFIG_FILE="${YUUBOT_CONFIG:-$CONFIG_DIR/config.yaml}"
 ENV_FILE="${YUUBOT_ENV_FILE:-$CONFIG_DIR/yuubot.env}"
 DATA_DIR="${YUU_DATA_DIR:-/var/lib/yuubot}"
-ADMIN_PORT="${YUUBOT_ADMIN_PORT:-8781}"
-DAEMON_PORT="${YUUBOT_DAEMON_PORT:-8780}"
+YUUBOT_PORT="${YUUBOT_PORT:-8765}"
 CADDYFILE="${YUUBOT_CADDYFILE:-/etc/caddy/Caddyfile}"
 CADDY_CONF_DIR="${YUUBOT_CADDY_CONF_DIR:-/etc/caddy/conf.d}"
 CADDY_SITE_FILE="${YUUBOT_CADDY_SITE_FILE:-$CADDY_CONF_DIR/yuubot.caddy}"
@@ -119,29 +118,12 @@ ensure_config() {
 
     if [[ ! -f "$CONFIG_FILE" ]]; then
         sudo_write "$CONFIG_FILE" 0640 <<EOF
-admin:
-  host: 127.0.0.1
-  port: $ADMIN_PORT
-  secret: \${YUU_ADMIN_SECRET}
-
-server:
-  daemon_host: 127.0.0.1
-  daemon_port: $DAEMON_PORT
-  daemon_secret: \${YUU_DAEMON_SECRET}
-
-database:
-  path: \${YUU_DATA_DIR}/yuubot/yuubot.db
-
-secrets:
-  master_key: \${YUU_SECRET_KEY}
-
-trace:
-  enabled: true
-  collector_host: 127.0.0.1
-  collector_port: 4318
-
-paths:
-  data_dir: \${YUU_DATA_DIR}
+data_dir: $DATA_DIR
+admin_url_base: http://127.0.0.1:$YUUBOT_PORT
+public_url_base: http://127.0.0.1:$YUUBOT_PORT
+trusted_proxies: [127.0.0.1]
+admin_auth:
+  mode: loopback_bypass
 EOF
         sudo chown "root:$SERVICE_GROUP" "$CONFIG_FILE"
     else
@@ -149,15 +131,8 @@ EOF
     fi
 
     if [[ ! -f "$ENV_FILE" ]]; then
-        local secret_key admin_secret daemon_secret
-        secret_key="$(openssl rand -base64 32)"
-        admin_secret="$(rand_token)"
-        daemon_secret="$(rand_token)"
         sudo_write "$ENV_FILE" 0640 <<EOF
 YUU_DATA_DIR=$DATA_DIR
-YUU_SECRET_KEY=$secret_key
-YUU_ADMIN_SECRET=$admin_secret
-YUU_DAEMON_SECRET=$daemon_secret
 EOF
         sudo chown "root:$SERVICE_GROUP" "$ENV_FILE"
     else
@@ -171,7 +146,7 @@ install_app_dependencies() {
 
     info "Building Admin UI"
     (
-        cd "$REPO_ROOT/apps/yuubot/web"
+        cd "$REPO_ROOT/web"
         if [[ -f pnpm-lock.yaml ]]; then
             pnpm install --frozen-lockfile
         else
@@ -187,7 +162,7 @@ install_app_dependencies() {
         source "$ENV_FILE"
         set +a
         cd "$REPO_ROOT"
-        uv run ybot --config "$CONFIG_FILE" check
+        uv run ybot check "$CONFIG_FILE" --json
     )
 }
 
@@ -198,9 +173,11 @@ install_systemd_units() {
     uv_dir="$(dirname "$uv_path")"
     service_path="$uv_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-    sudo_write /etc/systemd/system/yuubot-daemon.service 0644 <<EOF
+    sudo rm -f /etc/systemd/system/yuubot-daemon.service /etc/systemd/system/yuubot-admin.service
+
+    sudo_write /etc/systemd/system/yuubot.service 0644 <<EOF
 [Unit]
-Description=yuubot daemon
+Description=yuubot
 After=network-online.target
 Wants=network-online.target
 
@@ -211,29 +188,7 @@ Group=$SERVICE_GROUP
 WorkingDirectory=$REPO_ROOT
 EnvironmentFile=$ENV_FILE
 Environment="PATH=$service_path"
-ExecStart=$uv_path run ybot --config $CONFIG_FILE daemon
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo_write /etc/systemd/system/yuubot-admin.service 0644 <<EOF
-[Unit]
-Description=yuubot admin
-After=network-online.target yuubot-daemon.service
-Wants=network-online.target
-Requires=yuubot-daemon.service
-
-[Service]
-Type=simple
-User=$SERVICE_USER
-Group=$SERVICE_GROUP
-WorkingDirectory=$REPO_ROOT
-EnvironmentFile=$ENV_FILE
-Environment="PATH=$service_path"
-ExecStart=$uv_path run ybot --config $CONFIG_FILE admin
+ExecStart=$uv_path run ybot serve $CONFIG_FILE --host 127.0.0.1 --port $YUUBOT_PORT
 Restart=on-failure
 RestartSec=5
 
@@ -242,9 +197,9 @@ WantedBy=multi-user.target
 EOF
 
     sudo systemctl daemon-reload
-    sudo systemctl enable yuubot-daemon.service yuubot-admin.service
-    sudo systemctl restart yuubot-daemon.service
-    sudo systemctl restart yuubot-admin.service
+    sudo systemctl disable yuubot-daemon.service yuubot-admin.service >/dev/null 2>&1 || true
+    sudo systemctl enable yuubot.service
+    sudo systemctl restart yuubot.service
 }
 
 prompt_caddy_config() {
@@ -296,7 +251,7 @@ $domain {
         $username $hash
     }
 
-    reverse_proxy 127.0.0.1:$ADMIN_PORT
+    reverse_proxy 127.0.0.1:$YUUBOT_PORT
 }
 EOF
 
@@ -321,8 +276,8 @@ Cloudflare / DNS remaining work:
   4. Ensure the server firewall allows 80/tcp and 443/tcp.
 
 Service checks:
-  sudo systemctl status yuubot-daemon yuubot-admin caddy
-  sudo journalctl -u yuubot-daemon -u yuubot-admin -f
+  sudo systemctl status yuubot caddy
+  sudo journalctl -u yuubot -f
 
 Open:
   https://$domain

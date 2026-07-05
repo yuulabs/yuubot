@@ -15,7 +15,7 @@ wheels/
 
 # JavaScript dependencies and generated output
 node_modules/
-pnpm-lock.yaml
+web/dist/
 
 # Virtual environments and local tool state
 .venv/
@@ -25,6 +25,8 @@ env/
 .cache/
 .opencode/
 .claude/
+.agents/
+.codex/
 
 # Local config, secrets, and runtime data
 .env
@@ -32,25 +34,16 @@ env/
 config.yaml
 llm.yaml
 docker_config.yaml
-yuuagents.config.yaml
 .pypirc
 *.db
 *.sqlite
 *.sqlite3
-traces.db
+.yuubot-data/
 
 # Developer WIP notes; intentionally untracked
 warroom/
-apps/*/warroom/
-
-# Downloaded/vendor binaries
-vendor/
 
 # Preserve frontend source directories named lib
-!apps/yuubot/web/src/lib/
-.agents/
+!web/src/lib/
 .timetracking/
-
-# Local tooling artifacts
-.codex/
-skills-lock.json
+amy/
