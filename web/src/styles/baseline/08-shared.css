@@ -1,0 +1,64 @@
+/* ============================================================
+   SHARED: chips extras, links, tables, forms
+   ============================================================ */
+.chip--muted { color: var(--text-3); }
+.chip--kind { font-family: var(--ff-mono); font-size: 11px; padding: 1px 6px; }
+.chip--cap { font-size: 11.5px; padding: 3px 8px 3px 4px; gap: 4px; }
+.chip--cap .chip__src { font-family: var(--ff-mono); font-size: 10px; color: var(--text-3); background: var(--surface-3); padding: 1px 5px; border-radius: var(--r-sm); border: 1px solid var(--border); }
+.ac__row--nowrap .chip { white-space: nowrap; }
+
+.inline-link { background: none; border: 0; color: var(--ink-2); font: inherit; font-weight: 500; cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px; }
+.inline-link:hover { opacity: .75; }
+.req { color: var(--red); margin-left: 2px; }
+.btn--block { width: 100%; justify-content: center; }
+
+/* ---------- generic data table ---------- */
+.table-wrap { border: 1px solid var(--border-hi); border-radius: var(--r-lg); overflow: hidden; background: var(--surface); box-shadow: var(--shadow); }
+.data-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.data-table thead th {
+  text-align: left; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--cyan-deep); padding: 9px 12px; background: var(--surface-2); border-bottom: 1px solid var(--border-hi);
+  white-space: nowrap;
+}
+.data-table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.data-table tbody tr:last-child td { border-bottom: 0; }
+.data-table tbody tr:hover { background: var(--surface-4); }
+.mono-cell { font-family: var(--ff-mono); font-size: 11.5px; color: var(--text-2); }
+.text-sub { color: var(--text-3); font-size: 12px; }
+.font-medium { font-weight: 500; }
+.num-badge { font-size: 11px; font-weight: 600; color: var(--navy); background: var(--surface-4); border: 1px solid var(--yellow-deep); padding: 1px 7px; border-radius: var(--r-full); }
+.used-badge { font-size: 10px; color: var(--navy); background: var(--surface-4); padding: 1px 6px; border-radius: var(--r-sm); margin-left: 6px; vertical-align: middle; border: 1px solid var(--yellow-deep); }
+.row-actions { text-align: right; white-space: nowrap; }
+.row-actions .icon-btn { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: var(--r-sm); background: transparent; border: 0; cursor: pointer; color: var(--text-3); transition: background .1s, color .1s; vertical-align: middle; }
+.row-actions .icon-btn:hover { background: var(--surface-4); color: var(--text); }
+.row-actions .icon-btn.is-ok:hover { color: var(--green); }
+.row-actions .icon-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.row-actions .icon-btn.is-danger:hover { color: var(--red); }
+
+/* ---------- CRUD split layout (table + side form) ---------- */
+.crud-split { display: grid; grid-template-columns: 1fr 320px; gap: var(--sp-5); align-items: start; margin-top: var(--sp-2); }
+@media (max-width: 1080px) { .crud-split { grid-template-columns: 1fr; } }
+
+.crud-head { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border); }
+.crud-head__title { margin: 0; font-size: 14px; font-weight: 600; }
+.crud-head__count { font-size: 11.5px; font-weight: 500; color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border); padding: 1px 7px; border-radius: var(--r-full); }
+
+.crud-empty { text-align: center; padding: var(--sp-8) var(--sp-4); color: var(--text-2); border: 1px dashed var(--border-hi); border-radius: var(--r-lg); background: var(--surface); }
+.crud-empty .empty__ill { font-size: 32px; color: var(--text-3); margin-bottom: var(--sp-2); }
+.crud-empty h3 { margin: 0 0 var(--sp-1); color: var(--text); font-weight: 600; font-size: 14px; }
+.crud-empty p { margin: 0; font-size: 12.5px; }
+
+.crud-form { position: sticky; top: 72px; background: var(--surface); border: 1px solid var(--border-hi); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); }
+.crud-form__head { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-4); border-bottom: 1px solid var(--border); }
+.crud-form__icon { width: 32px; height: 32px; border-radius: var(--r-md); display: grid; place-items: center; background: var(--surface-4); border: 1.5px solid var(--yellow-deep); color: var(--navy); flex-shrink: 0; }
+.crud-form__icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+.crud-form__title { font-weight: 600; font-size: 13.5px; }
+.crud-form__sub { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+.crud-form__body { padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-4); }
+.crud-form__actions { margin-top: var(--sp-1); }
+
+/* ---------- source chips (ingress form helpers) ---------- */
+.source-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.source-chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--ff-mono); font-size: 11px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-2); padding: 3px 8px; border-radius: var(--r-sm); cursor: pointer; transition: border-color .1s, color .1s, background .1s; }
+.source-chip:hover { border-color: var(--navy); color: var(--text); background: var(--surface-4); }
+.source-chip__icon { font-size: 11px; }

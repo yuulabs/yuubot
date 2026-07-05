@@ -1,0 +1,58 @@
+/* ============================================================
+   Modal & Toast
+   ============================================================ */
+.modal { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; }
+.modal__backdrop { position: absolute; inset: 0; background: rgba(7, 26, 61, .38); animation: fade .15s; }
+.modal__panel {
+  position: relative; z-index: 1; width: min(400px, 92vw);
+  background: var(--surface); border: 1px solid var(--border-hi);
+  border-radius: var(--r-lg); padding: var(--sp-5); box-shadow: var(--shadow-lg);
+  animation: rise .15s cubic-bezier(.2,.7,.2,1); text-align: center;
+}
+.modal__icon {
+  width: 40px; height: 40px; margin: 0 auto var(--sp-3);
+  border-radius: 50%; display: grid; place-items: center;
+  background: #fff0f6;
+  color: var(--red); font-weight: 600; font-size: 18px;
+  border: 1px solid #ffb7cc;
+}
+.modal__title { margin: 0 0 var(--sp-1); font-size: 15px; font-weight: 600; }
+.modal__body { margin: 0 0 var(--sp-5); color: var(--text-2); }
+.modal__actions { display: flex; justify-content: center; gap: var(--sp-3); }
+@keyframes fade { from { opacity: 0; } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px) scale(.99); } }
+
+.toast-stack { position: fixed; bottom: var(--sp-6); right: var(--sp-6); z-index: 200; display: flex; flex-direction: column; gap: var(--sp-2); align-items: flex-end; }
+.toast {
+  display: flex; align-items: center; gap: var(--sp-2);
+  background: var(--surface); border: 1px solid var(--border-hi);
+  border-radius: var(--r-md); padding: 9px 13px; box-shadow: var(--shadow-lg);
+  font-size: 12.5px; font-weight: 500;
+  animation: toast-in .2s cubic-bezier(.2,.7,.2,1);
+}
+.toast.is-out { animation: toast-out .15s ease forwards; }
+.toast__dot { width: 7px; height: 7px; border-radius: 50%; }
+.toast--ok .toast__dot { background: var(--green); }
+.toast--err .toast__dot { background: var(--red); }
+.toast--info .toast__dot { background: var(--ink-2); }
+@keyframes toast-in { from { opacity: 0; transform: translateX(16px); } }
+@keyframes toast-out { to { opacity: 0; transform: translateX(16px); } }
+
+/* ---------- View transitions ---------- */
+.view { animation: venter .2s cubic-bezier(.2,.7,.2,1); }
+@keyframes venter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------- Scrollbars ---------- */
+* { scrollbar-width: thin; scrollbar-color: var(--border-hi) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--border-hi); border-radius: var(--r-full); border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: content-box; }

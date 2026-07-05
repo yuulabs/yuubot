@@ -1,0 +1,15 @@
+/* ============================================================
+   INGRESS VIEW
+   ============================================================ */
+.ingress-flow { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-3) var(--sp-4); background: var(--surface); border: 1px solid var(--border-hi); border-radius: var(--r-lg); margin-bottom: var(--sp-5); box-shadow: var(--shadow); }
+.ingress-flow__node { font-family: var(--ff-mono); font-size: 11.5px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); padding: 5px 11px; border-radius: var(--r-sm); }
+.ingress-flow__node--accent { background: var(--navy); color: var(--cyan); border-color: var(--navy); }
+.ingress-flow__arrow { width: 18px; height: 18px; flex-shrink: 0; fill: none; stroke: var(--text-3); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.rule-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.rule-compact { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; padding: var(--sp-3); background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--r-md); }
+.rule-compact__left { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.rule-compact__right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rule-src code, .rule-path { font-size: 11.5px; }
+.rule-path { color: var(--text-2); background: var(--surface); padding: 1px 6px; border-radius: var(--r-sm); border: 1px solid var(--border); }
+.rule-flow { width: 14px; height: 14px; fill: none; stroke: var(--text-3); stroke-width: 1.6; flex-shrink: 0; }

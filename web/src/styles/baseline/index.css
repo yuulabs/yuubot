@@ -1,0 +1,15 @@
+/* Galgame Uniform baseline design system — import order preserves cascade. */
+@import "./01-tokens.css";
+@import "./02-shell.css";
+@import "./03-components.css";
+@import "./04-editor.css";
+@import "./05-modal.css";
+@import "./06-providers.css";
+@import "./07-conversations.css";
+@import "./08-shared.css";
+@import "./09-ingress.css";
+@import "./11-visual-polish.css";
+@import "./12-art-direction.css";
+@import "./13-react-adapters.css";
+@import "./14-monitor.css";
+@import "./15-resource-cards.css";
