@@ -26,6 +26,8 @@ from ..domain.messages import (
     ToolResult,
 )
 from ..domain.stream import StreamEvent, Usage, estimate_cost
+from ..util.paths import safe_workspace_path
+from ..util.stream import stream_stop_event
 from ..runtime.cache import CachePool
 from .catalog import merge_catalog
 from .protocol import Provider
@@ -101,7 +103,7 @@ class OpenAIProvider:
     ) -> AsyncIterator[StreamEvent]:
         usage = Usage()
         if stop_event.is_set():
-            yield _stream_stop("interrupted", usage, {}, cost_estimated=False)
+            yield stream_stop_event("interrupted", usage, {}, cost_estimated=False)
             return
         upstream = await self._completion_stream(input, model, context, cache)
         tool_state = ToolStreamState()
@@ -109,7 +111,7 @@ class OpenAIProvider:
         try:
             async for chunk in upstream:
                 if stop_event.is_set():
-                    yield _stream_stop("interrupted", usage, {}, cost_estimated=False)
+                    yield stream_stop_event("interrupted", usage, {}, cost_estimated=False)
                     return
                 for event in _events_from_chunk(chunk, tool_state):
                     yield event
@@ -127,7 +129,7 @@ class OpenAIProvider:
         if payg is None and _has_tokens(usage):
             payg = estimate_cost(model, usage)
             cost_estimated = True
-        yield _stream_stop(finish_reason, _usage_with_payg(usage, payg), {}, cost_estimated=cost_estimated)
+        yield stream_stop_event(finish_reason, _usage_with_payg(usage, payg), {}, cost_estimated=cost_estimated)
 
     async def close(self) -> None:
         if self._client is not None:
@@ -165,80 +167,6 @@ class OpenAIProvider:
                 timeout=_timeout(self.config),
             )
         return self._client
-
-
-@define
-class ScriptedProvider:
-    """Deterministic provider replaying pre-scripted event steps; for tests."""
-
-    steps: list[list[StreamEvent]]
-    _index: int = field(default=0, init=False)
-
-    async def list_presets(self) -> list[ModelCard]:
-        return []
-
-    async def list_remote_models(self) -> list[str]:
-        return []
-
-    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
-        return merge_catalog(presets, remote)
-
-    async def get_balance(self) -> AccountSnapshot | None:
-        return None
-
-    async def validate(self) -> ValidationResult:
-        return ValidationResult(ok=True)
-
-    async def stream(
-        self,
-        input: LLMInput,
-        *,
-        model: ModelCard,
-        context: ConversationContext,
-        cache: CachePool,
-        stop_event: asyncio.Event,
-    ) -> AsyncIterator[StreamEvent]:
-        del input, model, context, cache
-        if stop_event.is_set():
-            yield _stream_stop("interrupted", Usage(), {}, cost_estimated=False)
-            return
-        events = self.steps[min(self._index, len(self.steps) - 1)]
-        self._index += 1
-        for event in events:
-            yield event
-
-    async def close(self) -> None:
-        return None
-
-
-def scripted_reply(text: str) -> ScriptedProvider:
-    return ScriptedProvider(
-        [
-            [
-                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": text}),
-                _stream_stop("stop", Usage(), {}, cost_estimated=False),
-            ]
-        ]
-    )
-
-
-def _stream_stop(
-    reason: str,
-    usage: Usage,
-    account: dict[str, object],
-    *,
-    cost_estimated: bool,
-) -> StreamEvent:
-    return StreamEvent(
-        group_id="stop",
-        kind="stream_stop",
-        payload={
-            "reason": reason,
-            "usage": msgspec.to_builtins(usage),
-            "account": account,
-            "cost_estimated": cost_estimated,
-        },
-    )
 
 
 def _base_url(endpoint: str) -> str:
@@ -368,14 +296,7 @@ def _image_data_url(item: ContentItem, *, workspace: Path, cache: CachePool) -> 
 
 
 def _content_path(value: str, workspace: Path) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        path = workspace / path
-    resolved = path.resolve()
-    root = workspace.resolve()
-    if resolved != root and root not in resolved.parents:
-        raise ValueError(f"path escapes workspace: {value}")
-    return resolved
+    return safe_workspace_path(workspace, value, allow_absolute=True)
 
 
 def _emit_tool_name(index: int, tool_id: str, name: str, state: ToolStreamState, events: list[StreamEvent]) -> None:

@@ -11,6 +11,16 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ...app import Yuubot
+from ...app.cron import (
+    create_cron_job,
+    delete_cron_job,
+    get_cron_job,
+    list_cron_jobs,
+    pause_cron_job,
+    resume_cron_job,
+    save_push_subscription,
+    vapid_public_key_for,
+)
 from ...app.deployment import DeploymentConfig
 from ...app.snapshots import redacted_integration_config
 from ...chat.listener import WsListener
@@ -19,8 +29,8 @@ from ...domain.records import ActorRecord, RouteBody, RouteRecord
 from ...integrations import IntegrationRecord
 from ...llm import ProviderInput, is_configured
 from ...llm.types import ModelCardInput, ProviderSnapshot
-from ...runtime import IncomingMessage
-from ...runtime.inbound import ActorInboundBody, MailboxUnavailableError
+from ...domain.messages import ActorMessage
+from ...runtime.inbound import MailboxUnavailableError
 from ...runtime.kv import (
     KvBadRequestError,
     KvConflictError,
@@ -36,6 +46,7 @@ from ...runtime.shares import (
     share_grant_snapshot,
 )
 from ...runtime.tasks import task_record_snapshot
+from ...util.secrets import merge_redacted_config
 from ..auth import LoginBody, SessionStore
 from ..client_ip import client_ip_from_scope, is_loopback
 from ..files import actor_workspace, delete_entries, directory_snapshot, make_directory, move_entries, rename_entry, save_uploads, workspace_path
@@ -45,6 +56,7 @@ from ..responses import error_response, json_response
 from ..errors import internal_error_detail, internal_error_message
 from ..ws import handle_ws_command
 from .bodies import CreateCronJobBody, PublishShareBody, PushSubscriptionBody, SubmitTaskBody, WorkspaceDeleteBody, WorkspaceMkdirBody, WorkspaceMoveBody, WorkspaceRenameBody
+from ._helpers import react_dist_dir, route_exists
 
 
 def create_admin_app(
@@ -62,7 +74,7 @@ def create_admin_app(
     def client_is_loopback(request: Request) -> bool:
         return is_loopback(client_ip_from_scope(request.scope, trusted))
 
-    react_dist = _react_dist_dir()
+    react_dist = react_dist_dir()
     if (react_dist / "assets").exists():
         api.mount("/assets", StaticFiles(directory=react_dist / "assets"), name="assets")
 
@@ -438,7 +450,7 @@ def create_admin_app(
                     id=integration_type,
                     type=integration_type,
                     name=name_value,
-                    config=_merge_redacted_config(dict(config_value), existing.config if existing else None),
+                    config=merge_redacted_config(dict(config_value), existing.config if existing else None),
                 )
             )
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
@@ -511,7 +523,7 @@ def create_admin_app(
         try:
             body = await read_json(request, RouteBody)
             record = body.to_record()
-            if body.id and await _route_exists(app, body.id):
+            if body.id and await route_exists(app, body.id):
                 return error_response(409, "conflict", f"route already exists: {body.id}")
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
@@ -585,13 +597,13 @@ def create_admin_app(
 
     @api.get("/api/cron-jobs")
     async def api_cron_jobs(owner: str | None = None, status: str | None = None, name_glob: str = "") -> Response:
-        items = await app.list_cron_jobs(owner=owner, status=status, name_glob=name_glob)
+        items = await list_cron_jobs(app.runtime, owner=owner, status=status, name_glob=name_glob)
         return json_response({"items": items})
 
     @api.get("/api/cron-jobs/{job_id}")
     async def api_cron_job(job_id: str) -> Response:
         try:
-            return json_response(await app.get_cron_job(job_id))
+            return json_response(await get_cron_job(app.runtime, job_id))
         except KeyError:
             return error_response(404, "not_found", "cron job not found")
 
@@ -606,7 +618,8 @@ def create_admin_app(
         try:
             schedule = msgspec.convert(body.schedule, CronSchedule)
             action = decode_cron_action(body.action)
-            snapshot = await app.create_cron_job(
+            snapshot = await create_cron_job(
+                app.runtime,
                 owner=body.owner,
                 name=body.name,
                 schedule=schedule,
@@ -620,27 +633,27 @@ def create_admin_app(
     @api.post("/api/cron-jobs/{job_id}/pause")
     async def api_pause_cron_job(job_id: str) -> Response:
         try:
-            return json_response(await app.pause_cron_job(job_id))
+            return json_response(await pause_cron_job(app.runtime, job_id))
         except KeyError:
             return error_response(404, "not_found", "cron job not found")
 
     @api.post("/api/cron-jobs/{job_id}/resume")
     async def api_resume_cron_job(job_id: str) -> Response:
         try:
-            return json_response(await app.resume_cron_job(job_id))
+            return json_response(await resume_cron_job(app.runtime, job_id))
         except KeyError:
             return error_response(404, "not_found", "cron job not found")
 
     @api.delete("/api/cron-jobs/{job_id}")
     async def api_delete_cron_job(job_id: str) -> Response:
-        deleted = await app.delete_cron_job(job_id)
+        deleted = await delete_cron_job(app.runtime, job_id)
         if not deleted:
             return error_response(404, "not_found", "cron job not found")
         return json_response({"id": job_id, "deleted": True})
 
     @api.get("/api/notifications/vapid-public-key")
     async def api_vapid_public_key() -> Response:
-        return json_response({"public_key": app.vapid_public_key()})
+        return json_response({"public_key": vapid_public_key_for(app.runtime)})
 
     @api.post("/api/notifications/subscriptions")
     async def api_create_push_subscription(request: Request) -> Response:
@@ -648,7 +661,7 @@ def create_admin_app(
             body = await read_json(request, PushSubscriptionBody)
         except (msgspec.DecodeError, msgspec.ValidationError) as exc:
             return bad_request(exc)
-        snapshot = await app.save_push_subscription(endpoint=body.endpoint, keys=body.keys)
+        snapshot = await save_push_subscription(app.runtime, endpoint=body.endpoint, keys=body.keys)
         return json_response(snapshot, status=201)
 
     @api.delete("/api/notifications/subscriptions/{subscription_id}")
@@ -706,21 +719,12 @@ def create_admin_app(
             return error_response(404, "not_found", "share not found")
         return json_response({"id": grant.id, "revoked": grant.revoked})
 
-    @api.post("/api/inbound/{integration_type}")
-    async def api_inbound(integration_type: str, request: Request) -> Response:
-        try:
-            message = await read_json(request, IncomingMessage)
-            delivered = await app.runtime.emit_incoming(message)
-        except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
-            return bad_request(exc)
-        return json_response({"integration_type": integration_type, "delivered": delivered})
-
     @api.post("/api/actors/{actor_id}/inbound")
     async def api_actor_inbound(actor_id: str, request: Request) -> Response:
         if actor_id not in app.actor_records:
             return error_response(404, "not_found", "actor not found")
         try:
-            body = await read_json(request, ActorInboundBody)
+            body = await read_json(request, ActorMessage)
             if not body.text:
                 return error_response(400, "bad_request", "text is required")
             result = await app.deliver_actor_inbound(actor_id, body)
@@ -823,23 +827,3 @@ def create_admin_app(
         return html_page(app)
 
     return api
-
-
-async def _route_exists(app: Yuubot, route_id: str) -> bool:
-    return any(record.id == route_id for record in await app.list_routes())
-
-
-def _react_dist_dir() -> Path:
-    return Path(__file__).resolve().parents[4] / "web" / "dist"
-
-
-def _merge_redacted_config(incoming: dict[str, object], stored: dict[str, object] | None) -> dict[str, object]:
-    merged = dict(stored or {})
-    merged.update(incoming)
-    if stored is None:
-        return merged
-    redacted = redacted_integration_config(stored)
-    for key, value in incoming.items():
-        if redacted.get(key) == "***" and value == "***":
-            merged[key] = stored[key]
-    return merged

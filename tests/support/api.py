@@ -328,11 +328,30 @@ async def conversation_costs(server: object, conversation_id: str) -> list[JsonO
     return cast(list[JsonObject], payload["items"])
 
 
-async def post_inbound(server: object, route: str, text: str, *, conversation_id: str | None = None) -> JsonObject:
+async def post_inbound(
+    server: object,
+    route: str,
+    text: str,
+    *,
+    conversation_id: str | None = None,
+    integration_type: str = "github",
+) -> JsonObject:
+    await _ensure_webhook_integration(server, integration_type)
     body: JsonObject = {"route": route, "text": text}
     if conversation_id is not None:
         body["conversation_id"] = conversation_id
-    return await http_json("POST", f"{base_url(server)}/api/inbound/test", body)
+    return await http_json("POST", f"{base_url(server)}/webhooks/app/{integration_type}", body)
+
+
+async def _ensure_webhook_integration(server: object, integration_type: str) -> None:
+    app = getattr(server, "app", None)
+    if isinstance(app, Yuubot) and app.integration_enabled(integration_type):
+        return
+    if integration_type == "github":
+        await put_integration(server, integration_type, name="gh", config={"access_token": "test-token"})
+    else:
+        await put_integration(server, integration_type, name=integration_type, config={"access_token": "test-token"})
+    await enable_integration(server, integration_type)
 
 
 async def recv_ws_frames(

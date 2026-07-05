@@ -6,6 +6,8 @@ from typing import Protocol, cast
 import msgspec
 from attrs import frozen
 
+from ..util.secrets import merge_redacted_config, redact_config as redact_secret_config
+
 from ..domain.messages import ModelCard
 from .protocol import Provider
 from .records import ProviderRecord
@@ -65,11 +67,7 @@ class ProviderRegistry:
         return msgspec.convert(config, self.config_type(protocol))
 
     def redact_config(self, protocol: str, config: dict[str, object]) -> dict[str, object]:
-        redacted = dict(config)
-        for field in self.secret_fields(protocol):
-            if field in redacted and redacted[field]:
-                redacted[field] = "***"
-        return redacted
+        return redact_secret_config(config, secret_fields=frozenset(self.secret_fields(protocol)))
 
     def merge_config(
         self,
@@ -77,18 +75,11 @@ class ProviderRegistry:
         incoming: dict[str, object],
         stored: dict[str, object] | None,
     ) -> dict[str, object]:
-        merged = dict(stored or {})
-        merged.update(incoming)
-        for field in self.secret_fields(protocol):
-            value = incoming.get(field)
-            if value is None or value == "***":
-                if stored is not None and field in stored:
-                    merged[field] = stored[field]
-                else:
-                    merged.pop(field, None)
-            elif value == "":
-                merged[field] = ""
-        return merged
+        return merge_redacted_config(
+            incoming,
+            stored,
+            secret_fields=frozenset(self.secret_fields(protocol)),
+        )
 
 
 def default_registry() -> ProviderRegistry:

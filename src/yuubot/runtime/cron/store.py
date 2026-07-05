@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import uuid
 from fnmatch import fnmatch
 from typing import TYPE_CHECKING
 
 from attrs import define
+
+from ...util.time import utc_now_iso
 
 from .models import CronAction, CronJob, CronJobStatus, CronSchedule, decode_cron_job, encode_cron_job, new_cron_job_id
 from .triggers import validate_schedule
 
 if TYPE_CHECKING:
     from ...db import Database
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
 
 @define
 class CronJobStore:
@@ -50,7 +47,7 @@ class CronJobStore:
 
     async def put(self, job: CronJob) -> CronJob:
         validate_schedule(job.schedule)
-        timestamp = _now()
+        timestamp = utc_now_iso()
         created_at = job.created_at or timestamp
         stored = CronJob(
             id=job.id,
@@ -97,7 +94,7 @@ class CronJobStore:
         status: CronJobStatus = "active",
     ) -> CronJob:
         validate_schedule(schedule)
-        timestamp = _now()
+        timestamp = utc_now_iso()
         return CronJob(
             id=self.new_id(),
             owner=owner,

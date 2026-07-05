@@ -15,19 +15,20 @@ from attrs import define, field
 from ..actor import Actor, ActorConfig
 from ..actor.workspace import resolve_actor_workspace_path
 from ..chat import Conversation
-from ..db import Database, auto_legacy_db, migrate_legacy
+from ..db import Database
+from .import_legacy import maybe_import_legacy
 from ..integrations import Integration, IntegrationRecord
 from ..runtime.inbound import (
-    ActorInboundBody,
     InboundEnvelope,
     deliver_actor_inbound,
     deliver_app_webhook,
 )
-from ..domain.messages import ContentItem, GenOutput, InputMessage, ModelCard, text_content
+from ..chat.loop import StreamCallback
+from ..domain.messages import ActorMessage, ContentItem, GenOutput, InputMessage, ModelCard, text_content
 from ..domain.stream import StreamEvent
 from ..llm import Provider, ProviderInput, ProviderRecord, is_configured, model_card_from_input, provider_configured, refresh_catalog
 from ..llm.types import AccountSnapshot, ModelCardInput, ProviderSnapshot, ValidationResult
-from ..runtime import IncomingMessage, Runtime
+from ..runtime import Runtime
 from .snapshots import (
     BootstrapSnapshot,
     ConversationSummary,
@@ -38,22 +39,12 @@ from .snapshots import (
     conversation_summaries as build_conversation_summaries,
     integration_snapshots as build_integration_snapshots,
     runtime_snapshot as build_runtime_snapshot,
-    task_snapshot_from_record,
 )
 from .deployment import DEFAULT_HOST, DEFAULT_PORT, ProcessConfig, load_process_config
 from ..python import PythonKernelsConfig
 from ..runtime.streams import TextStream
-from ..runtime.cron import (
-    CronAction,
-    CronJobStatus,
-    CronSchedule,
-    PushSubscription,
-    cron_job_snapshot,
-    decode_cron_action,
-    new_push_subscription_id,
-)
-from ..runtime.cron.vapid import vapid_public_key
-from ..runtime.tasks import TaskDeliveryListener, register_shell_task, wait_until_terminal_or_timeout
+from ..runtime.tasks import TaskDeliveryListener, TaskSnapshot, register_shell_task, task_record_snapshot, wait_until_terminal_or_timeout
+from ..util.secrets import merge_redacted_config
 from ..domain.records import ActorRecord, RouteRecord, lifecycle_error
 from ..tools import all_tool_configs, uninstall_tools
 
@@ -84,11 +75,8 @@ class Yuubot:
         python_kernels: PythonKernelsConfig | None = None,
     ) -> "Yuubot":
         root = Path(data_dir)
-        db_path = root / "db" / "yuubot.db"
-        legacy_db = auto_legacy_db(root) if not db_path.exists() else None
         db = await Database.open(root / "db")
-        if legacy_db is not None:
-            await migrate_legacy(db, data_dir=root, legacy_db=legacy_db)
+        await maybe_import_legacy(root, db)
         app = cls(Runtime.create(root, db, kernels=python_kernels))
         await app._load_application_state()
         return app
@@ -169,10 +157,10 @@ class Yuubot:
         existing = self.provider_records.get(provider_id)
         if existing is not None and existing.protocol != body.protocol:
             raise ValueError(f"cannot change protocol for provider {provider_id}")
-        merged_config = self.runtime.provider_registry.merge_config(
-            body.protocol,
+        merged_config = merge_redacted_config(
             body.config,
             existing.config if existing is not None else None,
+            secret_fields=frozenset(self.runtime.provider_registry.secret_fields(body.protocol)),
         )
         self.runtime.provider_registry.decode_config(body.protocol, merged_config)
         record = ProviderRecord(
@@ -409,14 +397,25 @@ class Yuubot:
 
     # -- Conversations -------------------------------------------------------
 
-    async def chat(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> tuple[Conversation, list[GenOutput]]:
+    async def run_user_message(
+        self,
+        actor_id: str,
+        message: InputMessage,
+        conversation_id: str | None = None,
+        *,
+        on_event: StreamCallback | None = None,
+    ) -> list[GenOutput]:
         actor = self.actors[actor_id]
         conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
-        return conversation, await conversation.run_loop(self._input_message(actor_id, input))
+        return await conversation.run_loop(message, on_event=on_event)
+
+    async def chat(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> tuple[Conversation, list[GenOutput]]:
+        message = self._input_message(actor_id, input)
+        actor = self.actors[actor_id]
+        conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
+        return conversation, await conversation.run_loop(message)
 
     async def chat_stream(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> AsyncIterator[StreamEvent]:
-        actor = self.actors[actor_id]
-        conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
         message = self._input_message(actor_id, input)
         queue: asyncio.Queue[StreamEvent | BaseException | None] = asyncio.Queue()
 
@@ -425,7 +424,7 @@ class Yuubot:
 
         async def run() -> None:
             try:
-                await conversation.run_loop(message, on_event=push)
+                await self.run_user_message(actor_id, message, conversation_id, on_event=push)
             except BaseException as exc:
                 await queue.put(exc)
             finally:
@@ -475,11 +474,6 @@ class Yuubot:
             await self._rebind_gateway_routes()
         return deleted
 
-    async def route_incoming(self, pattern: str, actor_id: str, *, integration_type: str = "") -> RouteRecord:
-        return await self.put_route(
-            RouteRecord(id=pattern, integration_type=integration_type, pattern=pattern, actor_id=actor_id)
-        )
-
     def integration_enabled(self, integration_type: str) -> bool:
         record = self.integration_records.get(integration_type)
         return record is not None and record.name in self.runtime.integrations
@@ -493,7 +487,7 @@ class Yuubot:
             emit=self.runtime.emit,
         )
 
-    async def deliver_actor_inbound(self, actor_id: str, body: ActorInboundBody) -> dict[str, object]:
+    async def deliver_actor_inbound(self, actor_id: str, body: ActorMessage) -> dict[str, object]:
         if actor_id not in self.actor_records:
             raise KeyError(actor_id)
         return await deliver_actor_inbound(
@@ -501,17 +495,6 @@ class Yuubot:
             body=body,
             wakeup=self.runtime.wakeup,
             actor_running=actor_id in self.actors,
-        )
-
-    async def receive_incoming(
-        self,
-        route: str,
-        text: str,
-        conversation_id: str | None = None,
-        source: dict[str, object] | None = None,
-    ) -> bool:
-        return await self.runtime.emit_incoming(
-            IncomingMessage(route=route, text=text, conversation_id=conversation_id, source=source or {})
         )
 
     # -- Snapshots -------------------------------------------------------------
@@ -538,7 +521,7 @@ class Yuubot:
         return build_runtime_snapshot(self)
 
     def task_snapshot(self, task_id: str, *, include_stdout: bool = False) -> TaskSnapshot:
-        return task_snapshot_from_record(self.runtime.tasks.get(task_id), include_stdout=include_stdout)
+        return task_record_snapshot(self.runtime.tasks.get(task_id), include_stdout=include_stdout)
 
     async def submit_shell_task(
         self,
@@ -560,69 +543,5 @@ class Yuubot:
         )
         if wait_s > 0:
             await wait_until_terminal_or_timeout(self.runtime.tasks, record.id, timeout=wait_s)
-        return task_snapshot_from_record(record, include_stdout=True)
-
-    async def create_cron_job(
-        self,
-        *,
-        owner: str,
-        name: str,
-        schedule: CronSchedule | Mapping[str, object],
-        action: CronAction | Mapping[str, object],
-        once: bool = False,
-    ) -> dict[str, object]:
-        parsed_schedule = schedule if isinstance(schedule, CronSchedule) else msgspec.convert(schedule, CronSchedule)
-        parsed_action = action if isinstance(action, CronAction) else decode_cron_action(dict(action))
-        job = await self.runtime.cron_jobs.build_new(
-            owner=owner,
-            name=name,
-            schedule=parsed_schedule,
-            action=parsed_action,
-            once=once,
-        )
-        stored = await self.runtime.cron.register(job)
-        return cron_job_snapshot(stored)
-
-    async def list_cron_jobs(
-        self,
-        *,
-        owner: str | None = None,
-        status: CronJobStatus | str | None = None,
-        name_glob: str = "",
-    ) -> list[dict[str, object]]:
-        parsed_status = status if status in {"active", "paused", "completed", "cancelled"} else None
-        jobs = await self.runtime.cron_jobs.list_jobs(
-            owner=owner,
-            status=parsed_status,
-            name_glob=name_glob,
-        )
-        if status is not None and parsed_status is None:
-            jobs = [job for job in jobs if job.status == status]
-        return [cron_job_snapshot(job) for job in jobs]
-
-    async def get_cron_job(self, job_id: str) -> dict[str, object]:
-        return cron_job_snapshot(await self.runtime.cron_jobs.get(job_id))
-
-    async def pause_cron_job(self, job_id: str) -> dict[str, object]:
-        return cron_job_snapshot(await self.runtime.cron.pause(job_id))
-
-    async def resume_cron_job(self, job_id: str) -> dict[str, object]:
-        return cron_job_snapshot(await self.runtime.cron.resume(job_id))
-
-    async def delete_cron_job(self, job_id: str) -> bool:
-        return await self.runtime.cron.delete(job_id)
-
-    async def save_push_subscription(self, *, endpoint: str, keys: dict[str, str]) -> dict[str, object]:
-        existing = await self.runtime.push_subscriptions.find_by_endpoint(endpoint)
-        subscription = PushSubscription(
-            id=existing.id if existing is not None else new_push_subscription_id(),
-            endpoint=endpoint,
-            keys=keys,
-            created_at=existing.created_at if existing is not None else "",
-        )
-        stored = await self.runtime.push_subscriptions.put(subscription)
-        return msgspec.to_builtins(stored)
-
-    def vapid_public_key(self) -> str:
-        return vapid_public_key(self.runtime.data_dir)
+        return task_record_snapshot(record, include_stdout=True)
 

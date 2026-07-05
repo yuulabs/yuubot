@@ -39,7 +39,10 @@ __all__ = [
     "ReminderAction",
     "ShellAction",
     "WakeupAction",
+    "cron_job_snapshot",
     "decode_cron_action",
+    "decode_cron_job",
+    "encode_cron_job",
     "new_cron_job_id",
     "validate_schedule",
 ]

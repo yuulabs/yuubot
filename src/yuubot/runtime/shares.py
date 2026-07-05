@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import mimetypes
 import shutil
@@ -15,6 +14,10 @@ from urllib.parse import quote
 
 import msgspec
 from attrs import define, field
+
+from ..util.asyncio_ import BackgroundSweeper
+from ..util.paths import safe_workspace_path
+from ..util.time import utc_now_iso
 
 if TYPE_CHECKING:
     from .store import ApplicationStateStore
@@ -74,11 +77,6 @@ def share_content_type(path: Path) -> str:
         return "text/plain; charset=utf-8"
     return "application/octet-stream"
 
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 def _parse_timestamp(value: str) -> datetime:
     if value.endswith("Z"):
         value = f"{value[:-1]}+00:00"
@@ -103,11 +101,7 @@ def _normalize_rel_path(rel_path: str, *, escape_error: type[ShareError] = Share
 
 
 def _contained_path(root: Path, rel_path: str) -> Path:
-    resolved_root = root.resolve()
-    candidate = (resolved_root / rel_path).resolve()
-    if candidate != resolved_root and resolved_root not in candidate.parents:
-        raise ShareNotFoundError("path escapes share root")
-    return candidate
+    return safe_workspace_path(root, rel_path, escape_error=ShareNotFoundError)
 
 
 def _resolve_index(directory: Path) -> Path | None:
@@ -218,7 +212,7 @@ class ShareRegistry:
     emit: EmitFn
     _grants: dict[str, ShareGrant] = field(factory=dict)
     _workspace_for_actor: WorkspaceResolver | None = field(default=None)
-    _cleanup_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _sweeper: BackgroundSweeper = field(factory=BackgroundSweeper, init=False)
 
     @property
     def published_dir(self) -> Path:
@@ -268,7 +262,7 @@ class ShareRegistry:
             id=share_id,
             actor_id=actor_id,
             source_path=rel,
-            created_at=_now(),
+            created_at=utc_now_iso(),
             expires_at=expires_at,
             kind=kind,
             entry_path=entry_path,
@@ -324,18 +318,10 @@ class ShareRegistry:
             self.emit("share.expired", share_id=grant.id)
 
     async def start_background_cleanup(self, interval_s: float = 300) -> None:
-        if self._cleanup_task is None:
-            self._cleanup_task = asyncio.create_task(self._cleanup_loop(interval_s))
+        await self._sweeper.start(interval_s, self.sweep_expired)
 
     async def stop_background_cleanup(self) -> None:
-        if self._cleanup_task is None:
-            return
-        self._cleanup_task.cancel()
-        try:
-            await self._cleanup_task
-        except asyncio.CancelledError:
-            pass
-        self._cleanup_task = None
+        await self._sweeper.stop()
 
     async def _persist(self, grant: ShareGrant) -> None:
         await self.state.put_share_grant(grant)
@@ -348,8 +334,3 @@ class ShareRegistry:
         tmp = self.published_dir / f"{share_id}.tmp"
         if tmp.exists():
             shutil.rmtree(tmp)
-
-    async def _cleanup_loop(self, interval_s: float) -> None:
-        while True:
-            await asyncio.sleep(interval_s)
-            await self.sweep_expired()

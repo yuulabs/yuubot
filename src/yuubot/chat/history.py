@@ -6,12 +6,13 @@ replayed to the LLM on resume; it is stripped from every frontend-facing view.
 """
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
 import msgspec
 from attrs import define
+
+from ..util.time import utc_now_iso
 
 from ..db import Database
 from ..domain.messages import (
@@ -60,7 +61,7 @@ class HistoryStore:
     async def extend(self, conversation_id: str, items: Sequence[HistoryItem]) -> list[dict[str, object]]:
         if not items:
             return []
-        created_at = _now()
+        created_at = utc_now_iso()
         rows: list[tuple[str, int, str, bytes, str]] = []
         async with self._db.transaction():
             cursor = await self._db.execute(
@@ -211,6 +212,3 @@ def _wrapped(seq: int, kind: str, payload: bytes, created_at: str) -> dict[str, 
         "created_at": created_at or None,
     }
 
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()

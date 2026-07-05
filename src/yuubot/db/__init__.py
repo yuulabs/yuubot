@@ -1,5 +1,5 @@
 from .database import Database
-from .legacy import LegacyImportError, auto_legacy_db, inspect_legacy, migrate_legacy
+from .import_legacy import LegacyImportError, auto_legacy_db, inspect_legacy, migrate_legacy
 from .migrate import current_version, migrate, migration_files, pending_versions
 
 __all__ = [

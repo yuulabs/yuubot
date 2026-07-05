@@ -12,6 +12,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+import msgspec
 from attrs import define, field
 
 from .streams import TaskCoroFactory, TextStream
@@ -38,6 +39,19 @@ def parse_owner(owner: str) -> tuple[str, str]:
 
 def new_task_id() -> str:
     return f"t-{uuid.uuid4().hex[:12]}"
+
+
+class TaskSnapshot(msgspec.Struct, frozen=True, kw_only=True):
+    id: str
+    owner: str
+    kind: str
+    name: str
+    intro: str
+    status: str
+    error: str | None
+    exit_code: int | None
+    delivery_state: str
+    stdout_tail: str = ""
 
 
 @define
@@ -334,18 +348,16 @@ class TaskDeliveryListener:
             record.delivery_state = "skipped"
 
 
-def task_record_snapshot(record: RuntimeTaskRecord, *, include_stdout: bool = False) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "id": record.id,
-        "owner": record.owner,
-        "kind": record.kind,
-        "name": record.name,
-        "intro": record.intro,
-        "status": record.status,
-        "error": record.error,
-        "exit_code": record.exit_code,
-        "delivery_state": record.delivery_state,
-    }
-    if include_stdout:
-        payload["stdout_tail"] = record.stdout.tail(max_bytes=65536)
-    return payload
+def task_record_snapshot(record: RuntimeTaskRecord, *, include_stdout: bool = False) -> TaskSnapshot:
+    return TaskSnapshot(
+        id=record.id,
+        owner=record.owner,
+        kind=record.kind,
+        name=record.name,
+        intro=record.intro,
+        status=record.status,
+        error=record.error,
+        exit_code=record.exit_code,
+        delivery_state=record.delivery_state,
+        stdout_tail=record.stdout.tail(max_bytes=65536) if include_stdout else "",
+    )

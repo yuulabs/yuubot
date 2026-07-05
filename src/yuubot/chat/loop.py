@@ -33,8 +33,11 @@ from ..domain.messages import (
     GenToolCall,
     HistoryItem,
     InputMessage,
+    text_content,
 )
 from ..domain.stream import StreamEvent, StreamStop, estimate_cost, extract_tool_calls, merge
+from ..util.asyncio_ import BackgroundSweeper
+from ..util.stream import stream_stop_from
 
 if TYPE_CHECKING:
     from ..runtime.core import Runtime
@@ -104,6 +107,16 @@ class Conversation:
         finally:
             self._running = False
 
+    async def append_developer_notice(
+        self,
+        text: str,
+        *,
+        name: str = "yuubot",
+        on_event: StreamCallback | None = None,
+    ) -> list[GenOutput]:
+        await self._append(InputMessage(role="developer", name=name, content=text_content(text)))
+        return await self.run_continuation(on_event)
+
     def interrupt(self) -> bool:
         if not self._running:
             return False
@@ -151,7 +164,7 @@ class Conversation:
                     await close_harness()
                 # The stream_stop frame is sent after history persistence and,
                 # for terminal turns, after tool resources have been released.
-                stop_frame = _stop_frame(stop)
+                stop_frame = stream_stop_from(stop)
                 if on_event is not None:
                     await on_event(stop_frame)
                 self.runtime.emit(
@@ -179,7 +192,7 @@ class Conversation:
                     stop = StreamStop(reason="interrupted")
                     self.runtime.emit("conversation.output", conversation_id=self.id, reason=stop.reason)
                     await close_harness()
-                    stop_frame = _stop_frame(stop)
+                    stop_frame = stream_stop_from(stop)
                     if on_event is not None:
                         await on_event(stop_frame)
                     self.runtime.emit(
@@ -234,20 +247,6 @@ class Conversation:
             last_error=dict(last_error) if last_error else None,
         )
 
-
-def _stop_frame(stop: StreamStop) -> StreamEvent:
-    return StreamEvent(
-        group_id="stop",
-        kind="stream_stop",
-        payload={
-            "reason": stop.reason,
-            "usage": msgspec.to_builtins(stop.usage),
-            "account": stop.account,
-            "cost_estimated": stop.cost_estimated,
-        },
-    )
-
-
 class ConversationCreator(Protocol):
     async def spawn_conversation(self, conversation_id: str | None = None) -> Conversation: ...
 
@@ -262,7 +261,7 @@ class ConversationManager:
     ttl_s: float = 3600
     _items: dict[str, tuple[Conversation, float]] = field(factory=dict)
     _create_lock: asyncio.Lock = field(factory=asyncio.Lock, init=False)
-    _cleanup_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _sweeper: BackgroundSweeper = field(factory=BackgroundSweeper, init=False)
 
     async def get_or_create(self, creator: ConversationCreator, conversation_id: str | None = None) -> Conversation:
         async with self._create_lock:
@@ -319,20 +318,7 @@ class ConversationManager:
             await self.discard(conversation_id)
 
     async def start_background_cleanup(self, interval_s: float = 60) -> None:
-        if self._cleanup_task is None:
-            self._cleanup_task = asyncio.create_task(self._cleanup_loop(interval_s))
+        await self._sweeper.start(interval_s, self.sweep)
 
     async def stop_background_cleanup(self) -> None:
-        if self._cleanup_task is None:
-            return
-        self._cleanup_task.cancel()
-        try:
-            await self._cleanup_task
-        except asyncio.CancelledError:
-            pass
-        self._cleanup_task = None
-
-    async def _cleanup_loop(self, interval_s: float) -> None:
-        while True:
-            await asyncio.sleep(interval_s)
-            await self.sweep()
+        await self._sweeper.stop()

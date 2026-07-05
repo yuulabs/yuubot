@@ -10,6 +10,7 @@ import msgspec
 from attrs import define
 from fastapi import Request
 
+from ..domain.messages import ActorMessage
 from .wakeup import WakeupDelivery, WakeupPayload, WakeupTarget
 
 
@@ -18,13 +19,6 @@ class InboundEnvelope(msgspec.Struct, frozen=True):
     conversation_id: str | None = None
     route: str | None = None
     source: dict[str, object] = msgspec.field(default_factory=dict)
-
-
-class ActorInboundBody(msgspec.Struct, frozen=True):
-    text: str
-    conversation_id: str | None = None
-    source: dict[str, object] = msgspec.field(default_factory=dict)
-
 
 class InboundBadRequestError(ValueError):
     pass
@@ -130,7 +124,7 @@ async def deliver_app_webhook(
 async def deliver_actor_inbound(
     *,
     actor_id: str,
-    body: ActorInboundBody,
+    body: ActorMessage,
     wakeup: WakeupDelivery,
     actor_running: bool,
 ) -> dict[str, object]:

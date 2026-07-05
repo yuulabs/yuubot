@@ -3,21 +3,17 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import msgspec
 from attrs import define
 
+from ...util.time import utc_now_iso
+
 from .notifications import PushSubscription
 
 if TYPE_CHECKING:
     from ...db import Database
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
 
 def new_push_subscription_id() -> str:
     return f"ps-{uuid.uuid4().hex[:12]}"
@@ -33,7 +29,7 @@ class PushSubscriptionStore:
         return [msgspec.json.decode(payload, type=PushSubscription) for payload, in rows]
 
     async def put(self, subscription: PushSubscription) -> PushSubscription:
-        timestamp = _now()
+        timestamp = utc_now_iso()
         stored = PushSubscription(
             id=subscription.id,
             endpoint=subscription.endpoint,

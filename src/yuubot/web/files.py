@@ -7,6 +7,7 @@ from urllib.parse import unquote
 from fastapi import UploadFile
 
 from ..app import Yuubot
+from ..util.paths import ensure_contained, safe_workspace_path
 
 
 def actor_workspace(app: Yuubot, actor_id: str) -> Path | None:
@@ -14,11 +15,7 @@ def actor_workspace(app: Yuubot, actor_id: str) -> Path | None:
 
 
 def workspace_path(workspace: Path, value: str) -> Path:
-    raw = unquote(value).lstrip("/")
-    candidate = (workspace / raw).resolve()
-    if candidate != workspace and workspace not in candidate.parents:
-        raise ValueError(f"path escapes workspace: {value}")
-    return candidate
+    return safe_workspace_path(workspace, value, url_decode=True)
 
 
 async def save_uploads(workspace: Path, uploads: list[UploadFile], destination: str | None = None) -> list[dict[str, object]]:
@@ -186,6 +183,4 @@ def _join_rel(directory: str, filename: str) -> str:
 
 
 def _ensure_contained(workspace: Path, path: Path) -> None:
-    resolved = path.resolve()
-    if resolved != workspace and workspace not in resolved.parents:
-        raise ValueError(f"path escapes workspace: {path}")
+    ensure_contained(workspace, path)

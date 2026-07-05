@@ -136,9 +136,7 @@ class Actor:
         try:
             inbound_kind = message.source.get("inbound_kind")
             if inbound_kind in {"task_delivery", "conversation_callback"}:
-                developer = InputMessage(role="developer", name="yuubot", content=text_content(message.text))
-                await conversation._append(developer)
-                outputs = await conversation.run_continuation()
+                outputs = await conversation.append_developer_notice(message.text)
             elif inbound_kind == "cron_wakeup":
                 input_message = InputMessage(role="user", name=self.config.id, content=text_content(message.text))
                 outputs = await conversation.run_loop(input_message)

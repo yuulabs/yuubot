@@ -1,13 +1,10 @@
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import cast
 
 import msgspec
-from attrs import define
 
-from ..domain.messages import ConversationContext
-from ..runtime.core import Runtime
-from .base import ToolConfig, ToolSpec
-from .paths import workspace, workspace_path
+from .base import workspace_tool
+from .paths import workspace_path
 
 DESCRIPTION = """Write UTF-8 text to a file inside the actor workspace.
 
@@ -21,26 +18,12 @@ class WritePayload(msgspec.Struct, frozen=True, kw_only=True):
     content: str
 
 
-@define
-class WriteTool:
-    payload_type: ClassVar[type[msgspec.Struct]] = WritePayload
-
-    workspace: Path
-
-    async def execute(self, payload: msgspec.Struct) -> str:
-        data = cast(WritePayload, payload)
-        path = workspace_path(self.workspace, data.path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(data.content, encoding="utf-8")
-        return f"wrote {data.path}"
-
-    async def close(self) -> None:
-        return None
+async def _execute_write(root: Path, payload: msgspec.Struct) -> str:
+    data = cast(WritePayload, payload)
+    path = workspace_path(root, data.path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(data.content, encoding="utf-8")
+    return f"wrote {data.path}"
 
 
-def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime) -> WriteTool:
-    del config, runtime
-    return WriteTool(workspace=workspace(context.workspace))
-
-
-WRITE_SPEC = ToolSpec(payload_type=WritePayload, description=DESCRIPTION, factory=_factory)
+WRITE_SPEC = workspace_tool(payload_type=WritePayload, description=DESCRIPTION, execute=_execute_write)

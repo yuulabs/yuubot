@@ -4,6 +4,7 @@ from support.api import (
     SharedTestContext,
     conversation_history,
     enable_integration,
+    wait_for_history_kind,
     ws_conversation_send,
 )
 from support.assertions import interaction_kinds, runtime_developer_notice_count, tool_result_text
@@ -100,7 +101,7 @@ async def test_http_tasks_docs_in_prompt_enable_submit_call(test_context: Shared
         conversation_id=conversation_id,
         content="start a background shell task",
     )
-    history = await conversation_history(test_context.server, conversation_id)
+    history = await wait_for_history_kind(test_context.server, conversation_id, "gen_text")
     assert history[-1]["payload"] == {"text": "tasks-ok"}
     assert tool_result_text(history) == f"{task_name}\nrunning\n1\n"
 

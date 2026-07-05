@@ -1,34 +1,35 @@
 """Tool contract, registry, and built-in tool implementations."""
 
-from .base import Tool, ToolConfig, ToolFactory, ToolSpec, ToolUninstaller
-from .bash import BashPayload, BashTool
-from .edit import EditPayload, EditTool
+from .base import Tool, ToolConfig, ToolFactory, ToolSpec, ToolUninstaller, workspace_tool
+from .bash import BASH_SPEC, BashPayload
+from .edit import EDIT_SPEC, EditPayload
 from .execute_python import ExecutePythonPayload, ExecutePythonTool
-from .read import ReadPayload, ReadTool
+from .read import READ_SPEC, ReadPayload
 from .registry import all_tool_configs, all_tool_specs, build_tools, register, resolve, tool_specs, uninstall_tools
-from .write import WritePayload, WriteTool
+from .write import WRITE_SPEC, WritePayload
 
 __all__ = [
     "all_tool_configs",
     "all_tool_specs",
+    "BASH_SPEC",
     "BashPayload",
-    "BashTool",
+    "EDIT_SPEC",
     "EditPayload",
-    "EditTool",
     "ExecutePythonPayload",
     "ExecutePythonTool",
+    "READ_SPEC",
     "ReadPayload",
-    "ReadTool",
     "Tool",
     "ToolConfig",
     "ToolFactory",
     "ToolSpec",
     "ToolUninstaller",
+    "WRITE_SPEC",
     "WritePayload",
-    "WriteTool",
     "build_tools",
     "register",
     "resolve",
     "tool_specs",
     "uninstall_tools",
+    "workspace_tool",
 ]

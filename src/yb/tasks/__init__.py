@@ -53,27 +53,33 @@ class Task:
         self.status = status
         self.intro = intro
         self._base_url = _base_url.rstrip("/")
+        self._payload: dict[str, object] | None = None
+
+    async def _status_payload(self) -> dict[str, object]:
+        if self._payload is None:
+            self._payload = await _request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
+        return self._payload
 
     async def output(self, *, max_bytes: int = 65536) -> str:
-        payload = await _request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
+        payload = await self._status_payload()
         stdout = payload.get("stdout_tail", "")
         if not isinstance(stdout, str):
             return ""
         return stdout[:max_bytes]
 
     async def error(self) -> str | None:
-        payload = await _request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
+        payload = await self._status_payload()
         error = payload.get("error")
         return error if isinstance(error, str) and error else None
 
     async def exit_code(self) -> int | None:
-        payload = await _request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
+        payload = await self._status_payload()
         code = payload.get("exit_code")
         return code if isinstance(code, int) else None
 
     async def cancel(self) -> None:
-        payload = await _request_json("POST", f"{self._base_url}/api/tasks/{self.id}/cancel")
-        status = payload.get("status")
+        self._payload = await _request_json("POST", f"{self._base_url}/api/tasks/{self.id}/cancel")
+        status = self._payload.get("status")
         if isinstance(status, str):
             self.status = status  # type: ignore[assignment]
 

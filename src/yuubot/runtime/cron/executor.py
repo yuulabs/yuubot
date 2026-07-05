@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from ...util.time import utc_now_iso
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -20,11 +20,6 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 WorkspaceResolver = Callable[[str], Path | None]
 SchedulerGetter = Callable[[], "CronJobScheduler"]
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
 
 def _with_job(job: CronJob, **changes: object) -> CronJob:
     fields = {
@@ -105,10 +100,10 @@ class CronExecutor:
             self._runtime.emit("cron.failed", job_id=job_id, owner=job.owner)
             return
 
-        last_run_at = _now()
+        last_run_at = utc_now_iso()
         if job.once or job.schedule.kind == "at":
             await self._runtime.cron_jobs.put(
-                _with_job(job, status="completed", next_run_at=None, last_run_at=last_run_at, updated_at=_now())
+                _with_job(job, status="completed", next_run_at=None, last_run_at=last_run_at, updated_at=utc_now_iso())
             )
             self._scheduler.unschedule(job_id)
         else:
@@ -117,7 +112,7 @@ class CronExecutor:
                     job,
                     next_run_at=self._scheduler.next_run_at(job_id),
                     last_run_at=last_run_at,
-                    updated_at=_now(),
+                    updated_at=utc_now_iso(),
                 )
             )
         self._runtime.emit("cron.finished", job_id=job_id, owner=job.owner, action_kind=job.action.kind)

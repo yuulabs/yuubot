@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 
 import msgspec
 from attrs import define
+
+from ..util.time import utc_now_iso
 
 
 class JsonDocument(msgspec.Struct, frozen=True):
@@ -77,11 +78,6 @@ def document_path(actor_root: Path, key: str) -> Path:
 
 def document_snapshot(document: JsonDocument) -> dict[str, object]:
     return msgspec.to_builtins(document)  # type: ignore[return-value]
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
 
 def _assert_json_value(value: object) -> None:
     if not isinstance(value, (dict, list)):
@@ -173,7 +169,7 @@ class KvStore:
             current_value, _ = _read_file(path)
             if compute_etag(current_value) != if_match:
                 raise KvConflictError("etag does not match", reason="etag_mismatch")
-        updated_at = _now()
+        updated_at = utc_now_iso(zulu=True)
         _write_atomic(path, value, updated_at)
         return JsonDocument(
             actor_id=actor_id,

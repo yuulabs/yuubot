@@ -1,6 +1,5 @@
 """Read-only view builders merging durable records with runtime state."""
 
-import re
 from typing import TYPE_CHECKING
 
 import msgspec
@@ -11,13 +10,13 @@ from ..domain.records import LifecycleError, RouteRecord
 from ..llm.records import ProviderRecord
 from ..llm.types import ProviderSnapshot
 from ..runtime.events import RuntimeEvent
-from ..runtime.tasks import RuntimeTaskRecord, task_record_snapshot
+from ..runtime.tasks import RuntimeTaskRecord, TaskSnapshot, task_record_snapshot
+from ..util.secrets import redact_config
 
 if TYPE_CHECKING:
     from .service import Yuubot
 
 RUNTIME_EVENT_SNAPSHOT_LIMIT = 100
-SECRET_FIELD_RE = re.compile(r"(api_)?key|token|secret|password", re.IGNORECASE)
 
 
 class ActorSnapshot(msgspec.Struct, frozen=True, kw_only=True):
@@ -71,20 +70,6 @@ class RuntimeIntegrationView(msgspec.Struct, frozen=True, kw_only=True):
     name: str
     package_path: str
 
-
-class TaskSnapshot(msgspec.Struct, frozen=True, kw_only=True):
-    id: str
-    owner: str
-    kind: str
-    name: str
-    intro: str
-    status: str
-    error: str | None
-    exit_code: int | None
-    delivery_state: str
-    stdout_tail: str = ""
-
-
 class RuntimeSnapshot(msgspec.Struct, frozen=True, kw_only=True):
     data_dir: str
     workspace_dir: str
@@ -102,23 +87,6 @@ class BootstrapSnapshot(msgspec.Struct, frozen=True, kw_only=True):
     integrations: list[IntegrationSnapshot]
     routes: list[RouteRecord]
     conversations: list[ConversationSummary]
-
-
-def task_snapshot_from_record(record: RuntimeTaskRecord, *, include_stdout: bool = False) -> TaskSnapshot:
-    raw = task_record_snapshot(record, include_stdout=include_stdout)
-    return TaskSnapshot(
-        id=str(raw["id"]),
-        owner=str(raw["owner"]),
-        kind=str(raw["kind"]),
-        name=str(raw["name"]),
-        intro=str(raw["intro"]),
-        status=str(raw["status"]),
-        error=raw["error"] if raw["error"] is None or isinstance(raw["error"], str) else str(raw["error"]),
-        exit_code=raw["exit_code"] if raw["exit_code"] is None or isinstance(raw["exit_code"], int) else None,
-        delivery_state=str(raw["delivery_state"]),
-        stdout_tail=str(raw.get("stdout_tail", "")),
-    )
-
 
 async def bootstrap_snapshot(app: "Yuubot") -> BootstrapSnapshot:
     return BootstrapSnapshot(
@@ -224,10 +192,7 @@ async def integration_snapshots(app: "Yuubot") -> list[IntegrationSnapshot]:
 
 
 def redacted_integration_config(config: dict[str, object]) -> dict[str, object]:
-    return {
-        key: "***" if SECRET_FIELD_RE.search(key) and value else value
-        for key, value in config.items()
-    }
+    return redact_config(config)
 
 
 def runtime_snapshot(app: "Yuubot") -> RuntimeSnapshot:
@@ -235,7 +200,7 @@ def runtime_snapshot(app: "Yuubot") -> RuntimeSnapshot:
     return RuntimeSnapshot(
         data_dir=str(app.runtime.data_dir),
         workspace_dir=str(app.runtime.workspace_dir),
-        tasks=[task_snapshot_from_record(record) for record in app.runtime.tasks.list()],
+        tasks=[task_record_snapshot(record) for record in app.runtime.tasks.list()],
         actors=[
             RuntimeActorView(id=actor.config.id, status=actor.status, mailbox=f"actor:{actor.config.id}")
             for actor in app.actors.values()
@@ -249,7 +214,7 @@ def runtime_snapshot(app: "Yuubot") -> RuntimeSnapshot:
 
 
 def task_snapshot(app: "Yuubot", task_id: str, *, include_stdout: bool = False) -> TaskSnapshot:
-    return task_snapshot_from_record(app.runtime.tasks.get(task_id), include_stdout=include_stdout)
+    return task_record_snapshot(app.runtime.tasks.get(task_id), include_stdout=include_stdout)
 
 
 async def _provider_snapshot(app: "Yuubot", record: ProviderRecord) -> ProviderSnapshot:

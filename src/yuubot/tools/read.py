@@ -1,14 +1,12 @@
 import mimetypes
 from pathlib import Path
-from typing import ClassVar, Final, cast
+from typing import Final, cast
 
 import msgspec
-from attrs import define
 
-from ..domain.messages import ContentItem, ConversationContext, ModelCard
-from ..runtime.core import Runtime
-from .base import ToolConfig, ToolSpec
-from .paths import workspace, workspace_path
+from ..domain.messages import ContentItem, ModelCard
+from .base import workspace_tool
+from .paths import workspace_path
 
 MAX_READ_LINES: Final[int] = 300
 MAX_READ_BYTES: Final[int] = 64 * 1024
@@ -30,50 +28,40 @@ class ReadPayload(msgspec.Struct, frozen=True, kw_only=True):
     end_lo: int = -1
 
 
-@define
-class ReadTool:
-    payload_type: ClassVar[type[msgspec.Struct]] = ReadPayload
+async def _execute_read(root: Path, payload: msgspec.Struct, *, model: ModelCard) -> str | list[ContentItem]:
+    data = cast(ReadPayload, payload)
+    path = workspace_path(root, data.path)
+    mime, _ = mimetypes.guess_type(path)
+    if (mime or "").startswith("image/"):
+        if not model.vision:
+            return f"{data.path} is an image, but model {model.selector} does not support vision."
+        return [
+            ContentItem(kind="text", text=f"image file: {data.path}"),
+            ContentItem(kind="image", path=str(path), mime=mime or "image/*"),
+        ]
 
-    workspace: Path
-    model: ModelCard
-
-    async def execute(self, payload: msgspec.Struct) -> str | list[ContentItem]:
-        data = cast(ReadPayload, payload)
-        path = workspace_path(self.workspace, data.path)
-        mime, _ = mimetypes.guess_type(path)
-        if (mime or "").startswith("image/"):
-            if not self.model.vision:
-                return f"{data.path} is an image, but model {self.model.selector} does not support vision."
-            return [
-                ContentItem(kind="text", text=f"image file: {data.path}"),
-                ContentItem(kind="image", path=str(path), mime=mime or "image/*"),
-            ]
-
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        start = max(data.start_lo, 0)
-        end = len(lines) if data.end_lo < 0 else min(data.end_lo, len(lines))
-        start = min(start, end)
-        selected = lines[start:end]
-        truncated_by_lines = len(selected) > MAX_READ_LINES
-        if truncated_by_lines:
-            selected = selected[:MAX_READ_LINES]
-        text = "\n".join(selected)
-        raw = text.encode("utf-8")
-        truncated_by_bytes = len(raw) > MAX_READ_BYTES
-        if truncated_by_bytes:
-            text = raw[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
-        final_lo = start + len(selected)
-        if truncated_by_lines or truncated_by_bytes or start > 0 or end < len(lines):
-            text += f"\n[truncated: lines {start}-{final_lo} of {len(lines)}]"
-        return text
-
-    async def close(self) -> None:
-        return None
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    start = max(data.start_lo, 0)
+    end = len(lines) if data.end_lo < 0 else min(data.end_lo, len(lines))
+    start = min(start, end)
+    selected = lines[start:end]
+    truncated_by_lines = len(selected) > MAX_READ_LINES
+    if truncated_by_lines:
+        selected = selected[:MAX_READ_LINES]
+    text = "\n".join(selected)
+    raw = text.encode("utf-8")
+    truncated_by_bytes = len(raw) > MAX_READ_BYTES
+    if truncated_by_bytes:
+        text = raw[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
+    final_lo = start + len(selected)
+    if truncated_by_lines or truncated_by_bytes or start > 0 or end < len(lines):
+        text += f"\n[truncated: lines {start}-{final_lo} of {len(lines)}]"
+    return text
 
 
-def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime) -> ReadTool:
-    del config, runtime
-    return ReadTool(workspace=workspace(context.workspace), model=context.model)
-
-
-READ_SPEC = ToolSpec(payload_type=ReadPayload, description=DESCRIPTION, factory=_factory)
+READ_SPEC = workspace_tool(
+    payload_type=ReadPayload,
+    description=DESCRIPTION,
+    execute=_execute_read,
+    bind=lambda context: {"model": context.model},
+)

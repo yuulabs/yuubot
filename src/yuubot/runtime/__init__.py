@@ -1,7 +1,6 @@
 from .cache import CachePool
 from .events import EventBus, ListenerHub, RuntimeEvent
 from .inbound import (
-    ActorInboundBody,
     InboundEnvelope,
     MailboxUnavailableError,
     deliver_actor_inbound,
@@ -30,6 +29,7 @@ from .tasks import (
     TaskDeliveryListener,
     TaskRegistry,
     TaskScheduler,
+    TaskSnapshot,
     register_shell_task,
     task_record_snapshot,
     wait_until_terminal_or_timeout,
@@ -37,13 +37,11 @@ from .tasks import (
 from .wakeup import WakeupDelivery, WakeupPayload, WakeupTarget
 
 __all__ = [
-    "ActorInboundBody",
     "ActorMailboxRegistry",
     "ApplicationStateStore",
     "CachePool",
     "EventBus",
     "Gateway",
-    "IncomingMessage",
     "InboundEnvelope",
     "KvBadRequestError",
     "KvConflictError",
@@ -64,6 +62,7 @@ __all__ = [
     "TaskDeliveryListener",
     "TaskRegistry",
     "TaskScheduler",
+    "TaskSnapshot",
     "TextStream",
     "WakeupDelivery",
     "WakeupPayload",
@@ -79,18 +78,17 @@ __all__ = [
     "wait_until_terminal_or_timeout",
 ]
 
-_CORE_EXPORTS = frozenset({"ActorMailboxRegistry", "Gateway", "IncomingMessage", "Mailbox", "Runtime"})
+_CORE_EXPORTS = frozenset({"ActorMailboxRegistry", "Gateway", "Mailbox", "Runtime"})
 _STORE_EXPORTS = frozenset({"ApplicationStateStore"})
 
 
 def __getattr__(name: str):
     if name in _CORE_EXPORTS:
-        from .core import ActorMailboxRegistry, Gateway, IncomingMessage, Mailbox, Runtime
+        from .core import ActorMailboxRegistry, Gateway, Mailbox, Runtime
 
         return {
             "ActorMailboxRegistry": ActorMailboxRegistry,
             "Gateway": Gateway,
-            "IncomingMessage": IncomingMessage,
             "Mailbox": Mailbox,
             "Runtime": Runtime,
         }[name]

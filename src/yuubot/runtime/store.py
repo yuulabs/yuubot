@@ -7,6 +7,7 @@ import msgspec
 from attrs import define
 
 from ..db import Database
+from ..util.time import utc_now_iso
 from ..db.migrate import current_version
 from ..domain.messages import ModelCard
 from ..domain.records import (
@@ -88,7 +89,7 @@ class ApplicationStateStore:
                 record.protocol,
                 msgspec.json.encode(record.config),
                 record.last_error,
-                _now(),
+                utc_now_iso(),
             ),
         )
         await self._db.commit()
@@ -96,7 +97,7 @@ class ApplicationStateStore:
     async def set_provider_last_error(self, provider_id: str, last_error: str | None) -> None:
         await self._db.execute(
             "update llm_providers set last_error = ?, updated_at = ? where id = ?",
-            (last_error, _now(), provider_id),
+            (last_error, utc_now_iso(), provider_id),
         )
         await self._db.commit()
 
@@ -132,7 +133,7 @@ class ApplicationStateStore:
                 payload = excluded.payload,
                 updated_at = excluded.updated_at
             """,
-            (provider_id, card.selector, msgspec.json.encode(card), _now()),
+            (provider_id, card.selector, msgspec.json.encode(card), utc_now_iso()),
         )
         await self._db.commit()
 
@@ -159,14 +160,14 @@ class ApplicationStateStore:
     async def put_integration(self, record: IntegrationRecord, *, enabled: bool, last_error: LifecycleError | None = None) -> None:
         await self._db.execute(
             "insert or replace into app_integrations (type, payload, enabled, last_error, updated_at) values (?, ?, ?, ?, ?)",
-            (record.type, msgspec.json.encode(record), int(enabled), _error_payload(last_error), _now()),
+            (record.type, msgspec.json.encode(record), int(enabled), _error_payload(last_error), utc_now_iso()),
         )
         await self._db.commit()
 
     async def set_integration_enabled(self, integration_type: str, *, enabled: bool, last_error: LifecycleError | None = None) -> None:
         await self._db.execute(
             "update app_integrations set enabled = ?, last_error = ?, updated_at = ? where type = ?",
-            (int(enabled), _error_payload(last_error), _now(), integration_type),
+            (int(enabled), _error_payload(last_error), utc_now_iso(), integration_type),
         )
         await self._db.commit()
 
@@ -189,7 +190,7 @@ class ApplicationStateStore:
     async def put_actor(self, record: ActorRecord, *, enabled: bool = True, status: str = "idle", last_error: LifecycleError | None = None) -> None:
         await self._db.execute(
             "insert or replace into app_actors (id, payload, enabled, status, last_error, updated_at) values (?, ?, ?, ?, ?, ?)",
-            (record.id, msgspec.json.encode(record), int(enabled), status, _error_payload(last_error), _now()),
+            (record.id, msgspec.json.encode(record), int(enabled), status, _error_payload(last_error), utc_now_iso()),
         )
         await self._db.commit()
 
@@ -201,12 +202,12 @@ class ApplicationStateStore:
         if enabled is None:
             await self._db.execute(
                 "update app_actors set status = ?, last_error = ?, updated_at = ? where id = ?",
-                (status, _error_payload(last_error), _now(), actor_id),
+                (status, _error_payload(last_error), utc_now_iso(), actor_id),
             )
         else:
             await self._db.execute(
                 "update app_actors set enabled = ?, status = ?, last_error = ?, updated_at = ? where id = ?",
-                (int(enabled), status, _error_payload(last_error), _now(), actor_id),
+                (int(enabled), status, _error_payload(last_error), utc_now_iso(), actor_id),
             )
         await self._db.commit()
 
@@ -223,7 +224,7 @@ class ApplicationStateStore:
         }
 
     async def put_conversation(self, conversation_id: str, actor_id: str, status: str, last_error: dict[str, object] | None = None) -> None:
-        timestamp = _now()
+        timestamp = utc_now_iso()
         error_payload = msgspec.json.encode(last_error) if last_error is not None else None
         await self._db.execute(
             """
@@ -277,7 +278,7 @@ class ApplicationStateStore:
         return conversation.rowcount > 0 or costs.rowcount > 0
 
     async def append_cost(self, conversation_id: str, usage: Usage, account: dict[str, object], *, estimated: bool) -> CostRow:
-        created_at = _now()
+        created_at = utc_now_iso()
         usage_payload = msgspec.json.encode(usage)
         account_payload = msgspec.json.encode(account)
         async with self._db.transaction():
@@ -319,7 +320,7 @@ class ApplicationStateStore:
         ]
 
     async def put_route(self, record: RouteRecord) -> None:
-        timestamp = _now()
+        timestamp = utc_now_iso()
         await self._db.execute(
             """
             insert into app_routes (id, integration_type, pattern, actor_id, enabled, created_at, updated_at)
@@ -354,7 +355,7 @@ class ApplicationStateStore:
         return [msgspec.json.decode(payload, type=ShareGrant) for payload, in rows]
 
     async def put_share_grant(self, grant: ShareGrant) -> None:
-        timestamp = _now()
+        timestamp = utc_now_iso()
         await self._db.execute(
             """
             insert into app_share_grants (id, payload, created_at, updated_at)
@@ -389,11 +390,6 @@ class ApplicationStateStore:
             )
             for seq, usage, account, estimated, created_at in rows
         ]
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
 
 def _error_payload(error: LifecycleError | dict[str, object] | None) -> bytes | None:
     if error is None:

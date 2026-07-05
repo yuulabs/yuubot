@@ -10,7 +10,7 @@ from .app.deployment import ProcessConfig
 from .integrations import GitHubConfig, IntegrationRecord, TavilyWebConfig
 from .llm import Provider, ProviderInput, ProviderRecord, ScriptedProvider, scripted_reply
 from .domain.messages import ActorMessage, ContentItem, ConversationContext, InputMessage, LLMInput, ModelCard
-from .runtime import Gateway, IncomingMessage, Runtime
+from .runtime import Gateway, Runtime
 from .runtime.streams import TextStream
 from .runtime.tasks import RuntimeTaskRecord
 from .domain.records import ActorRecord
@@ -32,7 +32,6 @@ __all__ = [
     "HarnessConfig",
     "HistoryHelper",
     "HistoryStore",
-    "IncomingMessage",
     "InputMessage",
     "IntegrationRecord",
     "Provider",

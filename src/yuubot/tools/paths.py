@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from ..util.paths import safe_workspace_path
+
 
 def workspace(path: Path) -> Path:
     root = path.resolve()
@@ -8,7 +10,4 @@ def workspace(path: Path) -> Path:
 
 
 def workspace_path(workspace: Path, value: str) -> Path:
-    path = (workspace / value).resolve()
-    if path != workspace and workspace not in path.parents:
-        raise ValueError(f"path escapes workspace: {value}")
-    return path
+    return safe_workspace_path(workspace, value)

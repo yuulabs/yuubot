@@ -70,14 +70,6 @@ class ActorMailboxRegistry:
     def items(self) -> list[tuple[str, Mailbox]]:
         return list(self._mailboxes.items())
 
-
-class IncomingMessage(msgspec.Struct, frozen=True, kw_only=True):
-    route: str
-    text: str
-    conversation_id: str | None = None
-    source: dict[str, object] = msgspec.field(default_factory=dict)
-
-
 @define
 class Gateway:
     """Maps inbound routes to actor ids."""
@@ -231,29 +223,6 @@ class Runtime:
 
     def emit(self, event_kind: str, **payload: object) -> None:
         self.eventbus.emit(event_kind, **payload)
-
-    async def emit_incoming(self, message: IncomingMessage) -> bool:
-        self.emit("incoming.message", route=message.route, text=message.text, source=message.source)
-        actor_id = self.gateway.resolve(message.route)
-        delivered = False
-        if actor_id is not None:
-            await self.wakeup.deliver(
-                WakeupTarget(
-                    kind="app_webhook",
-                    actor_id=actor_id,
-                    conversation_id=message.conversation_id,
-                ),
-                WakeupPayload(text=message.text, source=message.source),
-            )
-            delivered = True
-        self.emit(
-            "gateway.dispatch",
-            route=message.route,
-            actor_id=actor_id,
-            delivered=delivered,
-            conversation_id=message.conversation_id,
-        )
-        return delivered
 
     def enable_integration(self, record: IntegrationRecord) -> Integration:
         integration = self.integration_registry.create(record, self)

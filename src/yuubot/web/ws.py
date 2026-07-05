@@ -11,7 +11,7 @@ import asyncio
 import msgspec
 
 from ..app import Yuubot
-from ..chat import Conversation, ConversationBlocked, ConversationBusy
+from ..chat import ConversationBlocked, ConversationBusy
 from ..domain.messages import ContentItem, InputMessage
 from ..chat.listener import WsListener
 from .errors import internal_error_detail, internal_error_message
@@ -96,19 +96,23 @@ async def _start_conversation_send(
     await send({"id": command_id, "type": "conversation.send.accepted", "payload": {"conversation_id": conversation.id}})
     ws_listener.track_send(command_id, conversation.id)
     message = InputMessage(role="user", name=actor_id, content=content)
-    return asyncio.create_task(_conversation_send(send, command_id, conversation, message, development=app.runtime.development))
+    return asyncio.create_task(
+        _conversation_send(send, command_id, app, actor_id, conversation.id, message, development=app.runtime.development)
+    )
 
 
 async def _conversation_send(
     send: WSCommandSend,
     command_id: object,
-    conversation: Conversation,
+    app: Yuubot,
+    actor_id: str,
+    conversation_id: str,
     message: InputMessage,
     *,
     development: bool,
 ) -> None:
     try:
-        await conversation.run_loop(message)
+        await app.run_user_message(actor_id, message, conversation_id)
     except ConversationBusy:
         await send_error(send, command_id, "conversation_busy", "conversation is already running")
     except ConversationBlocked as exc:

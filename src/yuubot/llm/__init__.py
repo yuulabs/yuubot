@@ -8,7 +8,8 @@ from .catalog import (
     provider_configured,
     refresh_catalog,
 )
-from .openai import OpenAIProvider, OpenAIProviderConfig, ScriptedProvider, make_openai_provider, scripted_reply
+from .openai import OpenAIProvider, OpenAIProviderConfig, make_openai_provider
+from .scripted import ScriptedProvider, scripted_reply
 from .protocol import Provider
 from .records import ProviderRecord
 from .registry import ProviderRegistry, ProviderSpec, default_registry
