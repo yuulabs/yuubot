@@ -1,0 +1,22 @@
+data_dir: ~/.yuubot-data
+
+# python_kernels:
+#   max_workers: 4
+#   acquire_timeout_s: 30
+#   max_rss_bytes: 2147483648
+#   idle_ttl_s: 21600
+
+# Optional deployment boundary. Providers, integrations, actors, and routes are
+# configured from the Admin UI and persisted in the database under data_dir.
+# admin_url_base: http://127.0.0.1:8765
+# public_url_base: http://127.0.0.1:8765
+# trusted_proxies: [127.0.0.1]
+# admin_auth:
+#   mode: loopback_bypass  # proxy | builtin | loopback_bypass
+#   builtin:
+#     session_cookie_name: yuubot_session
+#     csrf_header: X-CSRF-Token
+#     password: change-me
+#   proxy:
+#     user_header: X-Forwarded-User
+#     groups_header: X-Forwarded-Groups
