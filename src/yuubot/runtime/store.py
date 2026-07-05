@@ -9,7 +9,17 @@ from attrs import define
 from ..db import Database
 from ..db.migrate import current_version
 from ..domain.messages import ModelCard
-from ..domain.records import ActorRecord, RouteRecord, decode_actor_record
+from ..domain.records import (
+    ActorRecord,
+    ActorStatus,
+    ConversationRow,
+    CostRow,
+    IntegrationStatus,
+    LifecycleError,
+    RouteRecord,
+    decode_actor_record,
+    decode_lifecycle_error,
+)
 from ..domain.stream import Usage
 from ..integrations import IntegrationRecord
 from ..llm.records import ProviderRecord
@@ -146,28 +156,28 @@ class ApplicationStateStore:
             for payload, enabled, last_error in rows
         ]
 
-    async def put_integration(self, record: IntegrationRecord, *, enabled: bool, last_error: dict[str, object] | None = None) -> None:
+    async def put_integration(self, record: IntegrationRecord, *, enabled: bool, last_error: LifecycleError | None = None) -> None:
         await self._db.execute(
             "insert or replace into app_integrations (type, payload, enabled, last_error, updated_at) values (?, ?, ?, ?, ?)",
             (record.type, msgspec.json.encode(record), int(enabled), _error_payload(last_error), _now()),
         )
         await self._db.commit()
 
-    async def set_integration_enabled(self, integration_type: str, *, enabled: bool, last_error: dict[str, object] | None = None) -> None:
+    async def set_integration_enabled(self, integration_type: str, *, enabled: bool, last_error: LifecycleError | None = None) -> None:
         await self._db.execute(
             "update app_integrations set enabled = ?, last_error = ?, updated_at = ? where type = ?",
             (int(enabled), _error_payload(last_error), _now(), integration_type),
         )
         await self._db.commit()
 
-    async def integration_statuses(self) -> dict[str, dict[str, object]]:
+    async def integration_statuses(self) -> dict[str, IntegrationStatus]:
         cursor = await self._db.execute("select type, enabled, last_error from app_integrations")
         rows = await cursor.fetchall()
         return {
-            integration_type: {
-                "enabled": bool(enabled),
-                "last_error": msgspec.json.decode(last_error, type=dict[str, object]) if last_error is not None else None,
-            }
+            integration_type: IntegrationStatus(
+                enabled=bool(enabled),
+                last_error=decode_lifecycle_error(last_error),
+            )
             for integration_type, enabled, last_error in rows
         }
 
@@ -176,7 +186,7 @@ class ApplicationStateStore:
         rows = await cursor.fetchall()
         return [(decode_actor_record(payload), bool(enabled)) for payload, enabled in rows]
 
-    async def put_actor(self, record: ActorRecord, *, enabled: bool = True, status: str = "idle", last_error: dict[str, object] | None = None) -> None:
+    async def put_actor(self, record: ActorRecord, *, enabled: bool = True, status: str = "idle", last_error: LifecycleError | None = None) -> None:
         await self._db.execute(
             "insert or replace into app_actors (id, payload, enabled, status, last_error, updated_at) values (?, ?, ?, ?, ?, ?)",
             (record.id, msgspec.json.encode(record), int(enabled), status, _error_payload(last_error), _now()),
@@ -187,7 +197,7 @@ class ApplicationStateStore:
         await self._db.execute("delete from app_actors where id = ?", (actor_id,))
         await self._db.commit()
 
-    async def set_actor_status(self, actor_id: str, status: str, last_error: dict[str, object] | None = None, *, enabled: bool | None = None) -> None:
+    async def set_actor_status(self, actor_id: str, status: str, last_error: LifecycleError | None = None, *, enabled: bool | None = None) -> None:
         if enabled is None:
             await self._db.execute(
                 "update app_actors set status = ?, last_error = ?, updated_at = ? where id = ?",
@@ -200,15 +210,15 @@ class ApplicationStateStore:
             )
         await self._db.commit()
 
-    async def actor_statuses(self) -> dict[str, dict[str, object]]:
+    async def actor_statuses(self) -> dict[str, ActorStatus]:
         cursor = await self._db.execute("select id, enabled, status, last_error from app_actors")
         rows = await cursor.fetchall()
         return {
-            actor_id: {
-                "enabled": bool(enabled),
-                "status": status,
-                "last_error": msgspec.json.decode(last_error, type=dict[str, object]) if last_error is not None else None,
-            }
+            actor_id: ActorStatus(
+                enabled=bool(enabled),
+                status=status,
+                last_error=decode_lifecycle_error(last_error),
+            )
             for actor_id, enabled, status, last_error in rows
         }
 
@@ -238,7 +248,7 @@ class ApplicationStateStore:
         )
         await self._db.commit()
 
-    async def list_conversations(self) -> list[dict[str, object]]:
+    async def list_conversations(self) -> list[ConversationRow]:
         cursor = await self._db.execute(
             """
             select id, actor_id, status, created_at, last_active_at, last_error, title
@@ -248,15 +258,15 @@ class ApplicationStateStore:
         )
         rows = await cursor.fetchall()
         return [
-            {
-                "id": conversation_id,
-                "actor_id": actor_id,
-                "status": status,
-                "created_at": created_at,
-                "last_active_at": last_active_at,
-                "last_error": msgspec.json.decode(last_error, type=dict[str, object]) if last_error is not None else None,
-                "title": title,
-            }
+            ConversationRow(
+                id=conversation_id,
+                actor_id=actor_id,
+                status=status,
+                created_at=created_at,
+                last_active_at=last_active_at,
+                last_error=msgspec.json.decode(last_error, type=dict[str, object]) if last_error is not None else None,
+                title=title,
+            )
             for conversation_id, actor_id, status, created_at, last_active_at, last_error, title in rows
         ]
 
@@ -266,7 +276,7 @@ class ApplicationStateStore:
         await self._db.commit()
         return conversation.rowcount > 0 or costs.rowcount > 0
 
-    async def append_cost(self, conversation_id: str, usage: Usage, account: dict[str, object], *, estimated: bool) -> dict[str, object]:
+    async def append_cost(self, conversation_id: str, usage: Usage, account: dict[str, object], *, estimated: bool) -> CostRow:
         created_at = _now()
         usage_payload = msgspec.json.encode(usage)
         account_payload = msgspec.json.encode(account)
@@ -283,14 +293,14 @@ class ApplicationStateStore:
                 "insert into app_costs (conversation_id, seq, usage, account, estimated, created_at) values (?, ?, ?, ?, ?, ?)",
                 (conversation_id, seq, usage_payload, account_payload, int(estimated), created_at),
             )
-        return {
-            "conversation_id": conversation_id,
-            "seq": seq,
-            "usage": msgspec.to_builtins(usage),
-            "account": dict(account),
-            "estimated": estimated,
-            "created_at": created_at,
-        }
+        return CostRow(
+            conversation_id=conversation_id,
+            seq=seq,
+            usage=usage,
+            account=dict(account),
+            estimated=estimated,
+            created_at=created_at,
+        )
 
     async def load_routes(self) -> list[RouteRecord]:
         cursor = await self._db.execute(
@@ -362,21 +372,21 @@ class ApplicationStateStore:
         await self._db.commit()
         return cursor.rowcount > 0
 
-    async def load_costs(self, conversation_id: str) -> list[dict[str, object]]:
+    async def load_costs(self, conversation_id: str) -> list[CostRow]:
         cursor = await self._db.execute(
             "select seq, usage, account, estimated, created_at from app_costs where conversation_id = ? order by seq",
             (conversation_id,),
         )
         rows = await cursor.fetchall()
         return [
-            {
-                "conversation_id": conversation_id,
-                "seq": seq,
-                "usage": msgspec.to_builtins(msgspec.json.decode(usage, type=Usage)),
-                "account": msgspec.json.decode(account, type=dict[str, object]) if account is not None else {},
-                "estimated": bool(estimated),
-                "created_at": created_at,
-            }
+            CostRow(
+                conversation_id=conversation_id,
+                seq=seq,
+                usage=msgspec.json.decode(usage, type=Usage),
+                account=msgspec.json.decode(account, type=dict[str, object]) if account is not None else {},
+                estimated=bool(estimated),
+                created_at=created_at,
+            )
             for seq, usage, account, estimated, created_at in rows
         ]
 
@@ -385,5 +395,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _error_payload(error: dict[str, object] | None) -> bytes | None:
-    return msgspec.json.encode(error) if error is not None else None
+def _error_payload(error: LifecycleError | dict[str, object] | None) -> bytes | None:
+    if error is None:
+        return None
+    return msgspec.json.encode(error)

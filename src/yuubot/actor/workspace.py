@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from ..domain.records import ActorRecord
+
 
 def prepare_workspace(path: Path) -> None:
     workspace = path.resolve()
@@ -23,3 +25,17 @@ def prepare_workspace(path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def resolve_actor_workspace_path(
+    actor_id: str,
+    *,
+    live_workspace: str | None,
+    record: ActorRecord | None,
+    default_workspace_dir: Path,
+) -> Path | None:
+    if live_workspace is not None:
+        return Path(live_workspace).resolve()
+    if record is None:
+        return None
+    return Path(record.workspace or str(default_workspace_dir / actor_id)).resolve()

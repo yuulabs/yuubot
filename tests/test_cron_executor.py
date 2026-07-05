@@ -9,7 +9,7 @@ from yuubot.runtime.cron.models import CronSchedule, ReminderAction
 @pytest.mark.asyncio
 async def test_cron_executor_emits_notification_event(tmp_path) -> None:
     app = await Yuubot.create(tmp_path / "data")
-    app.runtime.resolve_actor_workspace = app._actor_workspace_path
+    app.runtime.resolve_actor_workspace = app.actor_workspace_path
     try:
         job = await app.runtime.cron_jobs.build_new(
             owner="actor:amy:conv:c1",

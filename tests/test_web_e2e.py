@@ -238,13 +238,11 @@ actors:
     finally:
         await app.shutdown()
 
-    assert snapshot["providers"] == []
-    assert snapshot["actors"] == []
-    assert "deployment" not in snapshot
-    assert "llms" not in snapshot
-    github = next(item for item in cast(list[JsonObject], snapshot["integrations"]) if item["type"] == "github")
-    assert github["configured"] is False
-    assert github["enabled"] is False
+    assert snapshot.providers == []
+    assert snapshot.actors == []
+    github = next(item for item in snapshot.integrations if item.type == "github")
+    assert github.configured is False
+    assert github.enabled is False
 
 
 async def test_http_persists_integration_enable_error(tmp_path: Path) -> None:

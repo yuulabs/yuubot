@@ -5,11 +5,27 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
+import msgspec
 from attrs import define, field
 
 from .history import PREFIX_KINDS
+from ..domain.stream import StreamEvent
 
 WSCommandSend = Callable[[dict[str, object]], Awaitable[None]]
+
+
+def _wire_value(value: object) -> object:
+    if isinstance(value, StreamEvent):
+        return msgspec.to_builtins(value)
+    return value
+
+
+def _wire_event_payload(payload: dict[str, object]) -> dict[str, object]:
+    if "event" not in payload:
+        return payload
+    wired = dict(payload)
+    wired["event"] = _wire_value(payload["event"])
+    return wired
 
 
 @define
@@ -58,7 +74,7 @@ class WsListener:
         if self._closed:
             return
         if self._track_all_events or (self._event_kinds and kind in self._event_kinds):
-            await self._send({"type": "runtime.event", "payload": {"kind": kind, "event": payload}})
+            await self._send({"type": "runtime.event", "payload": {"kind": kind, "event": _wire_event_payload(payload)}})
         if self._history_conversation_id is not None and kind == "conversation.history.append":
             if payload.get("conversation_id") != self._history_conversation_id:
                 return
@@ -74,7 +90,7 @@ class WsListener:
                     {
                         "id": command_id,
                         "type": "conversation.stream",
-                        "payload": {"conversation_id": conversation_id, "event": payload.get("event")},
+                        "payload": {"conversation_id": conversation_id, "event": _wire_value(payload.get("event"))},
                     }
                 )
             elif kind == "conversation.output":

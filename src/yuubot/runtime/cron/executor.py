@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 WorkspaceResolver = Callable[[str], Path | None]
+SchedulerGetter = Callable[[], "CronJobScheduler"]
 
 
 def _now() -> str:
@@ -46,8 +47,12 @@ def _with_job(job: CronJob, **changes: object) -> CronJob:
 @define
 class CronExecutor:
     _runtime: Runtime
-    _scheduler: CronJobScheduler
+    _scheduler_getter: SchedulerGetter
     _workspace_resolver: WorkspaceResolver
+
+    @property
+    def _scheduler(self) -> CronJobScheduler:
+        return self._scheduler_getter()
 
     async def run(self, job_id: str) -> None:
         try:

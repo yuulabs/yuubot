@@ -10,7 +10,7 @@ from ..app import Yuubot
 
 
 def actor_workspace(app: Yuubot, actor_id: str) -> Path | None:
-    return app._actor_workspace_path(actor_id)
+    return app.actor_workspace_path(actor_id)
 
 
 def workspace_path(workspace: Path, value: str) -> Path:

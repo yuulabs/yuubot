@@ -37,6 +37,7 @@ from .cron import (
 
 if TYPE_CHECKING:
     from ..actor import Actor
+    from ..chat.loop import ConversationManager
 
 
 @define
@@ -55,7 +56,10 @@ class ActorMailboxRegistry:
     _mailboxes: dict[str, Mailbox] = field(factory=dict)
 
     def get(self, actor_id: str) -> Mailbox:
-        return self._mailboxes.setdefault(f"actor:{actor_id}", Mailbox())
+        return self.ensure(f"actor:{actor_id}")
+
+    def ensure(self, address: str) -> Mailbox:
+        return self._mailboxes.setdefault(address, Mailbox())
 
     def pop(self, actor_id: str) -> Mailbox | None:
         return self._mailboxes.pop(f"actor:{actor_id}", None)
@@ -117,9 +121,6 @@ class Runtime:
     tasks: TaskRegistry
     scheduler: TaskScheduler
     cron_jobs: CronJobStore
-    cron: CronJobScheduler
-    cron_executor: CronExecutor
-    notifications: NotificationDispatcher
     push_subscriptions: PushSubscriptionStore
     shares: ShareRegistry
     kv: KvStore
@@ -128,8 +129,29 @@ class Runtime:
     integrations: dict[str, Integration] = field(factory=dict)
     actors: dict[str, Actor] = field(factory=dict)
     _actor_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
+    _cron: CronJobScheduler | None = field(default=None, init=False)
+    _cron_executor: CronExecutor | None = field(default=None, init=False)
+    _notifications: NotificationDispatcher | None = field(default=None, init=False)
     resolve_actor_workspace: Callable[[str], Path | None] | None = None
     development: bool = False
+
+    @property
+    def cron(self) -> CronJobScheduler:
+        if self._cron is None:
+            raise RuntimeError("cron scheduler not initialized")
+        return self._cron
+
+    @property
+    def cron_executor(self) -> CronExecutor:
+        if self._cron_executor is None:
+            raise RuntimeError("cron executor not initialized")
+        return self._cron_executor
+
+    @property
+    def notifications(self) -> NotificationDispatcher:
+        if self._notifications is None:
+            raise RuntimeError("notification dispatcher not initialized")
+        return self._notifications
 
     @classmethod
     def create(cls, data_dir: str | Path, db: Database, *, kernels: PythonKernelsConfig | None = None) -> Runtime:
@@ -165,27 +187,29 @@ class Runtime:
             tasks=task_registry,
             scheduler=scheduler,
             cron_jobs=cron_jobs,
-            cron=None,  # type: ignore[arg-type]
-            cron_executor=None,  # type: ignore[arg-type]
-            notifications=None,  # type: ignore[arg-type]
             push_subscriptions=push_subscriptions,
             shares=shares,
             kv=kv,
             python_kernels=python_kernels,
             kernel_limiter=KernelLimiter(python_kernels),
         )
-        runtime.notifications = NotificationDispatcher.create(runtime)
-        runtime.cron_executor = CronExecutor(
+        runtime._notifications = NotificationDispatcher.create(runtime)
+
+        def scheduler_ref() -> CronJobScheduler:
+            if runtime._cron is None:
+                raise RuntimeError("cron scheduler not initialized")
+            return runtime._cron
+
+        runtime._cron_executor = CronExecutor(
             runtime=runtime,
-            scheduler=None,  # type: ignore[arg-type]
+            scheduler_getter=scheduler_ref,
             workspace_resolver=runtime._resolve_workspace,
         )
-        runtime.cron = CronJobScheduler(
+        runtime._cron = CronJobScheduler(
             runtime=runtime,
             store=cron_jobs,
-            executor=runtime.cron_executor,
+            executor=runtime._cron_executor,
         )
-        runtime.cron_executor._scheduler = runtime.cron
         return runtime
 
     @property
@@ -203,7 +227,7 @@ class Runtime:
     def get_mailbox(self, address: str) -> Mailbox:
         if address.startswith("actor:"):
             return self.mailboxes.get(address.removeprefix("actor:"))
-        return self.mailboxes._mailboxes.setdefault(address, Mailbox())
+        return self.mailboxes.ensure(address)
 
     def emit(self, event_kind: str, **payload: object) -> None:
         self.eventbus.emit(event_kind, **payload)

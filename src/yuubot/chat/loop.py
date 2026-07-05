@@ -17,7 +17,7 @@ Concurrency contract
 import asyncio
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol
 
 import msgspec
 from attrs import define, field
@@ -141,7 +141,7 @@ class Conversation:
                         self.runtime.emit(
                             "conversation.stream",
                             conversation_id=self.id,
-                            event=msgspec.to_builtins(chunk),
+                            event=chunk,
                         )
                 outputs, stop = merge(chunks)
                 await self._extend(outputs)
@@ -157,7 +157,7 @@ class Conversation:
                 self.runtime.emit(
                     "conversation.stream",
                     conversation_id=self.id,
-                    event=msgspec.to_builtins(stop_frame),
+                    event=stop_frame,
                 )
 
                 if stop.reason in {"stop", "interrupted"}:
@@ -236,7 +236,16 @@ class Conversation:
 
 
 def _stop_frame(stop: StreamStop) -> StreamEvent:
-    return StreamEvent(group_id="stop", kind="stream_stop", payload=cast(dict[str, object], msgspec.to_builtins(stop)))
+    return StreamEvent(
+        group_id="stop",
+        kind="stream_stop",
+        payload={
+            "reason": stop.reason,
+            "usage": msgspec.to_builtins(stop.usage),
+            "account": stop.account,
+            "cost_estimated": stop.cost_estimated,
+        },
+    )
 
 
 class ConversationCreator(Protocol):

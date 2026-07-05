@@ -18,7 +18,7 @@ from ...domain.messages import ModelCard
 from ...domain.records import ActorRecord, RouteBody, RouteRecord
 from ...integrations import IntegrationRecord
 from ...llm import ProviderInput, is_configured
-from ...llm.types import ModelCardInput
+from ...llm.types import ModelCardInput, ProviderSnapshot
 from ...runtime import IncomingMessage
 from ...runtime.inbound import ActorInboundBody, MailboxUnavailableError
 from ...runtime.kv import (
@@ -152,7 +152,7 @@ def create_admin_app(
     @api.get("/api/integrations/{integration_type}")
     async def api_integration(integration_type: str) -> Response:
         for integration in await app.integration_snapshots():
-            if integration["type"] == integration_type:
+            if integration.type == integration_type:
                 return json_response(integration)
         return error_response(404, "not_found", "integration type not found")
 
@@ -162,7 +162,7 @@ def create_admin_app(
 
     @api.get("/api/providers")
     async def api_providers() -> Response:
-        items: list[dict[str, object]] = []
+        items: list[ProviderSnapshot] = []
         for record in sorted(app.provider_records.values(), key=lambda item: item.id):
             cards = await app.runtime.state.list_model_cards(record.id)
             items.append(app.provider_snapshot(record, cards))
@@ -471,7 +471,11 @@ def create_admin_app(
         cached = app.runtime.conversations.has(conversation_id)
         if summary is None and not cached:
             return error_response(404, "not_found", "conversation not found")
-        payload = dict(summary or {"id": conversation_id, "message_count": 0, "last_seq": None})
+        payload: dict[str, object] = (
+            msgspec.to_builtins(summary)
+            if summary is not None
+            else {"id": conversation_id, "message_count": 0, "last_seq": None}
+        )
         payload["active"] = payload.get("status") == "active" if summary is not None else cached
         payload["history_url"] = f"/api/conversations/{conversation_id}/history"
         return json_response(payload)
