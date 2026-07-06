@@ -36,4 +36,6 @@ cd web && pnpm install && pnpm run build
 
 ## Prompt Visibility
 
-- Ensure that any function/tool descriptions defined in the framework are successfully injected into the LLM's system prompt or existing in tool specs.
+- Ensure that any function/tool descriptions defined in the framework are successfully injected into the LLM's system prompt or existing in tool specs and can be accurately understood(not too verbose or too concise).
+
+DEBUG: 找config example yaml里面的数据库/log

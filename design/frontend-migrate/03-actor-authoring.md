@@ -81,7 +81,7 @@ Do not derive editable records from lossy snapshots. Until full actor records ar
 
 - Actor edit preserves `llm` binding from loaded record.
 - Actor edit round-trips `persona`, `model`, `workspace`, and `tools`.
-- Actor detail links to `/admin/conversations/actor-{actorId}` or equivalent draft route.
+- Actor detail links to `/admin/conversations/new?actor={actorId}`.
 - Actor detail filters conversations by `actor_id`.
 - Enable/disable actions call the correct endpoints and refresh bootstrap.
 

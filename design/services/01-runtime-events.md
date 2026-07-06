@@ -113,8 +113,10 @@ class ActorMessage(msgspec.Struct, frozen=True):
 
 | `inbound_kind` | History 效果 | 进入 loop 方式 |
 | --- | --- | --- |
-| `app_webhook`, `actor_inbound` | 追加 **user** `InputMessage` | `run_loop(user_input_from_actor_message(message))` |
+| `app_webhook`, `actor_inbound` | 追加 **user** `InputMessage` | `conversation_id=None` 时由 Actor 默认 inbound loop 复用/新建 conversation；然后 `run_loop(user_input_from_actor_message(message))` |
 | `task_delivery`, `conversation_callback` | 追加 **developer** `InputMessage`（`name="yuubot"`） | `run_continuation()` |
+
+`conversation_callback` 必须绑定明确的 `conversation_id`，用于任务结果或 cron 回调继续 owner conversation。Cron legacy `wakeup` 仅作为兼容输入，执行时按 `actor_inbound` 语义投递，不再作为长期语义使用。
 
 ### WakeupDelivery
 

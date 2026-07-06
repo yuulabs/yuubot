@@ -14,7 +14,7 @@ The primary entry should be:
 
 1. User opens an Actor detail page.
 2. User clicks "Start conversation".
-3. Frontend navigates to a draft route tied to that actor, for example `/admin/conversations/actor-{actor_id}`.
+3. Frontend navigates to `/admin/conversations/new?actor={actor_id}`.
 4. Actor selector is locked because the draft is actor-bound.
 5. First successful send creates or resolves a real conversation id.
 6. URL switches to `/admin/conversations/{conversation_id}` without losing streamed output.
@@ -66,6 +66,14 @@ Define a small client-side conversation session state:
 | `error` | send or WS failed |
 
 The frontend should switch from draft id to real id after the backend sends `conversation.send.accepted` with `payload.conversation_id`. Do not infer the durable id from the draft URL.
+
+Draft pages do not open a WebSocket. The first send pre-allocates a conversation id, navigates to `/admin/conversations/{conversation_id}` with the pending message in router state, then the durable page opens the WebSocket and sends.
+
+### Stream transcript vs history re-fetch
+
+During an active session, the main transcript is built from WebSocket stream events (`sessionTurns` + live blocks) plus `conversation.history.append` for durable user messages. Do **not** invalidate or re-fetch `GET /api/conversations/{id}/history` when `stream_stop` arrives.
+
+Rationale: if the stream renderer is correct, its output must match persisted history exactly. Re-fetching history after every turn replaces the streamed view with the history renderer and hides stream-rendering bugs, which makes debugging harder. History is loaded once when opening a conversation (or on navigation); new turns in the current session stay on the stream path until the page reloads.
 
 ## Conversation History Rail
 

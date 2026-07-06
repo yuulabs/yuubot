@@ -70,6 +70,29 @@ data_dir/
 
 路径解析须 containment；拒绝 `..` 与符号链接逃逸。
 
+## Pre-deployment Gate: Logging and Resource Management
+
+部署前必须先补齐 log 与资源管理；这类能力是长期云服务的运行前提，不应推迟到部署后补救。
+
+**Logging**：yuubot 需要在关键 runtime 路径适当增加结构化 log，目标是支持线上 debug。log 与 trace 正交：
+trace 用于分析链路、耗时、成本和 profiling；log 用于解释 runtime 行为、错误现场、恢复路径和关键状态转换。
+
+**Disk management**：yuubot 预期作为云上长期服务运行，必须主动管理磁盘：
+
+- `/tmp` 定时清理；LLM 与工具调用很容易把临时产物写到这里。
+- `data_dir/logs/` 需要轮换与保留策略。
+- `app_spans`、trace artifacts、未来 traces 数据也需要轮换；这是长期目标，但部署前至少要有明确策略和可执行的第一阶段。
+- 磁盘空间不足时触发 runtime 告警，不能只依赖宿主机报错。
+
+**Runtime monitoring**：Runtime 需要暴露传统服务器信息，用于 Admin/Monitor 和告警判断：
+
+- CPU 占用率。
+- 内存占用率。
+- 磁盘使用率与剩余空间。
+- 网络相关指标（吞吐、连接或错误，按实现阶段细化）。
+
+**Memory and concurrency limits**：所有可能造成大内存占用的并发都需要被管理，典型例子是 `execute_python`。实现上应明确队列、并发上限、超时、取消、输出/产物大小限制，以及达到限制时的用户可见错误。
+
 ## Reverse proxy（示意）
 
 ```text

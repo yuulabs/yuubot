@@ -13,6 +13,7 @@
 | 7 | [07-cron.md](07-cron.md) | 持久化 Cron 调度、提醒推送、`yb.tasks.cron` |
 | 8 | [08-python-kernel.md](08-python-kernel.md) | ipykernel worker pool、`execute_python` 子进程隔离、`restart_kernel` |
 | 9 | [09-observability.md](09-observability.md) | OTEL GenAI tracing、`app_spans`、streaming timing、cost 聚合 API |
+| 10 | [10-data-sources.md](10-data-sources.md) | MCP data source、credential store、coding CLI PTY 登录、Skills |
 
 ## Runtime 组合（权威定义见 01）
 

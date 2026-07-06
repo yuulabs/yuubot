@@ -10,9 +10,12 @@ An operator or LLM schedules durable work:
 2. APScheduler triggers the job inside the daemon process.
 3. The executor dispatches by action kind:
    - `shell` → `register_shell_task` (same as `yb.tasks.submit`)
-   - `wakeup` → actor mailbox with `inbound_kind=cron_wakeup` (user message + `run_loop`)
+   - `actor_message` → actor mailbox with `inbound_kind=actor_inbound`, `conversation_id=None` (ordinary user input through the actor default inbound loop)
+   - `conversation_callback` → actor mailbox with `inbound_kind=conversation_callback`, bound to the owner conversation (developer notice + continuation)
    - `reminder` → `NotificationDispatcher` (browser toast / web push / future channels)
 4. Admin UI lists, creates, pauses, resumes, and deletes jobs under `/cron`.
+
+Legacy `wakeup` remains decodable for existing jobs and is executed as `actor_message`; it should not be used for new jobs.
 
 Cron jobs persist in SQLite (`app_cron_jobs`). Runtime tasks remain ephemeral.
 
@@ -56,7 +59,7 @@ Event: `notification.delivered` with `{ job_id, title, body, meta }`.
 
 1. Timezone must be explicit; missing/invalid timezone → `400 bad_request`.
 2. Cron jobs are durable; runtime tasks are not.
-3. `cron_wakeup` uses user + `run_loop`; `task_delivery` semantics unchanged.
+3. `actor_message` uses user + `run_loop` through the actor default inbound loop; `conversation_callback` and `task_delivery` use developer continuation.
 4. Reminders use channel handlers, not actor mailboxes.
 5. LLM uses `yb.tasks.cron` only; no direct admin HTTP from `execute_python`.
 

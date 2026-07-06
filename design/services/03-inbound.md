@@ -197,7 +197,7 @@ class IntegrationInboundAdapter:
 
 ```py
 async def handle_mailbox_message(actor, message: ActorMessage) -> None:
-  conversation = await conversations.get_or_create(actor, message.conversation_id)
+  conversation = await actor.conversation_for_message(message)
   inbound_kind = message.source.get("inbound_kind")
 
   if inbound_kind in {"task_delivery", "conversation_callback"}:
@@ -207,6 +207,8 @@ async def handle_mailbox_message(actor, message: ActorMessage) -> None:
 
   await conversation.run_loop(user_input_from_actor_message(message))
 ```
+
+`conversation_id=None` 的 `actor_inbound` 是普通 user input，由 Actor 默认 inbound loop 按 TTL 复用当前 actor conversation 或新建 conversation；它不是 conversation callback。`conversation_callback` 是 developer continuation，必须由投递方绑定明确 owner conversation。
 
 完整 `ActorMessage` 与 role 映射见 [01-runtime-events.md](01-runtime-events.md#actormessage共享-mailbox-契约)。
 
