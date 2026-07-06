@@ -12,6 +12,7 @@ from yuubot.domain import (
     StreamEvent,
     ToolResult,
 )
+from yuubot.actor.prompt import user_visible_text
 
 RulePredicate = Callable[[LLMInput], bool]
 RuleBuilder = Callable[[LLMInput], list[StreamEvent]]
@@ -115,7 +116,7 @@ def user_message_has_text_and_path(text: str, path: str) -> RulePredicate:
         message = last_user_message(inp)
         if message is None:
             return False
-        has_text = any(item.kind == "text" and item.text == text for item in message.content)
+        has_text = user_visible_text(message) == text
         has_path = any(item.kind == "file" and item.path == path for item in message.content)
         return has_text and has_path
 
