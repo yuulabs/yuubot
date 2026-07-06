@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import { describeApiError } from "@/shared/lib/api-errors";
+
 export function Page({ title, sub, actions, children }: { title: string; sub?: string; actions?: ReactNode; children: ReactNode }) {
   return (
     <div className="view">
@@ -20,7 +22,7 @@ export function LoadingState() {
 }
 
 export function ErrorState({ error }: { error: unknown }) {
-  return <div className="empty">Error: {error instanceof Error ? error.message : String(error)}</div>;
+  return <div className="empty">Error: {describeApiError(error)}</div>;
 }
 
 export function EmptyState({ children = "No records yet." }: { children?: ReactNode }) {

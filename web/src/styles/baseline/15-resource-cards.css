@@ -120,6 +120,16 @@
   overflow-wrap: anywhere;
 }
 
+.resource-card__title-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.resource-card__title-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .resource-card__status {
   display: inline-flex;
   align-items: center;
@@ -328,6 +338,14 @@
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.resource-preview--compact {
+  max-height: 76px;
+}
+
+.resource-preview--tall {
+  max-height: min(56dvh, 520px);
 }
 
 .resource-chip-row {

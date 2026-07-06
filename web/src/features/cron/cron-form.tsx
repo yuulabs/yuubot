@@ -87,11 +87,6 @@ export function CronForm({
               className="md:col-span-2"
             />
           )}
-          <CheckboxField
-            label="Run once then complete"
-            checked={draft.once}
-            onChange={(once) => setDraft({ ...draft, once })}
-          />
         </div>
       </DenseSection>
 
@@ -103,7 +98,8 @@ export function CronForm({
             onChange={(actionKind) => setDraft({ ...draft, actionKind: actionKind as CronDraft["actionKind"] })}
             options={[
               { value: "shell", label: "Shell task" },
-              { value: "wakeup", label: "Actor wakeup" },
+              { value: "actor_message", label: "Actor message" },
+              { value: "conversation_callback", label: "Conversation callback" },
               { value: "reminder", label: "Reminder" },
             ]}
           />
@@ -125,13 +121,13 @@ export function CronForm({
             />
           </div>
         )}
-        {draft.actionKind === "wakeup" && (
+        {(draft.actionKind === "actor_message" || draft.actionKind === "conversation_callback" || draft.actionKind === "wakeup") && (
           <label className="mt-3 grid gap-1">
-            <span className="text-sm font-medium">Wakeup message</span>
+            <span className="text-sm font-medium">Message</span>
             <textarea
               className="input min-h-24"
-              value={draft.wakeupText}
-              onChange={(event) => setDraft({ ...draft, wakeupText: event.target.value })}
+              value={draft.messageText}
+              onChange={(event) => setDraft({ ...draft, messageText: event.target.value })}
             />
           </label>
         )}

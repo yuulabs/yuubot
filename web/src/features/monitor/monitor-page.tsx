@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { ComponentType } from "react";
-import { Activity, CircleDot, DollarSign, FileText } from "lucide-react";
+import { Activity, CircleDot, Cpu, DollarSign, FileText, HardDrive, MemoryStick } from "lucide-react";
 
 import { cancelTask, getRuntime, getTask, listTasks } from "@/shared/lib/api";
-import type { TaskRecord } from "@/shared/types/api";
+import type { RuntimeEvent, TaskRecord } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import {
   EmptyState,
@@ -56,6 +56,8 @@ export function MonitorPage() {
 
   const actors = bootstrap?.actors ?? [];
   const routes = bootstrap?.routes ?? [];
+  const host = runtime.data?.host;
+  const diskWarn = (host?.disk_percent ?? 0) >= 85;
 
   return (
     <Page title="Runtime" sub="Live runtime, tasks, integrations, actors, and cost analytics.">
@@ -66,6 +68,13 @@ export function MonitorPage() {
           <MonitorStat icon={FileText} label="Routes" value={routes.length} sub="ingress bindings" />
           <MonitorStat icon={DollarSign} label="Health" value={health?.status === "ok" || health?.ok ? "OK" : "N/A"} sub="system status" />
         </div>
+        {host && (
+          <div className="monitor-stats monitor-stats--three">
+            <MonitorStat icon={Cpu} label="CPU" value={`${host.cpu_percent.toFixed(1)}%`} sub="host utilization" />
+            <MonitorStat icon={MemoryStick} label="Memory" value={`${host.memory_percent.toFixed(1)}%`} sub={formatBytes(host.memory_used_bytes, host.memory_total_bytes)} />
+            <MonitorStat icon={HardDrive} label="Disk" value={`${host.disk_percent.toFixed(1)}%`} sub={formatBytes(host.disk_used_bytes, host.disk_total_bytes)} danger={diskWarn} />
+          </div>
+        )}
 
         <div className="grid gap-3">
           <Panel>
@@ -131,9 +140,13 @@ export function MonitorPage() {
           </Panel>
           <Panel>
             <h2 className="text-lg font-semibold">Events</h2>
-            {!runtime.data?.events.length ? <EmptyState>No events.</EmptyState> : runtime.data.events.map((event) => (
-              <pre key={`${event.ts}-${event.kind}`} className="overflow-auto rounded border p-3 text-xs">{event.kind} {JSON.stringify(event.payload)}</pre>
-            ))}
+            {!runtime.data?.events.length ? <EmptyState>No events.</EmptyState> : (
+              <div className="runtime-events">
+                {runtime.data.events.map((event, index) => (
+                  <RuntimeEventRow key={`${event.ts}-${event.kind}-${index}`} event={event} />
+                ))}
+              </div>
+            )}
           </Panel>
         </div>
 
@@ -147,19 +160,71 @@ function canCancelTask(task: TaskRecord): boolean {
   return task.status === "pending" || task.status === "running";
 }
 
+function RuntimeEventRow({ event }: { event: RuntimeEvent }) {
+  const context = Object.entries(event.context ?? {});
+  return (
+    <article className="runtime-event">
+      <div className="runtime-event__time">{formatEventTime(event.ts)}</div>
+      <div className="runtime-event__body">
+        <div className="runtime-event__head">
+          <span className="runtime-event__title">{event.title || event.kind}</span>
+          <code className="runtime-event__kind">{event.kind}</code>
+        </div>
+        {event.detail && <p className="runtime-event__detail">{event.detail}</p>}
+        {context.length > 0 && (
+          <div className="runtime-event__context">
+            {context.map(([key, value]) => (
+              <span key={key} className="runtime-event__chip">
+                <span>{key}</span>
+                <strong>{formatContextValue(value)}</strong>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+function formatEventTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function formatContextValue(value: unknown): string {
+  if (value == null) return "null";
+  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
+
+function formatBytes(used: number, total: number): string {
+  return `${formatByteCount(used)} / ${formatByteCount(total)}`;
+}
+
+function formatByteCount(value: number): string {
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GiB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MiB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${value} B`;
+}
+
 function MonitorStat({
   icon: Icon,
   label,
   value,
   sub,
+  danger = false,
 }: {
   icon: ComponentType<{ className?: string; size?: number }>;
   label: string;
   value: string | number;
   sub: string;
+  danger?: boolean;
 }) {
   return (
-    <article className="monitor-stat">
+    <article className={`monitor-stat${danger ? " monitor-stat--danger" : ""}`}>
       <div className="monitor-stat__icon">
         <Icon size={18} />
       </div>

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getBootstrap } from "@/shared/lib/api";
+import type { BootstrapSnapshot } from "@/shared/types/api";
 
 export const bootstrapQueryKey = ["bootstrap"] as const;
 
@@ -11,6 +12,13 @@ export function useBootstrap() {
 export function useRefreshBootstrap() {
   const client = useQueryClient();
   return () => client.invalidateQueries({ queryKey: bootstrapQueryKey });
+}
+
+export function useSetBootstrapSnapshot() {
+  const client = useQueryClient();
+  return (snapshot: BootstrapSnapshot) => {
+    client.setQueryData(bootstrapQueryKey, snapshot);
+  };
 }
 
 export function useApiMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {

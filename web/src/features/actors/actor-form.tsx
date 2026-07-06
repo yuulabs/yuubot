@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { getProvider } from "@/shared/lib/api";
+import { describeApiError } from "@/shared/lib/api-errors";
 import type { ActorRecord, BootstrapSnapshot, ModelCard } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import { DenseSection } from "@/shared/components";
@@ -25,12 +26,17 @@ export function ActorForm({
   const [provider, setProvider] = useState(initial.provider);
   const [model, setModel] = useState<ModelCard>(initial.model);
   const [message, setMessage] = useState("");
+  const [saveError, setSaveError] = useState("");
   const providerDetail = useQuery({
     queryKey: ["provider", provider],
     queryFn: () => getProvider(provider),
     enabled: Boolean(provider),
   });
-  const cards = useMemo(() => providerDetail.data?.model_cards ?? [], [providerDetail.data?.model_cards]);
+  const allCards = useMemo(() => providerDetail.data?.model_cards ?? [], [providerDetail.data?.model_cards]);
+  const cards = useMemo(
+    () => allCards.filter((card) => card.configured),
+    [allCards],
+  );
 
   useEffect(() => {
     if (!cards.length) return;
@@ -39,6 +45,12 @@ export function ActorForm({
     }
   }, [cards, model.selector]);
 
+  const pricingHint = provider && allCards.length > 0 && cards.length === 0
+    ? "No models have pricing yet. Open the provider page, pick a model, set per-million prices (0 is allowed), and save before creating an actor."
+    : provider && allCards.length === 0
+      ? "This provider has no model cards yet. Refresh the catalog on the provider page first."
+      : "";
+
   return (
     <div className="dense-stack">
       <DenseSection title="Identity" description="Name the actor and bind it to a workspace.">
@@ -46,10 +58,21 @@ export function ActorForm({
           <TextField label="Actor id" value={id} onChange={setId} />
           <TextField label="Name" value={name} onChange={setName} />
           <TextField label="Description" value={description} onChange={setDescription} />
-          <TextField label="Workspace" value={workspace} onChange={setWorkspace} />
+          <label className="grid gap-1">
+            <span className="text-sm font-medium">Workspace</span>
+            <input
+              className="input"
+              value={workspace}
+              placeholder={id || "actor-id"}
+              onChange={(event) => setWorkspace(event.target.value)}
+            />
+            <span className="text-xs text-muted-foreground">
+              Relative to {bootstrap.workspace_dir}/ unless absolute.
+            </span>
+          </label>
         </div>
       </DenseSection>
-      <DenseSection title="Model binding" description="Choose the provider and model this actor will use.">
+      <DenseSection title="Model binding" description="Choose a provider model that already has pricing configured.">
         <div className="dense-form-grid">
           <label className="grid gap-1">
             <span className="text-sm font-medium">Provider</span>
@@ -63,12 +86,13 @@ export function ActorForm({
             <select
               className="input"
               value={model.selector}
+              disabled={!cards.length}
               onChange={(event) => {
                 const selected = cards.find((card) => card.selector === event.target.value);
                 setModel((current) => selected ? { ...selected, reasoning_effort: current.reasoning_effort ?? "" } : { ...current, selector: event.target.value });
               }}
             >
-              <option value={model.selector}>{model.selector || "Model"}</option>
+              <option value="">{cards.length ? "Select model" : "No priced models"}</option>
               {cards.map((card) => <option key={card.selector} value={card.selector}>{card.selector}</option>)}
             </select>
           </label>
@@ -82,7 +106,8 @@ export function ActorForm({
             />
           </label>
         </div>
-        {providerDetail.error && <p className="text-sm text-destructive">{providerDetail.error instanceof Error ? providerDetail.error.message : String(providerDetail.error)}</p>}
+        {pricingHint && <p className="text-sm text-muted-foreground">{pricingHint}</p>}
+        {providerDetail.error && <p className="text-sm text-destructive">{describeApiError(providerDetail.error)}</p>}
       </DenseSection>
       <DenseSection title="Persona" description="Long-form behavior instructions for the actor.">
         <label className="grid gap-1">
@@ -91,12 +116,16 @@ export function ActorForm({
         </label>
       </DenseSection>
       <div className="dense-actions-bar">
-        <div className="dense-actions-bar__status">{message || "Save actor identity, model binding, and persona."}</div>
+        <div className={`dense-actions-bar__status${saveError ? " text-destructive" : ""}`}>
+          {saveError || message || "Save actor identity, model binding, and persona."}
+        </div>
         <div className="dense-actions-bar__buttons">
           <Button
+            disabled={!provider || !cards.length || !model.selector}
             onClick={async () => {
               try {
                 setMessage("");
+                setSaveError("");
                 await onSave({
                   id,
                   name,
@@ -107,7 +136,7 @@ export function ActorForm({
                   model,
                 });
               } catch (err) {
-                setMessage(err instanceof Error ? err.message : String(err));
+                setSaveError(describeApiError(err));
               }
             }}
           >

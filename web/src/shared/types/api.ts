@@ -100,6 +100,7 @@ export interface ConversationSummary {
 export interface BootstrapSnapshot {
   development?: boolean;
   schema_version: number;
+  workspace_dir: string;
   providers: ProviderSnapshot[];
   actors: ActorSnapshot[];
   integrations: IntegrationSnapshot[];
@@ -113,9 +114,10 @@ export interface ModelCard {
   vision?: boolean;
   toolcall?: boolean;
   json?: boolean;
-  input_price_per_million?: number;
-  cached_input_price_per_million?: number;
-  output_price_per_million?: number;
+  input_price_per_million?: number | null;
+  cached_input_price_per_million?: number | null;
+  output_price_per_million?: number | null;
+  configured?: boolean;
 }
 
 export interface ActorRecord {
@@ -199,13 +201,36 @@ export interface ConversationCostRecord {
   created_at: string;
 }
 
+export interface HostStats {
+  cpu_percent: number;
+  memory_used_bytes: number;
+  memory_total_bytes: number;
+  memory_percent: number;
+  disk_used_bytes: number;
+  disk_total_bytes: number;
+  disk_free_bytes: number;
+  disk_percent: number;
+  disk_path: string;
+  net_bytes_sent: number;
+  net_bytes_recv: number;
+}
+
 export interface RuntimeSnapshot {
   data_dir: string;
   workspace_dir: string;
+  host: HostStats;
   tasks: TaskRecord[];
   actors: Array<{ id: string; status: string; mailbox: string }>;
   integrations: Array<{ name: string; package_path: string }>;
-  events: Array<{ ts: number; kind: string; payload: Record<string, unknown> }>;
+  events: RuntimeEvent[];
+}
+
+export interface RuntimeEvent {
+  ts: string;
+  kind: string;
+  title: string;
+  detail?: string;
+  context: Record<string, unknown>;
 }
 
 export interface TaskRecord {
@@ -231,7 +256,7 @@ export interface CronScheduleRecord {
 }
 
 export interface CronActionRecord {
-  kind: "shell" | "wakeup" | "reminder";
+  kind: "shell" | "wakeup" | "actor_message" | "conversation_callback" | "reminder";
   name?: string;
   shell?: string;
   intro?: string;

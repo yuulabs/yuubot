@@ -22,9 +22,11 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProvidersIdRouteImport } from './routes/providers.$id'
 import { Route as IntegrationsIdRouteImport } from './routes/integrations.$id'
 import { Route as CronNewRouteImport } from './routes/cron.new'
+import { Route as CronJobIdRouteImport } from './routes/cron.$jobId'
 import { Route as AdminConversationsRouteImport } from './routes/admin.conversations'
 import { Route as ActorsNewRouteImport } from './routes/actors.new'
 import { Route as ActorsIdRouteImport } from './routes/actors.$id'
+import { Route as AdminConversationsNewRouteImport } from './routes/admin.conversations.new'
 import { Route as AdminConversationsConversationIdRouteImport } from './routes/admin.conversations.$conversationId'
 import { Route as ActorsIdEditRouteImport } from './routes/actors.$id.edit'
 
@@ -93,6 +95,11 @@ const CronNewRoute = CronNewRouteImport.update({
   path: '/new',
   getParentRoute: () => CronRoute,
 } as any)
+const CronJobIdRoute = CronJobIdRouteImport.update({
+  id: '/$jobId',
+  path: '/$jobId',
+  getParentRoute: () => CronRoute,
+} as any)
 const AdminConversationsRoute = AdminConversationsRouteImport.update({
   id: '/admin/conversations',
   path: '/admin/conversations',
@@ -107,6 +114,11 @@ const ActorsIdRoute = ActorsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => ActorsRoute,
+} as any)
+const AdminConversationsNewRoute = AdminConversationsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => AdminConversationsRoute,
 } as any)
 const AdminConversationsConversationIdRoute =
   AdminConversationsConversationIdRouteImport.update({
@@ -134,11 +146,13 @@ export interface FileRoutesByFullPath {
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
+  '/cron/$jobId': typeof CronJobIdRoute
   '/cron/new': typeof CronNewRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
+  '/admin/conversations/new': typeof AdminConversationsNewRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -154,11 +168,13 @@ export interface FileRoutesByTo {
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
+  '/cron/$jobId': typeof CronJobIdRoute
   '/cron/new': typeof CronNewRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
+  '/admin/conversations/new': typeof AdminConversationsNewRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -175,11 +191,13 @@ export interface FileRoutesById {
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
+  '/cron/$jobId': typeof CronJobIdRoute
   '/cron/new': typeof CronNewRoute
   '/integrations/$id': typeof IntegrationsIdRoute
   '/providers/$id': typeof ProvidersIdRoute
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
+  '/admin/conversations/new': typeof AdminConversationsNewRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -197,11 +215,13 @@ export interface FileRouteTypes {
     | '/actors/$id'
     | '/actors/new'
     | '/admin/conversations'
+    | '/cron/$jobId'
     | '/cron/new'
     | '/integrations/$id'
     | '/providers/$id'
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
+    | '/admin/conversations/new'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -217,11 +237,13 @@ export interface FileRouteTypes {
     | '/actors/$id'
     | '/actors/new'
     | '/admin/conversations'
+    | '/cron/$jobId'
     | '/cron/new'
     | '/integrations/$id'
     | '/providers/$id'
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
+    | '/admin/conversations/new'
   id:
     | '__root__'
     | '/'
@@ -237,11 +259,13 @@ export interface FileRouteTypes {
     | '/actors/$id'
     | '/actors/new'
     | '/admin/conversations'
+    | '/cron/$jobId'
     | '/cron/new'
     | '/integrations/$id'
     | '/providers/$id'
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
+    | '/admin/conversations/new'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -351,6 +375,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CronNewRouteImport
       parentRoute: typeof CronRoute
     }
+    '/cron/$jobId': {
+      id: '/cron/$jobId'
+      path: '/$jobId'
+      fullPath: '/cron/$jobId'
+      preLoaderRoute: typeof CronJobIdRouteImport
+      parentRoute: typeof CronRoute
+    }
     '/admin/conversations': {
       id: '/admin/conversations'
       path: '/admin/conversations'
@@ -371,6 +402,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/actors/$id'
       preLoaderRoute: typeof ActorsIdRouteImport
       parentRoute: typeof ActorsRoute
+    }
+    '/admin/conversations/new': {
+      id: '/admin/conversations/new'
+      path: '/new'
+      fullPath: '/admin/conversations/new'
+      preLoaderRoute: typeof AdminConversationsNewRouteImport
+      parentRoute: typeof AdminConversationsRoute
     }
     '/admin/conversations/$conversationId': {
       id: '/admin/conversations/$conversationId'
@@ -415,10 +453,12 @@ const ActorsRouteWithChildren =
   ActorsRoute._addFileChildren(ActorsRouteChildren)
 
 interface CronRouteChildren {
+  CronJobIdRoute: typeof CronJobIdRoute
   CronNewRoute: typeof CronNewRoute
 }
 
 const CronRouteChildren: CronRouteChildren = {
+  CronJobIdRoute: CronJobIdRoute,
   CronNewRoute: CronNewRoute,
 }
 
@@ -450,10 +490,12 @@ const ProvidersRouteWithChildren = ProvidersRoute._addFileChildren(
 
 interface AdminConversationsRouteChildren {
   AdminConversationsConversationIdRoute: typeof AdminConversationsConversationIdRoute
+  AdminConversationsNewRoute: typeof AdminConversationsNewRoute
 }
 
 const AdminConversationsRouteChildren: AdminConversationsRouteChildren = {
   AdminConversationsConversationIdRoute: AdminConversationsConversationIdRoute,
+  AdminConversationsNewRoute: AdminConversationsNewRoute,
 }
 
 const AdminConversationsRouteWithChildren =

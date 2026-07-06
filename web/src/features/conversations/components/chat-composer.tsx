@@ -1,7 +1,12 @@
 import { useRef } from "react";
-import { Paperclip, X } from "lucide-react";
+import { MessageSquarePlus, Paperclip, SquareStop, X } from "lucide-react";
 
+import { CostBadge } from "@/components/conversation/cost-badge";
 import type { ActorSnapshot } from "@/shared/types/api";
+
+import type { ConversationPhase } from "../hooks/use-conversation-session";
+import { NewConversationLink } from "./new-conversation-link";
+import { TurnPill } from "./turn-pill";
 
 export function ChatComposer({
   actors,
@@ -14,26 +19,43 @@ export function ChatComposer({
   onUpload,
   onRemoveAttachment,
   onSend,
+  onInterrupt,
+  phase = "idle",
+  totalCost = 0,
+  canInterrupt = false,
   disabled = false,
   disabledReason = "",
   wsReady = false,
+  newConversationActorId = "",
 }: {
   actors: ActorSnapshot[];
   selectedActor: string;
   actorLocked?: boolean;
+  newConversationActorId?: string;
   text: string;
   attachments: string[];
   onActorChange: (actorId: string) => void;
   onTextChange: (text: string) => void;
   onUpload: (files: File[]) => void;
   onRemoveAttachment: (path: string) => void;
-  onSend: () => void;
+  onSend: () => boolean;
+  onInterrupt: () => void;
+  phase?: ConversationPhase;
+  totalCost?: number;
+  canInterrupt?: boolean;
   disabled?: boolean;
   disabledReason?: string;
   wsReady?: boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const canSend = !disabled && Boolean(text.trim()) && wsReady;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isActive = phase === "sending" || phase === "streaming";
+  const canSend = !disabled && Boolean(text.trim()) && wsReady && !isActive;
+  const sendAndRefocus = () => {
+    if (!canSend) return;
+    if (!onSend()) return;
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
 
   return (
     <div className="chat__composer">
@@ -52,6 +74,9 @@ export function ChatComposer({
               ))}
             </select>
           )}
+          <NewConversationLink actorId={newConversationActorId} className="composer__icon-btn">
+            <MessageSquarePlus size={16} />
+          </NewConversationLink>
           <input
             ref={fileRef}
             className="composer__file-input"
@@ -72,6 +97,10 @@ export function ChatComposer({
           >
             <Paperclip size={16} />
           </button>
+          <div className="composer__toolbar-end">
+            <TurnPill phase={phase} />
+            <CostBadge totalCost={totalCost} />
+          </div>
         </div>
 
         {attachments.length > 0 && (
@@ -94,6 +123,7 @@ export function ChatComposer({
         )}
 
         <textarea
+          ref={textareaRef}
           className="composer__input"
           rows={4}
           placeholder="Message the actor..."
@@ -103,7 +133,7 @@ export function ChatComposer({
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
-              if (canSend) onSend();
+              sendAndRefocus();
             }
           }}
         />
@@ -112,15 +142,28 @@ export function ChatComposer({
           <span className={wsReady ? "composer__status is-ready" : "composer__status"}>
             {wsReady ? "Connected" : "Connecting..."}
           </span>
-          <button
-            type="button"
-            className="composer__send composer__send--text"
-            disabled={!canSend}
-            aria-label="Send message"
-            onClick={onSend}
-          >
-            Send
-          </button>
+          {isActive ? (
+            <button
+              type="button"
+              className="composer__send composer__send--text composer__send--stop"
+              disabled={!canInterrupt}
+              aria-label="Stop generation"
+              onClick={onInterrupt}
+            >
+              <SquareStop size={14} />
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="composer__send composer__send--text"
+              disabled={!canSend}
+              aria-label="Send message"
+              onClick={sendAndRefocus}
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
 

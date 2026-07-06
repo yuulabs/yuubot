@@ -19,7 +19,6 @@ export function CronNewPage() {
         owner: buildCronOwner(draft.actorId, draft.conversationId),
         schedule: buildCronSchedule(draft),
         action: buildCronAction(draft),
-        once: draft.once,
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["cron-jobs"] });
@@ -33,7 +32,7 @@ export function CronNewPage() {
   return (
     <Page
       title="New Cron Job"
-      sub="Register a durable schedule for shell tasks, actor wakeups, or reminders."
+      sub="Register a durable schedule for shell tasks, actor messages, conversation callbacks, or reminders."
       actions={
         <Button variant="outline" asChild>
           <Link to="/cron">Back to list</Link>

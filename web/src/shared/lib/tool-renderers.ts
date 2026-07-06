@@ -166,6 +166,10 @@ export interface EditArgs {
 }
 
 export function extractToolPath(toolArgs: string): string | null {
+  const partial = extractToolStringArg(toolArgs, "path");
+  if (partial !== null && partial.trim()) {
+    return partial;
+  }
   const parsed = parseToolArgs(toolArgs);
   if (isPlainObject(parsed) && typeof parsed.path === "string" && parsed.path.trim()) {
     return parsed.path;
@@ -180,6 +184,14 @@ export function extractToolPath(toolArgs: string): string | null {
  * three required string fields. Callers should fall back to the generic
  * side-by-side renderer when this returns null.
  */
+export function parseEditArgsPartial(toolArgs: string): EditArgs {
+  return {
+    path: extractToolStringArg(toolArgs, "path") ?? "",
+    old_string: extractToolStringArg(toolArgs, "old_string") ?? "",
+    new_string: extractToolStringArg(toolArgs, "new_string") ?? "",
+  };
+}
+
 export function parseEditArgs(toolArgs: string): EditArgs | null {
   const parsed = parseToolArgs(toolArgs);
   if (

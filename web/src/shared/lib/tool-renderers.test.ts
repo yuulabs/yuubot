@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { extractToolStringArg } from "./tool-renderers.ts";
+import {
+  extractToolStringArg,
+  parseEditArgsPartial,
+} from "./tool-renderers.ts";
 
 test("extractToolStringArg reads complete JSON string args", () => {
   assert.equal(
@@ -26,4 +29,30 @@ test("extractToolStringArg streams incomplete escaped content", () => {
 
 test("extractToolStringArg returns null before the requested field starts", () => {
   assert.equal(extractToolStringArg("{\"path\":\"a.py\",", "code"), null);
+});
+
+test("parseEditArgsPartial streams incomplete edit arguments", () => {
+  assert.deepEqual(
+    parseEditArgsPartial("{\"path\":\"src/a.py\",\"old_string\":\"foo"),
+    {
+      path: "src/a.py",
+      old_string: "foo",
+      new_string: "",
+    },
+  );
+});
+
+test("parseEditArgsPartial reads complete edit arguments", () => {
+  assert.deepEqual(
+    parseEditArgsPartial(JSON.stringify({
+      path: "src/a.py",
+      old_string: "foo",
+      new_string: "bar",
+    })),
+    {
+      path: "src/a.py",
+      old_string: "foo",
+      new_string: "bar",
+    },
+  );
 });

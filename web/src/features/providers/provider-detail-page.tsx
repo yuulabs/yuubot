@@ -12,6 +12,7 @@ import {
   refreshProviderCatalog,
   validateProvider,
 } from "@/shared/lib/api";
+import { describeApiError } from "@/shared/lib/api-errors";
 import type { ActorRecord, ModelCard, ProviderInput } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import { DenseMeta, DenseSection, ErrorState, LoadingState, Page, ResourceList, ResourceListPrimary, Status } from "@/shared/components";
@@ -126,7 +127,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
     if (card.selector.trim()) {
       savedCard = await putProviderModelCard(providerId, { ...card, selector: card.selector.trim() });
     }
-    if (firstProvider && createDefaultActor && savedCard) {
+    if (firstProvider && createDefaultActor && savedCard?.configured) {
       const actor = defaultActor(providerId, name, savedCard);
       if (!bootstrap?.actors.some((item) => item.id === actor.id)) {
         await putActor(actor);
@@ -147,7 +148,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
       setMessage("Provider saved.");
       await afterPersist();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : String(err)),
+    onError: (err) => setError(describeApiError(err)),
   });
   const validate = useMutation({
     mutationFn: async () => {
@@ -158,7 +159,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
       setMessage(`${result.ok ? "OK" : "Failed"}${result.message ? `: ${result.message}` : ""}`);
       await afterPersist();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : String(err)),
+    onError: (err) => setError(describeApiError(err)),
   });
   const refreshCatalog = useMutation({
     mutationFn: () => refreshProviderCatalog(providerId),
@@ -167,7 +168,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
       void detail.refetch();
       refreshBootstrap();
     },
-    onError: (err) => setError(err instanceof Error ? err.message : String(err)),
+    onError: (err) => setError(describeApiError(err)),
   });
   const balance = useMutation({
     mutationFn: () => getProviderBalance(providerId),
@@ -178,7 +179,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
       }
       setMessage(`Balance: ${result.balance ?? "unknown"} ${result.currency ?? ""}`.trim());
     },
-    onError: (err) => setError(err instanceof Error ? err.message : String(err)),
+    onError: (err) => setError(describeApiError(err)),
   });
 
   if (protocols.isLoading || detail.isLoading) return <LoadingState />;
@@ -274,7 +275,13 @@ export function ProviderDetailPage({ id }: { id: string }) {
                           {item.selector}
                         </button>
                       }
-                      subtitle={item.selector === card.selector ? "selected" : undefined}
+                      subtitle={
+                        !item.configured
+                          ? "pricing required"
+                          : item.selector === card.selector
+                            ? "selected"
+                            : undefined
+                      }
                     />
                   ),
                 },
@@ -372,7 +379,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
   }
 }
 
-function PriceInput({ label, value, onChange }: { label: string; value: number | undefined; onChange: (value: number) => void }) {
+function PriceInput({ label, value, onChange }: { label: string; value: number | null | undefined; onChange: (value: number) => void }) {
   return (
     <label className="grid gap-1">
       <span className="text-sm font-medium">{label}</span>
@@ -381,8 +388,9 @@ function PriceInput({ label, value, onChange }: { label: string; value: number |
   );
 }
 
-function priceValue(value: number | undefined): string {
-  return `$${Number(value ?? 0).toFixed(2)}`;
+function priceValue(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "not set";
+  return `$${value.toFixed(2)}`;
 }
 
 function parseOptions(text: string): Record<string, unknown> {

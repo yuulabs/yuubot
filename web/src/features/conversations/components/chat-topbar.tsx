@@ -1,40 +1,36 @@
-import { CostBadge } from "@/components/conversation/cost-badge";
-import { Bug, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import type { ConversationPhase } from "../hooks/use-conversation-session";
+import { Bug, FolderOpen, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 
 export function ChatTopbar({
-  phase,
-  totalCost,
-  canInterrupt,
+  actorId,
   historyOpen,
   debugOpen,
   showDebugToggle = false,
   onToggleHistory,
   onToggleDebug,
-  onInterrupt,
 }: {
-  phase: ConversationPhase;
-  totalCost: number;
-  canInterrupt: boolean;
+  actorId: string;
   historyOpen: boolean;
   debugOpen: boolean;
   showDebugToggle?: boolean;
   onToggleHistory: () => void;
   onToggleDebug: () => void;
-  onInterrupt: () => void;
 }) {
+  const workspaceHref = actorId
+    ? `/workspace?actor=${encodeURIComponent(actorId)}`
+    : "/workspace";
+
   return (
     <div className="chat__topbar-actions">
-      <TurnPill phase={phase} />
-      <CostBadge totalCost={totalCost} />
-      <button
-        type="button"
-        className="btn conv-stop-btn"
-        disabled={!canInterrupt || phase === "idle"}
-        onClick={onInterrupt}
+      <a
+        href={workspaceHref}
+        className="chat__tool-btn"
+        target="_blank"
+        rel="noreferrer"
+        title="Open actor workspace"
       >
-        Stop
-      </button>
+        <FolderOpen size={15} />
+        <span>Workspace</span>
+      </a>
       <button
         type="button"
         className="chat__tool-btn"
@@ -58,25 +54,5 @@ export function ChatTopbar({
         </button>
       )}
     </div>
-  );
-}
-
-function TurnPill({ phase }: { phase: ConversationPhase }) {
-  const label =
-    phase === "sending" ? "Sending"
-    : phase === "streaming" ? "Streaming"
-    : phase === "error" ? "Error"
-    : "Ready";
-  const className =
-    phase === "sending" ? "turn-pill turn-pill--thinking"
-    : phase === "streaming" ? "turn-pill turn-pill--streaming"
-    : phase === "error" ? "turn-pill turn-pill--error"
-    : "turn-pill turn-pill--idle";
-
-  return (
-    <span className={className}>
-      <span className="turn-pill__dot" />
-      {label}
-    </span>
   );
 }

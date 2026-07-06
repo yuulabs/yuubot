@@ -174,13 +174,16 @@ function getConversationTitle(
   if (!match) return "";
   const conversationId = decodeURIComponent(match[1] ?? "");
   if (!conversationId) return "";
+  if (conversationId === "new") {
+    const actorId = new URLSearchParams(window.location.search).get("actor") ?? "";
+    const actor = data?.actors.find((item) => item.id === actorId);
+    const actorName = actor?.name || actorId || "Conversation";
+    return `${actorName} / New conversation`;
+  }
   const summary = data?.conversations.find((item) => item.id === conversationId);
   if (summary?.title) return summary.title;
-  const actorId = conversationId.startsWith("actor-")
-    ? conversationId.slice("actor-".length)
-    : summary?.actor_id ?? "";
+  const actorId = summary?.actor_id ?? "";
   const actor = data?.actors.find((item) => item.id === actorId);
   const actorName = actor?.name || actorId || "Conversation";
-  const label = conversationId.startsWith("actor-") ? "New conversation" : conversationId;
-  return `${actorName} / ${label}`;
+  return `${actorName} / ${conversationId}`;
 }

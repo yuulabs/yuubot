@@ -1,7 +1,9 @@
 import { Link } from "@tanstack/react-router";
-import { Plus, Trash2 } from "lucide-react";
+import { MessageSquarePlus, Trash2 } from "lucide-react";
 
 import type { ConversationSummary } from "@/shared/types/api";
+
+import { NewConversationLink } from "./new-conversation-link";
 
 export function ChatRail({
   actorId,
@@ -21,11 +23,9 @@ export function ChatRail({
       <div className="chat__rail-head">
         <span>{actorName || "Conversations"}</span>
         <div className="chat__rail-actions">
-          {actorId && (
-            <Link className="btn btn--sm" to="/admin/conversations/$conversationId" params={{ conversationId: `actor-${actorId}` }}>
-              <Plus size={13} />
-            </Link>
-          )}
+          <NewConversationLink actorId={actorId} className="btn btn--sm">
+            <MessageSquarePlus size={13} />
+          </NewConversationLink>
         </div>
       </div>
       <div className="chat__list">

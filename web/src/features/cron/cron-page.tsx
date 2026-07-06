@@ -1,5 +1,6 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Eye, Pause, Play } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { deleteCronJob, listCronJobs, pauseCronJob, resumeCronJob } from "@/shared/lib/api";
@@ -19,11 +20,11 @@ import {
 } from "@/shared/components";
 import {
   actionKindLabel,
-  actionSummary,
+  actionIntro,
   formatCronTime,
+  lifecycleLabel,
   parseCronOwner,
   scheduleSummary,
-  statusTone,
 } from "./cron-shared";
 
 export function CronPage() {
@@ -61,7 +62,7 @@ export function CronPage() {
   return (
     <Page
       title="Cron Jobs"
-      sub="Durable scheduled shell tasks, actor wakeups, and reminders."
+      sub="Durable scheduled shell tasks, actor messages, conversation callbacks, and reminders."
       actions={
         <Button asChild>
           <Link to="/cron/new">New Cron Job</Link>
@@ -129,36 +130,50 @@ function CronJobCard({
   onDelete: () => void;
 }) {
   const owner = parseCronOwner(job.owner);
+  const intro = actionIntro(job.action);
 
   return (
     <ResourceCard
       variant="task"
       label={actionKindLabel(job.action.kind)}
-      title={job.name}
+      title={<Link to="/cron/$jobId" params={{ jobId: job.id }} className="resource-card__title-link">{job.name}</Link>}
       subtitle={job.id}
       status={<Status enabled={job.status === "active"} label={job.status} />}
       actions={
         <>
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/cron/$jobId" params={{ jobId: job.id }}>
+              <Eye size={14} />
+              <span>Details</span>
+            </Link>
+          </Button>
           {job.status === "active" ? (
-            <Button variant="outline" size="sm" onClick={onPause}>Pause</Button>
+            <Button variant="outline" size="sm" onClick={onPause}>
+              <Pause size={14} />
+              <span>Pause</span>
+            </Button>
           ) : job.status === "paused" ? (
-            <Button variant="outline" size="sm" onClick={onResume}>Resume</Button>
+            <Button variant="outline" size="sm" onClick={onResume}>
+              <Play size={14} />
+              <span>Resume</span>
+            </Button>
           ) : null}
           <DeleteButton onDelete={onDelete} />
         </>
       }
     >
       <div className="resource-flow">
-        <span className="resource-flow__node">{job.schedule.kind === "cron" ? "Recurring" : "One-shot"}</span>
+        <span className="resource-flow__node">{lifecycleLabel(job)}</span>
         <span className="resource-flow__arrow">-&gt;</span>
         <span className="resource-flow__node">{actionKindLabel(job.action.kind)}</span>
         <span className="resource-flow__arrow">-&gt;</span>
-        <span className="resource-flow__node">{actionSummary(job.action)}</span>
+        <span className="resource-flow__node">{intro}</span>
       </div>
+      <pre className="resource-preview resource-preview--compact">{intro}</pre>
       <ResourceMeta
         items={[
           { label: "Schedule", value: scheduleSummary(job) },
-          { label: "Action", value: actionSummary(job.action) },
+          { label: "Lifecycle", value: lifecycleLabel(job), tone: job.schedule.kind === "at" ? "warning" : "default" },
           {
             label: "Actor",
             value: owner?.actorId ?? job.owner,
@@ -169,10 +184,8 @@ function CronJobCard({
             value: owner?.conversationId ?? "—",
             tone: owner ? "default" : "muted",
           },
-          { label: "Next run", value: formatCronTime(job.next_run_at), tone: job.next_run_at ? "default" : "muted" },
-          { label: "Last run", value: formatCronTime(job.last_run_at), tone: job.last_run_at ? "default" : "muted" },
-          { label: "Lifecycle", value: job.once ? "Run once" : "Repeat", tone: job.once ? "warning" : "default" },
-          { label: "Status", value: job.status, tone: statusTone(job.status) },
+          { label: "Next run", value: formatCronTime(job.next_run_at, job.schedule.timezone), tone: job.next_run_at ? "default" : "muted" },
+          { label: "Last run", value: formatCronTime(job.last_run_at, job.schedule.timezone), tone: job.last_run_at ? "default" : "muted" },
         ]}
       />
     </ResourceCard>

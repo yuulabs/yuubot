@@ -262,7 +262,7 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
                     onClick={() => entry.kind === "directory" && changePath(entry.path)}
                   >
                     {entry.kind === "directory" ? <Folder size={16} /> : <FileIcon size={16} />}
-                    <span>{entry.name}</span>
+                    <span>{entry.kind === "directory" ? `${entry.name}/` : entry.name}</span>
                   </button>
                   <span className="page-sub">{entry.kind === "file" ? formatSize(entry.size) : "folder"}</span>
                   <span className="page-sub">{formatDate(entry.mtime)}</span>

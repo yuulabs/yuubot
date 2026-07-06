@@ -1,9 +1,10 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { useState } from "react";
 
 import {
   deleteActorKv,
+  getActor,
   getActorKv,
   putActorKv,
   sendActorInbound,
@@ -18,10 +19,19 @@ export function ActorDetailPage({ id }: { id: string }) {
     return <Outlet />;
   }
   const { data, error, isLoading } = useBootstrap();
-  if (isLoading) return <LoadingState />;
+  const actorFromBootstrap = data?.actors.find((item) => item.id === id);
+  const actorQuery = useQuery({
+    queryKey: ["actor", id],
+    queryFn: () => getActor(id),
+    enabled: !isLoading && !error && !actorFromBootstrap,
+  });
+  const actor = actorFromBootstrap ?? actorQuery.data;
+  const runtime = actorFromBootstrap;
+
+  if (isLoading || (!actor && actorQuery.isLoading)) return <LoadingState />;
   if (error) return <ErrorState error={error} />;
-  const actor = data?.actors.find((item) => item.id === id);
-  if (!actor) return <EmptyState>Actor not found.</EmptyState>;
+  if (actorQuery.isError) return <ErrorState error={actorQuery.error} />;
+  if (!actor || !data) return <EmptyState>Actor not found.</EmptyState>;
   const routes = data?.routes.filter((route) => route.actor_id === id) ?? [];
   const conversations = data?.conversations.filter((conversation) => conversation.actor_id === id) ?? [];
   return (
@@ -30,8 +40,8 @@ export function ActorDetailPage({ id }: { id: string }) {
       sub={actor.description || "Actor detail"}
       actions={
         <div className="flex flex-wrap gap-2">
-          <Button asChild><Link to="/admin/conversations/$conversationId" params={{ conversationId: `actor-${id}` }}>Start conversation</Link></Button>
-          <Button variant="outline" asChild><a href={`/workspace?actor=${encodeURIComponent(id)}`}>Workspace</a></Button>
+          <Button asChild><Link to="/admin/conversations/new" search={{ actor: id }}>Start conversation</Link></Button>
+          <Button variant="outline" asChild><a href={`/workspace?actor=${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">Workspace</a></Button>
           <Button variant="outline" asChild><Link to="/actors/$id/edit" params={{ id }}>Edit</Link></Button>
         </div>
       }
@@ -42,7 +52,7 @@ export function ActorDetailPage({ id }: { id: string }) {
           label={actor.id}
           title="Actor overview"
           subtitle={actor.description || "This actor has no description yet."}
-          status={<Status enabled={actor.enabled} label={actor.status} />}
+          status={<Status enabled={runtime?.enabled ?? true} label={runtime?.status ?? "loaded"} />}
         >
           <ResourceMeta
             items={[
@@ -51,7 +61,7 @@ export function ActorDetailPage({ id }: { id: string }) {
               { label: "Workspace", value: actor.workspace },
             ]}
           />
-          {actor.last_error && <pre className="resource-preview">{JSON.stringify(actor.last_error, null, 2)}</pre>}
+          {runtime?.last_error && <pre className="resource-preview">{JSON.stringify(runtime.last_error, null, 2)}</pre>}
         </ResourceCard>
         <ActorInboundPanel actorId={id} />
         <ResourceCardGrid>

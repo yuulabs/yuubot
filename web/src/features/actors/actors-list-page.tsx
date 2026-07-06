@@ -52,7 +52,7 @@ export function ActorsListPage() {
               actions={
                 <>
                   <Button variant="outline" size="sm" asChild>
-                    <Link to="/admin/conversations/$conversationId" params={{ conversationId: `actor-${actor.id}` }}>Chat</Link>
+                    <Link to="/admin/conversations/new" search={{ actor: actor.id }}>Chat</Link>
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => (actor.enabled ? disable.mutate(actor.id) : enable.mutate(actor.id))}>
                     {actor.enabled ? "Disable" : "Enable"}
@@ -68,7 +68,7 @@ export function ActorsListPage() {
                 items={[
                   { label: "Provider", value: actor.provider || "unbound", tone: actor.provider ? "default" : "warning" },
                   { label: "Model", value: actor.model.selector || "missing", tone: actor.model.selector ? "default" : "warning" },
-                  { label: "Workspace", value: actor.workspace || "default", tone: actor.workspace ? "default" : "muted" },
+                  { label: "Workspace", value: actor.workspace || actor.id, tone: "default" },
                   { label: "Health", value: actor.last_error ? "error" : "ready", tone: actor.last_error ? "warning" : "ok" },
                 ]}
               />

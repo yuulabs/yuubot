@@ -1,6 +1,6 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTopbarActions } from "@/features/shell/app-layout";
 import {
@@ -11,7 +11,8 @@ import {
   type WsContentItem,
 } from "@/shared/lib/api";
 import { ErrorState, LoadingState } from "@/shared/components";
-import { useApiMutation, useBootstrap } from "@/shared/hooks";
+import { useApiMutation, useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
+import type { HistoryItem } from "@/shared/types/api";
 import { ChatComposer } from "./components/chat-composer";
 import { ChatDebugDrawer } from "./components/chat-debug-drawer";
 import { ChatLayout, ChatMain } from "./components/chat-layout";
@@ -19,19 +20,35 @@ import { ChatRail } from "./components/chat-rail";
 import { ChatTopbar } from "./components/chat-topbar";
 import { ChatTranscript } from "./components/chat-transcript";
 import { useConversationSession } from "./hooks/use-conversation-session";
-import { buildDisplayItems } from "./lib/conversation-transcript";
+import { newConversationId, parsePendingSend } from "./lib/pending-send";
 import { sumConversationCost } from "./lib/transcript";
 
-export function ConversationDetailPage({ conversationId }: { conversationId: string }) {
+export function ConversationDetailPage({
+  conversationId,
+  draftActorId = "",
+}: {
+  conversationId: string;
+  draftActorId?: string;
+}) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const refreshBootstrap = useRefreshBootstrap();
   const { setActions } = useTopbarActions();
   const { data: bootstrap } = useBootstrap();
-  const draftActorId = conversationId.startsWith("actor-") ? conversationId.slice("actor-".length) : "";
-  const isDraft = Boolean(draftActorId);
+  const isDraft = conversationId === "new";
+  const pendingSend = useRouterState({
+    select: (state) => parsePendingSend(state.location.state),
+  });
+  const awaitingFirstSend = Boolean(pendingSend);
+  const pendingSendConsumedRef = useRef(false);
+
+  useEffect(() => {
+    pendingSendConsumedRef.current = false;
+  }, [conversationId]);
   const { data: history = [], error, isLoading } = useQuery({
     queryKey: ["conversation-history", conversationId],
     queryFn: () => getConversationHistory(conversationId),
-    enabled: !isDraft,
+    enabled: !isDraft && !awaitingFirstSend,
   });
   const [actorId, setActorId] = useState(draftActorId);
   const [text, setText] = useState("");
@@ -63,7 +80,7 @@ export function ConversationDetailPage({ conversationId }: { conversationId: str
   const costs = useQuery({
     queryKey: ["conversation-costs", conversationId],
     queryFn: () => getConversationCosts(conversationId),
-    enabled: !isDraft,
+    enabled: !isDraft && !awaitingFirstSend,
   });
 
   const upload = useMutation({
@@ -83,61 +100,85 @@ export function ConversationDetailPage({ conversationId }: { conversationId: str
     },
   });
 
-  const handleConversationAccepted = useCallback(
-    (acceptedId: string) => {
-      void navigate({
-        to: "/admin/conversations/$conversationId",
-        params: { conversationId: acceptedId },
-        replace: true,
-      });
-    },
-    [navigate],
-  );
+  const handleHistoryAppend = useCallback((targetId: string, item: HistoryItem) => {
+    const append = (current: HistoryItem[]) => (
+      current.some((entry) => entry.seq === item.seq)
+        ? current
+        : [...current, item].sort((left, right) => left.seq - right.seq)
+    );
+    queryClient.setQueryData<HistoryItem[]>(
+      ["conversation-history", targetId],
+      (current = []) => append(current),
+    );
+  }, [queryClient]);
 
-  const handleStreamStop = useCallback(() => {
+  const handleTurnComplete = useCallback(() => {
     void costs.refetch();
-  }, [costs]);
+    refreshBootstrap();
+  }, [costs, refreshBootstrap]);
 
   const session = useConversationSession({
     conversationId,
+    history: isDraft ? [] : history,
     isDraft,
     development: Boolean(bootstrap?.development),
-    onConversationAccepted: handleConversationAccepted,
-    onStreamStop: handleStreamStop,
+    onHistoryAppend: handleHistoryAppend,
+    onTurnComplete: handleTurnComplete,
   });
+
+  useEffect(() => {
+    if (isDraft || pendingSendConsumedRef.current || !pendingSend || !session.wsReady) {
+      return;
+    }
+    pendingSendConsumedRef.current = true;
+    const sent = session.send(pendingSend.actorId, pendingSend.content, conversationId);
+    if (!sent) {
+      pendingSendConsumedRef.current = false;
+      return;
+    }
+    void navigate({
+      to: "/admin/conversations/$conversationId",
+      params: { conversationId },
+      replace: true,
+      state: {},
+    });
+    void queryClient.prefetchQuery({
+      queryKey: ["conversation-history", conversationId],
+      queryFn: () => getConversationHistory(conversationId),
+    });
+    void queryClient.prefetchQuery({
+      queryKey: ["conversation-costs", conversationId],
+      queryFn: () => getConversationCosts(conversationId),
+    });
+  }, [conversationId, isDraft, navigate, pendingSend, queryClient, session.send, session.wsReady]);
 
   const attachmentPaths = attachments.map((item) => item.path ?? "").filter(Boolean);
   const activeConversationId = session.activeConversationId || conversationId;
   const totalCost = sumConversationCost(costs.data?.items ?? []);
-  const displayItems = buildDisplayItems({
-    history,
-    liveBlocks: session.liveBlocks,
-    optimisticUserText: session.optimisticUserText,
-    phase: session.phase,
-    turnKey: session.turnKey,
-  });
+  const displayItems = session.displayItems;
+  const hasAcceptedDraftState = !isDraft
+    && (
+      awaitingFirstSend
+      || session.phase !== "idle"
+      || session.liveBlocks.length > 0
+      || session.displayItems.length > 0
+    );
 
   const interruptTarget = session.activeConversationId || (!isDraft ? conversationId : "");
   const conversationTopbarActions = useMemo(() => (
     <ChatTopbar
-      phase={session.phase}
-      totalCost={totalCost}
-      canInterrupt={Boolean(interruptTarget)}
+      actorId={selectedActor}
       historyOpen={historyOpen}
       debugOpen={debugOpen}
       showDebugToggle={Boolean(bootstrap?.development)}
       onToggleHistory={() => setHistoryOpen((value) => !value)}
       onToggleDebug={() => setDebugOpen((value) => !value)}
-      onInterrupt={() => session.interrupt(interruptTarget)}
     />
   ), [
     bootstrap?.development,
     debugOpen,
     historyOpen,
-    interruptTarget,
-    session.interrupt,
-    session.phase,
-    totalCost,
+    selectedActor,
   ]);
 
   useEffect(() => {
@@ -145,8 +186,8 @@ export function ConversationDetailPage({ conversationId }: { conversationId: str
     return () => setActions(null);
   }, [conversationTopbarActions, setActions]);
 
-  if (!isDraft && isLoading) return <LoadingState />;
-  if (!isDraft && error) return <ErrorState error={error} />;
+  if (!isDraft && isLoading && !hasAcceptedDraftState) return <LoadingState />;
+  if (!isDraft && error && !awaitingFirstSend) return <ErrorState error={error} />;
 
   return (
     <ChatLayout
@@ -171,12 +212,13 @@ export function ConversationDetailPage({ conversationId }: { conversationId: str
           <ChatTranscript
             items={displayItems}
             phase={session.phase}
-            waitingForResponse={session.waitingForResponse}
+            waitingForResponse={session.waitingForResponse || awaitingFirstSend}
           />
           <ChatComposer
             actors={actors}
             selectedActor={selectedActor}
             actorLocked={isDraft}
+            newConversationActorId={selectedActor}
             text={text}
             attachments={attachmentPaths}
             onActorChange={setActorId}
@@ -186,9 +228,13 @@ export function ConversationDetailPage({ conversationId }: { conversationId: str
               setAttachments((current) => current.filter((item) => item.path !== path));
             }}
             onSend={send}
+            onInterrupt={() => session.interrupt(interruptTarget)}
+            phase={session.phase}
+            totalCost={totalCost}
+            canInterrupt={Boolean(interruptTarget)}
             disabled={Boolean(disabledReason) || upload.isPending}
             disabledReason={disabledReason}
-            wsReady={session.wsReady}
+            wsReady={isDraft || session.wsReady}
           />
           {upload.error && (
             <p className="chat__error">
@@ -207,20 +253,31 @@ export function ConversationDetailPage({ conversationId }: { conversationId: str
   );
 
   function send() {
-    if (!selectedActor || disabledReason) return;
+    if (!selectedActor || disabledReason) return false;
     const content: WsContentItem[] = [];
     if (text.trim()) {
       content.push({ kind: "text", text: text.trim() });
     }
     content.push(...attachments);
-    if (!content.length) return;
-    const sent = session.send(
-      selectedActor,
-      content,
-      isDraft ? undefined : conversationId,
-    );
-    if (!sent) return;
+    if (!content.length) return false;
+
+    if (isDraft) {
+      const id = newConversationId();
+      void navigate({
+        to: "/admin/conversations/$conversationId",
+        params: { conversationId: id },
+        state: { pendingSend: { actorId: selectedActor, content } },
+        replace: true,
+      });
+      setText("");
+      setAttachments([]);
+      return true;
+    }
+
+    const sent = session.send(selectedActor, content, conversationId);
+    if (!sent) return false;
     setText("");
     setAttachments([]);
+    return true;
   }
 }

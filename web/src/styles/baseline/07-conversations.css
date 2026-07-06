@@ -143,7 +143,6 @@
 .turn-pill--error { color: var(--red); }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-.conv-stop-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .chat__scroll {
   flex: 1; overflow-y: auto; padding: var(--sp-3) clamp(var(--sp-3), 1.6vw, var(--sp-5));
@@ -553,6 +552,13 @@
   padding: 2px 6px;
   border-bottom: 1px solid var(--border);
 }
+.composer__toolbar-end {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+  padding-left: var(--sp-2);
+}
 .composer__actor {
   width: clamp(130px, 15vw, 200px);
   height: 26px;
@@ -648,12 +654,25 @@
   height: 30px;
 }
 .composer__send--text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   width: auto;
   min-width: 72px;
   height: 32px;
   padding: 0 14px;
   font-size: 13px;
   font-weight: 600;
+}
+.composer__send--stop {
+  background: linear-gradient(180deg, #f87171 0%, #dc2626 100%);
+  color: #fff;
+  border-color: #b91c1c;
+}
+.composer__send--stop:hover {
+  background: linear-gradient(180deg, #fca5a5 0%, #ef4444 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.35), var(--shadow-hi);
 }
 .composer__send:hover {
   background: linear-gradient(180deg, #fbdd80 0%, #f7cf52 100%);

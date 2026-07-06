@@ -1,13 +1,24 @@
 import type { HistoryItem } from "../../../shared/types/api";
+import { extractToolStringArg } from "../../../shared/lib/tool-renderers.ts";
+
+const REAL_TIME_CONTEXT_MARKER = "[yuubot-real-time-context]";
+const REAL_TIME_CONTEXT_SEPARATOR = "\n---\n";
+
+export function stripRealTimeContext(text: string): string {
+  if (!text.startsWith(REAL_TIME_CONTEXT_MARKER)) return text;
+  const separatorIndex = text.indexOf(REAL_TIME_CONTEXT_SEPARATOR);
+  if (separatorIndex < 0) return text;
+  return text.slice(separatorIndex + REAL_TIME_CONTEXT_SEPARATOR.length);
+}
 
 function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return stripRealTimeContext(content);
   if (!Array.isArray(content)) return "";
   return content
     .map((item) => {
       if (!item || typeof item !== "object") return "";
       const payload = item as Record<string, unknown>;
-      if (typeof payload.text === "string") return payload.text;
+      if (typeof payload.text === "string") return stripRealTimeContext(payload.text);
       if (typeof payload.path === "string") return `[${String(payload.kind ?? "file")}: ${payload.path}]`;
       if (typeof payload.url === "string") return `[${String(payload.kind ?? "url")}: ${payload.url}]`;
       return "";
@@ -71,9 +82,12 @@ export function toolDisplay(block: RenderBlock): ToolDisplay {
     : typeof args === "string"
       ? args
       : JSON.stringify(args, null, 2);
+  const streamedCode = block.toolArgs !== undefined
+    ? extractToolStringArg(block.toolArgs, "code")
+    : null;
   const code = args && typeof args === "object" && typeof (args as Record<string, unknown>).code === "string"
     ? String((args as Record<string, unknown>).code)
-    : undefined;
+    : streamedCode ?? undefined;
   return { name, argsText, code };
 }
 
@@ -193,7 +207,7 @@ function makeToolGroup(call: RenderBlock, result?: RenderBlock): RenderBlock {
     toolStreamId: call.toolStreamId,
     toolName: name,
     toolResult: result?.content,
-    toolStatus: result?.toolStatus,
+    toolStatus: result?.toolStatus ?? call.toolStatus,
   };
 }
 
@@ -257,9 +271,6 @@ function mergeToolArgs(existing?: string, incoming?: string): string | undefined
 }
 
 function samePendingToolCall(left: RenderBlock, right: RenderBlock): boolean {
-  if (left.type === "tool_group" && left.toolResult) {
-    return false;
-  }
   if (left.toolStreamId && right.toolStreamId) {
     return left.toolStreamId === right.toolStreamId;
   }
@@ -512,6 +523,7 @@ function parseTimestamp(createdAt: string | null): number {
 
 export function historyItemsFromHistory(history: HistoryItem[]): DisplayItem[] {
   const items: DisplayItem[] = [];
+  let currentUserSeq: number | null = null;
 
   for (const item of history) {
     if (PREFIX_KINDS.has(item.kind)) {
@@ -540,12 +552,14 @@ export function historyItemsFromHistory(history: HistoryItem[]): DisplayItem[] {
         continue;
       }
 
+      currentUserSeq = item.seq;
       items.push({
-        key: `history:${item.seq}`,
+        key: `turn:${item.seq}:user`,
         role: "user",
         blocks: appendRenderBlocks([], historyItemToBlocks(item)),
         timestamp: parseTimestamp(item.created_at),
         createdAt: item.created_at,
+        turnKey: `turn:${item.seq}`,
       });
       continue;
     }
@@ -561,22 +575,24 @@ export function historyItemsFromHistory(history: HistoryItem[]): DisplayItem[] {
       continue;
     }
 
+    const turnKey = currentUserSeq === null ? `history:${item.seq}` : `turn:${currentUserSeq}`;
     items.push({
-      key: `history:${item.seq}`,
+      key: `${turnKey}:actor`,
       role: "actor",
       blocks: appendRenderBlocks([], blocks),
       timestamp: parseTimestamp(item.created_at),
       createdAt: item.created_at,
+      turnKey,
     });
   }
 
   return items;
 }
 
-function uniqueHistoryItems(history: HistoryItem[]): HistoryItem[] {
+export function uniqueHistoryItems(history: HistoryItem[]): HistoryItem[] {
   const seenSeq = new Set<number>();
   const unique: HistoryItem[] = [];
-  for (const item of history) {
+  for (const item of [...history].sort((left, right) => left.seq - right.seq)) {
     if (seenSeq.has(item.seq)) {
       continue;
     }
@@ -586,84 +602,193 @@ function uniqueHistoryItems(history: HistoryItem[]): HistoryItem[] {
   return unique;
 }
 
-function mergeLiveAssistantTurn(
-  items: DisplayItem[],
-  liveBlocks: RenderBlock[],
-  turnKey: string | undefined,
-  phase: ConversationPhase,
-): DisplayItem[] {
+function lastUserTurnKey(items: DisplayItem[]): string | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.role === "user") {
+      return item.turnKey ?? item.key.replace(/:user$/, "");
+    }
+  }
+  return undefined;
+}
+
+function hasDurableActorForTurn(items: DisplayItem[], turnKey: string): boolean {
+  return items.some((item) => item.role === "actor" && item.turnKey === turnKey);
+}
+
+function mergeLiveAssistantTurn({
+  items,
+  liveBlocks,
+  turnKey,
+  phase,
+  previewStartedAt,
+}: {
+  items: DisplayItem[];
+  liveBlocks: RenderBlock[];
+  turnKey: string | undefined;
+  phase: ConversationPhase;
+  previewStartedAt: number;
+}): DisplayItem[] {
   const active = phase === "sending" || phase === "streaming";
-  if (!active && liveBlocks.length === 0) {
+  if (!active || liveBlocks.length === 0) {
     return items;
   }
 
-  const lastIndex = items.length - 1;
-  const last = items[lastIndex];
-  const streaming = phase === "streaming" || (phase === "sending" && liveBlocks.length === 0);
-
-  if (last?.role === "actor" && ((last.turnKey === turnKey && turnKey) || active)) {
-    return items.map((item, index) => (
-      index === lastIndex
-        ? {
-            ...item,
-            blocks: appendRenderBlocks(item.blocks, liveBlocks),
-            streaming,
-          }
+  const streaming = phase === "streaming";
+  const stableTurnKey = lastUserTurnKey(items) ?? turnKey ?? "live";
+  const liveKey = `${stableTurnKey}:actor`;
+  if (hasDurableActorForTurn(items, stableTurnKey)) {
+    return items.map((item) => (
+      item.key === liveKey
+        ? { ...item, streaming, turnKey: stableTurnKey }
         : item
     ));
   }
 
-  if (liveBlocks.length === 0 && phase === "sending") {
-    return items;
+  const existingIndex = items.findIndex((item) => item.key === liveKey);
+  if (existingIndex >= 0) {
+    return items.map((item, index) => (
+      index === existingIndex
+        ? { ...item, blocks: liveBlocks, streaming, turnKey: stableTurnKey }
+        : item
+    ));
   }
 
   return [
     ...items,
     {
-      key: "live-assistant",
+      key: liveKey,
       role: "actor" as const,
-      blocks: appendRenderBlocks([], liveBlocks),
-      timestamp: Date.now(),
-      turnKey,
+      blocks: liveBlocks,
+      timestamp: previewStartedAt,
+      turnKey: stableTurnKey,
       streaming,
     },
   ];
 }
 
+export interface TranscriptState {
+  history: HistoryItem[];
+  liveBlocks: RenderBlock[];
+  phase: ConversationPhase;
+  turnKey?: string;
+  previewStartedAt: number;
+}
+
+export type TranscriptAction =
+  | { type: "reset"; history: HistoryItem[] }
+  | { type: "begin_turn"; turnKey: string; now: number }
+  | { type: "history_append"; item: HistoryItem }
+  | { type: "append_blocks"; blocks: RenderBlock[] }
+  | { type: "mark_tools_completed" }
+  | { type: "finish_turn" }
+  | { type: "set_phase"; phase: ConversationPhase }
+  | { type: "clear_live" };
+
+export function createTranscriptState(history: HistoryItem[] = []): TranscriptState {
+  return {
+    history: uniqueHistoryItems(history),
+    liveBlocks: [],
+    phase: "idle",
+    previewStartedAt: Date.now(),
+  };
+}
+
+export function transcriptReducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
+  if (action.type === "reset") {
+    return createTranscriptState(action.history);
+  }
+  if (action.type === "begin_turn") {
+    return {
+      ...state,
+      liveBlocks: [],
+      phase: "sending",
+      turnKey: action.turnKey,
+      previewStartedAt: action.now,
+    };
+  }
+  if (action.type === "history_append") {
+    if (PREFIX_KINDS.has(action.item.kind) || state.history.some((item) => item.seq === action.item.seq)) {
+      return state;
+    }
+    return {
+      ...state,
+      history: uniqueHistoryItems([...state.history, action.item]),
+    };
+  }
+  if (action.type === "append_blocks") {
+    if (!action.blocks.length) {
+      return state;
+    }
+    return {
+      ...state,
+      liveBlocks: appendRenderBlocks(state.liveBlocks, action.blocks),
+      phase: state.phase === "sending" ? "streaming" : state.phase,
+    };
+  }
+  if (action.type === "mark_tools_completed") {
+    return {
+      ...state,
+      liveBlocks: markToolBlocksCompleted(state.liveBlocks),
+      phase: "streaming",
+    };
+  }
+  if (action.type === "finish_turn") {
+    return {
+      ...state,
+      phase: "idle",
+      liveBlocks: [],
+      turnKey: undefined,
+    };
+  }
+  if (action.type === "set_phase") {
+    return {
+      ...state,
+      phase: action.phase,
+    };
+  }
+  if (action.type === "clear_live") {
+    return {
+      ...state,
+      liveBlocks: [],
+      turnKey: undefined,
+    };
+  }
+  return state;
+}
+
+export function transcriptDisplayItems(state: TranscriptState): DisplayItem[] {
+  return buildDisplayItems({
+    history: state.history,
+    liveBlocks: state.liveBlocks,
+    phase: state.phase,
+    turnKey: state.turnKey,
+    previewStartedAt: state.previewStartedAt,
+  });
+}
+
 export function buildDisplayItems({
   history,
   liveBlocks = [],
-  optimisticUserText,
   phase,
   turnKey,
+  previewStartedAt = Date.now(),
 }: {
   history: HistoryItem[];
   liveBlocks?: RenderBlock[];
-  optimisticUserText: string | null;
   phase: ConversationPhase;
   turnKey?: string;
+  previewStartedAt?: number;
 }): DisplayItem[] {
-  let items = historyItemsFromHistory(uniqueHistoryItems(history));
+  const items = historyItemsFromHistory(uniqueHistoryItems(history));
 
-  if (
-    optimisticUserText
-    && !items.some((item) => (
-      item.role === "user"
-      && item.blocks.some((block) => block.type === "text" && block.content === optimisticUserText)
-    ))
-  ) {
-    items = [
-      ...items,
-      {
-        key: "optimistic-user",
-        role: "user",
-        blocks: [{ key: "optimistic-user:text", type: "text", content: optimisticUserText }],
-        timestamp: Date.now(),
-      },
-    ];
-  }
-
-  return mergeLiveAssistantTurn(items, liveBlocks, turnKey, phase);
+  return mergeLiveAssistantTurn({
+    items,
+    liveBlocks,
+    phase,
+    turnKey,
+    previewStartedAt,
+  });
 }
 
 export function isTerminalStreamStop(payload: Record<string, unknown>): boolean {

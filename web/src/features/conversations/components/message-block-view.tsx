@@ -14,8 +14,9 @@ import {
 import { MarkdownRenderer } from "@/components/conversation/markdown-renderer.tsx";
 import {
   extractBashCommand,
+  extractToolPath,
   extractToolStringArg,
-  parseEditArgs,
+  parseEditArgsPartial,
   renderSimpleDiff,
   stripAnsi,
   type DiffLine,
@@ -23,7 +24,7 @@ import {
 import type { RenderBlock } from "../lib/conversation-transcript";
 import { toolDisplay } from "../lib/conversation-transcript";
 
-type ToolRenderer = (block: RenderBlock) => ReactElement | null;
+type ToolRenderer = (block: RenderBlock) => ReactElement;
 
 function pythonHighlightedSegments(line: string): Array<{ text: string; kind: string }> {
   const commentIndex = line.indexOf("#");
@@ -160,10 +161,7 @@ function BashRenderer(block: RenderBlock): ReactElement {
   const display = toolDisplay(block);
   const isRunning = !block.toolResult;
   const streamedCommand = extractToolStringArg(block.toolArgs ?? "", "command");
-  if (streamedCommand === null && isRunning) {
-    return <PendingToolShell toolName={display.name} />;
-  }
-  const command = streamedCommand ?? extractBashCommand(block.toolArgs ?? display.argsText);
+  const command = streamedCommand ?? (block.toolArgs ? extractBashCommand(block.toolArgs) : "");
   const result = isRunning ? null : stripAnsi(block.toolResult ?? "");
   return (
     <div className="msg__tool">
@@ -197,11 +195,8 @@ function BashRenderer(block: RenderBlock): ReactElement {
   );
 }
 
-function EditRenderer(block: RenderBlock): ReactElement | null {
-  const args = parseEditArgs(block.toolArgs ?? "");
-  if (args === null) {
-    return null;
-  }
+function EditRenderer(block: RenderBlock): ReactElement {
+  const args = parseEditArgsPartial(block.toolArgs ?? "");
   const diff = renderSimpleDiff(args.old_string, args.new_string);
   const isRunning = !block.toolResult;
   return (
@@ -214,7 +209,7 @@ function EditRenderer(block: RenderBlock): ReactElement | null {
           <span className="msg__tool-status">{block.toolStatus}</span>
         )}
       </div>
-      <div className="msg__tool-path" title={args.path}>{args.path}</div>
+      {args.path && <div className="msg__tool-path" title={args.path}>{args.path}</div>}
       {isRunning && <PendingToolBanner toolName="edit" />}
       <pre className="msg__diff">
         <code>
@@ -230,9 +225,57 @@ function EditRenderer(block: RenderBlock): ReactElement | null {
   );
 }
 
+function ReadRenderer(block: RenderBlock): ReactElement {
+  const path = extractToolPath(block.toolArgs ?? "") ?? "";
+  const isRunning = !block.toolResult;
+  const result = isRunning ? null : stripAnsi(block.toolResult ?? "");
+  return (
+    <div className="msg__tool">
+      <div className="msg__tool-head">
+        <Hammer size={14} />
+        <span>read</span>
+        {isRunning && <Loader2 size={14} className="msg__tool-spinner" />}
+        {block.toolStatus && !isRunning && (
+          <span className="msg__tool-status">{block.toolStatus}</span>
+        )}
+      </div>
+      {path && <div className="msg__tool-path" title={path}>{path}</div>}
+      {isRunning
+        ? <PendingToolBanner toolName="read" />
+        : <pre className="msg__tool-output">{result}</pre>}
+    </div>
+  );
+}
+
+function WriteRenderer(block: RenderBlock): ReactElement {
+  const path = extractToolPath(block.toolArgs ?? "") ?? "";
+  const content = extractToolStringArg(block.toolArgs ?? "", "content") ?? "";
+  const isRunning = !block.toolResult;
+  const result = isRunning ? null : stripAnsi(block.toolResult ?? "");
+  return (
+    <div className="msg__tool">
+      <div className="msg__tool-head">
+        <Hammer size={14} />
+        <span>write</span>
+        {isRunning && <Loader2 size={14} className="msg__tool-spinner" />}
+        {block.toolStatus && !isRunning && (
+          <span className="msg__tool-status">{block.toolStatus}</span>
+        )}
+      </div>
+      {path && <div className="msg__tool-path" title={path}>{path}</div>}
+      <pre className="msg__tool-pre">{content}</pre>
+      {isRunning
+        ? <PendingToolBanner toolName="write" />
+        : <pre className="msg__tool-output">{result}</pre>}
+    </div>
+  );
+}
+
 const toolRendererRegistry: Record<string, ToolRenderer> = {
   bash: BashRenderer,
   edit: EditRenderer,
+  read: ReadRenderer,
+  write: WriteRenderer,
 };
 
 export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStreaming: boolean }) {
@@ -248,10 +291,8 @@ export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; i
     if (isExecutePython) {
       const streamedCode = extractToolStringArg(block.toolArgs ?? "", "code");
       const code = display.code ?? streamedCode;
-      if (code === undefined || code === null) {
-        if (isRunning) {
-          return <PendingToolShell toolName={display.name} />;
-        }
+      if ((code === undefined || code === null) && isRunning) {
+        return <PendingToolShell toolName={display.name} />;
       }
       return (
         <div className="msg__tool">
@@ -262,7 +303,7 @@ export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; i
           </div>
           <div className="msg__tool-grid">
             <div className="msg__tool-code">
-              <PythonCodeBlock code={code ?? display.argsText} />
+              <PythonCodeBlock code={code ?? ""} />
             </div>
             {isRunning ? (
               <div className="msg__tool-panel msg__tool-panel--result msg__tool-panel--pending">
@@ -278,13 +319,7 @@ export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; i
 
     const renderer = toolRendererRegistry[display.name];
     if (renderer) {
-      const rendered = renderer(block);
-      if (rendered !== null) {
-        return rendered;
-      }
-      if (isRunning) {
-        return <PendingToolShell toolName={display.name} />;
-      }
+      return renderer(block);
     }
 
     return (
