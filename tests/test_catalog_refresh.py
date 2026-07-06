@@ -21,7 +21,15 @@ async def test_refresh_catalog_removes_stale_models(tmp_path: Path, monkeypatch:
             ),
         )
         await app.runtime.state.upsert_model_card("deepseek", ModelCard(selector="gpt-4o"))
-        await app.runtime.state.upsert_model_card("deepseek", ModelCard(selector="deepseek-chat", input_price_per_million=0.5))
+        await app.runtime.state.upsert_model_card(
+            "deepseek",
+            ModelCard(
+                selector="deepseek-chat",
+                input_price_per_million=0.5,
+                cached_input_price_per_million=0,
+                output_price_per_million=0,
+            ),
+        )
 
         async def remote_models(self: OpenAIProvider) -> list[str]:
             del self

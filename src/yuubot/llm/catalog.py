@@ -1,5 +1,7 @@
 """Model catalog helpers shared by admin flows and provider implementations."""
 
+import msgspec
+
 from ..domain.messages import ModelCard
 from ..runtime.store import ApplicationStateStore
 from .protocol import Provider
@@ -24,16 +26,22 @@ def model_card_from_input(body: ModelCardInput) -> ModelCard:
     )
 
 
-def is_configured(card: ModelCard) -> bool:
-    defaults = ModelCard(selector=card.selector)
+def has_pricing_configured(card: ModelCard) -> bool:
     return (
-        card.vision != defaults.vision
-        or card.toolcall != defaults.toolcall
-        or card.json != defaults.json
-        or card.input_price_per_million != defaults.input_price_per_million
-        or card.cached_input_price_per_million != defaults.cached_input_price_per_million
-        or card.output_price_per_million != defaults.output_price_per_million
+        card.input_price_per_million is not None
+        and card.cached_input_price_per_million is not None
+        and card.output_price_per_million is not None
     )
+
+
+def is_configured(card: ModelCard) -> bool:
+    return has_pricing_configured(card)
+
+
+def model_card_wire(card: ModelCard) -> dict[str, object]:
+    payload = msgspec.to_builtins(card)
+    payload["configured"] = has_pricing_configured(card)
+    return payload
 
 
 def merge_catalog(presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
@@ -57,7 +65,7 @@ async def refresh_catalog(
         available = {card.selector for card in merged}
         for card in merged:
             existing = await store.load_model_card(provider_id, card.selector)
-            if existing is not None and is_configured(existing):
+            if existing is not None and has_pricing_configured(existing):
                 continue
             await store.upsert_model_card(provider_id, card)
         for existing in await store.list_model_cards(provider_id):

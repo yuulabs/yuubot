@@ -48,6 +48,7 @@ class WsListener:
         self._history_conversation_id = conversation_id
 
     def track_send(self, command_id: object, conversation_id: str) -> None:
+        self._send_tracks = [(cid, cid_) for cid, cid_ in self._send_tracks if cid_ != conversation_id]
         self._send_tracks.append((command_id, conversation_id))
 
     def track_task(self, task_id: str, status: str) -> None:

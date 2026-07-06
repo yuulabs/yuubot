@@ -9,7 +9,7 @@ import asyncio
 from typing import cast
 
 import msgspec
-from attrs import define
+from attrs import define, field
 
 from ..domain.messages import ContentItem, ConversationContext, ToolResult
 from ..domain.stream import ToolCall
@@ -26,10 +26,15 @@ class HarnessConfig(msgspec.Struct, frozen=True, kw_only=True):
 @define
 class Harness:
     tools: dict[str, Tool]
+    prepare_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
 
     @classmethod
     def from_config(cls, config: HarnessConfig, context: ConversationContext, runtime: Runtime) -> "Harness":
-        return cls(tools=build_tools(config.tools, context, runtime))
+        tools = build_tools(config.tools, context, runtime)
+        return cls(
+            tools=tools,
+            prepare_tasks={name: asyncio.create_task(tool.prepare()) for name, tool in tools.items()},
+        )
 
     async def gather(
         self,
@@ -63,6 +68,14 @@ class Harness:
         return [results[call.id] for call in tool_calls]
 
     async def close(self) -> None:
+        pending_prepare = [task for task in self.prepare_tasks.values() if not task.done()]
+        for task in pending_prepare:
+            task.cancel()
+        if pending_prepare:
+            await asyncio.gather(*pending_prepare, return_exceptions=True)
+        completed_prepare = [task for task in self.prepare_tasks.values() if task.done()]
+        if completed_prepare:
+            await asyncio.gather(*completed_prepare, return_exceptions=True)
         for tool in self.tools.values():
             await tool.close()
 
@@ -77,6 +90,10 @@ class Harness:
             return _result(call.id, f"invalid JSON for {call.name}: {exc}")
         except msgspec.ValidationError as exc:
             return _result(call.id, f"invalid payload for {call.name}: {exc}")
+        try:
+            await self._wait_prepared(call.name)
+        except Exception as exc:
+            return _result(call.id, f"{call.name} prepare failed: {_exception_detail(exc)}")
         task = asyncio.create_task(tool.execute(payload))
         try:
             value = await asyncio.wait_for(task, timeout=timeout)
@@ -89,7 +106,13 @@ class Harness:
             _copy_partial(task, asyncio.current_task())
             raise
         except Exception as exc:
-            return _result(call.id, f"{call.name} failed: {exc}")
+            return _result(call.id, f"{call.name} failed: {_exception_detail(exc)}")
+
+    async def _wait_prepared(self, name: str) -> None:
+        task = self.prepare_tasks.get(name)
+        if task is None:
+            return
+        await asyncio.shield(task)
 
 
 def _result(tool_call_id: str, text: str) -> ToolResult:
@@ -108,3 +131,19 @@ def _copy_partial(source: asyncio.Task[object], target: asyncio.Task[object] | N
     partial = getattr(source, "partial_result", "")
     if target is not None and isinstance(partial, str) and partial:
         setattr(target, "partial_result", partial)
+
+
+def _exception_detail(exc: BaseException) -> str:
+    parts = [_single_exception_detail(exc)]
+    cause = exc.__cause__ or exc.__context__
+    while cause is not None:
+        parts.append(_single_exception_detail(cause))
+        cause = cause.__cause__ or cause.__context__
+    return "; caused by ".join(parts)
+
+
+def _single_exception_detail(exc: BaseException) -> str:
+    message = str(exc).strip()
+    if not message:
+        message = repr(exc)
+    return f"{type(exc).__name__}: {message}"

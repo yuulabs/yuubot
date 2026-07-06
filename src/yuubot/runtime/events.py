@@ -12,6 +12,7 @@ import msgspec
 from attrs import define, field
 
 EVENT_BUFFER_SIZE = 100
+NOISY_STREAM_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_arguments_delta"})
 
 _log = logging.getLogger(__name__)
 
@@ -35,7 +36,8 @@ class EventBus:
 
     def emit(self, event_kind: str, **payload: object) -> None:
         event = RuntimeEvent(kind=event_kind, payload=dict(payload), ts=_utc_now_iso())
-        self._buffer.append(event)
+        if _should_buffer_event(event):
+            self._buffer.append(event)
         self._queue.put_nowait(event)
 
     @property
@@ -50,6 +52,16 @@ class EventBus:
 
     def pending_empty(self) -> bool:
         return self._queue.empty()
+
+
+def _should_buffer_event(event: RuntimeEvent) -> bool:
+    if event.kind != "conversation.stream":
+        return True
+    stream_event = event.payload.get("event")
+    stream_kind = getattr(stream_event, "kind", None)
+    if stream_kind is None and isinstance(stream_event, dict):
+        stream_kind = stream_event.get("kind")
+    return stream_kind not in NOISY_STREAM_KINDS
 
 
 class Listener(Protocol):

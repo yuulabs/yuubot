@@ -3,6 +3,20 @@ from pathlib import Path
 from ..domain.records import ActorRecord
 
 
+def resolve_workspace_path(
+    raw: str,
+    *,
+    workspace_dir: Path,
+    actor_id: str,
+) -> Path:
+    if not raw.strip():
+        return (workspace_dir / actor_id).resolve()
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (workspace_dir / path).resolve()
+
+
 def prepare_workspace(path: Path) -> None:
     workspace = path.resolve()
     for dirname in [".agents/skills", "artifacts", "uploads", "projects", "notes", "scripts"]:
@@ -34,8 +48,9 @@ def resolve_actor_workspace_path(
     record: ActorRecord | None,
     default_workspace_dir: Path,
 ) -> Path | None:
-    if live_workspace is not None:
-        return Path(live_workspace).resolve()
-    if record is None:
-        return None
-    return Path(record.workspace or str(default_workspace_dir / actor_id)).resolve()
+    raw = live_workspace
+    if raw is None:
+        if record is None:
+            return None
+        raw = record.workspace
+    return resolve_workspace_path(raw or "", workspace_dir=default_workspace_dir, actor_id=actor_id)

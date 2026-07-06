@@ -97,7 +97,8 @@ async def _start_conversation_send(
     ws_listener.track_send(command_id, conversation.id)
     message = InputMessage(role="user", name=actor_id, content=content)
     return asyncio.create_task(
-        _conversation_send(send, command_id, app, actor_id, conversation.id, message, development=app.runtime.development)
+        _conversation_send(send, command_id, app, actor_id, conversation.id, message, development=app.runtime.development),
+        name="conversation_send",
     )
 
 
@@ -230,12 +231,8 @@ def _string_set(value: object) -> set[str]:
 
 
 def _input_content(payload: dict[str, object]) -> list[ContentItem]:
-    """Normalize `content` (or legacy `text`) into a non-empty ContentItem list."""
     content = payload.get("content")
     if content is None:
-        text = payload.get("text")
-        if isinstance(text, str):
-            return [ContentItem(kind="text", text=text)]
         raise ValueError("content is required")
     items = msgspec.convert(content, list[ContentItem])
     if not items:

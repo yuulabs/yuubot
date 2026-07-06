@@ -2,8 +2,15 @@ import inspect
 from datetime import datetime
 from importlib import import_module
 from pathlib import Path
+from typing import Literal
 
-_RUNTIME_FACADE_PACKAGES = ("yb.tasks",)
+from ..domain.messages import ContentItem, InputMessage
+
+_RUNTIME_FACADE_PACKAGES = ("yb.tasks", "yb.tasks.cron")
+
+SessionMode = Literal["conversation", "actor"]
+REAL_TIME_CONTEXT_MARKER = "[yuubot-real-time-context]"
+_REAL_TIME_CONTEXT_SEPARATOR = "\n---\n"
 
 
 def developer_prompt(persona: str, workspace: Path, package_paths: list[str], *, has_python: bool) -> str:
@@ -28,7 +35,7 @@ def developer_prompt(persona: str, workspace: Path, package_paths: list[str], *,
 
 def _system_instructions(has_python: bool) -> str:
     lines = [
-        "Mode Description: You are running inside a yuubot Conversation. Context may be lost between turns; rely on persisted conversation history and workspace files when you need durable memory.",
+        "Session mode semantics are documented in Real-Time Data. Context may be lost between turns; rely on persisted conversation history and workspace files when you need durable memory.",
         "Do not expose secrets, raw integration credentials, or daemon implementation details to users.",
     ]
     if has_python:
@@ -61,6 +68,10 @@ def _tool_suggestions() -> str:
             "When the task finishes, yuubot appends a developer message and automatically continues this conversation.",
             "Use `await yb.tasks.find(...)`, `await yb.tasks.list_tasks(...)`, and `await task.output()` / `await task.cancel()` for query and control.",
             "Do not call daemon HTTP endpoints such as `/api/tasks`, `/api/inbound`, or admin/public APIs directly; use the yb.tasks facade.",
+            "For durable schedules, use `await yb.tasks.cron.add(...)` with an explicit IANA timezone. One-shot `at` accepts a local ISO datetime or a short relative delay such as `+1m`.",
+            "For daily or standalone scheduled actor work, use cron action `{\"kind\":\"actor_message\",\"text\":\"...\"}`; it enters the actor's default inbound loop as a user message.",
+            "For scheduled results that must continue this exact conversation, use cron action `{\"kind\":\"conversation_callback\",\"text\":\"...\"}`; yuubot appends it as a developer notice and continues the owner conversation.",
+            "Use `await yb.tasks.cron.list_jobs(...)`, `find(...)`, `pause(...)`, `resume(...)`, and `delete(...)` to manage cron jobs. Do not call `/api/cron-jobs` directly.",
             "For interactive admin pages, write HTML/CSS/JS under the workspace (for example `projects/.../form.html`).",
             "When an admin opens the page in the management UI, page JavaScript may call admin KV and inbound endpoints with AdminAuth:",
             "- `GET` / `PUT` / `DELETE` `/api/actors/{actor_id}/kv/{key}` (`{key}` is URL-encoded; supports `ETag` / `If-Match`)",
@@ -108,5 +119,53 @@ def _agents_context(workspace: Path) -> str:
 
 
 def _real_time_data() -> str:
+    tz = datetime.now().astimezone().tzname() or "local"
+    return "\n".join(
+        [
+            "platform: local",
+            f"timezone: {tz}",
+            "",
+            "## Session modes",
+            "Conversation (User): The user message is from a real person in this chat. Reply in this conversation; the user sees your responses here.",
+            "Actor: The user message may come from any source (webhook, schedule, inbound API, etc.). For each outbound action, decide whether it belongs in this Conversation (visible in this thread) or to Actor (your future self: workspace notes, cron actor_message, inbound without binding to this conversation, KV, and similar durable channels).",
+            "",
+            "Per-turn `mode` and `now` are appended to each incoming user message; do not expect them in this section.",
+        ]
+    )
+
+
+def real_time_turn_context(*, mode: SessionMode) -> str:
     now = datetime.now().astimezone()
-    return f"platform: local\nnow: {now.isoformat()}\ntimezone: {now.tzname() or 'local'}"
+    return "\n".join(
+        [
+            REAL_TIME_CONTEXT_MARKER,
+            f"mode: {mode}",
+            f"now: {now.isoformat()}",
+        ]
+    )
+
+
+def augment_user_message(message: InputMessage, *, mode: SessionMode) -> InputMessage:
+    prefix = real_time_turn_context(mode=mode) + _REAL_TIME_CONTEXT_SEPARATOR
+    content: list[ContentItem] = []
+    for item in message.content:
+        if item.kind == "text" and item.text and not content:
+            content.append(ContentItem(kind="text", text=prefix + item.text, meta=item.meta))
+            continue
+        content.append(item)
+    if not content:
+        content.append(ContentItem(kind="text", text=prefix.rstrip()))
+    return InputMessage(role=message.role, name=message.name, content=content)
+
+
+def user_visible_text(message: InputMessage) -> str:
+    parts: list[str] = []
+    for item in message.content:
+        if item.kind != "text" or not item.text:
+            continue
+        text = item.text
+        if text.startswith(REAL_TIME_CONTEXT_MARKER):
+            _, _, remainder = text.partition(_REAL_TIME_CONTEXT_SEPARATOR)
+            text = remainder
+        parts.append(text)
+    return "\n\n".join(parts)

@@ -25,6 +25,7 @@ from attrs import define, field
 from .harness import Harness, HarnessConfig
 from .history import PREFIX_KINDS, HistoryHelper
 from .titles import title_from_user_message
+from ..actor.prompt import SessionMode, augment_user_message
 from ..llm import Provider
 from ..domain.messages import (
     ContentItem,
@@ -74,7 +75,13 @@ class Conversation:
     def running(self) -> bool:
         return self._running
 
-    async def run_loop(self, input: InputMessage, on_event: StreamCallback | None = None) -> list[GenOutput]:
+    async def run_loop(
+        self,
+        input: InputMessage,
+        on_event: StreamCallback | None = None,
+        *,
+        session_mode: SessionMode | None = None,
+    ) -> list[GenOutput]:
         if self._running:
             raise ConversationBusy(self.id)
         self._running = True
@@ -82,6 +89,8 @@ class Conversation:
         try:
             await self._mark_status("active")
             if input.role == "user":
+                if session_mode is not None:
+                    input = augment_user_message(input, mode=session_mode)
                 await self.runtime.state.set_conversation_title_if_empty(
                     self.id,
                     title_from_user_message(input),
@@ -93,6 +102,9 @@ class Conversation:
             await self._append(input)
             self.runtime.emit("conversation.input", conversation_id=self.id, content=msgspec.to_builtins(input.content))
             return await self._run_loop(on_event)
+        except asyncio.CancelledError:
+            await self._mark_status("interrupted")
+            raise
         finally:
             self._running = False
 
@@ -162,8 +174,10 @@ class Conversation:
                 self.runtime.emit("conversation.output", conversation_id=self.id, reason=stop.reason)
                 if stop.reason in {"stop", "interrupted"}:
                     await close_harness()
+                    await self._mark_status("interrupted" if stop.reason == "interrupted" else "closed")
                 # The stream_stop frame is sent after history persistence and,
-                # for terminal turns, after tool resources have been released.
+                # for terminal turns, after tool resources have been released
+                # and terminal status has been persisted.
                 stop_frame = stream_stop_from(stop)
                 if on_event is not None:
                     await on_event(stop_frame)
@@ -174,7 +188,6 @@ class Conversation:
                 )
 
                 if stop.reason in {"stop", "interrupted"}:
-                    await self._mark_status("interrupted" if stop.reason == "interrupted" else "closed")
                     return outputs
                 if stop.reason not in {"tool_calls", "function_call"}:
                     await self._mark_status("blocked", reason=stop.reason)
@@ -192,6 +205,7 @@ class Conversation:
                     stop = StreamStop(reason="interrupted")
                     self.runtime.emit("conversation.output", conversation_id=self.id, reason=stop.reason)
                     await close_harness()
+                    await self._mark_status("interrupted")
                     stop_frame = stream_stop_from(stop)
                     if on_event is not None:
                         await on_event(stop_frame)
@@ -200,7 +214,6 @@ class Conversation:
                         conversation_id=self.id,
                         event=msgspec.to_builtins(stop_frame),
                     )
-                    await self._mark_status("interrupted")
                     return outputs
         finally:
             await close_harness()

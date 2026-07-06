@@ -44,10 +44,15 @@ class ToolCall(msgspec.Struct, frozen=True, kw_only=True):
 
 
 def estimate_cost(model: ModelCard, usage: Usage) -> float:
+    input_price = model.input_price_per_million
+    cached_price = model.cached_input_price_per_million
+    output_price = model.output_price_per_million
+    if input_price is None or cached_price is None or output_price is None:
+        return 0.0
     return (
-        usage.input_tokens * model.input_price_per_million
-        + usage.cached_input_tokens * model.cached_input_price_per_million
-        + usage.output_tokens * model.output_price_per_million
+        usage.input_tokens * input_price
+        + usage.cached_input_tokens * cached_price
+        + usage.output_tokens * output_price
     ) / 1_000_000
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -74,6 +75,8 @@ class Actor:
     kernels: KernelPool
     status: str = "idle"
     _active: Conversation | None = field(default=None, init=False)
+    _mailbox_conversation: str | None = field(default=None, init=False)
+    _mailbox_conversation_touched_at: float = field(default=0.0, init=False)
 
     @classmethod
     def from_config(cls, config: ActorConfig, runtime: Runtime, provider: Provider) -> Actor:
@@ -131,18 +134,15 @@ class Actor:
             raise
 
     async def handle_mailbox_message(self, message: ActorMessage) -> None:
-        conversation = await self.runtime.conversations.get_or_create(self, message.conversation_id)
+        conversation = await self._conversation_for_message(message)
         self._active = conversation
         try:
             inbound_kind = message.source.get("inbound_kind")
             if inbound_kind in {"task_delivery", "conversation_callback"}:
                 outputs = await conversation.append_developer_notice(message.text)
-            elif inbound_kind == "cron_wakeup":
-                input_message = InputMessage(role="user", name=self.config.id, content=text_content(message.text))
-                outputs = await conversation.run_loop(input_message)
             else:
                 input_message = InputMessage(role="user", name=self.config.id, content=text_content(message.text))
-                outputs = await conversation.run_loop(input_message)
+                outputs = await conversation.run_loop(input_message, session_mode="actor")
         except ConversationBusy:
             self.runtime.emit("actor.busy", actor_id=self.config.id, conversation_id=conversation.id)
         else:
@@ -160,6 +160,24 @@ class Actor:
             self._active.interrupt()
         await self.kernels.shutdown()
         self.status = "terminated"
+
+    async def _conversation_for_message(self, message: ActorMessage) -> Conversation:
+        if message.conversation_id is not None:
+            return await self.runtime.conversations.get_or_create(self, message.conversation_id)
+
+        now = time.time()
+        conversation_id = self._mailbox_conversation
+        if (
+            conversation_id is not None
+            and now - self._mailbox_conversation_touched_at <= self.runtime.conversations.ttl_s
+            and self.runtime.conversations.has(conversation_id)
+        ):
+            conversation = await self.runtime.conversations.get_or_create(self, conversation_id)
+        else:
+            conversation = await self.runtime.conversations.get_or_create(self)
+        self._mailbox_conversation = conversation.id
+        self._mailbox_conversation_touched_at = now
+        return conversation
 
     @property
     def _has_python(self) -> bool:

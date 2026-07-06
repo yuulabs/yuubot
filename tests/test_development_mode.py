@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import cast
@@ -46,9 +47,10 @@ async def test_bootstrap_development_flag(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_configure_logging_creates_log_file(tmp_path: Path) -> None:
     logs_dir = tmp_path / "logs"
-    log_path = configure_logging(logs_dir, development=False)
+    log_path = configure_logging(logs_dir, development=False, max_bytes=1024, backup_count=2)
     assert log_path == logs_dir / LOG_FILENAME
     assert log_path.is_file()
+    assert any(isinstance(handler, logging.handlers.RotatingFileHandler) for handler in logging.getLogger().handlers)
 
 
 @pytest.mark.asyncio

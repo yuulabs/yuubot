@@ -3,7 +3,6 @@
 import asyncio
 import mimetypes
 from collections.abc import Callable
-from pathlib import Path
 
 import msgspec
 from fastapi import FastAPI, File, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -22,12 +21,11 @@ from ...app.cron import (
     vapid_public_key_for,
 )
 from ...app.deployment import DeploymentConfig
-from ...app.snapshots import redacted_integration_config
 from ...chat.listener import WsListener
 from ...domain.messages import ModelCard
 from ...domain.records import ActorRecord, RouteBody, RouteRecord
 from ...integrations import IntegrationRecord
-from ...llm import ProviderInput, is_configured
+from ...llm import ProviderInput, has_pricing_configured, model_card_wire
 from ...llm.types import ModelCardInput, ProviderSnapshot
 from ...domain.messages import ActorMessage
 from ...runtime.inbound import MailboxUnavailableError
@@ -239,14 +237,14 @@ def create_admin_app(
             cards = await app.refresh_provider_catalog(provider_id)
         except Exception as exc:
             return error_response(503, "provider_unavailable", str(exc))
-        return json_response({"model_cards": [msgspec.to_builtins(card) for card in cards]})
+        return json_response({"model_cards": [model_card_wire(card) for card in cards]})
 
     @api.get("/api/providers/{provider_id}/model-cards")
     async def api_provider_model_cards(provider_id: str) -> Response:
         if provider_id not in app.provider_records:
             return error_response(404, "not_found", "provider not found")
         cards = await app.runtime.state.list_model_cards(provider_id)
-        return json_response({"items": [msgspec.to_builtins(card) for card in cards]})
+        return json_response({"items": [model_card_wire(card) for card in cards]})
 
     @api.put("/api/providers/{provider_id}/model-cards/{selector}")
     async def api_put_provider_model_card(provider_id: str, selector: str, request: Request) -> Response:
@@ -259,7 +257,7 @@ def create_admin_app(
             card = await app.put_model_card(provider_id, body)
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
-        return json_response(msgspec.to_builtins(card))
+        return json_response(model_card_wire(card))
 
     @api.delete("/api/providers/{provider_id}/model-cards/{selector}")
     async def api_delete_provider_model_card(provider_id: str, selector: str) -> Response:
@@ -283,11 +281,19 @@ def create_admin_app(
             if record.provider not in app.provider_records:
                 return error_response(422, "configuration_required", f"unknown provider: {record.provider}")
             card = await app.runtime.state.load_model_card(record.provider, record.model.selector)
-            if card is None or not is_configured(card):
+            if card is None:
                 return error_response(
                     422,
-                    "configuration_required",
-                    f"unconfigured model selector: {record.model.selector}",
+                    "model_selector_not_found",
+                    f"model selector not found: {record.model.selector}",
+                    detail={"provider_id": record.provider, "selector": record.model.selector},
+                )
+            if not has_pricing_configured(card):
+                return error_response(
+                    422,
+                    "model_pricing_required",
+                    f"model pricing is required before binding an actor: {record.model.selector}",
+                    detail={"provider_id": record.provider, "selector": record.model.selector},
                 )
             record = ActorRecord(
                 id=record.id,
@@ -473,10 +479,6 @@ def create_admin_app(
             return error_response(404, "not_found", "integration config not found")
         return json_response(await app.bootstrap_snapshot())
 
-    @api.get("/api/conversations")
-    async def api_conversations() -> Response:
-        return json_response({"items": await app.conversation_summaries()})
-
     @api.get("/api/conversations/{conversation_id}")
     async def api_conversation(conversation_id: str) -> Response:
         summary = await app.conversation_summary(conversation_id)
@@ -626,7 +628,7 @@ def create_admin_app(
                 action=action,
                 once=body.once,
             )
-        except (msgspec.ValidationError, TypeError, CronScheduleError) as exc:
+        except (msgspec.ValidationError, TypeError, ValueError, CronScheduleError) as exc:
             return bad_request(exc)
         return json_response(snapshot, status=201)
 
@@ -790,7 +792,7 @@ def create_admin_app(
     @api.websocket("/api/ws")
     async def websocket(websocket: WebSocket) -> None:
         await websocket.accept()
-        tasks: set[asyncio.Task[None]] = set()
+        connection_tasks: set[asyncio.Task[None]] = set()
         send_lock = asyncio.Lock()
 
         async def send(payload: dict[str, object]) -> None:
@@ -800,22 +802,27 @@ def create_admin_app(
         ws_listener = WsListener(send)
         app.runtime.listeners.add(ws_listener)
 
+        def track_task(task: asyncio.Task[None]) -> None:
+            if task.get_name() == "conversation_send":
+                return
+            connection_tasks.add(task)
+            task.add_done_callback(connection_tasks.discard)
+
         try:
             while True:
                 raw = await websocket.receive_text()
                 task = await handle_ws_command(app, raw, send, ws_listener)
                 if task is not None:
-                    tasks.add(task)
-                    task.add_done_callback(tasks.discard)
+                    track_task(task)
         except WebSocketDisconnect:
             pass
         finally:
             ws_listener.close()
             app.runtime.listeners.remove(ws_listener)
-            for task in tasks:
+            for task in connection_tasks:
                 task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            if connection_tasks:
+                await asyncio.gather(*connection_tasks, return_exceptions=True)
 
     @api.get("/{path:path}", response_class=HTMLResponse)
     async def react_app(path: str):

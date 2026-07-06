@@ -15,9 +15,9 @@ class ModelCard(msgspec.Struct, frozen=True, kw_only=True):
     vision: bool = False
     toolcall: bool = True
     json: bool = True
-    input_price_per_million: float = 0
-    cached_input_price_per_million: float = 0
-    output_price_per_million: float = 0
+    input_price_per_million: float | None = None
+    cached_input_price_per_million: float | None = None
+    output_price_per_million: float | None = None
 
 
 class ContentItem(msgspec.Struct, frozen=True, kw_only=True):

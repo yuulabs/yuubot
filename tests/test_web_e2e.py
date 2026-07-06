@@ -11,7 +11,9 @@ import websockets
 from yuubot import Yuubot
 from yuubot.app import load_process_config
 from yuubot.db import Database
+from yuubot.domain.stream import StreamEvent, Usage
 from yuubot.llm import ScriptedProvider
+from yuubot.util.stream import stream_stop_event
 
 from support.api import (
     JsonObject,
@@ -418,6 +420,130 @@ async def test_ws_conversation_send(test_context: SharedTestContext) -> None:
     assert frames[1]["type"] == "conversation.stream"
     assert cast(JsonObject, cast(JsonObject, frames[1]["payload"])["event"])["kind"] == "text_delta"
     assert (await conversation_history(test_context.server, conversation_id))[-1]["kind"] == "gen_text"
+
+
+async def test_ws_preassigned_conversation_id_first_message(test_context: SharedTestContext) -> None:
+    actor_id = await test_context.setup_actor(scripted_reply("hello from draft"))
+    conversation_id = test_context.conversation_id("draft-first")
+    frames = await ws_conversation_send(
+        test_context.server,
+        command_id="draft-m1",
+        actor_id=actor_id,
+        conversation_id=conversation_id,
+        content="hi",
+    )
+    assert frames[0] == {
+        "id": "draft-m1",
+        "type": "conversation.send.accepted",
+        "payload": {"conversation_id": conversation_id},
+    }
+    history = await conversation_history(test_context.server, conversation_id)
+    assert [item["kind"] for item in history][-2:] == ["input", "gen_text"]
+
+
+async def test_ws_conversation_send_completes_after_client_disconnect(test_context: SharedTestContext) -> None:
+    actor_id = await test_context.setup_actor(scripted_reply("survives disconnect"))
+    conversation_id = test_context.conversation_id("ws-survive")
+    async with websockets.connect(ws_url(test_context.server), open_timeout=5) as ws:
+        await ws.send(
+            json.dumps(
+                {
+                    "id": "m1",
+                    "type": "conversation.send",
+                    "payload": {
+                        "actor_id": actor_id,
+                        "conversation_id": conversation_id,
+                        "content": [{"kind": "text", "text": "hello"}],
+                    },
+                }
+            )
+        )
+        accepted = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))
+        assert accepted["type"] == "conversation.send.accepted"
+    for _ in range(50):
+        history = await conversation_history(test_context.server, conversation_id)
+        kinds = [item["kind"] for item in history]
+        if "input" in kinds and "gen_text" in kinds:
+            break
+        await asyncio.sleep(0.1)
+    else:
+        raise AssertionError("conversation did not complete after websocket disconnect")
+
+
+async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frames(test_context: SharedTestContext) -> None:
+    provider = ScriptedProvider(
+        [
+            [
+                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "first"}),
+                stream_stop_event("stop", Usage(), {}, cost_estimated=False),
+            ],
+            [
+                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "hel"}),
+                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "lo"}),
+                stream_stop_event("stop", Usage(), {}, cost_estimated=False),
+            ],
+        ]
+    )
+    actor_id = await test_context.setup_actor(provider)
+    conversation_id = test_context.conversation_id("ws-dedupe")
+
+    frames: list[JsonObject] = []
+    async with websockets.connect(ws_url(test_context.server), open_timeout=5) as ws:
+        await ws.send(
+            json.dumps(
+                {
+                    "id": "m1",
+                    "type": "conversation.send",
+                    "payload": {
+                        "actor_id": actor_id,
+                        "conversation_id": conversation_id,
+                        "content": [{"kind": "text", "text": "hello"}],
+                    },
+                }
+            )
+        )
+        while True:
+            frame = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=30)))
+            frames.append(frame)
+            if frame.get("type") == "conversation.stream":
+                event = cast(JsonObject, cast(JsonObject, frame["payload"])["event"])
+                if event.get("kind") == "stream_stop":
+                    break
+
+        await ws.send(
+            json.dumps(
+                {
+                    "id": "m2",
+                    "type": "conversation.send",
+                    "payload": {
+                        "actor_id": actor_id,
+                        "conversation_id": conversation_id,
+                        "content": [{"kind": "text", "text": "again"}],
+                    },
+                }
+            )
+        )
+        second_turn_frames: list[JsonObject] = []
+        while True:
+            frame = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=30)))
+            second_turn_frames.append(frame)
+            if frame.get("type") == "conversation.stream":
+                event = cast(JsonObject, cast(JsonObject, frame["payload"])["event"])
+                if event.get("kind") == "stream_stop":
+                    break
+
+    text_delta_frames = [
+        frame
+        for frame in second_turn_frames
+        if frame.get("type") == "conversation.stream"
+        and cast(JsonObject, cast(JsonObject, frame["payload"])["event"])["kind"] == "text_delta"
+    ]
+    assert len(text_delta_frames) == 2
+    texts = [
+        cast(str, cast(JsonObject, cast(JsonObject, frame["payload"])["event"])["payload"]["text"])
+        for frame in text_delta_frames
+    ]
+    assert texts == ["hel", "lo"]
 
 
 async def test_ws_rejects_busy_conversation(test_context: SharedTestContext) -> None:

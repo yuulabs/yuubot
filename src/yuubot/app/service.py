@@ -13,7 +13,8 @@ import msgspec
 from attrs import define, field
 
 from ..actor import Actor, ActorConfig
-from ..actor.workspace import resolve_actor_workspace_path
+from ..actor.prompt import SessionMode
+from ..actor.workspace import resolve_actor_workspace_path, resolve_workspace_path
 from ..chat import Conversation
 from ..db import Database
 from .import_legacy import maybe_import_legacy
@@ -26,7 +27,7 @@ from ..runtime.inbound import (
 from ..chat.loop import StreamCallback
 from ..domain.messages import ActorMessage, ContentItem, GenOutput, InputMessage, ModelCard, text_content
 from ..domain.stream import StreamEvent
-from ..llm import Provider, ProviderInput, ProviderRecord, is_configured, model_card_from_input, provider_configured, refresh_catalog
+from ..llm import Provider, ProviderInput, ProviderRecord, has_pricing_configured, is_configured, model_card_from_input, model_card_wire, provider_configured, refresh_catalog
 from ..llm.types import AccountSnapshot, ModelCardInput, ProviderSnapshot, ValidationResult
 from ..runtime import Runtime
 from .snapshots import (
@@ -42,6 +43,7 @@ from .snapshots import (
 )
 from .deployment import DEFAULT_HOST, DEFAULT_PORT, ProcessConfig, load_process_config
 from ..python import PythonKernelsConfig
+from ..runtime.resource_config import ResourceConfig
 from ..runtime.streams import TextStream
 from ..runtime.tasks import TaskDeliveryListener, TaskSnapshot, register_shell_task, task_record_snapshot, wait_until_terminal_or_timeout
 from ..util.secrets import merge_redacted_config
@@ -73,17 +75,22 @@ class Yuubot:
         data_dir: str | Path,
         *,
         python_kernels: PythonKernelsConfig | None = None,
+        resources: ResourceConfig | None = None,
     ) -> "Yuubot":
         root = Path(data_dir)
         db = await Database.open(root / "db")
         await maybe_import_legacy(root, db)
-        app = cls(Runtime.create(root, db, kernels=python_kernels))
+        app = cls(Runtime.create(root, db, kernels=python_kernels, resources=resources))
         await app._load_application_state()
         return app
 
     @classmethod
     async def from_config(cls, config: ProcessConfig, providers: Mapping[str, Provider] | None = None) -> "Yuubot":
-        app = await cls.create(config.data_dir, python_kernels=config.python_kernels)
+        app = await cls.create(
+            config.data_dir,
+            python_kernels=config.python_kernels,
+            resources=config.resources,
+        )
         app.provider_instances.update(providers or {})
         return app
 
@@ -136,6 +143,7 @@ class Yuubot:
         await self.runtime.cron.sync_from_store()
         await self.runtime.conversations.start_background_cleanup()
         await self.runtime.shares.start_background_cleanup()
+        await self.runtime.resource_supervisor.start()
 
     async def shutdown(self) -> None:
         if self._shutdown:
@@ -285,7 +293,7 @@ class Yuubot:
             "config": self.runtime.provider_registry.redact_config(record.protocol, record.config),
             "configured": provider_configured(record),
             "last_error": record.last_error,
-            "model_cards": [msgspec.to_builtins(card) for card in cards],
+            "model_cards": [model_card_wire(card) for card in cards],
         }
 
     # -- Integration lifecycle -----------------------------------------------
@@ -386,11 +394,16 @@ class Yuubot:
         return True
 
     def _actor_config(self, record: ActorRecord) -> ActorConfig:
+        workspace = resolve_workspace_path(
+            record.workspace,
+            workspace_dir=self.runtime.workspace_dir,
+            actor_id=record.id,
+        )
         return ActorConfig(
             id=record.id,
             name=record.name,
             description=record.description,
-            workspace=record.workspace or str(self.runtime.workspace_dir / record.id),
+            workspace=str(workspace),
             persona=record.persona,
             model=record.model,
         )
@@ -404,16 +417,17 @@ class Yuubot:
         conversation_id: str | None = None,
         *,
         on_event: StreamCallback | None = None,
+        session_mode: SessionMode = "conversation",
     ) -> list[GenOutput]:
         actor = self.actors[actor_id]
         conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
-        return await conversation.run_loop(message, on_event=on_event)
+        return await conversation.run_loop(message, on_event=on_event, session_mode=session_mode)
 
     async def chat(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> tuple[Conversation, list[GenOutput]]:
         message = self._input_message(actor_id, input)
         actor = self.actors[actor_id]
         conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
-        return conversation, await conversation.run_loop(message)
+        return conversation, await conversation.run_loop(message, session_mode="conversation")
 
     async def chat_stream(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> AsyncIterator[StreamEvent]:
         message = self._input_message(actor_id, input)

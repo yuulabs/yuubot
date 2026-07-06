@@ -42,9 +42,10 @@ async def track_created_apps(monkeypatch: pytest.MonkeyPatch) -> Any:
         data_dir: str | Path,
         *,
         python_kernels: Any = None,
+        resources: Any = None,
     ) -> Yuubot:
         del cls
-        app = await original_create(data_dir, python_kernels=python_kernels)
+        app = await original_create(data_dir, python_kernels=python_kernels, resources=resources)
         apps.append(app)
         return app
 
