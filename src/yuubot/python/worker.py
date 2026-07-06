@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from attrs import define, field
-from jupyter_client import AsyncKernelClient, AsyncKernelManager
+from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_client.kernelspec import KernelSpec
+from jupyter_client.manager import AsyncKernelManager
 
 from .config import RECYCLE_EXIT_CODE
 from .workspace import ensure_workspace_venv, prepare_kernel_workspace
 
 WorkerState = Literal["idle", "leased"]
+KERNEL_START_TIMEOUT_S = 30.0
 
 
 class KernelWorkerError(RuntimeError):
@@ -26,6 +29,8 @@ class KernelWorker:
     workspace: Path
     env: dict[str, str]
     max_rss_bytes: int
+    max_output_bytes: int
+    execution_timeout_s: float
     manager: AsyncKernelManager
     client: AsyncKernelClient
     state: WorkerState = "idle"
@@ -39,6 +44,8 @@ class KernelWorker:
         workspace: Path,
         env: dict[str, str],
         max_rss_bytes: int,
+        max_output_bytes: int,
+        execution_timeout_s: float,
     ) -> KernelWorker:
         root = workspace.resolve()
         prepare_kernel_workspace(root)
@@ -49,29 +56,52 @@ class KernelWorker:
         facade_dir = str(root / ".yuubot" / "facade")
         existing_path = kernel_env.get("PYTHONPATH", "")
         kernel_env["PYTHONPATH"] = f"{yuubot_dir}:{facade_dir}:{existing_path}" if existing_path else f"{yuubot_dir}:{facade_dir}"
-        manager = AsyncKernelManager()
+        manager = AsyncKernelManager(transport_encryption="required")
         manager._kernel_spec = KernelSpec(
             argv=[str(python), "-m", "ipykernel_launcher", "-f", "{connection_file}"],
             display_name="yuubot-workspace",
             language="python",
+            metadata={"supported_encryption": "curve"},
         )
-        await manager.start_kernel(
-            cwd=str(root),
-            env=kernel_env,
-        )
-        client = manager.client()
-        client.start_channels()
-        await client.wait_for_ready()
-        worker = cls(
-            workspace=root,
-            env=kernel_env,
-            max_rss_bytes=max_rss_bytes,
-            manager=manager,
-            client=client,
-        )
-        await worker._bootstrap()
-        worker._started = True
-        return worker
+        client: AsyncKernelClient | None = None
+        try:
+            await asyncio.wait_for(
+                manager.start_kernel(
+                    cwd=str(root),
+                    env=kernel_env,
+                ),
+                timeout=KERNEL_START_TIMEOUT_S,
+            )
+            client = manager.client(
+                curve_publickey=manager.curve_publickey,
+                curve_secretkey=manager.curve_secretkey,
+            )
+            client.start_channels()
+            await asyncio.wait_for(client.wait_for_ready(), timeout=KERNEL_START_TIMEOUT_S)
+            worker = cls(
+                workspace=root,
+                env=kernel_env,
+                max_rss_bytes=max_rss_bytes,
+                max_output_bytes=max_output_bytes,
+                execution_timeout_s=execution_timeout_s,
+                manager=manager,
+                client=client,
+            )
+            await asyncio.wait_for(worker._bootstrap(), timeout=KERNEL_START_TIMEOUT_S)
+            worker._started = True
+            return worker
+        except TimeoutError as exc:
+            if client is not None:
+                client.stop_channels()
+            with contextlib.suppress(Exception):
+                await manager.shutdown_kernel(now=True)
+            raise KernelWorkerError(f"kernel worker did not become ready within {int(KERNEL_START_TIMEOUT_S)}s") from exc
+        except BaseException:
+            if client is not None:
+                client.stop_channels()
+            with contextlib.suppress(Exception):
+                await manager.shutdown_kernel(now=True)
+            raise
 
     @property
     def workspace_key(self) -> str:
@@ -82,7 +112,7 @@ class KernelWorker:
         provisioner = self.manager.provisioner
         if provisioner is None or not provisioner.has_process:
             return False
-        process = provisioner.process
+        process = cast(Any, provisioner).process
         return process is not None and process.poll() is None
 
     @property
@@ -90,10 +120,10 @@ class KernelWorker:
         provisioner = self.manager.provisioner
         if provisioner is None or not provisioner.has_process:
             return None
-        process = provisioner.process
+        process = cast(Any, provisioner).process
         if process is None:
             return None
-        return process.poll()
+        return cast(int | None, process.poll())
 
     def mark_leased(self) -> None:
         self.state = "leased"
@@ -134,9 +164,16 @@ class KernelWorker:
     async def _execute(self, code: str) -> str:
         msg_id = self.client.execute(code, store_history=False)
         chunks: list[str] = []
+        truncated = False
+        deadline = time.monotonic() + self.execution_timeout_s
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise KernelWorkerError(
+                    f"kernel execution exceeded {int(self.execution_timeout_s)}s"
+                )
             try:
-                msg = await self.client.get_iopub_msg(timeout=1)
+                msg = await self.client.get_iopub_msg(timeout=min(1.0, remaining))
             except asyncio.TimeoutError as exc:
                 if not self.alive:
                     raise KernelWorkerError(f"kernel worker exited with code {self.exit_code}") from exc
@@ -146,13 +183,31 @@ class KernelWorker:
             msg_type = msg["header"]["msg_type"]
             content = msg["content"]
             if msg_type == "stream":
-                chunks.append(str(content.get("text", "")))
+                text = str(content.get("text", ""))
+                if text:
+                    total = sum(len(part.encode()) for part in chunks) + len(text.encode())
+                    if total > self.max_output_bytes:
+                        truncated = True
+                        allowed = self.max_output_bytes - sum(len(part.encode()) for part in chunks)
+                        if allowed > 0:
+                            chunks.append(text.encode()[:allowed].decode("utf-8", errors="replace"))
+                        break
+                    chunks.append(text)
             elif msg_type == "execute_result":
                 data = content.get("data", {})
                 if isinstance(data, dict) and "text/plain" in data:
-                    chunks.append(str(data["text/plain"]))
+                    text = str(data["text/plain"])
+                    total = sum(len(part.encode()) for part in chunks) + len(text.encode())
+                    if total > self.max_output_bytes:
+                        truncated = True
+                        break
+                    chunks.append(text)
             elif msg_type == "error":
                 chunks.append("\n".join(str(line) for line in content.get("traceback", [])))
             elif msg_type == "status" and content.get("execution_state") == "idle":
                 break
-        return "".join(chunks)
+        output = "".join(chunks)
+        if truncated:
+            suffix = f"\n[system] output truncated at {self.max_output_bytes} bytes"
+            output = f"{output}{suffix}"
+        return output

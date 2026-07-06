@@ -5,6 +5,22 @@ data_dir: ~/.yuubot-data
 #   acquire_timeout_s: 30
 #   max_rss_bytes: 2147483648
 #   idle_ttl_s: 21600
+#   max_output_bytes: 262144
+#   execution_timeout_s: 120
+
+# resources:
+#   tmp_cleanup_interval_s: 3600
+#   tmp_max_age_s: 86400
+#   tmp_globs: ["yuubot-*", "jupyter-*", "ipykernel-*"]
+#   logs:
+#     max_bytes: 52428800
+#     backup_count: 5
+#     retention_days: 14
+#   disk_alert:
+#     interval_s: 60
+#     warn_used_pct: 85
+#     critical_used_pct: 95
+#   spans_retention_days: 30
 
 # Optional deployment boundary. Providers, integrations, actors, and routes are
 # configured from the Admin UI and persisted in the database under data_dir.

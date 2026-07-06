@@ -9,6 +9,7 @@ import msgspec
 import yaml
 
 from ..python import PythonKernelsConfig, python_kernels_config_from_raw
+from ..runtime.resource_config import ResourceConfig, resource_config_from_raw
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -47,6 +48,7 @@ class DeploymentConfig(msgspec.Struct, frozen=True):
 class ProcessConfig(msgspec.Struct, frozen=True, kw_only=True):
     data_dir: str = ".yuubot-data"
     python_kernels: PythonKernelsConfig = msgspec.field(default_factory=PythonKernelsConfig)
+    resources: ResourceConfig = msgspec.field(default_factory=ResourceConfig)
 
 
 def load_yaml_mapping(path: str | Path) -> dict[str, object]:
@@ -65,6 +67,7 @@ def process_config_from_raw(raw: dict[str, object]) -> ProcessConfig:
     return ProcessConfig(
         data_dir=_expand_path_value(str(data_dir or ".yuubot-data")),
         python_kernels=python_kernels_config_from_raw(raw.get("python_kernels")),
+        resources=resource_config_from_raw(raw.get("resources")),
     )
 
 

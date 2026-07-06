@@ -21,6 +21,8 @@ class ToolConfig(msgspec.Struct, frozen=True, kw_only=True):
 class Tool(Protocol):
     payload_type: ClassVar[type[msgspec.Struct]]
 
+    async def prepare(self) -> None: ...
+
     async def execute(self, payload: msgspec.Struct) -> str | list[ContentItem]: ...
 
     async def close(self) -> None: ...
@@ -54,6 +56,9 @@ def workspace_tool(
         payload_type: ClassVar[type[msgspec.Struct]] = payload_cls
         root: Path
         bound: dict[str, object] = field(factory=dict)
+
+        async def prepare(self) -> None:
+            return None
 
         async def execute(self, payload: msgspec.Struct) -> str | list[ContentItem]:
             return await execute(self.root, payload, **self.bound)

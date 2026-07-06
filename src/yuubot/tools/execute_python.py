@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -10,8 +11,9 @@ from attrs import define, field
 
 from ..domain.messages import ConversationContext
 from ..python.facade import remove_facade
-from ..python.pool import KernelPool
+from ..python.pool import KernelPool, KernelPoolBusy
 from ..python.worker import KernelWorker, KernelWorkerError
+from ..python.workspace import ensure_workspace_venv, prepare_kernel_workspace
 from ..runtime.core import Runtime
 from ..runtime.tasks import make_owner
 from .base import ToolConfig, ToolSpec
@@ -36,8 +38,10 @@ For long-running shell work, use the runtime task facade instead of blocking she
 - Do not call daemon HTTP endpoints such as `/api/tasks`, `/api/inbound`, or admin/public APIs directly; use the `yb.tasks` facade.
 
 Scheduled jobs (durable cron):
-- `await yb.tasks.cron.add(name, timezone=..., cron=..., action=...)` or `at=...` for one-shot schedules. `timezone` must be an explicit IANA name such as `Asia/Shanghai`.
-- Action dict examples: `{"kind":"shell","name":"...","shell":"...","intro":"..."}`, `{"kind":"wakeup","text":"..."}`, `{"kind":"reminder","title":"...","body":"...","channels":[{"kind":"browser"},{"kind":"web_push"}]}`.
+- Import `yb.tasks` or `yb.tasks.cron`; `yb.tasks.cron` is available as the cron facade.
+- `await yb.tasks.cron.add(name, timezone=..., cron=..., action=...)` or `at=...` for one-shot schedules. `timezone` must be an explicit IANA name such as `Asia/Shanghai`; `at` accepts a local ISO datetime like `2026-07-06T11:30:00` or a short relative delay such as `+1m`.
+- Action dict examples: `{"kind":"shell","name":"...","shell":"...","intro":"..."}`, `{"kind":"actor_message","text":"..."}`, `{"kind":"conversation_callback","text":"..."}`, `{"kind":"reminder","title":"...","body":"...","channels":[{"kind":"browser"},{"kind":"web_push"}]}`.
+- Use `actor_message` for standalone scheduled actor work. Use `conversation_callback` when the scheduled result should continue this exact conversation.
 - Manage with `await yb.tasks.cron.list_jobs()`, `await yb.tasks.cron.find(job_id)`, `await yb.tasks.cron.pause(job_id)`, `await yb.tasks.cron.delete(job_id)`.
 - Do not call `/api/cron-jobs` directly; use the `yb.tasks.cron` facade.
 
@@ -72,18 +76,33 @@ class ExecutePythonTool:
     _worker: KernelWorker | None = field(default=None, init=False)
     _leased: bool = field(default=False, init=False)
 
+    async def prepare(self) -> None:
+        root = self.workspace.resolve()
+        prepare_kernel_workspace(root)
+        await ensure_workspace_venv(root)
+
     async def execute(self, payload: msgspec.Struct) -> str:
         data = cast(ExecutePythonPayload, payload)
+        self._set_partial_result("execute_python is acquiring a Python kernel worker and preparing the workspace environment.")
         worker = await self._worker_or_acquire()
         try:
+            self._set_partial_result("execute_python acquired a Python kernel worker and is executing the submitted code.")
             return await worker.run_code(data.code)
-        except KernelWorkerError:
+        except KernelWorkerError as first_exc:
             if self._worker is not None:
                 await self.pool.drop_leased_worker(self.lease_key, self._worker)
                 self._worker = None
                 self._leased = False
+            self._set_partial_result("execute_python is retrying after the Python kernel worker failed.")
             worker = await self._worker_or_acquire()
-            return await worker.run_code(data.code)
+            try:
+                self._set_partial_result("execute_python acquired a replacement Python kernel worker and is executing the submitted code.")
+                return await worker.run_code(data.code)
+            except KernelWorkerError as retry_exc:
+                raise KernelWorkerError(
+                    "kernel worker retry failed after initial error: "
+                    f"{first_exc}; retry error: {retry_exc}"
+                ) from retry_exc
 
     async def close(self) -> None:
         if not self._leased:
@@ -99,9 +118,19 @@ class ExecutePythonTool:
             self._leased = False
         if self._worker is not None and self._worker.alive:
             return self._worker
-        self._worker = await self.pool.acquire(self.workspace, lease_key=self.lease_key, env=self.env)
+        try:
+            self._worker = await self.pool.acquire(self.workspace, lease_key=self.lease_key, env=self.env)
+        except KernelPoolBusy as exc:
+            raise KernelWorkerError(
+                "no python kernel worker available; all workers are busy, try again later"
+            ) from exc
         self._leased = True
         return self._worker
+
+    def _set_partial_result(self, text: str) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            setattr(task, "partial_result", text)
 
 
 def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime) -> ExecutePythonTool:
@@ -113,6 +142,7 @@ def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime)
     env["YUUBOT_TASK_OWNER"] = make_owner(actor_id=context.actor, conversation_id=context.conversation_id)
     db_path = runtime.db_dir / "yuubot.db"
     env["YUUBOT_DB_PATH"] = str(db_path)
+    env["TMPDIR"] = str(runtime.tmp_dir)
     return ExecutePythonTool(
         pool=runtime.actors[context.actor].kernels,
         workspace=context.workspace.resolve(),

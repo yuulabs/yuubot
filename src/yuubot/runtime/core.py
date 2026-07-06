@@ -27,6 +27,8 @@ from .kv import KvStore
 from .shares import ShareRegistry
 from .tasks import TaskRegistry, TaskScheduler, wait_until_terminal_or_timeout
 from .wakeup import WakeupDelivery, WakeupPayload, WakeupTarget
+from .resource_config import ResourceConfig
+from .resources import ResourceSupervisor, resolve_tmp_dir
 from .cron import (
     CronExecutor,
     CronJobScheduler,
@@ -118,6 +120,8 @@ class Runtime:
     kv: KvStore
     python_kernels: PythonKernelsConfig
     kernel_limiter: KernelLimiter
+    resources_config: ResourceConfig
+    resource_supervisor: ResourceSupervisor
     integrations: dict[str, Integration] = field(factory=dict)
     actors: dict[str, Actor] = field(factory=dict)
     _actor_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
@@ -146,11 +150,18 @@ class Runtime:
         return self._notifications
 
     @classmethod
-    def create(cls, data_dir: str | Path, db: Database, *, kernels: PythonKernelsConfig | None = None) -> Runtime:
+    def create(
+        cls,
+        data_dir: str | Path,
+        db: Database,
+        *,
+        kernels: PythonKernelsConfig | None = None,
+        resources: ResourceConfig | None = None,
+    ) -> Runtime:
         from ..chat.loop import ConversationManager
 
         root = Path(data_dir)
-        for sub in ("workspace", "logs", "db", "published", "kv"):
+        for sub in ("workspace", "logs", "db", "published", "kv", "tmp"):
             (root / sub).mkdir(parents=True, exist_ok=True)
         mailboxes = ActorMailboxRegistry()
         eventbus = EventBus()
@@ -162,6 +173,14 @@ class Runtime:
         shares = ShareRegistry(data_dir=root, state=state, emit=eventbus.emit)
         kv = KvStore(data_dir=root)
         python_kernels = kernels or PythonKernelsConfig()
+        resources_config = resources or ResourceConfig()
+        resource_supervisor = ResourceSupervisor(
+            data_dir=root,
+            logs_dir=root / "logs",
+            db=db,
+            config=resources_config,
+            emit=eventbus.emit,
+        )
         runtime = cls(
             data_dir=root,
             db=db,
@@ -184,6 +203,8 @@ class Runtime:
             kv=kv,
             python_kernels=python_kernels,
             kernel_limiter=KernelLimiter(python_kernels),
+            resources_config=resources_config,
+            resource_supervisor=resource_supervisor,
         )
         runtime._notifications = NotificationDispatcher.create(runtime)
 
@@ -211,6 +232,10 @@ class Runtime:
     @property
     def logs_dir(self) -> Path:
         return self.data_dir / "logs"
+
+    @property
+    def tmp_dir(self) -> Path:
+        return resolve_tmp_dir(self.data_dir, self.resources_config)
 
     @property
     def db_dir(self) -> Path:
@@ -277,6 +302,7 @@ class Runtime:
         return None
 
     async def shutdown(self) -> None:
+        await self.resource_supervisor.stop()
         await self.shares.stop_background_cleanup()
         self.cron.shutdown()
         await self.scheduler.shutdown()

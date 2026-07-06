@@ -89,7 +89,12 @@ class UvicornServer:
 
     async def serve(self) -> None:
         self.app.runtime.development = self.development
-        log_path = configure_logging(self.app.runtime.logs_dir, development=self.development)
+        log_path = configure_logging(
+            self.app.runtime.logs_dir,
+            development=self.development,
+            max_bytes=self.app.runtime.resources_config.logs.max_bytes,
+            backup_count=self.app.runtime.resources_config.logs.backup_count,
+        )
         print(f"Logs: {log_path}", flush=True)
         await self.app.startup()
         write_run_state(self.app.runtime.data_dir, self.host, self.server_port)

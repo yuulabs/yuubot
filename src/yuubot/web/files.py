@@ -79,7 +79,7 @@ def mime_dir(mime: str) -> str:
 
 def directory_snapshot(workspace: Path, target: Path) -> dict[str, object]:
     entries: list[dict[str, object]] = []
-    for child in sorted(target.iterdir(), key=lambda item: item.name):
+    for child in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold(), item.name)):
         resolved = child.resolve()
         if resolved != workspace and workspace not in resolved.parents:
             continue

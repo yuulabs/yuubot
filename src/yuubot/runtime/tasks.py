@@ -26,6 +26,7 @@ _log = logging.getLogger(__name__)
 TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
 DeliveryState = Literal["pending", "delivered", "skipped"]
 EmitFn = Callable[..., None]
+STDERR_CAPTURE_MAX_BYTES = 65536
 
 
 def make_owner(*, actor_id: str, conversation_id: str) -> str:
@@ -211,36 +212,51 @@ async def _terminate_shell_process(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
-def shell_coro_factory(*, shell: str, workspace: Path) -> TaskCoroFactory:
+def shell_coro_factory(*, shell: str, workspace: Path, tmp_dir: Path) -> TaskCoroFactory:
     async def run(_stdin: TextStream, stdout: TextStream) -> int:
+        env = os.environ.copy()
+        env["TMPDIR"] = str(tmp_dir)
         proc = await asyncio.create_subprocess_exec(
             "bash",
             "-lc",
             shell,
             cwd=workspace,
-            env=os.environ.copy(),
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
         assert proc.stdout is not None
         assert proc.stderr is not None
-        stdout_chunks: list[bytes] = []
         stderr_chunks: list[bytes] = []
+        stderr_size = 0
+        saw_stdout = False
 
-        async def pump(stream: asyncio.StreamReader, chunks: list[bytes], mirror: bool) -> None:
+        async def pump_stdout(stream: asyncio.StreamReader) -> None:
+            nonlocal saw_stdout
             while True:
                 chunk = await stream.read(4096)
                 if not chunk:
                     break
-                chunks.append(chunk)
-                if mirror:
-                    stdout.write(chunk.decode("utf-8", errors="replace"))
+                saw_stdout = True
+                stdout.write(chunk.decode("utf-8", errors="replace"))
+
+        async def pump_stderr(stream: asyncio.StreamReader) -> None:
+            nonlocal stderr_size
+            while True:
+                chunk = await stream.read(4096)
+                if not chunk:
+                    break
+                if stderr_size >= STDERR_CAPTURE_MAX_BYTES:
+                    continue
+                take = chunk[: STDERR_CAPTURE_MAX_BYTES - stderr_size]
+                stderr_chunks.append(take)
+                stderr_size += len(take)
 
         try:
             await asyncio.gather(
-                pump(proc.stdout, stdout_chunks, True),
-                pump(proc.stderr, stderr_chunks, False),
+                pump_stdout(proc.stdout),
+                pump_stderr(proc.stderr),
             )
             code = await proc.wait()
         except asyncio.CancelledError:
@@ -249,7 +265,7 @@ def shell_coro_factory(*, shell: str, workspace: Path) -> TaskCoroFactory:
         if stderr_chunks:
             stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
             if stderr_text.strip():
-                stdout.write(stderr_text if stdout_chunks else stderr_text)
+                stdout.write(stderr_text if saw_stdout else stderr_text)
         return code
 
     return run
@@ -273,7 +289,10 @@ def register_shell_task(
         shell=shell,
     )
     runtime.tasks.put(record)
-    runtime.scheduler.schedule(record, shell_coro_factory(shell=shell, workspace=workspace))
+    runtime.scheduler.schedule(
+        record,
+        shell_coro_factory(shell=shell, workspace=workspace, tmp_dir=runtime.tmp_dir),
+    )
     return record
 
 

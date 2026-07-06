@@ -91,20 +91,26 @@ class KernelPool:
                     return worker
 
             await self.limiter.acquire()
-            worker: KernelWorker | None = None
+            spawned: KernelWorker | None = None
+            leased_to_caller = False
             try:
-                worker = await self._spawn_worker(workspace, env=env)
+                spawned = await self._spawn_worker(workspace, env=env)
                 async with self._lock:
                     leased = self._leases.get(lease_key)
                     if leased is not None and leased.alive:
-                        await self._drop_worker_unlocked(worker)
+                        await self._drop_worker_unlocked(spawned)
+                        spawned = None
                         return leased
-                    worker.mark_leased()
-                    self._leases[lease_key] = worker
-                    return worker
-            except Exception:
-                if worker is None:
+                    spawned.mark_leased()
+                    self._leases[lease_key] = spawned
+                    leased_to_caller = True
+                    return spawned
+            except BaseException:
+                if spawned is None:
                     self.limiter.release()
+                elif not leased_to_caller:
+                    async with self._lock:
+                        await self._drop_worker_unlocked(spawned)
                 raise
 
     async def release(self, lease_key: str) -> None:
@@ -157,6 +163,8 @@ class KernelPool:
             workspace=workspace,
             env=env,
             max_rss_bytes=self.config.max_rss_bytes,
+            max_output_bytes=self.config.max_output_bytes,
+            execution_timeout_s=self.config.execution_timeout_s,
         )
         self._workers.append(worker)
         return worker

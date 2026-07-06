@@ -31,6 +31,9 @@ class RestartKernelTool:
     pool: KernelPool
     lease_key: str
 
+    async def prepare(self) -> None:
+        return None
+
     async def execute(self, payload: msgspec.Struct) -> str:
         del payload
         await self.pool.purge_for_restart(self.lease_key)
