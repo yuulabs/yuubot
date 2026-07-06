@@ -2,6 +2,8 @@
 
 from .executor import CronExecutor
 from .models import (
+    ActorMessageAction,
+    ConversationCallbackAction,
     CronAction,
     CronJob,
     CronJobStatus,
@@ -23,6 +25,8 @@ from .store import CronJobStore
 from .triggers import CronScheduleError, validate_schedule
 
 __all__ = [
+    "ActorMessageAction",
+    "ConversationCallbackAction",
     "CronAction",
     "CronExecutor",
     "CronJob",

@@ -13,6 +13,12 @@ intermediate status check.
 Query and control tasks only through this facade. Do not call daemon HTTP routes
 such as ``/api/tasks``, ``/api/inbound``, or admin/public APIs directly.
 
+Durable schedules live under ``yb.tasks.cron``. Use ``await yb.tasks.cron.add(...)``
+with an explicit IANA timezone to register recurring cron or one-shot jobs.
+Use cron action ``{"kind": "actor_message", "text": "..."}`` for standalone
+scheduled actor work, and ``{"kind": "conversation_callback", "text": "..."}``
+to continue the owner conversation.
+
 Examples::
 
     task = await submit("fetch-report", "make build", "Build project artifacts")
@@ -151,3 +157,6 @@ async def _request_json(method: str, url: str, params: dict[str, str] | None = N
     if not isinstance(body, dict):
         raise RuntimeError("unexpected task API response")
     return body
+
+
+from . import cron as cron  # noqa: E402  # expose yb.tasks.cron after helpers are defined

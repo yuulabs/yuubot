@@ -1,12 +1,19 @@
 """Cron scheduling facade for execute_python.
 
 Use ``await add(...)`` to register durable cron jobs with explicit IANA timezones.
+For one-shot schedules, pass either a timezone-naive local ISO datetime
+(``YYYY-MM-DDTHH:MM:SS``) or a short relative delay such as ``+1m``.
+Use ``{"kind": "actor_message", "text": "..."}`` for standalone scheduled
+actor work, and ``{"kind": "conversation_callback", "text": "..."}`` when the
+scheduled message should continue the owner conversation.
 Query and control jobs only through this facade.
 """
 
 from __future__ import annotations
 
-import os
+import re
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -81,7 +88,7 @@ async def add(
         schedule["cron"] = cron
     else:
         schedule["kind"] = "at"
-        schedule["at"] = at
+        schedule["at"] = _normalize_at(at or "", timezone)
     base_url = _daemon_url()
     owner = _task_owner()
     body = {"name": name, "owner": owner, "schedule": schedule, "action": action, "once": once}
@@ -115,3 +122,22 @@ async def delete(job_id: str) -> None:
 
 def _job_from_payload(payload: dict[str, object], *, base_url: str) -> CronJob:
     return CronJob(payload, base_url=base_url)
+
+
+_RELATIVE_AT = re.compile(r"^\+(?P<count>\d+)(?P<unit>[smhd])$")
+
+
+def _normalize_at(at: str, timezone: str) -> str:
+    match = _RELATIVE_AT.fullmatch(at.strip())
+    if match is None:
+        return at
+    count = int(match.group("count"))
+    unit = match.group("unit")
+    delta = {
+        "s": timedelta(seconds=count),
+        "m": timedelta(minutes=count),
+        "h": timedelta(hours=count),
+        "d": timedelta(days=count),
+    }[unit]
+    local = datetime.now(ZoneInfo(timezone)) + delta
+    return local.replace(tzinfo=None).isoformat(timespec="seconds")

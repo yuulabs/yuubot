@@ -4,7 +4,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from yuubot.runtime.cron.models import CronSchedule, ReminderAction, ShellAction
+import yb.tasks
+from yb.tasks.cron import _normalize_at
+from yuubot.runtime.cron.models import CronSchedule
 from yuubot.runtime.cron.triggers import CronScheduleError, build_trigger, validate_schedule, validate_timezone
 
 
@@ -36,3 +38,14 @@ def test_validate_schedule_rejects_missing_timezone_fields() -> None:
         validate_schedule(CronSchedule(kind="cron", timezone="UTC"))
     with pytest.raises(CronScheduleError):
         validate_schedule(CronSchedule(kind="at", timezone="UTC"))
+
+
+def test_tasks_package_exposes_cron_facade() -> None:
+    assert yb.tasks.cron.add is not None
+
+
+def test_cron_facade_accepts_short_relative_at() -> None:
+    normalized = _normalize_at("+1m", "UTC")
+    parsed = datetime.fromisoformat(normalized)
+    assert parsed.tzinfo is None
+    assert 0 < (parsed - datetime.now(UTC).replace(tzinfo=None)).total_seconds() <= 90

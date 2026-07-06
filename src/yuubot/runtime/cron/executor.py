@@ -11,7 +11,14 @@ from attrs import define
 
 from ..tasks import parse_owner, register_shell_task
 from ..wakeup import WakeupPayload, WakeupTarget
-from .models import CronJob, ReminderAction, ShellAction, WakeupAction
+from .models import (
+    ActorMessageAction,
+    ConversationCallbackAction,
+    CronJob,
+    ReminderAction,
+    ShellAction,
+    WakeupAction,
+)
 
 if TYPE_CHECKING:
     from ..core import Runtime
@@ -63,7 +70,7 @@ class CronExecutor:
             if workspace is None:
                 _log.warning("cron job %s skipped: actor workspace not found", job_id)
                 return
-        elif workspace is None and isinstance(job.action, WakeupAction):
+        elif workspace is None and isinstance(job.action, (ActorMessageAction, ConversationCallbackAction, WakeupAction)):
             if actor_id not in self._runtime.actors:
                 _log.warning("cron job %s skipped: actor not running", job_id)
                 return
@@ -81,12 +88,40 @@ class CronExecutor:
                     workspace=workspace,
                 )
             elif isinstance(job.action, WakeupAction):
-                target_conversation = job.action.conversation_id or conversation_id
                 await self._runtime.wakeup.deliver(
-                    WakeupTarget(kind="cron_wakeup", actor_id=actor_id, conversation_id=target_conversation),
+                    WakeupTarget(kind="actor_inbound", actor_id=actor_id, conversation_id=None),
                     WakeupPayload(
                         text=job.action.text,
-                        source={"cron_job_id": job_id, "cron_job_name": job.name},
+                        source={
+                            "cron_job_id": job_id,
+                            "cron_job_name": job.name,
+                            "cron_delivery": "actor_message",
+                            "cron_legacy_kind": "wakeup",
+                        },
+                    ),
+                )
+            elif isinstance(job.action, ActorMessageAction):
+                await self._runtime.wakeup.deliver(
+                    WakeupTarget(kind="actor_inbound", actor_id=actor_id, conversation_id=None),
+                    WakeupPayload(
+                        text=job.action.text,
+                        source={
+                            "cron_job_id": job_id,
+                            "cron_job_name": job.name,
+                            "cron_delivery": "actor_message",
+                        },
+                    ),
+                )
+            elif isinstance(job.action, ConversationCallbackAction):
+                await self._runtime.wakeup.deliver(
+                    WakeupTarget(kind="conversation_callback", actor_id=actor_id, conversation_id=conversation_id),
+                    WakeupPayload(
+                        text=job.action.text,
+                        source={
+                            "cron_job_id": job_id,
+                            "cron_job_name": job.name,
+                            "cron_delivery": "conversation_callback",
+                        },
                     ),
                 )
             elif isinstance(job.action, ReminderAction):

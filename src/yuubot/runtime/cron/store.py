@@ -10,7 +10,16 @@ from attrs import define
 
 from ...util.time import utc_now_iso
 
-from .models import CronAction, CronJob, CronJobStatus, CronSchedule, decode_cron_job, encode_cron_job, new_cron_job_id
+from .models import (
+    CronAction,
+    CronJob,
+    CronJobStatus,
+    CronSchedule,
+    decode_cron_job,
+    encode_cron_job,
+    lifecycle_once_for_schedule,
+    new_cron_job_id,
+)
 from .triggers import validate_schedule
 
 if TYPE_CHECKING:
@@ -58,7 +67,7 @@ class CronJobStore:
             status=job.status,
             next_run_at=job.next_run_at,
             last_run_at=job.last_run_at,
-            once=job.once,
+            once=lifecycle_once_for_schedule(job.schedule),
             created_at=created_at,
             updated_at=timestamp,
         )
@@ -102,7 +111,7 @@ class CronJobStore:
             schedule=schedule,
             action=action,
             status=status,
-            once=once,
+            once=lifecycle_once_for_schedule(schedule),
             created_at=timestamp,
             updated_at=timestamp,
         )

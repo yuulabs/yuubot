@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+CRON_MISFIRE_GRACE_TIME_S = 60
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -68,7 +70,7 @@ class CronJobScheduler:
             id=job.id,
             args=[job.id],
             replace_existing=True,
-            misfire_grace_time=1,
+            misfire_grace_time=CRON_MISFIRE_GRACE_TIME_S,
             coalesce=True,
             max_instances=1,
         )
