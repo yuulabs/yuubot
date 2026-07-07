@@ -43,7 +43,7 @@ from ...runtime.shares import (
     SharePublishError,
     share_grant_snapshot,
 )
-from ...runtime.tasks import task_record_snapshot
+from ...runtime.tasks import TaskNotRunningError, task_record_snapshot
 from ...util.secrets import merge_redacted_config
 from ..auth import LoginBody, SessionStore
 from ..client_ip import client_ip_from_scope, is_loopback
@@ -53,8 +53,13 @@ from ..request import bad_request, read_json
 from ..responses import error_response, json_response
 from ..errors import internal_error_detail, internal_error_message
 from ..ws import handle_ws_command
-from .bodies import CreateCronJobBody, PublishShareBody, PushSubscriptionBody, SubmitTaskBody, WorkspaceDeleteBody, WorkspaceMkdirBody, WorkspaceMoveBody, WorkspaceRenameBody
+from .bodies import CreateCronJobBody, PublishShareBody, PushSubscriptionBody, SubmitTaskBody, TaskStdinBody, WorkspaceDeleteBody, WorkspaceMkdirBody, WorkspaceMoveBody, WorkspaceRenameBody
 from ._helpers import react_dist_dir, route_exists
+from .auth_attempts import register_auth_attempt_routes
+from .credentials import register_credential_routes
+from .mcp_servers import register_mcp_routes
+from .skills import register_skill_routes
+from .terminal import register_terminal_routes
 
 
 def create_admin_app(
@@ -165,6 +170,11 @@ def create_admin_app(
             if integration.type == integration_type:
                 return json_response(integration)
         return error_response(404, "not_found", "integration type not found")
+
+    register_mcp_routes(api, app, deployment)
+    register_credential_routes(api, app)
+    register_skill_routes(api, app)
+    register_auth_attempt_routes(api, app)
 
     @api.get("/api/provider-protocols")
     async def api_provider_protocols() -> Response:
@@ -597,6 +607,20 @@ def create_admin_app(
         app.runtime.cancel_runtime_task(task_id)
         return json_response(task_record_snapshot(app.runtime.tasks.get(task_id), include_stdout=True))
 
+    @api.post("/api/tasks/{task_id}/stdin")
+    async def api_task_stdin(task_id: str, request: Request) -> Response:
+        if task_id not in app.runtime.tasks:
+            return error_response(404, "not_found", "task not found")
+        try:
+            body = await read_json(request, TaskStdinBody)
+        except (msgspec.DecodeError, msgspec.ValidationError) as exc:
+            return bad_request(exc)
+        try:
+            snapshot = app.task_stdin_write(task_id, body.text)
+        except TaskNotRunningError as exc:
+            return error_response(409, "conflict", str(exc))
+        return json_response(snapshot)
+
     @api.get("/api/cron-jobs")
     async def api_cron_jobs(owner: str | None = None, status: str | None = None, name_glob: str = "") -> Response:
         items = await list_cron_jobs(app.runtime, owner=owner, status=status, name_glob=name_glob)
@@ -823,6 +847,8 @@ def create_admin_app(
                 task.cancel()
             if connection_tasks:
                 await asyncio.gather(*connection_tasks, return_exceptions=True)
+
+    register_terminal_routes(api, app)
 
     @api.get("/{path:path}", response_class=HTMLResponse)
     async def react_app(path: str):

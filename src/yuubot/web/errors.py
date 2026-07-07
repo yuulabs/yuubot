@@ -2,7 +2,10 @@ INTERNAL_ERROR_MESSAGE = "internal server error"
 
 
 def internal_error_message(exc: Exception, *, development: bool) -> str:
-    return str(exc) if development else INTERNAL_ERROR_MESSAGE
+    if not development:
+        return INTERNAL_ERROR_MESSAGE
+    message = str(exc).strip()
+    return message or f"{type(exc).__name__}: {exc!r}"
 
 
 def internal_error_detail(exc: Exception, *, development: bool) -> dict[str, object] | None:

@@ -11,6 +11,7 @@ import asyncio
 import msgspec
 
 from ..app import Yuubot
+from ..runtime.tasks import TaskNotRunningError
 from ..chat import ConversationBlocked, ConversationBusy
 from ..domain.messages import ContentItem, InputMessage
 from ..chat.listener import WsListener
@@ -40,6 +41,8 @@ async def handle_ws_command(
         return asyncio.create_task(_history_subscribe(send, ws_listener, command_id, payload))
     if command_type == "task.subscribe":
         return asyncio.create_task(_task_subscribe(app, send, ws_listener, command_id, payload))
+    if command_type == "task.stdin":
+        return asyncio.create_task(_task_stdin(app, send, command_id, payload))
     if command_type == "conversation.interrupt":
         conversation_id = _optional_str(payload.get("conversation_id"))
         if not conversation_id:
@@ -179,7 +182,10 @@ async def _task_subscribe(
         return
     task = app.runtime.tasks.get(task_id)
     await send({"id": command_id, "type": "task.subscribe.result", "payload": {"task_id": task_id}})
-    await send({"type": "task.event", "payload": {"task_id": task_id, "status": task.status, "stdout": ""}})
+    await send({
+        "type": "task.event",
+        "payload": {"task_id": task_id, "status": task.status, "stdout": task.stdout.tail(max_bytes=65536)},
+    })
     ws_listener.start_task_stdout(task_id, task.stdout, task.status)
     try:
         try:
@@ -189,6 +195,31 @@ async def _task_subscribe(
         await ws_listener.send_task_terminal(task_id, task.status)
     finally:
         ws_listener.stop_task_stdout()
+
+
+async def _task_stdin(
+    app: Yuubot,
+    send: WSCommandSend,
+    command_id: object,
+    payload: dict[str, object],
+) -> None:
+    task_id = _optional_str(payload.get("task_id"))
+    text = payload.get("text")
+    if not task_id:
+        await send_error(send, command_id, "bad_request", "task_id is required")
+        return
+    if not isinstance(text, str):
+        await send_error(send, command_id, "bad_request", "text is required")
+        return
+    if task_id not in app.runtime.tasks:
+        await send_error(send, command_id, "not_found", "task not found")
+        return
+    try:
+        snapshot = app.task_stdin_write(task_id, text)
+    except TaskNotRunningError as exc:
+        await send_error(send, command_id, "conflict", str(exc))
+        return
+    await send({"id": command_id, "type": "task.stdin.result", "payload": msgspec.to_builtins(snapshot)})
 
 
 async def send_error(
