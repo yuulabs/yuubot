@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+
 import pytest
 
 from yuubot.actor import ActorConfig
-from yuubot.domain import ActorMessage, ModelCard
-from yuubot.llm import scripted_reply
+from yuubot.domain import ActorMessage, ConversationContext, LLMInput, ModelCard, StreamEvent
+from yuubot.llm import merge_catalog, scripted_reply
+from yuubot.llm.types import AccountSnapshot, ValidationResult
 from yuubot.app import Yuubot
+from yuubot.runtime.cache import CachePool
 
 
 def _input_roles(items: list[dict[str, object]]) -> list[str]:
@@ -17,6 +22,45 @@ def _input_roles(items: list[dict[str, object]]) -> list[str]:
         if isinstance(payload, dict):
             roles.append(str(payload.get("role")))
     return roles
+
+
+class BlockingProvider:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def list_presets(self) -> list[ModelCard]:
+        return []
+
+    async def list_remote_models(self) -> list[str]:
+        return []
+
+    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
+        return merge_catalog(presets, remote)
+
+    async def get_balance(self) -> AccountSnapshot | None:
+        return None
+
+    async def validate(self) -> ValidationResult:
+        return ValidationResult(ok=True)
+
+    async def stream(
+        self,
+        input: LLMInput,
+        *,
+        model: ModelCard,
+        context: ConversationContext,
+        cache: CachePool,
+        stop_event: asyncio.Event,
+    ) -> AsyncIterator[StreamEvent]:
+        del input, model, context, cache, stop_event
+        self.started.set()
+        await self.release.wait()
+        yield StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "ok"})
+        yield StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "stop"})
+
+    async def close(self) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -98,4 +142,42 @@ async def test_actor_explicit_conversation_and_callback_roles(tmp_path) -> None:
         items = await app.runtime.history.load_interaction_wrapped("explicit")
         assert _input_roles(items) == ["user", "developer"]
     finally:
+        await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_task_delivery_busy_does_not_append_developer_notice(tmp_path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    provider = BlockingProvider()
+    actor = app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(tmp_path / "workspace"),
+            model=ModelCard(selector="fake"),
+        ),
+        provider,
+    )
+    try:
+        task = asyncio.create_task(app.chat("amy", "first", conversation_id="explicit"))
+        await provider.started.wait()
+
+        await actor.handle_mailbox_message(
+            ActorMessage(
+                text="task done",
+                conversation_id="explicit",
+                source={"inbound_kind": "task_delivery"},
+            )
+        )
+
+        items = await app.runtime.history.load_interaction_wrapped("explicit")
+        assert _input_roles(items) == ["user"]
+
+        provider.release.set()
+        await task
+        items = await app.runtime.history.load_interaction_wrapped("explicit")
+        assert _input_roles(items) == ["user"]
+        assert items[-1]["kind"] == "gen_text"
+    finally:
+        provider.release.set()
         await app.shutdown()

@@ -717,7 +717,7 @@ async def test_ws_subscribes_task_stdout_and_status(test_context: SharedTestCont
     )
 
     task_events = [frame for frame in frames if frame["type"] == "task.event"]
-    assert any(cast(JsonObject, frame["payload"])["stdout"] == "ready\n" for frame in task_events)
+    assert any("ready" in str(cast(JsonObject, frame["payload"])["stdout"]) for frame in task_events)
     assert cast(JsonObject, task_events[-1]["payload"])["status"] == "done"
 
 

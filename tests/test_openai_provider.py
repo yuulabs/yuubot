@@ -6,8 +6,24 @@ from typing import Any
 import pytest
 from attrs import define, field
 from openai.types.chat import ChatCompletionChunk
-from yuubot.domain import ConversationContext, GenReasoning, GenText, InputMessage, LLMInput, ModelCard, text_content
-from yuubot.llm.openai import OpenAIProvider, OpenAIProviderConfig, ToolStreamState, _events_from_chunk, _messages, _presets_for_endpoint
+from yuubot.domain import (
+    ContentItem,
+    ConversationContext,
+    GenReasoning,
+    GenText,
+    InputMessage,
+    LLMInput,
+    ModelCard,
+    text_content,
+)
+from yuubot.llm.openai import (
+    OpenAIProvider,
+    OpenAIProviderConfig,
+    ToolStreamState,
+    _events_from_chunk,
+    _messages,
+    _presets_for_endpoint,
+)
 from yuubot.runtime.cache import CachePool
 
 
@@ -70,6 +86,40 @@ def test_openai_provider_replays_reasoning_content(tmp_path: Path) -> None:
         {"role": "assistant", "content": "visible answer", "reasoning_content": "hidden chain"},
         {"role": "user", "name": "actor", "content": "continue"},
     ]
+
+
+def test_openai_provider_caches_image_data_url_with_explicit_size(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"image-bytes")
+    cache = CachePool()
+
+    messages = _messages(
+        [
+            InputMessage(
+                role="user",
+                name="actor",
+                content=[ContentItem(kind="image", path="image.png", mime="image/png")],
+            )
+        ],
+        workspace=tmp_path,
+        cache=cache,
+    )
+
+    expected_url = "data:image/png;base64,aW1hZ2UtYnl0ZXM="
+    assert messages == [
+        {
+            "role": "user",
+            "name": "actor",
+            "content": [{"type": "image_url", "image_url": {"url": expected_url}}],
+        }
+    ]
+
+    stat = image_path.stat()
+    _, cached = cache.get(
+        f"content-image-v1:{image_path}:{stat.st_mtime_ns}:{stat.st_size}:image/png"
+    )
+    assert cached.value == expected_url
+    assert cached.get_cache_size() == len(expected_url)
 
 
 def test_openai_provider_keeps_tool_argument_chunks_without_repeated_type() -> None:

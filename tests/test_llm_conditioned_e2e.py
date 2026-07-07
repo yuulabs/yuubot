@@ -37,7 +37,7 @@ def _tasks_inspect_code(task_name: str) -> str:
         "import yb.tasks\n"
         f"task = await yb.tasks.submit({task_name!r}, 'echo task-probe', 'prompt test')\n"
         "print(task.name)\n"
-        "print(task.status)\n"
+        "print(await task.status())\n"
         f"tasks = await yb.tasks.list_tasks(name_glob={task_name!r})\n"
         "print(len(tasks))\n"
     )

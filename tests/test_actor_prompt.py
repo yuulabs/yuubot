@@ -21,6 +21,14 @@ def test_developer_prompt_documents_cron_facade(tmp_path: Path) -> None:
     assert "+1m" in prompt
 
 
+def test_developer_prompt_documents_interactive_tasks(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "await task.write" in prompt
+    assert "Do not use the `bash` tool with `timeout_s`" in prompt
+    assert "PTY" in prompt
+
+
 def test_developer_prompt_real_time_data_is_static(tmp_path: Path) -> None:
     prompt = developer_prompt("", tmp_path, [], has_python=False)
     real_time = prompt.split("# Real-Time Data\n", 1)[1]
