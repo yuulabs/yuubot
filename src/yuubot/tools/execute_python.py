@@ -33,9 +33,19 @@ Enabled integrations inject credentials and defaults into the process environmen
 
 For long-running shell work, use the runtime task facade instead of blocking shell in this session:
 - `task = await yb.tasks.submit(name, shell, intro)` registers a fire-and-forget shell task with Runtime and returns a Task handle immediately.
+- Shell tasks run in a PTY with live stdout and stdin. Use this for interactive CLI init, login, or bind flows.
 - Task execution continues under Runtime after this tool call ends; when the task finishes, yuubot appends a developer message and automatically continues the owner conversation.
-- Query and control with `await yb.tasks.find(task_id)`, `await yb.tasks.list_tasks(name_glob=...)`, `await task.output()`, and `await task.cancel()`.
+- Query with `await yb.tasks.find(task_id)`, `await yb.tasks.list_tasks(name_glob=...)`, `await task.output()`, and `await task.status()`.
+- Send interactive input with `await task.write(text)` (include newlines when the prompt expects them).
+- Cancel with `await task.cancel()`.
+- Do not use the `bash` tool with `timeout_s` for interactive or long-running init; timeouts kill the process and can leave partial setup behind.
 - Do not call daemon HTTP endpoints such as `/api/tasks`, `/api/inbound`, or admin/public APIs directly; use the `yb.tasks` facade.
+
+MCP data sources:
+- Use `import yb.mcps`, then `await yb.mcps.search(query)` to discover enabled MCP tools/resources/prompts.
+- Search results intentionally omit parameter schemas. Use `client = yb.mcps.get_client(server_id)` and `await client.get_spec(name)` before invoking a tool.
+- Call tools with `await client.invoke(name, **kwargs)` and read resources with `await client.read_resource(uri)`.
+- Secrets and raw credentials are daemon-managed and are never available in this Python session.
 
 Scheduled jobs (durable cron):
 - Import `yb.tasks` or `yb.tasks.cron`; `yb.tasks.cron` is available as the cron facade.

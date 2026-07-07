@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import queue
+import re
 import time
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -12,12 +14,15 @@ from attrs import define, field
 from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_client.kernelspec import KernelSpec
 from jupyter_client.manager import AsyncKernelManager
+from strip_ansi import strip_ansi
 
 from .config import RECYCLE_EXIT_CODE
 from .workspace import ensure_workspace_venv, prepare_kernel_workspace
 
 WorkerState = Literal["idle", "leased"]
 KERNEL_START_TIMEOUT_S = 30.0
+_OSC_CONTROL_RE = re.compile(r"\x1B\][^\x1B\x07]*(?:\x07|\x1B\\)")
+_C0_CONTROL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 
 class KernelWorkerError(RuntimeError):
@@ -159,7 +164,7 @@ class KernelWorker:
         self._started = False
 
     async def _bootstrap(self) -> None:
-        await self._execute("import worker_runtime")
+        await self._execute("import worker_runtime; worker_runtime.bootstrap()")
 
     async def _execute(self, code: str) -> str:
         msg_id = self.client.execute(code, store_history=False)
@@ -174,7 +179,7 @@ class KernelWorker:
                 )
             try:
                 msg = await self.client.get_iopub_msg(timeout=min(1.0, remaining))
-            except asyncio.TimeoutError as exc:
+            except (asyncio.TimeoutError, queue.Empty) as exc:
                 if not self.alive:
                     raise KernelWorkerError(f"kernel worker exited with code {self.exit_code}") from exc
                 continue
@@ -183,7 +188,7 @@ class KernelWorker:
             msg_type = msg["header"]["msg_type"]
             content = msg["content"]
             if msg_type == "stream":
-                text = str(content.get("text", ""))
+                text = _filter_tool_text(str(content.get("text", "")))
                 if text:
                     total = sum(len(part.encode()) for part in chunks) + len(text.encode())
                     if total > self.max_output_bytes:
@@ -196,14 +201,14 @@ class KernelWorker:
             elif msg_type == "execute_result":
                 data = content.get("data", {})
                 if isinstance(data, dict) and "text/plain" in data:
-                    text = str(data["text/plain"])
+                    text = _filter_tool_text(str(data["text/plain"]))
                     total = sum(len(part.encode()) for part in chunks) + len(text.encode())
                     if total > self.max_output_bytes:
                         truncated = True
                         break
                     chunks.append(text)
             elif msg_type == "error":
-                chunks.append("\n".join(str(line) for line in content.get("traceback", [])))
+                chunks.append(_filter_tool_text("\n".join(str(line) for line in content.get("traceback", []))))
             elif msg_type == "status" and content.get("execution_state") == "idle":
                 break
         output = "".join(chunks)
@@ -211,3 +216,8 @@ class KernelWorker:
             suffix = f"\n[system] output truncated at {self.max_output_bytes} bytes"
             output = f"{output}{suffix}"
         return output
+
+
+def _filter_tool_text(text: str) -> str:
+    filtered = strip_ansi(_OSC_CONTROL_RE.sub("", text))
+    return _C0_CONTROL_RE.sub("", filtered)

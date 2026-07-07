@@ -26,6 +26,17 @@ def maybe_recycle_worker() -> None:
         os._exit(RECYCLE_EXIT_CODE)
 
 
+def import_facades() -> None:
+    import facade_bootstrap
+
+    facade_bootstrap.import_facades()
+
+
+def bootstrap() -> None:
+    import_facades()
+
+
 def reset_or_recycle() -> None:
     reset_worker_namespace()
+    import_facades()
     maybe_recycle_worker()

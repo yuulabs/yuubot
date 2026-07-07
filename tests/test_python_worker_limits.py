@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 from pathlib import Path
 from typing import Any, cast
 
@@ -79,3 +80,72 @@ async def test_execute_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(KernelWorkerError, match="exceeded"):
         await worker._execute("while True: pass")
+
+
+@pytest.mark.asyncio
+async def test_execute_treats_queue_empty_as_poll_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    class EmptyThenDoneClient(FakeKernelClient):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    {
+                        "parent_header": {"msg_id": "m1"},
+                        "header": {"msg_type": "status"},
+                        "content": {"execution_state": "idle"},
+                    },
+                ]
+            )
+            self._empty_once = True
+
+        async def get_iopub_msg(self, timeout: float) -> dict[str, object]:
+            if self._empty_once:
+                self._empty_once = False
+                raise queue.Empty
+            if not self._messages:
+                raise asyncio.TimeoutError
+            return self._messages.pop(0)
+
+    worker = _worker(EmptyThenDoneClient())
+    worker._started = True
+    monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
+
+    output = await worker.run_code("1 + 1")
+
+    assert output == "ok"
+
+
+@pytest.mark.asyncio
+async def test_execute_filters_terminal_control_sequences(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeKernelClient(
+        [
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "stream"},
+                "content": {"text": "\x1b[31mred\x1b[0m\n"},
+            },
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "execute_result"},
+                "content": {"data": {"text/plain": "\x1b]0;ignored\x07value"}},
+            },
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "error"},
+                "content": {"traceback": ["\x1b[36mTraceback\x1b[0m", "boom\x07"]},
+            },
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "status"},
+                "content": {"execution_state": "idle"},
+            },
+        ]
+    )
+    worker = _worker(client, max_output_bytes=128)
+    worker._started = True
+    monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
+
+    output = await worker._execute("print('x')")
+
+    assert output == "red\nvalueTraceback\nboom"
+    assert "\x1b" not in output
+    assert "\x07" not in output

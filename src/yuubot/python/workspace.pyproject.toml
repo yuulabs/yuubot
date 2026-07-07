@@ -8,4 +8,5 @@ dependencies = [
     "msgspec>=0.21.1",
     "psutil>=7.2.2",
     "pymupdf4llm>=1.28.0",
+    "strip-ansi>=0.1.1",
 ]
