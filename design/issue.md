@@ -60,3 +60,11 @@ Potential probes:
   completed, and followed by a final LLM turn.
 - Run the full suite repeatedly from a clean archive and track whether the same
   test is the only intermittent failure.
+
+
+DEBUG    httpcore.connection:_trace.py:87 close.started
+DEBUG    httpcore.connection:_trace.py:87 close.complete
+============================================= short test summary info =============================================
+FAILED tests/test_llm_conditioned_e2e.py::test_http_tasks_docs_in_prompt_enable_submit_call - AssertionError: conversation test-http-tasks-docs-in-prompt-enable-submit-cal-57ef0295-tasks-c1 did not reach ...
+
+非常奇怪，偶尔出现此bug。如果出现这个bug时测试运行时间会显著变长。

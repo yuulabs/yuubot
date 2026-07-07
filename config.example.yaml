@@ -1,4 +1,11 @@
 data_dir: ~/.yuubot-data
+# Layout under data_dir:
+#   workspace/{actor_id}/  actor workspaces and execute_python cwd
+#   db/yuubot.db           SQLite persistence
+#   logs/                  daemon logs
+#   tmp/                   tool and kernel temp files
+#   kv/                    actor key-value store
+#   published/             public share snapshots
 
 # python_kernels:
 #   max_workers: 4

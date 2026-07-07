@@ -47,3 +47,4 @@ warroom/
 !web/src/lib/
 .timetracking/
 amy/
+.cursor/

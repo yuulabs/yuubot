@@ -36,6 +36,18 @@ cd web && pnpm install && pnpm run build
 
 ## Prompt Visibility
 
-- Ensure that any function/tool descriptions defined in the framework are successfully injected into the LLM's system prompt or existing in tool specs and can be accurately understood(not too verbose or too concise).
+- Ensure that **any function/tool** descriptions defined in the framework are successfully injected into the LLM's system prompt or existing in tool specs and can be accurately understood(not too verbose or too concise).
 
 DEBUG: 找config example yaml里面的数据库/log
+
+## Dependencies
+
+Don't fear to introduce them, as long as they simplify the codebase.
+
+## Remote Chrome
+
+Prompt the user to run npx -y @dbalabka/chrome-wsl if you find chrome dev mcp failed. (sudo might be required so LLM should not run it)
+
+## Compatibility
+
+**NO Backward Compatibility** except database migration. Any compatibility layer is a tech debt.

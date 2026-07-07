@@ -52,7 +52,7 @@ Capability Index = daemon 缓存的 MCP tools/resources/prompts 轻量目录
 | 类型 | 主要职责 | 登录归属 | LLM 调用面 |
 | --- | --- | --- | --- |
 | MCP | 标准 data source / tool / resource 总线 | daemon Credential | `yb.mcps` |
-| Coding CLI Integration | 本地编码 agent readiness 与任务入口 | 官方 CLI 写入系统用户 HOME | `yb.coding` / integration facade |
+| Coding CLI Integration | 本地编码 agent readiness 与任务入口 | 官方 CLI 写入系统用户 HOME | concrete `yext.*` integration facade |
 | Skill | 行为规范、SOP、领域流程 | 无 runtime credential | prompt 按需展开 |
 
 ## MCP
@@ -434,4 +434,3 @@ Terminal：
 5. Coding CLI readiness is determined by adapter probe; file watch is optional.
 6. Skills are behavior instructions and loaded progressively.
 7. v1 scope is global personal hub; records may include `scope="global"` for future actor/workspace/user scope.
-
