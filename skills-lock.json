@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "python-profiling": {
+      "source": "fgmacedo/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/python-profiling/SKILL.md",
+      "computedHash": "b6bab2bca03cf9195911d6ceb7910c759553d690e5ee98a44d5bfa64bc47e6de"
+    }
+  }
+}
