@@ -7,6 +7,7 @@ import msgspec
 from ..domain.messages import ModelCard
 from ..domain.stream import StreamEvent
 from ..domain.records import LifecycleError, RouteRecord
+from ..integrations import integration_health
 from ..llm.records import ProviderRecord
 from ..llm.types import ProviderSnapshot
 from ..runtime.host_stats import HostStats, collect_host_stats
@@ -44,6 +45,10 @@ class IntegrationSnapshot(msgspec.Struct, frozen=True, kw_only=True):
     config_schema: dict[str, object]
     config: dict[str, object]
     last_error: LifecycleError | None = None
+    health_status: str = ""
+    health_reason: str = ""
+    health_details: dict[str, object] = msgspec.field(default_factory=dict)
+    action_hint: dict[str, object] | None = None
 
 
 class ConversationSummary(msgspec.Struct, frozen=True, kw_only=True):
@@ -185,16 +190,26 @@ async def integration_snapshots(app: "Yuubot") -> list[IntegrationSnapshot]:
     for integration_type, spec in sorted(app.runtime.integration_registry.specs().items()):
         record = app.integration_records.get(integration_type)
         state = statuses.get(integration_type)
+        default_config = app.runtime.integration_registry.default_config(integration_type)
+        enabled = state.enabled if state is not None else (record is not None and record.name in app.runtime.integrations)
+        live = app.runtime.integrations.get(record.name if record is not None else integration_type)
+        health = await integration_health(live) if enabled and live is not None else None
+        health_status = health.status if health is not None else ("disabled" if not enabled else ("error" if state is not None and state.last_error is not None else "ready"))
+        health_reason = health.reason if health is not None else (state.last_error.message if state is not None and state.last_error is not None else "")
         snapshots.append(
             IntegrationSnapshot(
                 type=integration_type,
                 name=record.name if record is not None else integration_type,
                 package_path=spec.package_path,
-                enabled=state.enabled if state is not None else (record is not None and record.name in app.runtime.integrations),
-                configured=record is not None,
+                enabled=enabled,
+                configured=record is not None or default_config is not None,
                 last_error=state.last_error if state is not None else None,
                 config_schema=msgspec.json.schema(spec.config_type),
-                config=redacted_integration_config(record.config if record is not None else {}),
+                config=redacted_integration_config(record.config if record is not None else default_config or {}),
+                health_status=health_status,
+                health_reason=health_reason,
+                health_details=health.details if health is not None else {},
+                action_hint=health.action_hint if health is not None else None,
             )
         )
     return snapshots

@@ -9,7 +9,6 @@ import asyncio
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
-import msgspec
 from attrs import define, field
 
 from ..actor import Actor, ActorConfig
@@ -18,7 +17,7 @@ from ..actor.workspace import resolve_actor_workspace_path, resolve_workspace_pa
 from ..chat import Conversation
 from ..db import Database
 from .import_legacy import maybe_import_legacy
-from ..integrations import Integration, IntegrationRecord
+from ..integrations import Integration, IntegrationHealth, IntegrationRecord, integration_health
 from ..runtime.inbound import (
     InboundEnvelope,
     deliver_actor_inbound,
@@ -27,15 +26,36 @@ from ..runtime.inbound import (
 from ..chat.loop import StreamCallback
 from ..domain.messages import ActorMessage, ContentItem, GenOutput, InputMessage, ModelCard, text_content
 from ..domain.stream import StreamEvent
-from ..llm import Provider, ProviderInput, ProviderRecord, has_pricing_configured, is_configured, model_card_from_input, model_card_wire, provider_configured, refresh_catalog
+from ..llm import Provider, ProviderInput, ProviderRecord, is_configured, model_card_from_input, model_card_wire, provider_configured, refresh_catalog
 from ..llm.types import AccountSnapshot, ModelCardInput, ProviderSnapshot, ValidationResult
 from ..runtime import Runtime
+from ..runtime.credentials import CredentialRecord
+from ..runtime.auth_attempts import AuthAttempt, AuthAttemptCreate, AuthAttemptStatus, new_auth_attempt, transition_auth_attempt
+from ..runtime.mcp import (
+    McpCapabilityIndex,
+    McpServerRecord,
+    McpServerState,
+    OAUTH_AUTH_MODES,
+    is_oauth_auth_mode,
+    normalize_mcp_record,
+    replace_mcp_record,
+    summarize_capabilities,
+)
+from ..runtime.mcp_oauth import McpOAuthCoordinator, ensure_oauth_credential_id, run_mcp_oauth_attempt
+from ..runtime.skills import (
+    SkillCliCommandBody,
+    SkillCliCommandResult,
+    SkillRecord,
+    SkillSummary,
+    installed_global_skill_summaries,
+    run_skill_cli_command,
+    stored_skill,
+)
 from .snapshots import (
     BootstrapSnapshot,
     ConversationSummary,
     IntegrationSnapshot,
     RuntimeSnapshot,
-    TaskSnapshot,
     bootstrap_snapshot as build_bootstrap_snapshot,
     conversation_summaries as build_conversation_summaries,
     integration_snapshots as build_integration_snapshots,
@@ -47,10 +67,17 @@ from ..runtime.resource_config import ResourceConfig
 from ..runtime.streams import TextStream
 from ..runtime.tasks import TaskDeliveryListener, TaskSnapshot, register_shell_task, task_record_snapshot, wait_until_terminal_or_timeout
 from ..util.secrets import merge_redacted_config
-from ..domain.records import ActorRecord, RouteRecord, lifecycle_error
+from ..util.time import utc_now_iso
+from ..domain.records import ActorRecord, LifecycleError, RouteRecord, lifecycle_error
 from ..tools import all_tool_configs, uninstall_tools
 
 ChatInput = str | list[ContentItem]
+
+
+def _integration_health_error(health: IntegrationHealth | None) -> LifecycleError | None:
+    if health is None or health.status == "ready":
+        return None
+    return LifecycleError(type=health.status, message=health.reason or health.status)
 
 
 @define
@@ -60,6 +87,7 @@ class Yuubot:
     provider_instances: dict[str, Provider] = field(factory=dict)
     integration_records: dict[str, IntegrationRecord] = field(factory=dict)
     actor_records: dict[str, ActorRecord] = field(factory=dict)
+    mcp_oauth: McpOAuthCoordinator = field(factory=McpOAuthCoordinator)
     config_path: Path | None = None
     server_host: str = DEFAULT_HOST
     server_port: int = DEFAULT_PORT
@@ -123,6 +151,40 @@ class Yuubot:
                 await self.runtime.state.set_integration_enabled(
                     integration_record.type, enabled=False, last_error=lifecycle_error(exc)
                 )
+        mcp_records: list[McpServerRecord] = []
+        mcp_indexes: list[McpCapabilityIndex] = []
+        mcp_errors: dict[str, str] = {}
+        for mcp_record, mcp_enabled, last_error, index in await self.runtime.state.load_mcp_servers():
+            record = normalize_mcp_record(
+                McpServerRecord(
+                    id=mcp_record.id,
+                    name=mcp_record.name,
+                    endpoint_url=mcp_record.endpoint_url,
+                    transport=mcp_record.transport,
+                    auth_mode=mcp_record.auth_mode,
+                    credential_id=mcp_record.credential_id,
+                    oauth_issuer=mcp_record.oauth_issuer,
+                    oauth_authorization_endpoint=mcp_record.oauth_authorization_endpoint,
+                    oauth_token_endpoint=mcp_record.oauth_token_endpoint,
+                    oauth_client_id=mcp_record.oauth_client_id,
+                    oauth_scope=mcp_record.oauth_scope,
+                    enabled=mcp_enabled,
+                    created_at=mcp_record.created_at,
+                    updated_at=mcp_record.updated_at,
+                )
+            )
+            mcp_records.append(record)
+            if index is not None:
+                mcp_indexes.append(index)
+            if last_error:
+                mcp_errors[record.id] = last_error
+        self.runtime.mcps.bind(mcp_records, mcp_indexes)
+        for server_id, last_error in mcp_errors.items():
+            self.runtime.mcps.states[server_id] = McpServerState(status="error", last_error=last_error)
+        for skill in await self.runtime.state.load_skills():
+            self.runtime.skills[skill.id] = skill
+        for attempt in await self.runtime.state.load_auth_attempts():
+            self.runtime.auth_attempts[attempt.id] = attempt
         for actor_record, actor_enabled in await self.runtime.state.load_actor_records():
             self.actor_records[actor_record.id] = actor_record
             if not actor_enabled:
@@ -149,6 +211,7 @@ class Yuubot:
         if self._shutdown:
             return
         self._shutdown = True
+        await self.mcp_oauth.shutdown()
         for actor_id in list(self.actors):
             actor = self.actors.pop(actor_id)
             await self.runtime.stop_actor_task(actor_id)
@@ -301,11 +364,13 @@ class Yuubot:
     async def configure_integration(self, record: IntegrationRecord) -> None:
         self.integration_records[record.type] = record
         enabled = record.name in self.runtime.integrations
+        last_error: LifecycleError | None = None
         if enabled:
             # Hot-reload: replace the running instance with one built from the new record.
             await self.runtime.disable_integration(record.name)
-            self.runtime.enable_integration(record)
-        await self.runtime.state.put_integration(record, enabled=enabled)
+            integration = self.runtime.enable_integration(record)
+            last_error = _integration_health_error(await integration_health(integration))
+        await self.runtime.state.put_integration(record, enabled=enabled, last_error=last_error)
 
     async def enable_integration(self, record: IntegrationRecord) -> Integration:
         self.integration_records[record.type] = record
@@ -314,13 +379,20 @@ class Yuubot:
         except Exception as exc:
             await self.runtime.state.put_integration(record, enabled=False, last_error=lifecycle_error(exc))
             raise
-        await self.runtime.state.put_integration(record, enabled=True)
+        await self.runtime.state.put_integration(
+            record,
+            enabled=True,
+            last_error=_integration_health_error(await integration_health(integration)),
+        )
         return integration
 
     async def enable_configured_integration(self, integration_type: str) -> Integration | None:
         record = self.integration_records.get(integration_type)
         if record is None:
-            return None
+            config = self.runtime.integration_registry.default_config(integration_type)
+            if config is None:
+                return None
+            record = IntegrationRecord(id=integration_type, type=integration_type, name=integration_type, config=config)
         return await self.enable_integration(record)
 
     async def disable_integration(self, integration_type: str) -> bool:
@@ -330,6 +402,315 @@ class Yuubot:
         await self.runtime.disable_integration(record.name)
         await self.runtime.state.set_integration_enabled(record.type, enabled=False)
         return True
+
+    # -- MCP data source lifecycle -------------------------------------------
+
+    def _store_mcp_record(self, record: McpServerRecord) -> McpServerRecord:
+        stored = normalize_mcp_record(record)
+        self.runtime.mcps.records[stored.id] = stored
+        return stored
+
+    async def _persist_mcp_record(
+        self,
+        record: McpServerRecord,
+        *,
+        last_error: str | None = None,
+        capabilities: McpCapabilityIndex | None = None,
+    ) -> McpServerRecord:
+        stored = self._store_mcp_record(record)
+        await self.runtime.state.put_mcp_server(
+            stored,
+            enabled=stored.enabled,
+            last_error=last_error,
+            capabilities=capabilities,
+        )
+        return stored
+
+    async def configure_mcp_server(
+        self,
+        record: McpServerRecord,
+        *,
+        api_key: str = "",
+        api_key_header: str = "Authorization",
+        api_key_prefix: str = "Bearer ",
+        oauth_client_secret: str = "",
+    ) -> McpServerRecord:
+        incoming = normalize_mcp_record(record)
+        existing = self.runtime.mcps.records.get(incoming.id)
+        now = utc_now_iso()
+        credential_id = incoming.credential_id
+        if is_oauth_auth_mode(incoming.auth_mode):
+            credential_id = (
+                existing.credential_id
+                if existing is not None and is_oauth_auth_mode(existing.auth_mode)
+                else incoming.credential_id or f"mcp:{incoming.id}:oauth"
+            )
+        if incoming.auth_mode == "api_key" and api_key:
+            credential_id = (
+                existing.credential_id
+                if existing is not None and existing.auth_mode == "api_key"
+                else incoming.credential_id or f"mcp:{incoming.id}:api_key"
+            )
+            if credential_id is None:
+                raise ValueError("api key credential id is required")
+            await self.runtime.credentials.put(
+                CredentialRecord(
+                    id=credential_id,
+                    kind="api_key",
+                    provider=incoming.id,
+                    label=f"{incoming.name} API key",
+                    redacted_summary="configured",
+                ),
+                secret_payload={
+                    "api_key": api_key,
+                    "header": api_key_header,
+                    "prefix": api_key_prefix,
+                },
+            )
+        if incoming.auth_mode == "oauth_manual" and oauth_client_secret:
+            credential_id = credential_id or f"mcp:{incoming.id}:oauth"
+            payload = await self.runtime.credentials.secret_payload(credential_id) or {}
+            payload["manual_client_secret"] = oauth_client_secret
+            await self.runtime.credentials.put(
+                CredentialRecord(
+                    id=credential_id,
+                    kind="oauth_token",
+                    provider=incoming.id,
+                    label=f"{incoming.name} OAuth token",
+                    redacted_summary="manual client configured",
+                ),
+                secret_payload=payload,
+            )
+        stored = replace_mcp_record(
+            incoming,
+            credential_id=credential_id,
+            created_at=existing.created_at if existing is not None and existing.created_at else now,
+            updated_at=now,
+        )
+        return await self._persist_mcp_record(stored)
+
+    async def enable_mcp_server(self, server_id: str) -> McpServerState:
+        record = self.runtime.mcps.records[server_id]
+        enabled = replace_mcp_record(record, enabled=True, updated_at=utc_now_iso())
+        await self._persist_mcp_record(enabled)
+        await self.runtime.state.set_mcp_server_enabled(server_id, enabled=True)
+        return await self.refresh_mcp_server(server_id)
+
+    async def disable_mcp_server(self, server_id: str) -> bool:
+        record = self.runtime.mcps.records.get(server_id)
+        if record is None:
+            return False
+        disabled = replace_mcp_record(record, enabled=False, updated_at=utc_now_iso())
+        self._store_mcp_record(disabled)
+        self.runtime.mcps.states[server_id] = McpServerState(status="disabled")
+        await self.runtime.state.set_mcp_server_enabled(server_id, enabled=False)
+        return True
+
+    async def delete_mcp_server(self, server_id: str) -> bool:
+        record = self.runtime.mcps.records.pop(server_id, None)
+        self.runtime.mcps.states.pop(server_id, None)
+        self.runtime.mcps.indexes.pop(server_id, None)
+        self.mcp_oauth.cancel_for_server(server_id, self.runtime.auth_attempts)
+        if record is not None and record.credential_id:
+            await self.runtime.credentials.delete(record.credential_id)
+        return await self.runtime.state.delete_mcp_server(server_id)
+
+    async def refresh_mcp_server(self, server_id: str) -> McpServerState:
+        record = self.runtime.mcps.records[server_id]
+        if not record.enabled:
+            state = McpServerState(status="disabled")
+            self.runtime.mcps.states[server_id] = state
+            return state
+        if is_oauth_auth_mode(record.auth_mode) and not await self.runtime.mcps.has_oauth_tokens(record):
+            state = McpServerState(
+                status="needs_auth",
+                action_hint={
+                    "kind": "start_mcp_oauth",
+                    "server_id": server_id,
+                    "title": f"Authorize {record.name}",
+                },
+                last_checked_at=utc_now_iso(),
+            )
+            self.runtime.mcps.states[server_id] = state
+            await self.runtime.state.put_mcp_server(record, enabled=True, last_error=None)
+            return state
+        self.runtime.mcps.states[server_id] = McpServerState(status="checking", last_checked_at=utc_now_iso())
+        try:
+            index = await self.runtime.mcps.discover(record)
+        except Exception as exc:
+            if is_oauth_auth_mode(record.auth_mode):
+                state = McpServerState(
+                    status="needs_auth",
+                    last_error=str(exc),
+                    action_hint={
+                        "kind": "start_mcp_oauth",
+                        "server_id": server_id,
+                        "title": f"Reauthorize {record.name}",
+                    },
+                    last_checked_at=utc_now_iso(),
+                )
+                self.runtime.mcps.states[server_id] = state
+                await self.runtime.state.put_mcp_server(record, enabled=True, last_error=str(exc))
+                return state
+            state = McpServerState(status="error", last_error=str(exc), last_checked_at=utc_now_iso())
+            self.runtime.mcps.states[server_id] = state
+            await self.runtime.state.put_mcp_server(record, enabled=True, last_error=str(exc))
+            return state
+        self.runtime.mcps.indexes[server_id] = index
+        state = McpServerState(
+            status="ready",
+            capabilities_summary=summarize_capabilities(index),
+            last_checked_at=utc_now_iso(),
+        )
+        self.runtime.mcps.states[server_id] = state
+        await self.runtime.state.put_mcp_server(record, enabled=True, capabilities=index)
+        return state
+
+    async def start_mcp_oauth(self, server_id: str, *, public_url_base: str) -> AuthAttempt:
+        record = self.runtime.mcps.records[server_id]
+        if not is_oauth_auth_mode(record.auth_mode):
+            raise ValueError(f"MCP server {server_id} is not configured for OAuth")
+        record = ensure_oauth_credential_id(record)
+        if record.credential_id != self.runtime.mcps.records[server_id].credential_id:
+            await self._persist_mcp_record(record)
+        attempt = await self.create_auth_attempt(
+            AuthAttemptCreate(
+                connection_id=f"mcp:{server_id}",
+                method="oauth_pkce",
+                action={
+                    "kind": "preparing_oauth",
+                    "server_id": server_id,
+                    "title": f"Authorize {record.name}",
+                },
+            )
+        )
+        redirect_uri = f"{public_url_base.rstrip('/')}/api/mcp-oauth/{attempt.id}/callback"
+        future = self.mcp_oauth.begin(attempt.id)
+        self.mcp_oauth.start_task(
+            attempt.id,
+            run_mcp_oauth_attempt(
+                record=record,
+                attempt_id=attempt.id,
+                redirect_uri=redirect_uri,
+                future=future,
+                manager=self.runtime.mcps,
+                state=self.runtime.state,
+                auth_attempts=self.runtime.auth_attempts,
+                update_auth_attempt=self.update_auth_attempt,
+                coordinator=self.mcp_oauth,
+            ),
+        )
+        return attempt
+
+    async def complete_mcp_oauth_callback(self, attempt_id: str, *, code: str, state: str | None) -> AuthAttempt:
+        if not code:
+            raise ValueError("OAuth callback code is required")
+        self.mcp_oauth.complete(attempt_id, code=code, state=state)
+        return await self.update_auth_attempt(attempt_id, status="exchanging")
+
+    async def mcp_server_snapshots(self) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        for record in sorted(self.runtime.mcps.records.values(), key=lambda item: item.id):
+            state = self.runtime.mcps.states.get(record.id)
+            index = self.runtime.mcps.indexes.get(record.id)
+            credential_configured = False
+            if record.credential_id:
+                credential_configured = await self.runtime.credentials.get(record.credential_id) is not None
+            items.append({
+                "id": record.id,
+                "name": record.name,
+                "endpoint_url": record.endpoint_url,
+                "transport": record.transport,
+                "auth_mode": record.auth_mode,
+                "oauth_issuer": record.oauth_issuer,
+                "oauth_authorization_endpoint": record.oauth_authorization_endpoint,
+                "oauth_token_endpoint": record.oauth_token_endpoint,
+                "oauth_client_id": record.oauth_client_id,
+                "oauth_scope": record.oauth_scope,
+                "credential_configured": credential_configured,
+                "enabled": record.enabled,
+                "status": state.status if state is not None else ("disabled" if not record.enabled else "checking"),
+                "capabilities_summary": state.capabilities_summary if state is not None else "",
+                "last_error": state.last_error if state is not None else None,
+                "action_hint": state.action_hint if state is not None else None,
+                "last_checked_at": state.last_checked_at if state is not None else None,
+                "tools_count": len(index.tools) if index is not None else 0,
+                "resources_count": len(index.resources) if index is not None else 0,
+                "prompts_count": len(index.prompts) if index is not None else 0,
+            })
+        return items
+
+    async def credential_snapshots(self) -> list[CredentialRecord]:
+        return await self.runtime.credentials.list_records()
+
+    async def delete_credential(self, credential_id: str) -> bool:
+        for record_id, record in list(self.runtime.mcps.records.items()):
+            if record.credential_id != credential_id:
+                continue
+            updated = replace_mcp_record(record, credential_id=None, updated_at=utc_now_iso())
+            self._store_mcp_record(updated)
+            self.runtime.mcps.states[record_id] = McpServerState(
+                status="needs_auth" if record.auth_mode in {"api_key", *OAUTH_AUTH_MODES} else "checking",
+                action_hint={"kind": "configure_credentials", "server_id": record.id, "title": f"Configure {record.name} credentials"},
+                last_checked_at=utc_now_iso(),
+            )
+            await self.runtime.state.put_mcp_server(updated, enabled=updated.enabled)
+        return await self.runtime.credentials.delete(credential_id)
+
+    # -- Skills ---------------------------------------------------------------
+
+    def skill_summaries(self) -> list[SkillSummary]:
+        return self.runtime.skill_summaries()
+
+    async def installed_skill_summaries(self) -> list[SkillSummary]:
+        return await installed_global_skill_summaries()
+
+    async def run_skill_command(self, body: SkillCliCommandBody) -> SkillCliCommandResult:
+        result = await run_skill_cli_command(body)
+        if result.exit_code != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"skills exited with {result.exit_code}"
+            raise RuntimeError(detail)
+        return result
+
+    async def put_skill(self, record: SkillRecord) -> SkillRecord:
+        existing = self.runtime.skills.get(record.id)
+        stored = stored_skill(record, existing=existing)
+        self.runtime.skills[stored.id] = stored
+        await self.runtime.state.put_skill(stored)
+        return stored
+
+    async def delete_skill(self, skill_id: str) -> bool:
+        self.runtime.skills.pop(skill_id, None)
+        return await self.runtime.state.delete_skill(skill_id)
+
+    # -- Auth attempts --------------------------------------------------------
+
+    def auth_attempt_snapshots(self) -> list[AuthAttempt]:
+        return sorted(self.runtime.auth_attempts.values(), key=lambda item: item.updated_at, reverse=True)
+
+    async def create_auth_attempt(self, body: AuthAttemptCreate) -> AuthAttempt:
+        attempt = new_auth_attempt(body)
+        self.runtime.auth_attempts[attempt.id] = attempt
+        await self.runtime.state.put_auth_attempt(attempt)
+        return attempt
+
+    async def update_auth_attempt(
+        self,
+        attempt_id: str,
+        *,
+        status: AuthAttemptStatus,
+        error: str | None = None,
+        action: dict[str, object] | None = None,
+    ) -> AuthAttempt:
+        attempt = self.runtime.auth_attempts[attempt_id]
+        updated = transition_auth_attempt(attempt, status=status, error=error, action=action)
+        self.runtime.auth_attempts[updated.id] = updated
+        await self.runtime.state.put_auth_attempt(updated)
+        return updated
+
+    async def delete_auth_attempt(self, attempt_id: str) -> bool:
+        self.runtime.auth_attempts.pop(attempt_id, None)
+        return await self.runtime.state.delete_auth_attempt(attempt_id)
 
     # -- Actor lifecycle -----------------------------------------------------
 
@@ -537,6 +918,10 @@ class Yuubot:
     def task_snapshot(self, task_id: str, *, include_stdout: bool = False) -> TaskSnapshot:
         return task_record_snapshot(self.runtime.tasks.get(task_id), include_stdout=include_stdout)
 
+    def task_stdin_write(self, task_id: str, text: str) -> TaskSnapshot:
+        self.runtime.write_runtime_task_stdin(task_id, text)
+        return task_record_snapshot(self.runtime.tasks.get(task_id), include_stdout=True)
+
     async def submit_shell_task(
         self,
         *,
@@ -558,4 +943,3 @@ class Yuubot:
         if wait_s > 0:
             await wait_until_terminal_or_timeout(self.runtime.tasks, record.id, timeout=wait_s)
         return task_record_snapshot(record, include_stdout=True)
-

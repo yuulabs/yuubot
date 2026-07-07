@@ -7,10 +7,12 @@ from .db import Database
 from .chat.harness import Harness, HarnessConfig
 from .chat.history import HistoryHelper, HistoryStore
 from .app.deployment import ProcessConfig
-from .integrations import GitHubConfig, IntegrationRecord, TavilyWebConfig
+from .integrations import CodexConfig, GitHubConfig, IntegrationRecord, OpenCodeConfig, TavilyWebConfig
 from .llm import Provider, ProviderInput, ProviderRecord, ScriptedProvider, scripted_reply
 from .domain.messages import ActorMessage, ContentItem, ConversationContext, InputMessage, LLMInput, ModelCard
 from .runtime import Gateway, Runtime
+from .runtime.mcp import McpServerRecord
+from .runtime.skills import SkillRecord
 from .runtime.streams import TextStream
 from .runtime.tasks import RuntimeTaskRecord
 from .domain.records import ActorRecord
@@ -24,6 +26,7 @@ __all__ = [
     "ContentItem",
     "Conversation",
     "ConversationContext",
+    "CodexConfig",
     "ConversationManager",
     "Database",
     "Gateway",
@@ -41,8 +44,11 @@ __all__ = [
     "ScriptedProvider",
     "LLMInput",
     "ModelCard",
+    "McpServerRecord",
+    "OpenCodeConfig",
     "Runtime",
     "RuntimeTaskRecord",
+    "SkillRecord",
     "TavilyWebConfig",
     "TextStream",
     "Yuubot",

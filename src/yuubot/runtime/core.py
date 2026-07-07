@@ -8,7 +8,6 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import msgspec
 from attrs import define, field
 
 from ..python import KernelLimiter, PythonKernelsConfig
@@ -25,8 +24,12 @@ from .store import ApplicationStateStore
 from .streams import TaskCoroFactory, TextStream
 from .kv import KvStore
 from .shares import ShareRegistry
-from .tasks import TaskRegistry, TaskScheduler, wait_until_terminal_or_timeout
-from .wakeup import WakeupDelivery, WakeupPayload, WakeupTarget
+from .credentials import CredentialStore
+from .auth_attempts import AuthAttempt
+from .mcp import McpManager
+from .skills import SkillRecord, SkillSummary, skill_summary
+from .tasks import TaskDeliveryQueue, TaskRegistry, TaskScheduler, drain_pending_task_deliveries, wait_until_terminal_or_timeout
+from .wakeup import WakeupDelivery
 from .resource_config import ResourceConfig
 from .resources import ResourceSupervisor, resolve_tmp_dir
 from .cron import (
@@ -114,14 +117,19 @@ class Runtime:
     mailboxes: ActorMailboxRegistry
     tasks: TaskRegistry
     scheduler: TaskScheduler
+    task_delivery_queue: TaskDeliveryQueue
     cron_jobs: CronJobStore
     push_subscriptions: PushSubscriptionStore
     shares: ShareRegistry
     kv: KvStore
+    credentials: CredentialStore
+    mcps: McpManager
     python_kernels: PythonKernelsConfig
     kernel_limiter: KernelLimiter
     resources_config: ResourceConfig
     resource_supervisor: ResourceSupervisor
+    skills: dict[str, SkillRecord] = field(factory=dict)
+    auth_attempts: dict[str, AuthAttempt] = field(factory=dict)
     integrations: dict[str, Integration] = field(factory=dict)
     actors: dict[str, Actor] = field(factory=dict)
     _actor_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
@@ -168,10 +176,13 @@ class Runtime:
         state = ApplicationStateStore(db)
         task_registry = TaskRegistry()
         scheduler = TaskScheduler(emit=eventbus.emit, registry=task_registry)
+        task_delivery_queue = TaskDeliveryQueue()
         cron_jobs = CronJobStore(db)
         push_subscriptions = PushSubscriptionStore(db)
         shares = ShareRegistry(data_dir=root, state=state, emit=eventbus.emit)
         kv = KvStore(data_dir=root)
+        credentials = CredentialStore(db, data_dir=root)
+        mcps = McpManager(credentials)
         python_kernels = kernels or PythonKernelsConfig()
         resources_config = resources or ResourceConfig()
         resource_supervisor = ResourceSupervisor(
@@ -197,10 +208,13 @@ class Runtime:
             mailboxes=mailboxes,
             tasks=task_registry,
             scheduler=scheduler,
+            task_delivery_queue=task_delivery_queue,
             cron_jobs=cron_jobs,
             push_subscriptions=push_subscriptions,
             shares=shares,
             kv=kv,
+            credentials=credentials,
+            mcps=mcps,
             python_kernels=python_kernels,
             kernel_limiter=KernelLimiter(python_kernels),
             resources_config=resources_config,
@@ -249,6 +263,9 @@ class Runtime:
     def emit(self, event_kind: str, **payload: object) -> None:
         self.eventbus.emit(event_kind, **payload)
 
+    def skill_summaries(self) -> list[SkillSummary]:
+        return [skill_summary(record) for record in sorted(self.skills.values(), key=lambda item: item.id)]
+
     def enable_integration(self, record: IntegrationRecord) -> Integration:
         integration = self.integration_registry.create(record, self)
         self.integrations[integration.name] = integration
@@ -289,6 +306,14 @@ class Runtime:
     def cancel_runtime_task(self, task_id: str) -> None:
         record = self.tasks.get(task_id)
         self.scheduler.cancel(record)
+
+    def write_runtime_task_stdin(self, task_id: str, text: str) -> None:
+        from .tasks import TaskNotRunningError, write_task_stdin
+
+        write_task_stdin(self.tasks.get(task_id), text)
+
+    async def drain_pending_task_deliveries(self, conversation_id: str) -> None:
+        await drain_pending_task_deliveries(self, conversation_id)
 
     async def wait_until_terminal_or_timeout(self, task_id: str, *, timeout: float) -> None:
         await wait_until_terminal_or_timeout(self.tasks, task_id, timeout=timeout)

@@ -15,6 +15,15 @@ from .kv import (
     normalize_key,
     parse_if_match,
 )
+from .mcp import (
+    McpCapabilityIndex,
+    McpCapabilitySummary,
+    McpManager,
+    McpResult,
+    McpServerRecord,
+    McpServerState,
+)
+from .skills import SkillRecord, SkillSummary
 from .shares import (
     ShareBadRequestError,
     ShareGrant,
@@ -50,6 +59,12 @@ __all__ = [
     "ListenerHub",
     "Mailbox",
     "MailboxUnavailableError",
+    "McpCapabilityIndex",
+    "McpCapabilitySummary",
+    "McpManager",
+    "McpResult",
+    "McpServerRecord",
+    "McpServerState",
     "Runtime",
     "RuntimeEvent",
     "RuntimeTaskRecord",
@@ -58,6 +73,8 @@ __all__ = [
     "ShareNotFoundError",
     "SharePublishError",
     "ShareRegistry",
+    "SkillRecord",
+    "SkillSummary",
     "TaskCoroFactory",
     "TaskDeliveryListener",
     "TaskRegistry",

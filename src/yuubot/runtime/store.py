@@ -1,6 +1,5 @@
 """Durable application state persisted in SQLite."""
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 import msgspec
@@ -23,6 +22,9 @@ from ..domain.records import (
 )
 from ..domain.stream import Usage
 from ..integrations import IntegrationRecord
+from .mcp import McpCapabilityIndex, McpServerRecord
+from .skills import SkillRecord
+from .auth_attempts import AuthAttempt
 from ..llm.records import ProviderRecord
 from .shares import ShareGrant
 
@@ -181,6 +183,109 @@ class ApplicationStateStore:
             )
             for integration_type, enabled, last_error in rows
         }
+
+    async def load_mcp_servers(self) -> list[tuple[McpServerRecord, bool, str | None, McpCapabilityIndex | None]]:
+        cursor = await self._db.execute(
+            "select payload, enabled, last_error, capabilities from app_mcp_servers order by id"
+        )
+        rows = await cursor.fetchall()
+        return [
+            (
+                msgspec.json.decode(payload, type=McpServerRecord),
+                bool(enabled),
+                last_error,
+                msgspec.json.decode(capabilities, type=McpCapabilityIndex) if capabilities is not None else None,
+            )
+            for payload, enabled, last_error, capabilities in rows
+        ]
+
+    async def put_mcp_server(
+        self,
+        record: McpServerRecord,
+        *,
+        enabled: bool,
+        last_error: str | None = None,
+        capabilities: McpCapabilityIndex | None = None,
+    ) -> None:
+        await self._db.execute(
+            """
+            insert into app_mcp_servers (id, payload, enabled, last_error, capabilities, updated_at)
+            values (?, ?, ?, ?, ?, ?)
+            on conflict(id) do update set
+                payload = excluded.payload,
+                enabled = excluded.enabled,
+                last_error = excluded.last_error,
+                capabilities = coalesce(excluded.capabilities, app_mcp_servers.capabilities),
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.id,
+                msgspec.json.encode(record),
+                int(enabled),
+                last_error,
+                msgspec.json.encode(capabilities) if capabilities is not None else None,
+                utc_now_iso(),
+            ),
+        )
+        await self._db.commit()
+
+    async def set_mcp_server_enabled(self, server_id: str, *, enabled: bool, last_error: str | None = None) -> None:
+        await self._db.execute(
+            "update app_mcp_servers set enabled = ?, last_error = ?, updated_at = ? where id = ?",
+            (int(enabled), last_error, utc_now_iso(), server_id),
+        )
+        await self._db.commit()
+
+    async def delete_mcp_server(self, server_id: str) -> bool:
+        cursor = await self._db.execute("delete from app_mcp_servers where id = ?", (server_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def load_skills(self) -> list[SkillRecord]:
+        cursor = await self._db.execute("select payload from app_skills order by id")
+        rows = await cursor.fetchall()
+        return [msgspec.json.decode(payload, type=SkillRecord) for payload, in rows]
+
+    async def put_skill(self, record: SkillRecord) -> None:
+        await self._db.execute(
+            """
+            insert into app_skills (id, payload, updated_at)
+            values (?, ?, ?)
+            on conflict(id) do update set
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (record.id, msgspec.json.encode(record), utc_now_iso()),
+        )
+        await self._db.commit()
+
+    async def delete_skill(self, skill_id: str) -> bool:
+        cursor = await self._db.execute("delete from app_skills where id = ?", (skill_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def load_auth_attempts(self) -> list[AuthAttempt]:
+        cursor = await self._db.execute("select payload from app_auth_attempts order by updated_at desc")
+        rows = await cursor.fetchall()
+        return [msgspec.json.decode(payload, type=AuthAttempt) for payload, in rows]
+
+    async def put_auth_attempt(self, attempt: AuthAttempt) -> None:
+        await self._db.execute(
+            """
+            insert into app_auth_attempts (id, payload, updated_at)
+            values (?, ?, ?)
+            on conflict(id) do update set
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (attempt.id, msgspec.json.encode(attempt), utc_now_iso()),
+        )
+        await self._db.commit()
+
+    async def delete_auth_attempt(self, attempt_id: str) -> bool:
+        cursor = await self._db.execute("delete from app_auth_attempts where id = ?", (attempt_id,))
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def load_actor_records(self) -> list[tuple[ActorRecord, bool]]:
         cursor = await self._db.execute("select payload, enabled from app_actors order by id")
