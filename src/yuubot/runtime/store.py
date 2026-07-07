@@ -354,6 +354,29 @@ class ApplicationStateStore:
         )
         await self._db.commit()
 
+    async def get_conversation(self, conversation_id: str) -> ConversationRow | None:
+        cursor = await self._db.execute(
+            """
+            select id, actor_id, status, created_at, last_active_at, last_error, title
+            from app_conversations
+            where id = ?
+            """,
+            (conversation_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        conversation_id, actor_id, status, created_at, last_active_at, last_error, title = row
+        return ConversationRow(
+            id=conversation_id,
+            actor_id=actor_id,
+            status=status,
+            created_at=created_at,
+            last_active_at=last_active_at,
+            last_error=msgspec.json.decode(last_error, type=dict[str, object]) if last_error is not None else None,
+            title=title,
+        )
+
     async def list_conversations(self) -> list[ConversationRow]:
         cursor = await self._db.execute(
             """

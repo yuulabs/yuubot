@@ -154,6 +154,31 @@ async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
     return snapshots
 
 
+async def conversation_summary(app: "Yuubot", conversation_id: str) -> ConversationSummary | None:
+    record = await app.runtime.state.get_conversation(conversation_id)
+    history = await app.runtime.history.conversation_meta(conversation_id)
+    if record is None and history is None:
+        return None
+    if record is not None:
+        return ConversationSummary(
+            id=record.id,
+            actor_id=record.actor_id,
+            status=record.status,
+            created_at=record.created_at,
+            last_active_at=record.last_active_at,
+            title=record.title,
+            last_error=record.last_error,
+            message_count=int(history.get("message_count", 0)) if history is not None else 0,
+            last_seq=history.get("last_seq") if history is not None else None,
+        )
+    return ConversationSummary(
+        id=str(history["id"]),
+        message_count=int(history.get("message_count", 0)),
+        last_seq=history.get("last_seq"),
+        last_active_at=history.get("last_active_at"),
+    )
+
+
 async def conversation_summaries(app: "Yuubot") -> list[ConversationSummary]:
     by_id = {item["id"]: item for item in await app.runtime.history.list_conversations()}
     summaries: list[ConversationSummary] = []

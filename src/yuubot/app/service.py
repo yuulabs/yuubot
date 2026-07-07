@@ -26,10 +26,12 @@ from ..runtime.inbound import (
 from ..chat.loop import StreamCallback
 from ..domain.messages import ActorMessage, ContentItem, GenOutput, InputMessage, ModelCard, text_content
 from ..domain.stream import StreamEvent
-from ..llm import Provider, ProviderInput, ProviderRecord, is_configured, model_card_from_input, model_card_wire, provider_configured, refresh_catalog
+from ..llm import Provider, ProviderInput, ProviderRecord, has_pricing_configured, is_configured, model_card_from_input, model_card_wire, provider_configured, refresh_catalog
 from ..llm.types import AccountSnapshot, ModelCardInput, ProviderSnapshot, ValidationResult
 from ..runtime import Runtime
 from ..runtime.credentials import CredentialRecord
+from ..runtime.kv import JsonDocument
+from ..runtime.shares import ShareGrant
 from ..runtime.auth_attempts import AuthAttempt, AuthAttemptCreate, AuthAttemptStatus, new_auth_attempt, transition_auth_attempt
 from ..runtime.mcp import (
     McpCapabilityIndex,
@@ -58,6 +60,7 @@ from .snapshots import (
     RuntimeSnapshot,
     bootstrap_snapshot as build_bootstrap_snapshot,
     conversation_summaries as build_conversation_summaries,
+    conversation_summary as build_conversation_summary,
     integration_snapshots as build_integration_snapshots,
     runtime_snapshot as build_runtime_snapshot,
 )
@@ -68,7 +71,7 @@ from ..runtime.streams import TextStream
 from ..runtime.tasks import TaskDeliveryListener, TaskSnapshot, register_shell_task, task_record_snapshot, wait_until_terminal_or_timeout
 from ..util.secrets import merge_redacted_config
 from ..util.time import utc_now_iso
-from ..domain.records import ActorRecord, LifecycleError, RouteRecord, lifecycle_error
+from ..domain.records import ActorConfigError, ActorInput, ActorRecord, CostRow, LifecycleError, RouteRecord, lifecycle_error
 from ..tools import all_tool_configs, uninstall_tools
 
 ChatInput = str | list[ContentItem]
@@ -96,6 +99,10 @@ class Yuubot:
     @property
     def actors(self) -> dict[str, Actor]:
         return self.runtime.actors
+
+    @property
+    def development(self) -> bool:
+        return self.runtime.development
 
     @classmethod
     async def create(
@@ -321,6 +328,9 @@ class Yuubot:
         if referencing:
             raise ValueError(f"model card is referenced by actors: {', '.join(sorted(referencing))}")
         await self.runtime.state.delete_model_card(provider_id, selector)
+
+    async def list_model_cards(self, provider_id: str) -> list[ModelCard]:
+        return await self.runtime.state.list_model_cards(provider_id)
 
     def build_provider(self, provider_id: str) -> Provider:
         cached = self.provider_instances.get(provider_id)
@@ -758,6 +768,43 @@ class Yuubot:
         await self.put_actor_record(record)
         await self.enable_actor(record.id)
 
+    async def put_actor(self, actor_id: str, body: ActorInput) -> ActorRecord:
+        if body.provider not in self.provider_records:
+            raise ActorConfigError("configuration_required", f"unknown provider: {body.provider}")
+        card = await self.runtime.state.load_model_card(body.provider, body.model.selector)
+        if card is None:
+            raise ActorConfigError(
+                "model_selector_not_found",
+                f"model selector not found: {body.model.selector}",
+                {"provider_id": body.provider, "selector": body.model.selector},
+            )
+        if not has_pricing_configured(card):
+            raise ActorConfigError(
+                "model_pricing_required",
+                f"model pricing is required before binding an actor: {body.model.selector}",
+                {"provider_id": body.provider, "selector": body.model.selector},
+            )
+        record = ActorRecord(
+            id=actor_id,
+            name=body.name,
+            description=body.description,
+            workspace=body.workspace,
+            persona=body.persona,
+            model=ModelCard(
+                selector=card.selector,
+                reasoning_effort=body.model.reasoning_effort.strip(),
+                vision=card.vision,
+                toolcall=card.toolcall,
+                json=card.json,
+                input_price_per_million=card.input_price_per_million,
+                cached_input_price_per_million=card.cached_input_price_per_million,
+                output_price_per_million=card.output_price_per_million,
+            ),
+            provider=body.provider,
+        )
+        await self.update_actor(record)
+        return record
+
     async def remove_actor(self, actor_id: str) -> bool:
         record = self.actor_records.get(actor_id)
         if record is None:
@@ -844,6 +891,17 @@ class Yuubot:
     def interrupt_all(self) -> list[str]:
         return self.runtime.conversations.interrupt_all()
 
+    def conversation_active(self, conversation_id: str) -> bool:
+        return self.runtime.conversations.has(conversation_id)
+
+    async def conversation_costs(self, conversation_id: str) -> list[CostRow]:
+        return await self.runtime.state.load_costs(conversation_id)
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        discarded = await self.runtime.conversations.discard(conversation_id)
+        deleted_data = await self.runtime.delete_conversation_data(conversation_id)
+        return discarded or deleted_data
+
     def _input_message(self, actor_id: str, input: ChatInput) -> InputMessage:
         content = text_content(input) if isinstance(input, str) else input
         return InputMessage(role="user", name=actor_id, content=content)
@@ -892,6 +950,63 @@ class Yuubot:
             actor_running=actor_id in self.actors,
         )
 
+    # -- Shares ----------------------------------------------------------------
+
+    async def publish_share(
+        self,
+        *,
+        actor_id: str,
+        source_path: str,
+        expires_at: str | None,
+    ) -> ShareGrant:
+        return await self.runtime.shares.publish(
+            actor_id=actor_id,
+            source_path=source_path,
+            expires_at=expires_at,
+        )
+
+    def list_share_grants(self) -> list[ShareGrant]:
+        return self.runtime.shares.list_grants()
+
+    def get_share_grant(self, share_id: str) -> ShareGrant:
+        return self.runtime.shares.get(share_id)
+
+    async def revoke_share(self, share_id: str) -> ShareGrant:
+        return await self.runtime.shares.revoke(share_id)
+
+    # -- Actor KV --------------------------------------------------------------
+
+    async def kv_get(self, actor_id: str, key: str) -> JsonDocument | None:
+        return await self.runtime.kv.get(actor_id, key)
+
+    async def kv_put(
+        self,
+        actor_id: str,
+        key: str,
+        value: object,
+        *,
+        if_match: str | None = None,
+    ) -> JsonDocument:
+        return await self.runtime.kv.put(actor_id, key, value, if_match=if_match)
+
+    async def kv_delete(self, actor_id: str, key: str) -> bool:
+        return await self.runtime.kv.delete(actor_id, key)
+
+    # -- Push notifications ----------------------------------------------------
+
+    def vapid_public_key(self) -> str:
+        from .cron import vapid_public_key_for
+
+        return vapid_public_key_for(self.runtime)
+
+    async def save_push_subscription(self, *, endpoint: str, keys: dict[str, str]) -> dict[str, object]:
+        from .cron import save_push_subscription
+
+        return await save_push_subscription(self.runtime, endpoint=endpoint, keys=keys)
+
+    async def delete_push_subscription(self, subscription_id: str) -> bool:
+        return await self.runtime.push_subscriptions.delete(subscription_id)
+
     # -- Snapshots -------------------------------------------------------------
 
     async def bootstrap_snapshot(self) -> BootstrapSnapshot:
@@ -901,10 +1016,7 @@ class Yuubot:
         return await build_conversation_summaries(self)
 
     async def conversation_summary(self, conversation_id: str) -> ConversationSummary | None:
-        for summary in await self.conversation_summaries():
-            if summary.id == conversation_id:
-                return summary
-        return None
+        return await build_conversation_summary(self, conversation_id)
 
     async def conversation_history(self, conversation_id: str) -> list[dict[str, object]]:
         return await self.runtime.history.load_interaction_wrapped(conversation_id)

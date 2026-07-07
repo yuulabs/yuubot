@@ -88,6 +88,28 @@ class HistoryStore:
         rows = await cursor.fetchall()
         return [msgspec.json.decode(payload, type=_TYPES[kind]) for kind, payload in rows]
 
+    async def conversation_meta(self, conversation_id: str) -> dict[str, object] | None:
+        cursor = await self._db.execute(
+            """
+            select sum(case when kind in ('tool_specs', 'system_prompt') then 0 else 1 end),
+                   max(seq),
+                   max(created_at)
+            from history
+            where conversation_id = ?
+            """,
+            (conversation_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        message_count, last_seq, last_active_at = row
+        return {
+            "id": conversation_id,
+            "message_count": message_count,
+            "last_seq": last_seq,
+            "last_active_at": last_active_at or None,
+        }
+
     async def list_conversations(self) -> list[dict[str, object]]:
         cursor = await self._db.execute(
             """
