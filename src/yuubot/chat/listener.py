@@ -13,6 +13,8 @@ from ..domain.stream import StreamEvent
 
 WSCommandSend = Callable[[dict[str, object]], Awaitable[None]]
 
+_STREAM_KINDS = frozenset({"conversation.stream", "conversation.output", "conversation.tool_results"})
+
 
 def _wire_value(value: object) -> object:
     if isinstance(value, StreamEvent):
@@ -83,37 +85,60 @@ class WsListener:
             if isinstance(item, dict) and str(item.get("kind")) in PREFIX_KINDS:
                 return
             await self._send({"type": "conversation.history.append", "payload": payload})
-        for command_id, conversation_id in self._send_tracks:
-            if payload.get("conversation_id") != conversation_id:
+
+        if kind not in _STREAM_KINDS:
+            return
+
+        conversation_id = payload.get("conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            return
+
+        sent_via_track = False
+        for command_id, tracked_conversation_id in self._send_tracks:
+            if conversation_id != tracked_conversation_id:
                 continue
-            if kind == "conversation.stream":
-                await self._send(
-                    {
-                        "id": command_id,
-                        "type": "conversation.stream",
-                        "payload": {"conversation_id": conversation_id, "event": _wire_value(payload.get("event"))},
-                    }
-                )
-            elif kind == "conversation.output":
-                await self._send(
-                    {
-                        "id": command_id,
-                        "type": "conversation.output",
-                        "payload": {"conversation_id": conversation_id, "reason": payload.get("reason")},
-                    }
-                )
-            elif kind == "conversation.tool_results":
-                await self._send(
-                    {
-                        "id": command_id,
-                        "type": "conversation.tool_results",
-                        "payload": {
-                            "conversation_id": conversation_id,
-                            "count": payload.get("count"),
-                            "results": payload.get("results", []),
-                        },
-                    }
-                )
+            await self._send_conversation_frame(kind, command_id, conversation_id, payload)
+            sent_via_track = True
+
+        if (
+            not sent_via_track
+            and self._history_conversation_id is not None
+            and conversation_id == self._history_conversation_id
+        ):
+            await self._send_conversation_frame(kind, None, conversation_id, payload)
+
+    async def _send_conversation_frame(
+        self,
+        kind: str,
+        command_id: object | None,
+        conversation_id: str,
+        payload: dict[str, object],
+    ) -> None:
+        frame: dict[str, object] = {}
+        if command_id is not None:
+            frame["id"] = command_id
+        if kind == "conversation.stream":
+            frame["type"] = "conversation.stream"
+            frame["payload"] = {
+                "conversation_id": conversation_id,
+                "event": _wire_value(payload.get("event")),
+            }
+        elif kind == "conversation.output":
+            frame["type"] = "conversation.output"
+            frame["payload"] = {
+                "conversation_id": conversation_id,
+                "reason": payload.get("reason"),
+            }
+        elif kind == "conversation.tool_results":
+            frame["type"] = "conversation.tool_results"
+            frame["payload"] = {
+                "conversation_id": conversation_id,
+                "count": payload.get("count"),
+                "results": payload.get("results", []),
+            }
+        else:
+            return
+        await self._send(frame)
 
     async def _stdout_loop(self, task_id: str, stdout: object, status: str) -> None:
         from ..runtime.streams import TextStream

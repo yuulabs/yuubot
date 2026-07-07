@@ -15,6 +15,7 @@ Concurrency contract
 """
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Protocol
@@ -42,6 +43,8 @@ from ..util.stream import stream_stop_from
 
 if TYPE_CHECKING:
     from ..runtime.core import Runtime
+
+_log = logging.getLogger(__name__)
 
 
 class ConversationBlocked(RuntimeError):
@@ -107,6 +110,7 @@ class Conversation:
             raise
         finally:
             self._running = False
+            await self.runtime.drain_pending_task_deliveries(self.id)
 
     async def run_continuation(self, on_event: StreamCallback | None = None) -> list[GenOutput]:
         if self._running:
@@ -118,6 +122,7 @@ class Conversation:
             return await self._run_loop(on_event)
         finally:
             self._running = False
+            await self.runtime.drain_pending_task_deliveries(self.id)
 
     async def append_developer_notice(
         self,
@@ -126,8 +131,17 @@ class Conversation:
         name: str = "yuubot",
         on_event: StreamCallback | None = None,
     ) -> list[GenOutput]:
-        await self._append(InputMessage(role="developer", name=name, content=text_content(text)))
-        return await self.run_continuation(on_event)
+        if self._running:
+            raise ConversationBusy(self.id)
+        self._running = True
+        self.stop_event.clear()
+        try:
+            await self._mark_status("active")
+            await self._append(InputMessage(role="developer", name=name, content=text_content(text)))
+            return await self._run_loop(on_event)
+        finally:
+            self._running = False
+            await self.runtime.drain_pending_task_deliveries(self.id)
 
     def interrupt(self) -> bool:
         if not self._running:
@@ -146,7 +160,10 @@ class Conversation:
             nonlocal harness_closed
             if harness_closed:
                 return
-            await harness.close()
+            try:
+                await harness.close()
+            except Exception:
+                _log.warning("harness cleanup failed for conversation %s", self.id, exc_info=True)
             harness_closed = True
 
         try:
@@ -308,6 +325,14 @@ class ConversationManager:
 
     def has(self, conversation_id: str) -> bool:
         return conversation_id in self._items
+
+    def get_if_present(self, conversation_id: str) -> Conversation | None:
+        item = self._items.get(conversation_id)
+        if item is None:
+            return None
+        conversation, _ = item
+        self._items[conversation_id] = (conversation, time.time())
+        return conversation
 
     async def discard(self, conversation_id: str) -> bool:
         item = self._items.pop(conversation_id, None)

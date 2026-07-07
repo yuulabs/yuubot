@@ -29,6 +29,8 @@ class Provider(Protocol):
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
-    ) -> AsyncIterator[StreamEvent]: ...
+    ) -> AsyncIterator[StreamEvent]:
+        if False:
+            yield StreamEvent(group_id="", kind="text_delta")
 
     async def close(self) -> None: ...

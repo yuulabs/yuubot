@@ -54,6 +54,15 @@ class ToolStreamState:
     ids: dict[int, str] = field(factory=dict)
     pending_arguments: dict[int, list[str]] = field(factory=dict)
 
+
+@define(frozen=True)
+class _CachedImageDataUrl:
+    value: str
+
+    def get_cache_size(self) -> int:
+        return len(self.value)
+
+
 _DEEPSEEK_PRESETS: tuple[ModelCard, ...] = (
     ModelCard(selector="deepseek-chat", input_price_per_million=0.27, output_price_per_million=1.1),
     ModelCard(selector="deepseek-reasoner", toolcall=False, input_price_per_million=0.55, output_price_per_million=2.19),
@@ -288,11 +297,13 @@ def _image_data_url(item: ContentItem, *, workspace: Path, cache: CachePool) -> 
     mime = item.mime if item.mime.startswith("image/") else "image/*"
     key = f"content-image-v1:{path}:{stat.st_mtime_ns}:{stat.st_size}:{mime}"
     try:
-        _, data = cache.get(key)
+        _, cached = cache.get(key)
+        data_url = cast(_CachedImageDataUrl, cached)
     except KeyError:
-        data = base64.b64encode(path.read_bytes())
-        cache.set(key, {"mime": mime}, data)
-    return f"data:{mime};base64,{data.decode('ascii')}"
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        data_url = _CachedImageDataUrl(f"data:{mime};base64,{encoded}")
+        cache.set(key, {"mime": mime}, data_url)
+    return data_url.value
 
 
 def _content_path(value: str, workspace: Path) -> Path:

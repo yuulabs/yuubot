@@ -98,8 +98,10 @@ class Actor:
         prompt = developer_prompt(
             self.config.persona,
             context.workspace,
-            [integration.package_path for integration in self.runtime.integrations.values()],
+            list(self.runtime.integrations.values()),
             has_python=self._has_python,
+            enabled_mcp_servers=len(self.runtime.mcps.enabled_records()),
+            global_skills=self.runtime.skill_summaries(),
         )
         history = await HistoryHelper.load(
             self.runtime.history,
@@ -135,15 +137,18 @@ class Actor:
 
     async def handle_mailbox_message(self, message: ActorMessage) -> None:
         conversation = await self._conversation_for_message(message)
+        inbound_kind = message.source.get("inbound_kind")
         self._active = conversation
         try:
-            inbound_kind = message.source.get("inbound_kind")
             if inbound_kind in {"task_delivery", "conversation_callback"}:
                 outputs = await conversation.append_developer_notice(message.text)
             else:
                 input_message = InputMessage(role="user", name=self.config.id, content=text_content(message.text))
                 outputs = await conversation.run_loop(input_message, session_mode="actor")
         except ConversationBusy:
+            task_id = message.source.get("task_id")
+            if inbound_kind == "task_delivery" and isinstance(task_id, str):
+                self.runtime.task_delivery_queue.enqueue(conversation.id, task_id)
             self.runtime.emit("actor.busy", actor_id=self.config.id, conversation_id=conversation.id)
         else:
             self.runtime.emit(

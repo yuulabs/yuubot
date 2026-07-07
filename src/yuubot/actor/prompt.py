@@ -5,15 +5,25 @@ from pathlib import Path
 from typing import Literal
 
 from ..domain.messages import ContentItem, InputMessage
+from ..integrations.registry import Integration
+from ..runtime.skills import SkillSummary
 
-_RUNTIME_FACADE_PACKAGES = ("yb.tasks", "yb.tasks.cron")
+_RUNTIME_FACADE_PACKAGES = ("yb.tasks", "yb.tasks.cron", "yb.mcps", "yb.skills")
 
 SessionMode = Literal["conversation", "actor"]
 REAL_TIME_CONTEXT_MARKER = "[yuubot-real-time-context]"
 _REAL_TIME_CONTEXT_SEPARATOR = "\n---\n"
 
 
-def developer_prompt(persona: str, workspace: Path, package_paths: list[str], *, has_python: bool) -> str:
+def developer_prompt(
+    persona: str,
+    workspace: Path,
+    integrations: list[Integration],
+    *,
+    has_python: bool,
+    enabled_mcp_servers: int = 0,
+    global_skills: list[SkillSummary] | None = None,
+) -> str:
     sections = [
         "# Persona\n" + (persona.strip() or "You are a yuubot actor."),
         "# System Instructions\n" + _system_instructions(has_python),
@@ -21,13 +31,12 @@ def developer_prompt(persona: str, workspace: Path, package_paths: list[str], *,
     ]
     if has_python:
         sections.append("# Tool Suggestions\n" + _tool_suggestions())
-    integration_paths = list(package_paths)
-    if has_python:
-        integration_paths.extend(_RUNTIME_FACADE_PACKAGES)
-    integration_docs = _integration_docs(integration_paths)
+        sections.append("# MCP Data Sources\n" + _mcp_data_sources(enabled_mcp_servers))
+    extra_packages = _RUNTIME_FACADE_PACKAGES if has_python else ()
+    integration_docs = _integration_docs(integrations, extra_packages)
     if integration_docs:
         sections.append("# Integration SDKs\n" + integration_docs)
-    sections.append("# Skills\n" + _skills(workspace))
+    sections.append("# Skills\n" + _skills(workspace, global_skills or []))
     sections.append("# AGENTS.md Context\n" + _agents_context(workspace))
     sections.append("# Real-Time Data\n" + _real_time_data())
     return "\n\n".join(sections)
@@ -64,9 +73,13 @@ def _tool_suggestions() -> str:
             "execute_python runs an IPython interactive session with native top-level await. Use it like a notebook cell.",
             "Examples: `await yext.web.search(...)`, `await yext.web.read(...)`, `yext.github.repo().issues.list_recent(...)`, and `yb.office.pdf.to_markdown(...)`.",
             "For long-running shell work, use `await yb.tasks.submit(name, shell, intro)` instead of blocking shell inside execute_python.",
+            "For interactive CLI init, login, or bind flows, submit the command as a task and use `await task.output()` plus `await task.write(text)` across later turns.",
+            "Do not use the `bash` tool with `timeout_s` for interactive or long-running init; timeouts kill the process.",
+            "For MCP data sources, use the `yb.mcps` facade. Search first, then inspect a specific tool signature with `await client.get_spec(name)` before invoking.",
             "submit is fire-and-forget: it registers the task with Runtime and returns a Task handle; execution continues after the tool call ends.",
+            "Shell tasks run in a PTY with live stdout and stdin.",
             "When the task finishes, yuubot appends a developer message and automatically continues this conversation.",
-            "Use `await yb.tasks.find(...)`, `await yb.tasks.list_tasks(...)`, and `await task.output()` / `await task.cancel()` for query and control.",
+            "Use `await yb.tasks.find(...)`, `await yb.tasks.list_tasks(...)`, `await task.output()`, `await task.status()`, `await task.write(...)`, and `await task.cancel()` for query and control.",
             "Do not call daemon HTTP endpoints such as `/api/tasks`, `/api/inbound`, or admin/public APIs directly; use the yb.tasks facade.",
             "For durable schedules, use `await yb.tasks.cron.add(...)` with an explicit IANA timezone. One-shot `at` accepts a local ISO datetime or a short relative delay such as `+1m`.",
             "For daily or standalone scheduled actor work, use cron action `{\"kind\":\"actor_message\",\"text\":\"...\"}`; it enters the actor's default inbound loop as a user message.",
@@ -83,24 +96,55 @@ def _tool_suggestions() -> str:
     )
 
 
-def _integration_docs(package_paths: list[str]) -> str:
+def _mcp_data_sources(enabled_servers: int) -> str:
+    if enabled_servers <= 0:
+        return "No MCP servers are currently configured."
+    return "\n".join(
+        [
+            "MCP data sources are available through `yb.mcps`.",
+            "Use `await yb.mcps.search(query)` to discover relevant servers/tools/resources.",
+            "Search results intentionally omit parameter details.",
+            "Before calling a tool, use `client = yb.mcps.get_client(server_id)` and `await client.get_spec(name)`.",
+            "Call tools with `await client.invoke(name, **kwargs)`.",
+            "Read resources with `await client.read_resource(uri)`.",
+            "Secrets and raw credentials are managed by daemon and are never available.",
+        ]
+    )
+
+
+def _integration_docs(integrations: list[Integration], extra_packages: tuple[str, ...]) -> str:
     parts: list[str] = []
-    for package_path in package_paths:
+    seen: set[str] = set()
+    for integration in integrations:
+        prompt_doc = getattr(integration, "prompt_doc", None)
+        if callable(prompt_doc):
+            doc = prompt_doc()
+        else:
+            doc = inspect.getdoc(import_module(integration.package_path)) or ""
+        if doc:
+            parts.append(f"{integration.package_path}:\n{doc}")
+        seen.add(integration.package_path)
+    for package_path in extra_packages:
+        if package_path in seen:
+            continue
         doc = inspect.getdoc(import_module(package_path)) or ""
         if doc:
             parts.append(f"{package_path}:\n{doc}")
     return "\n\n".join(parts)
 
 
-def _skills(workspace: Path) -> str:
+def _skills(workspace: Path, global_skills: list[SkillSummary]) -> str:
     skills_dir = workspace / ".agents" / "skills"
     entries: list[str] = []
-    for skill in sorted(skills_dir.glob("*/SKILL.md")):
-        text = skill.read_text(encoding="utf-8")
-        entries.append(f"- {skill.parent.name}: {_skill_description(text)}")
+    for skill in global_skills:
+        description = skill.description or "No description provided."
+        entries.append(f"- {skill.name} ({skill.id}): {description}. Inspect full instructions via {skill.inspect_hint}.")
+    for skill_path in sorted(skills_dir.glob("*/SKILL.md")):
+        text = skill_path.read_text(encoding="utf-8")
+        entries.append(f"- {skill_path.parent.name}: {_skill_description(text)}. Inspect full instructions with the read tool at `{skill_path}`.")
     if not entries:
         return "No workspace skills are currently installed."
-    return "The following skills can be inspected with the read tool:\n" + "\n".join(entries)
+    return "The following skills are summaries only; inspect full instructions on demand:\n" + "\n".join(entries)
 
 
 def _skill_description(text: str) -> str:

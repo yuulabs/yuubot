@@ -15,6 +15,7 @@ from ..domain.messages import ContentItem, ConversationContext, ToolResult
 from ..domain.stream import ToolCall
 from ..runtime.core import Runtime
 from ..tools import Tool, ToolConfig, build_tools
+from ..util.secrets import redact_value
 
 TOOL_TIMEOUT_S = 240
 
@@ -97,7 +98,7 @@ class Harness:
         task = asyncio.create_task(tool.execute(payload))
         try:
             value = await asyncio.wait_for(task, timeout=timeout)
-            return ToolResult(tool_call_id=call.id, content=value if isinstance(value, list) else [ContentItem(kind="text", text=value)])
+            return _tool_result(call.id, value)
         except TimeoutError:
             return _result(call.id, _with_partial(f"[system] {call.name}工具调用已超过{int(timeout)}s, 被强制中断.", task))
         except asyncio.CancelledError:
@@ -116,6 +117,28 @@ class Harness:
 
 
 def _result(tool_call_id: str, text: str) -> ToolResult:
+    return _tool_result(tool_call_id, text)
+
+
+def _tool_result(tool_call_id: str, value: object) -> ToolResult:
+    if isinstance(value, list):
+        return ToolResult(
+            tool_call_id=tool_call_id,
+            content=[
+                ContentItem(
+                    kind=item.kind,
+                    text=redact_value(item.text) if isinstance(item.text, str) else item.text,
+                    path=item.path,
+                    url=item.url,
+                    mime=item.mime,
+                    meta=redact_value(item.meta) if isinstance(item.meta, dict) else item.meta,
+                )
+                for item in value
+                if isinstance(item, ContentItem)
+            ],
+        )
+    redacted = redact_value(value)
+    text = redacted if isinstance(redacted, str) else str(redacted)
     return ToolResult(tool_call_id=tool_call_id, content=[ContentItem(kind="text", text=text)])
 
 
@@ -124,7 +147,7 @@ def _with_partial(text: str, task: asyncio.Task[object]) -> str:
     partial = getattr(task, "partial_result", "")
     if not isinstance(partial, str) or not partial:
         return text
-    return f"{text}\n该工具产生的临时result为：{partial}"
+    return f"{text}\n该工具产生的临时result为：{redact_value(partial)}"
 
 
 def _copy_partial(source: asyncio.Task[object], target: asyncio.Task[object] | None) -> None:
@@ -146,4 +169,6 @@ def _single_exception_detail(exc: BaseException) -> str:
     message = str(exc).strip()
     if not message:
         message = repr(exc)
-    return f"{type(exc).__name__}: {message}"
+    detail = f"{type(exc).__name__}: {message}"
+    redacted = redact_value(detail)
+    return redacted if isinstance(redacted, str) else detail

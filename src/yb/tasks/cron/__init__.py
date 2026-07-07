@@ -15,9 +15,7 @@ import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import httpx
-
-from yb.tasks import _daemon_url, _request_json, _task_owner
+from yb._daemon import daemon_url, request_json, task_owner
 
 
 class CronJob:
@@ -49,14 +47,14 @@ class CronJob:
 
 
 async def list_jobs(*, name_glob: str = "", status: str = "") -> list[CronJob]:
-    base_url = _daemon_url()
-    owner = _task_owner()
+    base_url = daemon_url()
+    owner = task_owner()
     params: dict[str, str] = {"owner": owner}
     if name_glob:
         params["name_glob"] = name_glob
     if status:
         params["status"] = status
-    payload = await _request_json("GET", f"{base_url}/api/cron-jobs", params=params)
+    payload = await request_json("GET", f"{base_url}/api/cron-jobs", params=params)
     items = payload.get("items", [])
     if not isinstance(items, list):
         return []
@@ -64,8 +62,8 @@ async def list_jobs(*, name_glob: str = "", status: str = "") -> list[CronJob]:
 
 
 async def find(job_id: str) -> CronJob:
-    base_url = _daemon_url()
-    payload = await _request_json("GET", f"{base_url}/api/cron-jobs/{job_id}")
+    base_url = daemon_url()
+    payload = await request_json("GET", f"{base_url}/api/cron-jobs/{job_id}")
     return _job_from_payload(payload, base_url=base_url)
 
 
@@ -89,35 +87,28 @@ async def add(
     else:
         schedule["kind"] = "at"
         schedule["at"] = _normalize_at(at or "", timezone)
-    base_url = _daemon_url()
-    owner = _task_owner()
+    base_url = daemon_url()
+    owner = task_owner()
     body = {"name": name, "owner": owner, "schedule": schedule, "action": action, "once": once}
-    async with httpx.AsyncClient() as client:
-        response = await client.post(f"{base_url}/api/cron-jobs", json=body, timeout=30.0)
-        response.raise_for_status()
-        payload = response.json()
-    if not isinstance(payload, dict):
-        raise RuntimeError("unexpected cron API response")
+    payload = await request_json("POST", f"{base_url}/api/cron-jobs", json=body)
     return _job_from_payload(payload, base_url=base_url)
 
 
 async def pause(job_id: str) -> CronJob:
-    base_url = _daemon_url()
-    payload = await _request_json("POST", f"{base_url}/api/cron-jobs/{job_id}/pause")
+    base_url = daemon_url()
+    payload = await request_json("POST", f"{base_url}/api/cron-jobs/{job_id}/pause")
     return _job_from_payload(payload, base_url=base_url)
 
 
 async def resume(job_id: str) -> CronJob:
-    base_url = _daemon_url()
-    payload = await _request_json("POST", f"{base_url}/api/cron-jobs/{job_id}/resume")
+    base_url = daemon_url()
+    payload = await request_json("POST", f"{base_url}/api/cron-jobs/{job_id}/resume")
     return _job_from_payload(payload, base_url=base_url)
 
 
 async def delete(job_id: str) -> None:
-    base_url = _daemon_url()
-    async with httpx.AsyncClient() as client:
-        response = await client.delete(f"{base_url}/api/cron-jobs/{job_id}", timeout=30.0)
-        response.raise_for_status()
+    base_url = daemon_url()
+    await request_json("DELETE", f"{base_url}/api/cron-jobs/{job_id}")
 
 
 def _job_from_payload(payload: dict[str, object], *, base_url: str) -> CronJob:
