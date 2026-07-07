@@ -237,7 +237,7 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
             <EmptyState>Drop files here or create a folder to start this workspace.</EmptyState>
           ) : (
             <div className="data-table">
-              <div className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_260px] gap-3 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground">
+              <div className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_210px] gap-3 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground">
                 <button className="text-left" type="button" onClick={selectAll} aria-label="Toggle all entries">
                   {selected.size === entries.length ? "All" : "Any"}
                 </button>
@@ -249,29 +249,36 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
               {entries.map((entry) => (
                 <div
                   key={entry.path}
-                  className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_260px] items-center gap-3 border-t px-3 py-2"
+                  className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_210px] items-center gap-3 border-t px-3 py-2"
                   draggable
                   onDragStart={(event) => dragStart(event, entry)}
                   onDragOver={(event) => entry.kind === "directory" && event.preventDefault()}
                   onDrop={(event) => dropOnDirectory(event, entry)}
                 >
                   <input type="checkbox" checked={selected.has(entry.path)} onChange={() => toggle(entry.path)} />
-                  <button
-                    className="inline-flex items-center gap-2 text-left font-medium underline-offset-4 hover:underline"
-                    type="button"
-                    onClick={() => entry.kind === "directory" && changePath(entry.path)}
-                  >
-                    {entry.kind === "directory" ? <Folder size={16} /> : <FileIcon size={16} />}
-                    <span>{entry.kind === "directory" ? `${entry.name}/` : entry.name}</span>
-                  </button>
+                  {entry.kind === "directory" ? (
+                    <button
+                      className="inline-flex cursor-pointer items-center gap-2 text-left font-medium underline-offset-4 hover:underline"
+                      type="button"
+                      onClick={() => changePath(entry.path)}
+                    >
+                      <Folder size={16} />
+                      <span>{entry.name}/</span>
+                    </button>
+                  ) : (
+                    <a
+                      className="inline-flex items-center gap-2 text-left font-medium underline-offset-4 hover:underline"
+                      href={getActorFileUrl(actorId, entry.path)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <FileIcon size={16} />
+                      <span>{entry.name}</span>
+                    </a>
+                  )}
                   <span className="page-sub">{entry.kind === "file" ? formatSize(entry.size) : "folder"}</span>
                   <span className="page-sub">{formatDate(entry.mtime)}</span>
                   <div className="flex flex-wrap gap-2">
-                    {entry.kind === "file" && (
-                      <Button variant="outline" size="xs" asChild>
-                        <a href={getActorFileUrl(actorId, entry.path)} target="_blank" rel="noreferrer">Open</a>
-                      </Button>
-                    )}
                     <Button variant="outline" size="xs" onClick={() => share(entry)} disabled={busy}>
                       <Share2 size={12} /> Share
                     </Button>

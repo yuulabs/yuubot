@@ -20,3 +20,11 @@ export function getTask(taskId: string): Promise<TaskRecord> {
 export function cancelTask(taskId: string): Promise<TaskRecord> {
   return request<TaskRecord>(`${BASE}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
 }
+
+export function sendTaskStdin(taskId: string, text: string): Promise<TaskRecord> {
+  return request<TaskRecord>(`${BASE}/tasks/${encodeURIComponent(taskId)}/stdin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+}

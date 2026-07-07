@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTopbarActions } from "@/features/shell/app-layout";
 import {
   deleteConversation,
+  getConversation,
   getConversationCosts,
   getConversationHistory,
   uploadActorFile,
@@ -12,6 +13,7 @@ import {
 } from "@/shared/lib/api";
 import { ErrorState, LoadingState } from "@/shared/components";
 import { useApiMutation, useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
+import { describeConversationError } from "@/shared/lib/api-errors";
 import type { HistoryItem } from "@/shared/types/api";
 import { ChatComposer } from "./components/chat-composer";
 import { ChatDebugDrawer } from "./components/chat-debug-drawer";
@@ -49,6 +51,8 @@ export function ConversationDetailPage({
     queryKey: ["conversation-history", conversationId],
     queryFn: () => getConversationHistory(conversationId),
     enabled: !isDraft && !awaitingFirstSend,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
   const [actorId, setActorId] = useState(draftActorId);
   const [text, setText] = useState("");
@@ -112,6 +116,27 @@ export function ConversationDetailPage({
     );
   }, [queryClient]);
 
+  const syncConversationState = useCallback(async () => {
+    if (isDraft) {
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: ["conversation-history", conversationId] });
+    try {
+      const detail = await getConversation(conversationId);
+      if (detail.active) {
+        sessionRef.current?.markRemoteTurnActive();
+      }
+    } catch {
+      // Ignore transient sync failures; history refetch is the primary recovery path.
+    }
+  }, [conversationId, isDraft, queryClient]);
+
+  const sessionRef = useRef<ReturnType<typeof useConversationSession> | null>(null);
+
+  const handleHistoryFallback = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["conversation-history", conversationId] });
+  }, [conversationId, queryClient]);
+
   const handleTurnComplete = useCallback(() => {
     void costs.refetch();
     refreshBootstrap();
@@ -124,7 +149,28 @@ export function ConversationDetailPage({
     development: Boolean(bootstrap?.development),
     onHistoryAppend: handleHistoryAppend,
     onTurnComplete: handleTurnComplete,
+    onReconnect: () => {
+      void syncConversationState();
+    },
+    onHistoryFallback: handleHistoryFallback,
   });
+  sessionRef.current = session;
+
+  useEffect(() => {
+    if (isDraft) {
+      return;
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void syncConversationState();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [isDraft, syncConversationState]);
+
+  const persistedError = describeConversationError(durableSummary?.last_error);
+  const showPersistedError = Boolean(persistedError) && !session.error;
 
   useEffect(() => {
     if (isDraft || pendingSendConsumedRef.current || !pendingSend || !session.wsReady) {
@@ -209,6 +255,12 @@ export function ConversationDetailPage({
       main={
         <ChatMain>
           {session.error && <p className="chat__error">{session.error}</p>}
+          {showPersistedError && (
+            <p className="chat__error">
+              {persistedError}
+              {durableSummary?.status ? ` (status: ${durableSummary.status})` : ""}
+            </p>
+          )}
           <ChatTranscript
             items={displayItems}
             phase={session.phase}
@@ -235,6 +287,7 @@ export function ConversationDetailPage({
             disabled={Boolean(disabledReason) || upload.isPending}
             disabledReason={disabledReason}
             wsReady={isDraft || session.wsReady}
+            wsConnectionState={session.wsConnectionState}
           />
           {upload.error && (
             <p className="chat__error">

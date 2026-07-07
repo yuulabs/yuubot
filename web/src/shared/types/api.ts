@@ -73,6 +73,10 @@ export interface IntegrationSnapshot {
   last_error: Record<string, unknown> | null;
   config_schema: Record<string, unknown>;
   config: Record<string, unknown>;
+  health_status?: string;
+  health_reason?: string;
+  health_details?: Record<string, unknown>;
+  action_hint?: Record<string, unknown> | null;
 }
 
 export type IntegrationDetail = IntegrationSnapshot;
@@ -185,6 +189,108 @@ export interface IntegrationRecord {
   config?: Record<string, unknown>;
 }
 
+export type McpAuthMode = "none" | "api_key" | "oauth_auto" | "oauth_manual" | "auto" | "oauth";
+export type McpTransport = "http" | "stdio";
+export type McpServerStatus = "disabled" | "checking" | "needs_auth" | "ready" | "degraded" | "error";
+
+export interface McpServerBody {
+  name: string;
+  endpoint_url: string;
+  transport: McpTransport;
+  auth_mode: McpAuthMode;
+  enabled: boolean;
+  api_key?: string;
+  api_key_header?: string;
+  api_key_prefix?: string;
+  oauth_issuer?: string;
+  oauth_authorization_endpoint?: string;
+  oauth_token_endpoint?: string;
+  oauth_client_id?: string;
+  oauth_client_secret?: string;
+  oauth_scope?: string;
+}
+
+export interface McpServerState {
+  status: McpServerStatus;
+  capabilities_summary?: string;
+  last_error?: string | null;
+  action_hint?: Record<string, unknown> | null;
+  last_checked_at?: string | null;
+}
+
+export interface McpServerSnapshot extends McpServerState {
+  id: string;
+  name: string;
+  endpoint_url: string;
+  transport: McpTransport;
+  auth_mode: McpAuthMode;
+  oauth_issuer?: string;
+  oauth_authorization_endpoint?: string;
+  oauth_token_endpoint?: string;
+  oauth_client_id?: string;
+  oauth_scope?: string;
+  credential_configured: boolean;
+  enabled: boolean;
+  tools_count: number;
+  resources_count: number;
+  prompts_count: number;
+}
+
+export interface AuthAttempt {
+  id: string;
+  connection_id: string;
+  method: "oauth_pkce" | "device_code" | "api_key" | "manual";
+  status: "waiting_for_user" | "polling" | "exchanging" | "succeeded" | "failed" | "expired";
+  action: Record<string, unknown>;
+  error?: string | null;
+  expires_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CredentialRecord {
+  id: string;
+  owner_scope: "global";
+  kind: "oauth_token" | "api_key" | "manual_token";
+  provider: string;
+  label: string;
+  redacted_summary: string;
+  expires_at?: string | null;
+  scopes: string[];
+  secret_ref: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  scope: "global";
+  inspect_hint: string;
+}
+
+export interface SkillRecord {
+  id: string;
+  name: string;
+  description: string;
+  scope: "global";
+  body: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type SkillCliAction = "add" | "remove" | "update";
+
+export interface SkillCliCommandResult {
+  action: SkillCliAction;
+  target: string;
+  command: string[];
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+}
+
 export interface HistoryItem {
   seq: number;
   kind: string;
@@ -243,9 +349,11 @@ export interface TaskRecord {
   error?: string | null;
   exit_code?: number | null;
   delivery_state?: string;
+  interactive?: boolean;
   stdout_tail?: string;
   created_at?: string;
-  updated_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
 }
 
 export interface CronScheduleRecord {

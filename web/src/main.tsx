@@ -4,6 +4,7 @@ import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
 import "katex/dist/katex.min.css";
+import "@xterm/xterm/css/xterm.css";
 import "./index.css";
 
 const STALE_BUILD_RELOAD_KEY = "yuubot:stale-build-reload";

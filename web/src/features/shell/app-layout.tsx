@@ -6,7 +6,9 @@ import {
   Activity,
   ArrowRightToLine,
   Bot,
+  BookOpen,
   Clock,
+  DatabaseZap,
   FolderOpen,
   Menu,
   MessageSquare,
@@ -17,6 +19,7 @@ import {
   Server,
   Settings,
   Share2,
+  SquareTerminal,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -41,11 +44,14 @@ export const navItems = [
   { to: "/workspace", label: "Workspace", icon: FolderOpen },
   { to: "/providers", label: "Providers", icon: Server },
   { to: "/integrations", label: "Integrations", icon: Plug },
+  { to: "/mcp-servers", label: "MCP Servers", icon: DatabaseZap },
+  { to: "/skills", label: "Skills", icon: BookOpen },
   { to: "/routes", label: "Routes", icon: ArrowRightToLine },
   { to: "/admin/conversations", label: "Conversations", icon: MessageSquare },
   { to: "/monitor", label: "Runtime", icon: Activity },
   { to: "/cron", label: "Cron Jobs", icon: Clock },
   { to: "/shares", label: "Shares", icon: Share2 },
+  { to: "/terminal", label: "Terminal", icon: SquareTerminal },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 

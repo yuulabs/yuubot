@@ -60,3 +60,34 @@ export function subscribeConversationHistory(
   );
   return commandId;
 }
+
+export function subscribeTask(
+  ws: WebSocket,
+  taskId: string,
+  commandId = `task-sub-${Date.now()}`,
+): string {
+  ws.send(
+    JSON.stringify({
+      id: commandId,
+      type: "task.subscribe",
+      payload: { task_id: taskId },
+    }),
+  );
+  return commandId;
+}
+
+export function sendTaskStdinWs(
+  ws: WebSocket,
+  taskId: string,
+  text: string,
+  commandId = `task-stdin-${Date.now()}`,
+): string {
+  ws.send(
+    JSON.stringify({
+      id: commandId,
+      type: "task.stdin",
+      payload: { task_id: taskId, text },
+    }),
+  );
+  return commandId;
+}

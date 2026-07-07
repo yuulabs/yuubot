@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import type { ComponentType } from "react";
+import type { ComponentType, FormEvent } from "react";
 import { Activity, CircleDot, Cpu, DollarSign, FileText, HardDrive, MemoryStick } from "lucide-react";
 
-import { cancelTask, getRuntime, getTask, listTasks } from "@/shared/lib/api";
+import { cancelTask, getRuntime, getTask, listTasks, sendTaskStdin } from "@/shared/lib/api";
 import type { RuntimeEvent, TaskRecord } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +19,7 @@ import {
 } from "@/shared/components";
 import { useBootstrap, useHealth } from "@/shared/hooks";
 import { CostDashboard } from "./components/cost-dashboard";
+import { useTaskStream } from "./hooks/use-task-stream";
 
 export function MonitorPage() {
   const queryClient = useQueryClient();
@@ -31,11 +32,20 @@ export function MonitorPage() {
     refetchInterval: 5_000,
   });
   const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [stdinDraft, setStdinDraft] = useState("");
   const taskDetail = useQuery({
     queryKey: ["task", selectedTaskId],
     queryFn: () => getTask(selectedTaskId),
     enabled: Boolean(selectedTaskId),
     refetchInterval: 5_000,
+  });
+  const { liveStdout, liveStatus } = useTaskStream(selectedTaskId || undefined);
+  const stdin = useMutation({
+    mutationFn: ({ taskId, text }: { taskId: string; text: string }) => sendTaskStdin(taskId, text),
+    onSuccess: async (_record, variables) => {
+      setStdinDraft("");
+      await queryClient.invalidateQueries({ queryKey: ["task", variables.taskId] });
+    },
   });
   const cancel = useMutation({
     mutationFn: (taskId: string) => cancelTask(taskId),
@@ -119,8 +129,8 @@ export function MonitorPage() {
                     variant="task"
                     title="Task output"
                     subtitle={taskDetail.data.id}
-                    status={<Status enabled={taskDetail.data.status === "running" || taskDetail.data.status === "done"} label={taskDetail.data.status} />}
-                    actions={canCancelTask(taskDetail.data) ? <Button variant="outline" size="sm" disabled={cancel.isPending} onClick={() => cancel.mutate(taskDetail.data.id)}>Cancel</Button> : undefined}
+                    status={<Status enabled={displayStatus(taskDetail.data, liveStatus) === "running" || displayStatus(taskDetail.data, liveStatus) === "done"} label={displayStatus(taskDetail.data, liveStatus)} />}
+                    actions={canCancelTask(taskDetail.data, liveStatus) ? <Button variant="outline" size="sm" disabled={cancel.isPending} onClick={() => cancel.mutate(taskDetail.data.id)}>Cancel</Button> : undefined}
                   >
                     <ResourceMeta
                       items={[
@@ -128,10 +138,33 @@ export function MonitorPage() {
                         { label: "Kind", value: taskDetail.data.kind },
                         { label: "Delivery", value: taskDetail.data.delivery_state ?? "unknown", tone: taskDetail.data.delivery_state === "delivered" ? "ok" : "muted" },
                         { label: "Exit", value: taskDetail.data.exit_code ?? "pending", tone: taskDetail.data.exit_code === 0 ? "ok" : taskDetail.data.exit_code == null ? "muted" : "danger" },
+                        { label: "Created", value: taskDetail.data.created_at ?? "unknown" },
+                        { label: "Started", value: taskDetail.data.started_at ?? "pending" },
+                        { label: "Finished", value: taskDetail.data.finished_at ?? "pending" },
                       ]}
                     />
                     {taskDetail.data.error && <pre className="resource-preview">{taskDetail.data.error}</pre>}
-                    <pre className="resource-preview">{taskDetail.data.stdout_tail || "No stdout."}</pre>
+                    <pre className="resource-preview">{displayStdout(taskDetail.data, liveStdout) || "No stdout."}</pre>
+                    {canSendStdin(taskDetail.data, liveStatus) && (
+                      <form
+                        className="mt-2 flex gap-2"
+                        onSubmit={(event: FormEvent<HTMLFormElement>) => {
+                          event.preventDefault();
+                          if (!stdinDraft.trim()) return;
+                          stdin.mutate({ taskId: taskDetail.data.id, text: stdinDraft });
+                        }}
+                      >
+                        <input
+                          className="input flex-1"
+                          value={stdinDraft}
+                          placeholder="Send stdin to running task"
+                          onChange={(event) => setStdinDraft(event.target.value)}
+                        />
+                        <Button type="submit" size="sm" disabled={stdin.isPending || !stdinDraft}>
+                          Send
+                        </Button>
+                      </form>
+                    )}
                   </ResourceCard>
                 )}
                 {taskDetail.error && <p className="text-sm text-destructive">{taskDetail.error instanceof Error ? taskDetail.error.message : String(taskDetail.error)}</p>}
@@ -156,8 +189,22 @@ export function MonitorPage() {
   );
 }
 
-function canCancelTask(task: TaskRecord): boolean {
-  return task.status === "pending" || task.status === "running";
+function canCancelTask(task: TaskRecord, liveStatus?: string): boolean {
+  const status = liveStatus ?? task.status;
+  return status === "pending" || status === "running";
+}
+
+function canSendStdin(task: TaskRecord, liveStatus?: string): boolean {
+  return (liveStatus ?? task.status) === "running" && task.interactive !== false;
+}
+
+function displayStatus(task: TaskRecord, liveStatus?: string): string {
+  return liveStatus ?? task.status;
+}
+
+function displayStdout(task: TaskRecord, liveStdout: string): string {
+  if (liveStdout) return liveStdout;
+  return task.stdout_tail ?? "";
 }
 
 function RuntimeEventRow({ event }: { event: RuntimeEvent }) {

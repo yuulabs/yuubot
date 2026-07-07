@@ -1,3 +1,4 @@
+import type { AnchorHTMLAttributes } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import { markdownPlugins } from "./markdown-renderer.ts";
@@ -9,6 +10,25 @@ export { markdownPlugins };
 // (the common LLM output) becomes unreadable — without borders it's unclear
 // which cell belongs to which row. Override the table family with border
 // utilities that work in both light and dark themes.
+function markdownLinkProps(href: string | undefined): AnchorHTMLAttributes<HTMLAnchorElement> {
+  if (!href) {
+    return {};
+  }
+  return {
+    href,
+    target: "_blank",
+    rel: "noopener noreferrer",
+  };
+}
+
+const markdownComponents: Components = {
+  a: ({ href, children }) => (
+    <a className="text-primary underline underline-offset-2" {...markdownLinkProps(href)}>
+      {children}
+    </a>
+  ),
+};
+
 const tableComponents: Components = {
   table: ({ children }) => (
     <div className="my-3 overflow-x-auto">
@@ -42,7 +62,7 @@ export function MarkdownRenderer({
       <ReactMarkdown
         remarkPlugins={markdownPlugins.remark}
         rehypePlugins={markdownPlugins.rehype}
-        components={tableComponents}
+        components={{ ...markdownComponents, ...tableComponents }}
       >
         {content}
       </ReactMarkdown>

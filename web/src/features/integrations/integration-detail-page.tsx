@@ -1,10 +1,11 @@
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { SquareTerminal } from "lucide-react";
 
 import { configureIntegration, disableIntegration, enableIntegration } from "@/shared/lib/api";
 import type { IntegrationRecord } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
-import { DenseSection, ErrorState, LoadingState, Page, ResourceList, ResourceListPrimary } from "@/shared/components";
+import { DenseMeta, DenseSection, ErrorState, LoadingState, Page, ResourceList, ResourceListPrimary, Status } from "@/shared/components";
 import { useApiMutation, useBootstrap } from "@/shared/hooks";
 
 export function IntegrationDetailPage({ id }: { id: string }) {
@@ -31,21 +32,44 @@ export function IntegrationDetailPage({ id }: { id: string }) {
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState error={error} />;
+  if (!existing) return <ErrorState error={`integration ${id} was not found`} />;
 
   return (
     <Page title={`Configure ${id}`} sub="Integration config is saved through the backend schema contract.">
       <div className="dense-stack">
+        <DenseSection
+          title="Integration status"
+          description={existing.health_reason || "Runtime health is checked by the integration when available."}
+          actions={
+            existing.action_hint?.kind === "open_pty" ? (
+              <Button variant="outline" asChild>
+                <Link to="/terminal" search={{}}>
+                  <SquareTerminal size={14} />
+                  <span>Terminal</span>
+                </Link>
+              </Button>
+            ) : undefined
+          }
+        >
+          <DenseMeta items={[
+            { label: "Enabled", value: <Status enabled={existing.enabled} label={existing.enabled ? "enabled" : "disabled"} /> },
+            { label: "Health", value: existing.health_status || (existing.last_error ? "error" : "ready"), tone: existing.health_status === "ready" || (!existing.health_status && !existing.last_error) ? "ok" : "warning" },
+            ...(existing.health_details?.binary_path ? [{ label: "Binary", value: String(existing.health_details.binary_path), tone: "ok" as const }] : []),
+            { label: "Package", value: existing.package_path || "none" },
+          ]} />
+        </DenseSection>
         <DenseSection title="Integration config" description="Edit schema-backed fields for this integration.">
           <div className="dense-form-grid">
             <label className="grid gap-1">
               <span className="text-sm font-medium">Name</span>
-              <input className="input" value={name} onChange={(event) => setName(event.target.value)} />
+              <input name="name" className="input" value={name} onChange={(event) => setName(event.target.value)} />
             </label>
             {fields.map((field) => (
               <label className="grid gap-1" key={field.name}>
                 <span className="text-sm font-medium">{field.name}{field.required ? " *" : ""}</span>
                 <input
                   className="input"
+                  name={field.name}
                   type={field.secret ? "password" : "text"}
                   value={String(config[field.name] ?? "")}
                   onChange={(event) => {
@@ -61,7 +85,7 @@ export function IntegrationDetailPage({ id }: { id: string }) {
         <DenseSection title="Advanced JSON" description="Raw config payload saved to the backend.">
           <label className="grid gap-1">
             <span className="text-sm font-medium">Advanced config JSON</span>
-            <textarea className="textarea font-mono" rows={7} value={advancedText} onChange={(event) => setAdvancedText(event.target.value)} />
+            <textarea name="advanced-config-json" className="textarea font-mono" rows={7} value={advancedText} onChange={(event) => setAdvancedText(event.target.value)} />
           </label>
         </DenseSection>
         <div className="dense-actions-bar">

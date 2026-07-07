@@ -10,13 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as WorkspaceRouteImport } from './routes/workspace'
+import { Route as TerminalRouteImport } from './routes/terminal'
+import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SharesRouteImport } from './routes/shares'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RoutesRouteImport } from './routes/routes'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as MonitorRouteImport } from './routes/monitor'
+import { Route as McpServersRouteImport } from './routes/mcp-servers'
 import { Route as IntegrationsRouteImport } from './routes/integrations'
 import { Route as CronRouteImport } from './routes/cron'
+import { Route as CredentialsRouteImport } from './routes/credentials'
 import { Route as ActorsRouteImport } from './routes/actors'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProvidersIdRouteImport } from './routes/providers.$id'
@@ -33,6 +37,16 @@ import { Route as ActorsIdEditRouteImport } from './routes/actors.$id.edit'
 const WorkspaceRoute = WorkspaceRouteImport.update({
   id: '/workspace',
   path: '/workspace',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TerminalRoute = TerminalRouteImport.update({
+  id: '/terminal',
+  path: '/terminal',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SkillsRoute = SkillsRouteImport.update({
+  id: '/skills',
+  path: '/skills',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SharesRoute = SharesRouteImport.update({
@@ -60,6 +74,11 @@ const MonitorRoute = MonitorRouteImport.update({
   path: '/monitor',
   getParentRoute: () => rootRouteImport,
 } as any)
+const McpServersRoute = McpServersRouteImport.update({
+  id: '/mcp-servers',
+  path: '/mcp-servers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IntegrationsRoute = IntegrationsRouteImport.update({
   id: '/integrations',
   path: '/integrations',
@@ -68,6 +87,11 @@ const IntegrationsRoute = IntegrationsRouteImport.update({
 const CronRoute = CronRouteImport.update({
   id: '/cron',
   path: '/cron',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CredentialsRoute = CredentialsRouteImport.update({
+  id: '/credentials',
+  path: '/credentials',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ActorsRoute = ActorsRouteImport.update({
@@ -135,13 +159,17 @@ const ActorsIdEditRoute = ActorsIdEditRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
+  '/credentials': typeof CredentialsRoute
   '/cron': typeof CronRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
+  '/mcp-servers': typeof McpServersRoute
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
   '/routes': typeof RoutesRoute
   '/settings': typeof SettingsRoute
   '/shares': typeof SharesRoute
+  '/skills': typeof SkillsRoute
+  '/terminal': typeof TerminalRoute
   '/workspace': typeof WorkspaceRoute
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
@@ -157,13 +185,17 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
+  '/credentials': typeof CredentialsRoute
   '/cron': typeof CronRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
+  '/mcp-servers': typeof McpServersRoute
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
   '/routes': typeof RoutesRoute
   '/settings': typeof SettingsRoute
   '/shares': typeof SharesRoute
+  '/skills': typeof SkillsRoute
+  '/terminal': typeof TerminalRoute
   '/workspace': typeof WorkspaceRoute
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
@@ -180,13 +212,17 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/actors': typeof ActorsRouteWithChildren
+  '/credentials': typeof CredentialsRoute
   '/cron': typeof CronRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
+  '/mcp-servers': typeof McpServersRoute
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
   '/routes': typeof RoutesRoute
   '/settings': typeof SettingsRoute
   '/shares': typeof SharesRoute
+  '/skills': typeof SkillsRoute
+  '/terminal': typeof TerminalRoute
   '/workspace': typeof WorkspaceRoute
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
@@ -204,13 +240,17 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/actors'
+    | '/credentials'
     | '/cron'
     | '/integrations'
+    | '/mcp-servers'
     | '/monitor'
     | '/providers'
     | '/routes'
     | '/settings'
     | '/shares'
+    | '/skills'
+    | '/terminal'
     | '/workspace'
     | '/actors/$id'
     | '/actors/new'
@@ -226,13 +266,17 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/actors'
+    | '/credentials'
     | '/cron'
     | '/integrations'
+    | '/mcp-servers'
     | '/monitor'
     | '/providers'
     | '/routes'
     | '/settings'
     | '/shares'
+    | '/skills'
+    | '/terminal'
     | '/workspace'
     | '/actors/$id'
     | '/actors/new'
@@ -248,13 +292,17 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/actors'
+    | '/credentials'
     | '/cron'
     | '/integrations'
+    | '/mcp-servers'
     | '/monitor'
     | '/providers'
     | '/routes'
     | '/settings'
     | '/shares'
+    | '/skills'
+    | '/terminal'
     | '/workspace'
     | '/actors/$id'
     | '/actors/new'
@@ -271,13 +319,17 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActorsRoute: typeof ActorsRouteWithChildren
+  CredentialsRoute: typeof CredentialsRoute
   CronRoute: typeof CronRouteWithChildren
   IntegrationsRoute: typeof IntegrationsRouteWithChildren
+  McpServersRoute: typeof McpServersRoute
   MonitorRoute: typeof MonitorRoute
   ProvidersRoute: typeof ProvidersRouteWithChildren
   RoutesRoute: typeof RoutesRoute
   SettingsRoute: typeof SettingsRoute
   SharesRoute: typeof SharesRoute
+  SkillsRoute: typeof SkillsRoute
+  TerminalRoute: typeof TerminalRoute
   WorkspaceRoute: typeof WorkspaceRoute
   AdminConversationsRoute: typeof AdminConversationsRouteWithChildren
 }
@@ -289,6 +341,20 @@ declare module '@tanstack/react-router' {
       path: '/workspace'
       fullPath: '/workspace'
       preLoaderRoute: typeof WorkspaceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terminal': {
+      id: '/terminal'
+      path: '/terminal'
+      fullPath: '/terminal'
+      preLoaderRoute: typeof TerminalRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/skills': {
+      id: '/skills'
+      path: '/skills'
+      fullPath: '/skills'
+      preLoaderRoute: typeof SkillsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/shares': {
@@ -326,6 +392,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof MonitorRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mcp-servers': {
+      id: '/mcp-servers'
+      path: '/mcp-servers'
+      fullPath: '/mcp-servers'
+      preLoaderRoute: typeof McpServersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/integrations': {
       id: '/integrations'
       path: '/integrations'
@@ -338,6 +411,13 @@ declare module '@tanstack/react-router' {
       path: '/cron'
       fullPath: '/cron'
       preLoaderRoute: typeof CronRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/credentials': {
+      id: '/credentials'
+      path: '/credentials'
+      fullPath: '/credentials'
+      preLoaderRoute: typeof CredentialsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/actors': {
@@ -504,13 +584,17 @@ const AdminConversationsRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActorsRoute: ActorsRouteWithChildren,
+  CredentialsRoute: CredentialsRoute,
   CronRoute: CronRouteWithChildren,
   IntegrationsRoute: IntegrationsRouteWithChildren,
+  McpServersRoute: McpServersRoute,
   MonitorRoute: MonitorRoute,
   ProvidersRoute: ProvidersRouteWithChildren,
   RoutesRoute: RoutesRoute,
   SettingsRoute: SettingsRoute,
   SharesRoute: SharesRoute,
+  SkillsRoute: SkillsRoute,
+  TerminalRoute: TerminalRoute,
   WorkspaceRoute: WorkspaceRoute,
   AdminConversationsRoute: AdminConversationsRouteWithChildren,
 }

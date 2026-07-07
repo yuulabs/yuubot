@@ -4,7 +4,7 @@ import { MessageSquarePlus, Paperclip, SquareStop, X } from "lucide-react";
 import { CostBadge } from "@/components/conversation/cost-badge";
 import type { ActorSnapshot } from "@/shared/types/api";
 
-import type { ConversationPhase } from "../hooks/use-conversation-session";
+import type { ConversationPhase, WsConnectionState } from "../hooks/use-conversation-session";
 import { NewConversationLink } from "./new-conversation-link";
 import { TurnPill } from "./turn-pill";
 
@@ -26,6 +26,7 @@ export function ChatComposer({
   disabled = false,
   disabledReason = "",
   wsReady = false,
+  wsConnectionState = "connecting",
   newConversationActorId = "",
 }: {
   actors: ActorSnapshot[];
@@ -46,11 +47,17 @@ export function ChatComposer({
   disabled?: boolean;
   disabledReason?: string;
   wsReady?: boolean;
+  wsConnectionState?: WsConnectionState;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isActive = phase === "sending" || phase === "streaming";
   const canSend = !disabled && Boolean(text.trim()) && wsReady && !isActive;
+  const connectionLabel = wsConnectionState === "connected"
+    ? "Connected"
+    : wsConnectionState === "reconnecting"
+      ? "Reconnecting..."
+      : "Connecting...";
   const sendAndRefocus = () => {
     if (!canSend) return;
     if (!onSend()) return;
@@ -140,7 +147,7 @@ export function ChatComposer({
 
         <div className="composer__footer">
           <span className={wsReady ? "composer__status is-ready" : "composer__status"}>
-            {wsReady ? "Connected" : "Connecting..."}
+            {connectionLabel}
           </span>
           {isActive ? (
             <button

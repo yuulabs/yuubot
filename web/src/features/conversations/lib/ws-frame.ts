@@ -7,3 +7,15 @@ export function shouldProcessCommandFrame(
   }
   return true;
 }
+
+export function shouldProcessConversationFrame(
+  frameConversationId: string | undefined,
+  subscribedConversationId: string | null,
+  frameId: string | undefined,
+  activeCommandId: string | null,
+): boolean {
+  if (subscribedConversationId && frameConversationId && frameConversationId !== subscribedConversationId) {
+    return false;
+  }
+  return shouldProcessCommandFrame(frameId, activeCommandId);
+}

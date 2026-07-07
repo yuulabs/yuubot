@@ -14,6 +14,7 @@
     "@hookform/resolvers": "^3.10.0",
     "@tanstack/react-query": "^5.100.14",
     "@tanstack/react-router": "^1.0.0",
+    "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "katex": "^0.17.0",

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   appendRenderBlocks,
   buildDisplayItems,
+  contentItemsToText,
   createTranscriptState,
   historyItemsFromHistory,
   renderBlocksFromStreamEvent,
@@ -660,4 +661,44 @@ test("transcript reducer replaces live preview with durable history without chan
   const durableItems = transcriptDisplayItems(state);
   assert.equal(durableItems[1]?.key, "turn:0:actor");
   assert.equal(durableItems[1]?.blocks[0]?.content, "persisted");
+});
+
+test("pending user message appears until durable user input arrives", () => {
+  let state = createTranscriptState();
+  state = transcriptReducer(state, {
+    type: "pending_user",
+    clientKey: "pending-1",
+    text: "hello",
+    now: 42,
+  });
+
+  const pendingItems = transcriptDisplayItems(state);
+  assert.equal(pendingItems.length, 1);
+  assert.equal(pendingItems[0]?.role, "user");
+  assert.equal(pendingItems[0]?.blocks[0]?.content, "hello");
+
+  state = transcriptReducer(state, {
+    type: "history_append",
+    item: {
+      seq: 0,
+      kind: "input",
+      payload: { role: "user", name: "amy", content: [{ kind: "text", text: "hello" }] },
+      created_at: null,
+    },
+  });
+
+  const durableItems = transcriptDisplayItems(state);
+  assert.equal(durableItems.length, 1);
+  assert.equal(durableItems[0]?.key, "turn:0:user");
+  assert.equal(state.pendingUser, null);
+});
+
+test("contentItemsToText formats text and attachments", () => {
+  assert.equal(
+    contentItemsToText([
+      { kind: "text", text: "hello" },
+      { kind: "file", path: "notes.txt" },
+    ]),
+    "hello\n\n[file: notes.txt]",
+  );
 });

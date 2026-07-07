@@ -37,6 +37,7 @@
 
 /* ---------- CRUD split layout (table + side form) ---------- */
 .crud-split { display: grid; grid-template-columns: 1fr 320px; gap: var(--sp-5); align-items: start; margin-top: var(--sp-2); }
+.crud-split--wide-form { grid-template-columns: minmax(0, 1fr) minmax(340px, 420px); }
 @media (max-width: 1080px) { .crud-split { grid-template-columns: 1fr; } }
 
 .crud-head { display: flex; align-items: center; gap: var(--sp-3); margin-bottom: var(--sp-3); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border); }

@@ -8,9 +8,11 @@ import {
   subscribeConversationHistory,
   type WsContentItem,
 } from "@/shared/lib/api";
+import { describeWsError } from "@/shared/lib/api-errors";
 import type { HistoryItem } from "@/shared/types/api";
 
 import {
+  contentItemsToText,
   createTranscriptState,
   isTerminalStreamStop,
   renderBlocksFromStreamEvent,
@@ -19,13 +21,18 @@ import {
   transcriptReducer,
   type ConversationPhase,
 } from "../lib/conversation-transcript";
-import { shouldProcessCommandFrame } from "../lib/ws-frame";
+import { shouldProcessConversationFrame } from "../lib/ws-frame";
+
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_MAX_MS = 30_000;
+
+export type WsConnectionState = "connecting" | "connected" | "reconnecting";
 
 interface WsFrame {
   id?: string;
   type?: string;
   payload?: Record<string, unknown>;
-  error?: { code?: string; message?: string };
+  error?: { code?: string; message?: string; detail?: Record<string, unknown> };
 }
 
 interface PendingSend {
@@ -41,6 +48,8 @@ export function useConversationSession({
   development,
   onHistoryAppend,
   onTurnComplete,
+  onReconnect,
+  onHistoryFallback,
 }: {
   conversationId: string;
   history: HistoryItem[];
@@ -49,11 +58,15 @@ export function useConversationSession({
   onHistoryAppend: (conversationId: string, item: HistoryItem) => void;
   /** Called after a terminal stream stop; must not re-fetch conversation history. */
   onTurnComplete: () => void;
+  onReconnect?: () => void;
+  onHistoryFallback?: () => void;
 }) {
   const wsRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<PendingSend | null>(null);
   const onHistoryAppendRef = useRef(onHistoryAppend);
   const onTurnCompleteRef = useRef(onTurnComplete);
+  const onReconnectRef = useRef(onReconnect);
+  const onHistoryFallbackRef = useRef(onHistoryFallback);
   const historyRef = useRef(history);
   const conversationIdRef = useRef(conversationId);
   const liveBlockIndexRef = useRef(0);
@@ -62,17 +75,25 @@ export function useConversationSession({
   const inFlightRef = useRef(false);
   const terminalHandledRef = useRef(false);
   const historySubscriptionRef = useRef<string | null>(null);
+  const turnAppendReceivedRef = useRef(false);
+  const reconnectAttemptRef = useRef(0);
+  const hadConnectedRef = useRef(false);
 
   const [transcript, dispatchTranscript] = useReducer(transcriptReducer, history, createTranscriptState);
   const [wsReady, setWsReady] = useState(false);
+  const [wsConnectionState, setWsConnectionState] = useState<WsConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<string[]>([]);
   const [activeConversationId, setActiveConversationId] = useState(isDraft ? "" : conversationId);
 
   onHistoryAppendRef.current = onHistoryAppend;
   onTurnCompleteRef.current = onTurnComplete;
+  onReconnectRef.current = onReconnect;
+  onHistoryFallbackRef.current = onHistoryFallback;
   historyRef.current = history;
   conversationIdRef.current = conversationId;
+
+  const subscribedConversationId = activeConversationId || conversationId;
 
   const resetLiveTurn = useCallback(() => {
     turnKeyRef.current = "";
@@ -93,6 +114,10 @@ export function useConversationSession({
     finishTurn();
     activeCommandIdRef.current = null;
     resetLiveTurn();
+    if (!turnAppendReceivedRef.current) {
+      onHistoryFallbackRef.current?.();
+    }
+    turnAppendReceivedRef.current = false;
     onTurnCompleteRef.current();
   }, [finishTurn, resetLiveTurn]);
 
@@ -100,9 +125,30 @@ export function useConversationSession({
     const nextTurnKey = `turn-${Date.now()}`;
     inFlightRef.current = true;
     terminalHandledRef.current = false;
+    turnAppendReceivedRef.current = false;
     turnKeyRef.current = nextTurnKey;
     liveBlockIndexRef.current = 0;
     dispatchTranscript({ type: "begin_turn", turnKey: nextTurnKey, now: Date.now() });
+  }, []);
+
+  const beginRemoteTurn = useCallback(() => {
+    if (inFlightRef.current) {
+      return;
+    }
+    beginTurn();
+  }, [beginTurn]);
+
+  const markRemoteTurnActive = useCallback(() => {
+    if (inFlightRef.current) {
+      return;
+    }
+    const nextTurnKey = `remote-${Date.now()}`;
+    inFlightRef.current = true;
+    terminalHandledRef.current = false;
+    turnAppendReceivedRef.current = false;
+    turnKeyRef.current = nextTurnKey;
+    liveBlockIndexRef.current = 0;
+    dispatchTranscript({ type: "set_phase", phase: "streaming" });
   }, []);
 
   const appendStreamEvent = useCallback((event: Record<string, unknown>) => {
@@ -140,6 +186,19 @@ export function useConversationSession({
     subscribeConversationHistory(ws, targetConversationId);
   }, []);
 
+  const queueOptimisticUser = useCallback((content: WsContentItem[]) => {
+    const text = contentItemsToText(content);
+    if (!text) {
+      return;
+    }
+    dispatchTranscript({
+      type: "pending_user",
+      clientKey: `pending-${Date.now()}`,
+      text,
+      now: Date.now(),
+    });
+  }, []);
+
   const flushPending = useCallback((ws: WebSocket) => {
     const pending = pendingRef.current;
     if (!pending) return;
@@ -150,6 +209,18 @@ export function useConversationSession({
     beginTurn();
     setError(null);
   }, [beginTurn, ensureHistorySubscription]);
+
+  const shouldProcessFrame = useCallback((frame: WsFrame): boolean => {
+    const frameConversationId = typeof frame.payload?.conversation_id === "string"
+      ? frame.payload.conversation_id
+      : undefined;
+    return shouldProcessConversationFrame(
+      frameConversationId,
+      subscribedConversationId,
+      frame.id,
+      activeCommandIdRef.current,
+    );
+  }, [subscribedConversationId]);
 
   useEffect(() => {
     if (!isDraft) {
@@ -164,6 +235,7 @@ export function useConversationSession({
     pendingRef.current = null;
     activeCommandIdRef.current = null;
     terminalHandledRef.current = false;
+    turnAppendReceivedRef.current = false;
   }, [conversationId, finishTurn, isDraft, resetLiveTurn]);
 
   useEffect(() => {
@@ -193,35 +265,26 @@ export function useConversationSession({
     }
 
     let disposed = false;
-    const ws = connectWs();
-    wsRef.current = ws;
-    setWsReady(false);
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    ws.onopen = () => {
+    const scheduleReconnect = () => {
       if (disposed) return;
-      setWsReady(true);
-      setError(null);
-      flushPending(ws);
-    };
-
-    ws.onerror = () => {
-      if (disposed) return;
-      setError("WebSocket connection failed.");
-      dispatchTranscript({ type: "set_phase", phase: "error" });
-      finishTurn();
-    };
-
-    ws.onclose = () => {
-      if (disposed) return;
+      const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttemptRef.current, RECONNECT_MAX_MS);
+      reconnectAttemptRef.current += 1;
+      setWsConnectionState("reconnecting");
       setWsReady(false);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        openSocket();
+      }, delay);
     };
 
-    ws.onmessage = (event) => {
+    const handleMessage = (event: MessageEvent) => {
       if (disposed) return;
       if (development) {
-        setEvents((items) => [...items.slice(-100), event.data]);
+        setEvents((items) => [...items.slice(-100), String(event.data)]);
       }
-      const frame = parseFrame(event.data);
+      const frame = parseFrame(String(event.data));
       if (!frame) return;
 
       if (frame.type === "conversation.send.accepted") {
@@ -238,6 +301,7 @@ export function useConversationSession({
           : "";
         const item = parseHistoryItem(frame.payload?.item);
         if (targetId && item) {
+          turnAppendReceivedRef.current = true;
           dispatchTranscript({ type: "history_append", item });
           onHistoryAppendRef.current(targetId, item);
         }
@@ -252,8 +316,11 @@ export function useConversationSession({
       }
 
       if (frame.type === "conversation.tool_results") {
-        if (!shouldProcessCommandFrame(frame.id, activeCommandIdRef.current)) {
+        if (!shouldProcessFrame(frame)) {
           return;
+        }
+        if (!inFlightRef.current) {
+          beginRemoteTurn();
         }
         const results = Array.isArray(frame.payload?.results) ? frame.payload.results : [];
         appendToolResults(results);
@@ -261,7 +328,7 @@ export function useConversationSession({
       }
 
       if (frame.type === "conversation.output") {
-        if (!shouldProcessCommandFrame(frame.id, activeCommandIdRef.current)) {
+        if (!shouldProcessFrame(frame)) {
           return;
         }
         const reason = frame.payload?.reason;
@@ -273,8 +340,11 @@ export function useConversationSession({
       }
 
       if (frame.type === "conversation.stream") {
-        if (!shouldProcessCommandFrame(frame.id, activeCommandIdRef.current)) {
+        if (!shouldProcessFrame(frame)) {
           return;
+        }
+        if (!inFlightRef.current) {
+          beginRemoteTurn();
         }
         const streamPayload = frame.payload;
         const streamEvent = streamPayload?.event as Record<string, unknown> | undefined;
@@ -298,22 +368,91 @@ export function useConversationSession({
       }
 
       if (frame.type === "error") {
-        const message = frame.error?.message ?? "Conversation request failed.";
+        if (!shouldProcessFrame(frame)) {
+          return;
+        }
+        const message = describeWsError(frame.error);
+        const turnAlreadyFinished = terminalHandledRef.current;
+        if (turnAlreadyFinished) {
+          toast.warning(message);
+          onTurnCompleteRef.current();
+          return;
+        }
         setError(message);
         dispatchTranscript({ type: "set_phase", phase: "error" });
         finishTurn();
         activeCommandIdRef.current = null;
         resetLiveTurn();
         toast.error(message);
+        onTurnCompleteRef.current();
       }
     };
 
+    const openSocket = () => {
+      if (disposed) return;
+      const ws = connectWs();
+      wsRef.current = ws;
+      setWsReady(false);
+      setWsConnectionState(reconnectAttemptRef.current > 0 ? "reconnecting" : "connecting");
+
+      ws.onopen = () => {
+        if (disposed) return;
+        const reconnected = hadConnectedRef.current;
+        hadConnectedRef.current = true;
+        reconnectAttemptRef.current = 0;
+        setWsReady(true);
+        setWsConnectionState("connected");
+        setError(null);
+        historySubscriptionRef.current = null;
+        ensureHistorySubscription(ws, conversationIdRef.current);
+        flushPending(ws);
+        if (reconnected) {
+          onReconnectRef.current?.();
+        }
+      };
+
+      ws.onerror = () => {
+        if (disposed) return;
+        setError("WebSocket connection failed.");
+        dispatchTranscript({ type: "set_phase", phase: "error" });
+        finishTurn();
+      };
+
+      ws.onclose = () => {
+        if (disposed) return;
+        wsRef.current = null;
+        setWsReady(false);
+        scheduleReconnect();
+      };
+
+      ws.onmessage = handleMessage;
+    };
+
+    openSocket();
+
     return () => {
       disposed = true;
-      ws.close();
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+      }
+      wsRef.current?.close();
       wsRef.current = null;
+      hadConnectedRef.current = false;
+      reconnectAttemptRef.current = 0;
     };
-  }, [appendStreamEvent, appendToolResults, development, finishTerminalTurn, finishTurn, flushPending, isDraft, resetLiveTurn]);
+  }, [
+    appendStreamEvent,
+    appendToolResults,
+    beginRemoteTurn,
+    development,
+    ensureHistorySubscription,
+    finishTerminalTurn,
+    finishTurn,
+    flushPending,
+    isDraft,
+    resetLiveTurn,
+    shouldProcessFrame,
+  ]);
 
   const send = useCallback(
     (actorId: string, content: WsContentItem[], durableId?: string) => {
@@ -323,6 +462,8 @@ export function useConversationSession({
       if (inFlightRef.current) {
         return false;
       }
+
+      queueOptimisticUser(content);
 
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -339,7 +480,7 @@ export function useConversationSession({
       setError(null);
       return true;
     },
-    [beginTurn, ensureHistorySubscription, isDraft],
+    [beginTurn, ensureHistorySubscription, isDraft, queueOptimisticUser],
   );
 
   const interrupt = useCallback((targetConversationId: string) => {
@@ -353,6 +494,7 @@ export function useConversationSession({
 
   return {
     wsReady: isDraft ? false : wsReady,
+    wsConnectionState: isDraft ? "connecting" as const : wsConnectionState,
     phase: transcript.phase,
     liveBlocks: transcript.liveBlocks,
     error,
@@ -363,6 +505,7 @@ export function useConversationSession({
     waitingForResponse,
     send,
     interrupt,
+    markRemoteTurnActive,
   };
 }
 

@@ -667,18 +667,26 @@ function mergeLiveAssistantTurn({
   ];
 }
 
+export interface PendingUserMessage {
+  clientKey: string;
+  text: string;
+  timestamp: number;
+}
+
 export interface TranscriptState {
   history: HistoryItem[];
   liveBlocks: RenderBlock[];
   phase: ConversationPhase;
   turnKey?: string;
   previewStartedAt: number;
+  pendingUser: PendingUserMessage | null;
 }
 
 export type TranscriptAction =
   | { type: "reset"; history: HistoryItem[] }
   | { type: "begin_turn"; turnKey: string; now: number }
   | { type: "history_append"; item: HistoryItem }
+  | { type: "pending_user"; clientKey: string; text: string; now: number }
   | { type: "append_blocks"; blocks: RenderBlock[] }
   | { type: "mark_tools_completed" }
   | { type: "finish_turn" }
@@ -691,7 +699,12 @@ export function createTranscriptState(history: HistoryItem[] = []): TranscriptSt
     liveBlocks: [],
     phase: "idle",
     previewStartedAt: Date.now(),
+    pendingUser: null,
   };
+}
+
+function isUserInputItem(item: HistoryItem): boolean {
+  return item.kind === "input" && String(item.payload.role ?? "user") === "user";
 }
 
 export function transcriptReducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
@@ -707,6 +720,16 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
       previewStartedAt: action.now,
     };
   }
+  if (action.type === "pending_user") {
+    return {
+      ...state,
+      pendingUser: {
+        clientKey: action.clientKey,
+        text: action.text,
+        timestamp: action.now,
+      },
+    };
+  }
   if (action.type === "history_append") {
     if (PREFIX_KINDS.has(action.item.kind) || state.history.some((item) => item.seq === action.item.seq)) {
       return state;
@@ -714,6 +737,7 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
     return {
       ...state,
       history: uniqueHistoryItems([...state.history, action.item]),
+      pendingUser: isUserInputItem(action.item) ? null : state.pendingUser,
     };
   }
   if (action.type === "append_blocks") {
@@ -764,7 +788,22 @@ export function transcriptDisplayItems(state: TranscriptState): DisplayItem[] {
     phase: state.phase,
     turnKey: state.turnKey,
     previewStartedAt: state.previewStartedAt,
+    pendingUser: state.pendingUser,
   });
+}
+
+function pendingUserDisplayItem(pendingUser: PendingUserMessage): DisplayItem {
+  return {
+    key: pendingUser.clientKey,
+    role: "user",
+    blocks: [{
+      key: `${pendingUser.clientKey}:text`,
+      type: "text",
+      content: pendingUser.text,
+    }],
+    timestamp: pendingUser.timestamp,
+    turnKey: pendingUser.clientKey,
+  };
 }
 
 export function buildDisplayItems({
@@ -773,14 +812,19 @@ export function buildDisplayItems({
   phase,
   turnKey,
   previewStartedAt = Date.now(),
+  pendingUser = null,
 }: {
   history: HistoryItem[];
   liveBlocks?: RenderBlock[];
   phase: ConversationPhase;
   turnKey?: string;
   previewStartedAt?: number;
+  pendingUser?: PendingUserMessage | null;
 }): DisplayItem[] {
   const items = historyItemsFromHistory(uniqueHistoryItems(history));
+  if (pendingUser) {
+    items.push(pendingUserDisplayItem(pendingUser));
+  }
 
   return mergeLiveAssistantTurn({
     items,
@@ -789,6 +833,21 @@ export function buildDisplayItems({
     turnKey,
     previewStartedAt,
   });
+}
+
+export function contentItemsToText(content: Array<{ kind: string; text?: string; path?: string }>): string {
+  return content
+    .map((item) => {
+      if (item.kind === "text" && item.text) {
+        return item.text;
+      }
+      if (item.path) {
+        return `[${item.kind}: ${item.path}]`;
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function isTerminalStreamStop(payload: Record<string, unknown>): boolean {
