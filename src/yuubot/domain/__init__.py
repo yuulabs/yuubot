@@ -19,7 +19,7 @@ from .messages import (
     ToolResult,
     text_content,
 )
-from .records import ActorRecord, RouteBody, RouteRecord, decode_actor_record
+from .records import ActorRecord, RouteBody, RouteInput, RouteRecord, decode_actor_record
 from .stream import (
     StopReason,
     StreamEvent,
@@ -52,6 +52,7 @@ __all__ = [
     "LLMInput",
     "ModelCard",
     "RouteBody",
+    "RouteInput",
     "RouteRecord",
     "StopReason",
     "StreamEvent",

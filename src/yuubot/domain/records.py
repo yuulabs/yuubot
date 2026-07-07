@@ -51,6 +51,27 @@ class ActorRecord(msgspec.Struct, frozen=True, kw_only=True):
     provider: str
 
 
+class ActorModelInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
+    selector: str
+    reasoning_effort: str = ""
+
+
+class ActorInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
+    name: str
+    description: str = ""
+    workspace: str = ""
+    persona: str = ""
+    model: ActorModelInput
+    provider: str
+
+
+class ActorConfigError(ValueError):
+    def __init__(self, code: str, message: str, detail: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail or {}
+
+
 def decode_actor_record(payload: bytes) -> ActorRecord:
     raw = msgspec.json.decode(payload)
     if isinstance(raw, dict) and "llm" in raw and "provider" not in raw:
@@ -78,6 +99,22 @@ def decode_lifecycle_error(payload: bytes | None) -> LifecycleError | None:
 
 def lifecycle_error(exc: Exception) -> LifecycleError:
     return LifecycleError(type=type(exc).__name__, message=str(exc))
+
+
+class RouteInput(msgspec.Struct, frozen=True, kw_only=True):
+    pattern: str
+    actor_id: str
+    integration_type: str = ""
+    enabled: bool = True
+
+    def to_record(self, route_id: str) -> RouteRecord:
+        return RouteRecord(
+            id=route_id,
+            integration_type=self.integration_type,
+            pattern=self.pattern,
+            actor_id=self.actor_id,
+            enabled=self.enabled,
+        )
 
 
 class RouteBody(msgspec.Struct, frozen=True, kw_only=True):

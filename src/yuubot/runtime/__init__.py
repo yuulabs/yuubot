@@ -23,7 +23,7 @@ from .mcp import (
     McpServerRecord,
     McpServerState,
 )
-from .skills import SkillRecord, SkillSummary
+from .skills import SkillInput, SkillRecord, SkillSummary
 from .shares import (
     ShareBadRequestError,
     ShareGrant,
@@ -73,6 +73,7 @@ __all__ = [
     "ShareNotFoundError",
     "SharePublishError",
     "ShareRegistry",
+    "SkillInput",
     "SkillRecord",
     "SkillSummary",
     "TaskCoroFactory",

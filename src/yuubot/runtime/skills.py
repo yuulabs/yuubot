@@ -25,6 +25,22 @@ class SkillRecord(msgspec.Struct, frozen=True, kw_only=True):
     updated_at: str = ""
 
 
+class SkillInput(msgspec.Struct, frozen=True, kw_only=True):
+    name: str
+    description: str = ""
+    body: str = ""
+    scope: str = "global"
+
+    def to_record(self, skill_id: str) -> SkillRecord:
+        return SkillRecord(
+            id=skill_id,
+            name=self.name,
+            description=self.description,
+            body=self.body,
+            scope=self.scope,
+        )
+
+
 class SkillSummary(msgspec.Struct, frozen=True, kw_only=True):
     id: str
     name: str
