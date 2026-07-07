@@ -56,3 +56,18 @@ async def test_terminal_websocket_opens_admin_pty(tmp_path: Path) -> None:
 
     assert "terminal.opened" in seen
     assert "ws-terminal-ok" in seen
+
+
+@pytest.mark.asyncio
+async def test_terminal_websocket_rejects_invalid_command_payload(tmp_path: Path) -> None:
+    app = await boot_app(tmp_path / "data")
+    async with running_server(app) as server:
+        uri = f"{base_url(server).replace('http://', 'ws://')}/api/terminal/ws"
+        async with websockets.connect(uri, open_timeout=5) as ws:
+            await ws.send(json.dumps({
+                "type": "terminal.open",
+                "payload": {"command": "printf bad-input-test", "rows": "not-an-int"},
+            }))
+            frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+            assert frame["type"] == "terminal.error"
+            assert "rows" in frame["payload"]["message"].lower()

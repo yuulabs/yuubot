@@ -7,14 +7,25 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from ...app import Yuubot
 from ...runtime.terminal import TerminalSession
+from ..auth import AuthContext
+from ..terminal_commands import (
+    TerminalCloseCommand,
+    TerminalCommand,
+    TerminalInputCommand,
+    TerminalOpenCommand,
+    TerminalResizeCommand,
+)
 
 
 def register_terminal_routes(api: FastAPI, app: Yuubot) -> None:
     @api.websocket("/api/terminal/ws")
     async def terminal_websocket(websocket: WebSocket) -> None:
+        auth = _auth_context(websocket)
+        if auth is None:
+            await websocket.close(code=1008, reason="authentication required")
+            return
+        auth_user = auth.user_id
         await websocket.accept()
-        auth = websocket.scope.get("state", {}).get("auth") if isinstance(websocket.scope.get("state"), dict) else None
-        auth_user = getattr(auth, "user_id", "admin")
         session: TerminalSession | None = None
 
         async def send(payload: dict[str, object]) -> None:
@@ -24,37 +35,40 @@ def register_terminal_routes(api: FastAPI, app: Yuubot) -> None:
             while True:
                 raw = await websocket.receive_text()
                 try:
-                    command = msgspec.json.decode(raw.encode(), type=dict[str, object])
-                    command_type = command.get("type")
-                    payload = command.get("payload", {})
-                    if not isinstance(command_type, str) or not isinstance(payload, dict):
-                        raise ValueError("terminal command requires type and object payload")
-                    if command_type == "terminal.open":
-                        if session is not None:
-                            raise ValueError("terminal session is already open")
-                        session = TerminalSession(
-                            send=send,
-                            auth_user=str(auth_user),
-                            command=_terminal_str(payload.get("command")),
-                            cwd=_terminal_str(payload.get("cwd")) or "~",
-                            rows=_terminal_int(payload.get("rows"), 24),
-                            cols=_terminal_int(payload.get("cols"), 80),
-                        )
-                        app.runtime.emit("terminal.opened", auth_user=str(auth_user), cwd=session.cwd, command=session.command)
-                        await session.start()
-                        continue
-                    if session is None:
-                        raise ValueError("terminal session is not open")
-                    if command_type == "terminal.input":
-                        await session.write(_terminal_str(payload.get("data")))
-                    elif command_type == "terminal.resize":
-                        await session.resize(rows=_terminal_int(payload.get("rows"), 24), cols=_terminal_int(payload.get("cols"), 80))
-                    elif command_type == "terminal.close":
-                        await session.close()
-                        app.runtime.emit("terminal.closed", auth_user=str(auth_user))
-                        session = None
-                    else:
-                        raise ValueError(f"unknown terminal command: {command_type}")
+                    command = msgspec.json.decode(raw.encode(), type=TerminalCommand)
+                    match command:
+                        case TerminalOpenCommand(payload=payload):
+                            if session is not None:
+                                raise ValueError("terminal session is already open")
+                            session = TerminalSession(
+                                send=send,
+                                auth_user=auth_user,
+                                command=payload.command,
+                                cwd=payload.cwd or "~",
+                                rows=payload.rows,
+                                cols=payload.cols,
+                            )
+                            app.runtime.emit(
+                                "terminal.opened",
+                                auth_user=auth_user,
+                                cwd=session.cwd,
+                                command=session.command,
+                            )
+                            await session.start()
+                        case TerminalInputCommand(payload=payload):
+                            if session is None:
+                                raise ValueError("terminal session is not open")
+                            await session.write(payload.data)
+                        case TerminalResizeCommand(payload=payload):
+                            if session is None:
+                                raise ValueError("terminal session is not open")
+                            await session.resize(rows=payload.rows, cols=payload.cols)
+                        case TerminalCloseCommand():
+                            if session is None:
+                                raise ValueError("terminal session is not open")
+                            await session.close()
+                            app.runtime.emit("terminal.closed", auth_user=auth_user)
+                            session = None
                 except (msgspec.DecodeError, msgspec.ValidationError, ValueError, RuntimeError) as exc:
                     await send({"type": "terminal.error", "payload": {"message": str(exc)}})
         except WebSocketDisconnect:
@@ -64,9 +78,9 @@ def register_terminal_routes(api: FastAPI, app: Yuubot) -> None:
                 await session.close()
 
 
-def _terminal_str(value: object) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _terminal_int(value: object, default: int) -> int:
-    return value if isinstance(value, int) else default
+def _auth_context(websocket: WebSocket) -> AuthContext | None:
+    state = websocket.scope.get("state")
+    if not isinstance(state, dict):
+        return None
+    auth = state.get("auth")
+    return auth if isinstance(auth, AuthContext) else None

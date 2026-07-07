@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from ...app import Yuubot
-from ...runtime.skills import SkillCliCommandBody, SkillRecord, skill_summary
+from ...runtime.skills import SkillCliCommandBody, SkillInput, skill_summary
 from ..request import bad_request, read_json
 from ..responses import error_response, json_response
 
@@ -42,9 +42,8 @@ def register_skill_routes(api: FastAPI, app: Yuubot) -> None:
     @api.put("/api/skills/{skill_id}")
     async def api_put_skill(skill_id: str, request: Request) -> Response:
         try:
-            raw = await read_json(request, dict[str, object])
-            raw["id"] = skill_id
-            record = await app.put_skill(msgspec.convert(raw, SkillRecord))
+            body = await read_json(request, SkillInput)
+            record = await app.put_skill(body.to_record(skill_id))
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
         return json_response({"record": record, "summary": skill_summary(record)})
