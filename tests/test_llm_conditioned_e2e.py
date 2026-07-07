@@ -3,7 +3,6 @@ from __future__ import annotations
 from support.api import (
     SharedTestContext,
     conversation_history,
-    enable_integration,
     wait_for_history_kind,
     ws_conversation_send,
 )
@@ -19,6 +18,7 @@ from support.llm_rules import (
     user_message_contains,
     user_message_has_text_and_path,
 )
+from support.exec_py import ExecPyModuleContext
 from support.prompt_conditioned_llm import PromptConditionedProvider
 
 INTEGRATION_INSPECT_CODE = (
@@ -55,25 +55,26 @@ def _integration_llm() -> PromptConditionedProvider:
     )
 
 
-async def test_http_integration_docs_in_prompt_enable_execute_python_call(test_context: SharedTestContext) -> None:
-    await test_context.put_integration(
+async def test_http_integration_docs_in_prompt_enable_execute_python_call(exec_py_context: ExecPyModuleContext) -> None:
+    await exec_py_context.reset_state()
+    await exec_py_context.put_integration(
         "github",
         name="gh",
         config={"access_token": "token", "default_owner": "yuulabs", "default_repo": "yuubot"},
     )
-    await enable_integration(test_context.server, "github")
-    await test_context.put_integration("tavily_web", name="web", config={"api_key": "web-token", "max_read_chars": 42})
-    await enable_integration(test_context.server, "tavily_web")
-    actor_id = await test_context.setup_actor(_integration_llm())
-    conversation_id = test_context.conversation_id("integration-c1")
+    await exec_py_context.enable_integration("github")
+    await exec_py_context.put_integration("tavily_web", name="web", config={"api_key": "web-token", "max_read_chars": 42})
+    await exec_py_context.enable_integration("tavily_web")
+    await exec_py_context.activate(_integration_llm())
+    conversation_id = exec_py_context.conversation_id("integration-c1")
     await ws_conversation_send(
-        test_context.server,
+        exec_py_context.server,
         command_id="m1",
-        actor_id=actor_id,
+        actor_id=exec_py_context.actor_id,
         conversation_id=conversation_id,
         content="inspect integration context",
     )
-    history = await conversation_history(test_context.server, conversation_id)
+    history = await conversation_history(exec_py_context.server, conversation_id)
     assert history[-1]["payload"] == {"text": "integration-ok"}
     assert tool_result_text(history) == "yuulabs/yuubot\ntoken\n42\n"
 
@@ -90,33 +91,35 @@ def _tasks_llm(task_name: str) -> PromptConditionedProvider:
     )
 
 
-async def test_http_tasks_docs_in_prompt_enable_submit_call(test_context: SharedTestContext) -> None:
-    task_name = test_context.name("probe")
-    actor_id = await test_context.setup_actor(_tasks_llm(task_name))
-    conversation_id = test_context.conversation_id("tasks-c1")
+async def test_http_tasks_docs_in_prompt_enable_submit_call(exec_py_context: ExecPyModuleContext) -> None:
+    await exec_py_context.reset_state()
+    task_name = exec_py_context.name("probe")
+    await exec_py_context.activate(_tasks_llm(task_name))
+    conversation_id = exec_py_context.conversation_id("tasks-c1")
     await ws_conversation_send(
-        test_context.server,
+        exec_py_context.server,
         command_id="m1",
-        actor_id=actor_id,
+        actor_id=exec_py_context.actor_id,
         conversation_id=conversation_id,
         content="start a background shell task",
     )
-    history = await wait_for_history_kind(test_context.server, conversation_id, "gen_text")
+    history = await wait_for_history_kind(exec_py_context.server, conversation_id, "gen_text")
     assert history[-1]["payload"] == {"text": "tasks-ok"}
     assert tool_result_text(history) == f"{task_name}\nrunning\n1\n"
 
 
-async def test_http_integration_docs_missing_prevents_execute_python_call(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(_integration_llm())
-    conversation_id = test_context.conversation_id("integration-missing")
+async def test_http_integration_docs_missing_prevents_execute_python_call(exec_py_context: ExecPyModuleContext) -> None:
+    await exec_py_context.reset_state()
+    await exec_py_context.activate(_integration_llm())
+    conversation_id = exec_py_context.conversation_id("integration-missing")
     await ws_conversation_send(
-        test_context.server,
+        exec_py_context.server,
         command_id="m1",
-        actor_id=actor_id,
+        actor_id=exec_py_context.actor_id,
         conversation_id=conversation_id,
         content="inspect integration context",
     )
-    history = await conversation_history(test_context.server, conversation_id)
+    history = await conversation_history(exec_py_context.server, conversation_id)
     assert history[-1]["payload"] != {"text": "integration-ok"}
     assert not any(item["kind"] == "tool_result" for item in history)
 
@@ -141,8 +144,9 @@ async def test_http_tool_loop_continues_when_llm_sees_prior_tool_result(test_con
     assert interaction_kinds(history) == ["input", "gen_tool_call", "tool_result", "gen_text"]
 
 
-async def test_http_python_reset_notice_enables_second_turn_after_execute_python(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(
+async def test_http_python_reset_notice_enables_second_turn_after_execute_python(exec_py_context: ExecPyModuleContext) -> None:
+    await exec_py_context.reset_state()
+    await exec_py_context.activate(
         PromptConditionedProvider(
             rules=[
                 (runtime_developer_notice("previous execute_python session has been reset"), reply_text("continued")),
@@ -154,10 +158,22 @@ async def test_http_python_reset_notice_enables_second_turn_after_execute_python
             ]
         )
     )
-    conversation_id = test_context.conversation_id("python-reset-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="run python")
-    await ws_conversation_send(test_context.server, command_id="m2", actor_id=actor_id, conversation_id=conversation_id, content="continue")
-    history = await conversation_history(test_context.server, conversation_id)
+    conversation_id = exec_py_context.conversation_id("python-reset-c1")
+    await ws_conversation_send(
+        exec_py_context.server,
+        command_id="m1",
+        actor_id=exec_py_context.actor_id,
+        conversation_id=conversation_id,
+        content="run python",
+    )
+    await ws_conversation_send(
+        exec_py_context.server,
+        command_id="m2",
+        actor_id=exec_py_context.actor_id,
+        conversation_id=conversation_id,
+        content="continue",
+    )
+    history = await conversation_history(exec_py_context.server, conversation_id)
     assert history[-1]["payload"] == {"text": "continued"}
     assert runtime_developer_notice_count(history, "previous execute_python session has been reset") == 1
 

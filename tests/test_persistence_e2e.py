@@ -26,6 +26,7 @@ from support.llm_rules import (
     runtime_developer_notice,
     user_message_contains,
 )
+from support.exec_py import ExecPyModuleContext
 from support.prompt_conditioned_llm import PromptConditionedProvider
 
 
@@ -69,12 +70,25 @@ async def test_http_conversation_facade_history_hides_prefix(test_context: Share
     assert interaction_kinds(facade) == ["input", "gen_text"]
 
 
-async def test_http_resume_keeps_conversation_usable(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(_python_reset_llm())
-    conversation_id = test_context.conversation_id("resume-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="run python")
-    await ws_conversation_send(test_context.server, command_id="m2", actor_id=actor_id, conversation_id=conversation_id, content="continue")
-    history = await conversation_history(test_context.server, conversation_id)
+async def test_http_resume_keeps_conversation_usable(exec_py_context: ExecPyModuleContext) -> None:
+    await exec_py_context.reset_state()
+    await exec_py_context.activate(_python_reset_llm())
+    conversation_id = exec_py_context.conversation_id("resume-c1")
+    await ws_conversation_send(
+        exec_py_context.server,
+        command_id="m1",
+        actor_id=exec_py_context.actor_id,
+        conversation_id=conversation_id,
+        content="run python",
+    )
+    await ws_conversation_send(
+        exec_py_context.server,
+        command_id="m2",
+        actor_id=exec_py_context.actor_id,
+        conversation_id=conversation_id,
+        content="continue",
+    )
+    history = await conversation_history(exec_py_context.server, conversation_id)
     assert history[-1]["payload"] == {"text": "continued"}
     assert interaction_kinds(history).count("gen_tool_call") == 1
 

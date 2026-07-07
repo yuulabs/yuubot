@@ -9,7 +9,7 @@ from support.prompt_conditioned_llm import PromptConditionedProvider
 
 async def test_http_read_tool_reads_requested_slice(test_context: SharedTestContext) -> None:
     workspace = test_context.workspace
-    workspace.mkdir()
+    workspace.mkdir(exist_ok=True)
     workspace.joinpath("big.txt").write_text("0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n", encoding="utf-8")
     actor_id = await test_context.setup_actor(
         PromptConditionedProvider(

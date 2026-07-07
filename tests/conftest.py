@@ -14,6 +14,13 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
 from support.api import SharedTestContext, boot_app, running_server  # noqa: E402
+from support.exec_py import exec_py_context  # noqa: F401,E402
+from support.workspaces import prepare_session_workspaces, reset_workspace_files  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+async def prepared_workspaces(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    return await prepare_session_workspaces(tmp_path_factory.mktemp("yuubot-workspaces"))
 
 
 @pytest.fixture(scope="session")
@@ -24,12 +31,19 @@ async def shared_server(tmp_path_factory: pytest.TempPathFactory) -> AsyncIterat
 
 
 @pytest.fixture
-async def test_context(shared_server: object, tmp_path: Path, request: pytest.FixtureRequest) -> AsyncIterator[SharedTestContext]:
-    context = SharedTestContext(shared_server, tmp_path, request.node.name)
+async def test_context(
+    shared_server: object,
+    prepared_workspaces: tuple[Path, Path],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> AsyncIterator[SharedTestContext]:
+    context = SharedTestContext(shared_server, tmp_path, request.node.name, prepared_workspaces)
+    reset_workspace_files(context.workspace)
     try:
         yield context
     finally:
         await context.cleanup()
+        reset_workspace_files(context.workspace)
 
 
 @pytest.fixture(autouse=True)

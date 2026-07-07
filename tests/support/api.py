@@ -18,6 +18,8 @@ from yuubot.domain import StreamEvent
 from yuubot.llm import Provider, ScriptedProvider, scripted_reply
 from yuubot.web import make_server
 
+from .workspaces import workspace_shard
+
 JsonObject = dict[str, object]
 
 
@@ -34,28 +36,45 @@ async def boot_app(data_dir: Path, *, provider: Provider | None = None) -> Yuubo
 
 
 @contextlib.asynccontextmanager
-async def running_server(app: Yuubot) -> AsyncIterator[object]:
-    server = make_server(app, port=0)
+async def running_server(app: Yuubot, *, development: bool = False) -> AsyncIterator[object]:
+    server = make_server(app, port=0, development=development)
+    ready = asyncio.Event()
     serve_task = asyncio.create_task(server.serve())
-    for _ in range(100):
-        if server._server.started:
-            break
-        await asyncio.sleep(0.01)
+
+    async def wait_ready() -> None:
+        while not server._server.started:  # noqa: SLF001
+            await asyncio.sleep(0)
+        ready.set()
+
+    wait_task = asyncio.create_task(wait_ready())
     try:
+        await asyncio.wait_for(ready.wait(), timeout=10.0)
         yield server
     finally:
+        wait_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await wait_task
         server.shutdown()
         await serve_task
 
 
 class SharedTestContext:
-    def __init__(self, server: object, tmp_path: Path, test_name: str) -> None:
+    def __init__(
+        self,
+        server: object,
+        tmp_path: Path,
+        test_name: str,
+        workspaces: tuple[Path, Path],
+    ) -> None:
         self.server = server
         self.tmp_path = tmp_path
         self.prefix = _test_prefix(test_name)
         self.actor_id = self.name("actor")
         self.provider_id = self.name("provider")
-        self.workspace = tmp_path / "workspace"
+        shard = workspace_shard(workspaces, test_name)
+        self.workspace = workspaces[shard]
+        self.workspace_alt = workspaces[1 - shard]
+        self._http = httpx.AsyncClient(timeout=30.0)
         self._actors: list[str] = []
         self._providers: list[str] = []
         self._routes: list[str] = []
@@ -86,7 +105,7 @@ class SharedTestContext:
         app = getattr(self.server, "app", None)
         if isinstance(app, Yuubot) and provider is not None:
             app.provider_instances[resolved] = provider
-        await put_provider(self.server, resolved, model=model)
+        await put_provider(self.server, resolved, model=model, client=self._http)
         if resolved not in self._providers:
             self._providers.append(resolved)
         return resolved
@@ -96,59 +115,87 @@ class SharedTestContext:
         provider: Provider | None = None,
         *,
         actor_id: str | None = None,
+        provider_id: str | None = None,
+        workspace: Path | None = None,
         enable: bool = True,
         model: str = "fake",
     ) -> str:
         resolved_actor = actor_id or self.actor_id
-        await self.put_provider(provider, model=model)
+        resolved_provider = provider_id or self.provider_id
+        resolved_workspace = workspace or self.workspace
+        await self.put_provider(provider, provider_id=resolved_provider, model=model)
         await put_actor(
             self.server,
             resolved_actor,
-            workspace=self.workspace,
-            provider=self.provider_id,
+            workspace=resolved_workspace,
+            provider=resolved_provider,
             model=model,
+            client=self._http,
         )
         if resolved_actor not in self._actors:
             self._actors.append(resolved_actor)
         if enable:
-            await enable_actor(self.server, resolved_actor)
+            await enable_actor(self.server, resolved_actor, client=self._http)
         return resolved_actor
 
     async def put_integration(self, integration_type: str, *, name: str, config: dict[str, object]) -> JsonObject:
         self._integrations.add(integration_type)
-        return await put_integration(self.server, integration_type, name=name, config=config)
+        return await put_integration(
+            self.server,
+            integration_type,
+            name=name,
+            config=config,
+            client=self._http,
+        )
 
     async def create_route(self, *, route_id: str, pattern: str, actor_id: str, enabled: bool = True) -> JsonObject:
         if route_id not in self._routes:
             self._routes.append(route_id)
-        return await create_route(self.server, route_id=route_id, pattern=pattern, actor_id=actor_id, enabled=enabled)
+        return await create_route(
+            self.server,
+            route_id=route_id,
+            pattern=pattern,
+            actor_id=actor_id,
+            enabled=enabled,
+            client=self._http,
+        )
 
     async def cleanup(self) -> None:
         url = base_url(self.server)
-        for route_id in reversed(self._routes):
-            await _try_http_json("DELETE", f"{url}/api/routes/{route_id}")
-        for conversation_id in reversed(self._conversations):
-            await _try_http_json("DELETE", f"{url}/api/conversations/{conversation_id}")
-        await self._cleanup_shares()
-        for actor_id in reversed(self._actors):
-            await _try_http_json("DELETE", f"{url}/api/actors/{actor_id}")
-        for provider_id in reversed(self._providers):
-            await _try_http_json("DELETE", f"{url}/api/providers/{provider_id}")
-            app = getattr(self.server, "app", None)
-            if isinstance(app, Yuubot):
-                self._remove_provider_instance(app, provider_id)
+        if self._routes:
+            for route_id in reversed(self._routes):
+                await _try_http_json("DELETE", f"{url}/api/routes/{route_id}", client=self._http)
+        if self._conversations:
+            for conversation_id in reversed(self._conversations):
+                await _try_http_json("DELETE", f"{url}/api/conversations/{conversation_id}", client=self._http)
+        if self._actors:
+            await self._cleanup_shares()
+        if self._actors:
+            for actor_id in reversed(self._actors):
+                await _try_http_json("DELETE", f"{url}/api/actors/{actor_id}", client=self._http)
+        if self._providers:
+            for provider_id in reversed(self._providers):
+                await _try_http_json("DELETE", f"{url}/api/providers/{provider_id}", client=self._http)
+                app = getattr(self.server, "app", None)
+                if isinstance(app, Yuubot):
+                    self._remove_provider_instance(app, provider_id)
         await self._cleanup_integrations()
+        await self._http.aclose()
+
+    async def reset_integrations(self) -> None:
+        await self._cleanup_integrations()
+        self._integrations.clear()
 
     async def _cleanup_shares(self) -> None:
         try:
-            payload = await http_json("GET", f"{base_url(self.server)}/api/shares")
+            payload = await http_json("GET", f"{base_url(self.server)}/api/shares", client=self._http)
         except AssertionError:
             return
         for grant in cast(list[JsonObject], payload.get("items", [])):
             if grant.get("actor_id") in self._actors:
                 share_id = grant.get("id")
                 if isinstance(share_id, str):
-                    await _try_http_json("DELETE", f"{base_url(self.server)}/api/shares/{share_id}")
+                    await _try_http_json("DELETE", f"{base_url(self.server)}/api/shares/{share_id}", client=self._http)
 
     async def _cleanup_integrations(self) -> None:
         app = getattr(self.server, "app", None)
@@ -167,9 +214,15 @@ class SharedTestContext:
         app.provider_instances.pop(provider_id, None)
 
 
-async def _try_http_json(method: str, url: str, body: JsonObject | bytes | None = None) -> JsonObject:
+async def _try_http_json(
+    method: str,
+    url: str,
+    body: JsonObject | bytes | None = None,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> JsonObject:
     try:
-        return await http_json(method, url, body)
+        return await http_json(method, url, body, client=client)
     except AssertionError:
         return {}
 
@@ -191,6 +244,7 @@ async def http_json(
     *,
     content_type: str = "application/json",
     expected_status: int = 200,
+    client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
     headers: dict[str, str] = {}
     content: bytes | None = None
@@ -200,8 +254,11 @@ async def http_json(
     elif isinstance(body, bytes):
         content = body
         headers["content-type"] = content_type
-    async with httpx.AsyncClient() as client:
-        response = await client.request(method, url, content=content, headers=headers, timeout=30.0)
+    if client is None:
+        async with httpx.AsyncClient() as ephemeral:
+            response = await ephemeral.request(method, url, content=content, headers=headers, timeout=30.0)
+    else:
+        response = await client.request(method, url, content=content, headers=headers)
     assert response.status_code == expected_status, response.text
     if not response.content:
         return {}
@@ -221,7 +278,13 @@ def multipart_body(boundary: str, filename: str, content_type: str, data: bytes)
     )
 
 
-async def put_provider(server: object, provider_id: str = "fake", *, model: str = "fake") -> JsonObject:
+async def put_provider(
+    server: object,
+    provider_id: str = "fake",
+    *,
+    model: str = "fake",
+    client: httpx.AsyncClient | None = None,
+) -> JsonObject:
     app = getattr(server, "app", None)
     injected = app.provider_instances.get(provider_id) if isinstance(app, Yuubot) else None
     if injected is None:
@@ -234,6 +297,7 @@ async def put_provider(server: object, provider_id: str = "fake", *, model: str 
             "protocol": "openai-compatible",
             "config": {"endpoint": "", "api_key": "test-key", "options": {}},
         },
+        client=client,
     )
     await http_json(
         "PUT",
@@ -243,6 +307,7 @@ async def put_provider(server: object, provider_id: str = "fake", *, model: str 
             "toolcall": True,
             "input_price_per_million": 1.0,
         },
+        client=client,
     )
     if isinstance(app, Yuubot) and injected is not None:
         app.provider_instances[provider_id] = injected
@@ -256,6 +321,7 @@ async def put_actor(
     workspace: Path,
     provider: str = "fake",
     model: str = "fake",
+    client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
     return await http_json(
         "PUT",
@@ -266,15 +332,16 @@ async def put_actor(
             "provider": provider,
             "model": {"selector": model},
         },
+        client=client,
     )
 
 
-async def enable_actor(server: object, actor_id: str) -> JsonObject:
-    return await http_json("POST", f"{base_url(server)}/api/actors/{actor_id}/enable", {})
+async def enable_actor(server: object, actor_id: str, *, client: httpx.AsyncClient | None = None) -> JsonObject:
+    return await http_json("POST", f"{base_url(server)}/api/actors/{actor_id}/enable", {}, client=client)
 
 
-async def disable_actor(server: object, actor_id: str) -> JsonObject:
-    return await http_json("POST", f"{base_url(server)}/api/actors/{actor_id}/disable", {})
+async def disable_actor(server: object, actor_id: str, *, client: httpx.AsyncClient | None = None) -> JsonObject:
+    return await http_json("POST", f"{base_url(server)}/api/actors/{actor_id}/disable", {}, client=client)
 
 
 async def put_integration(
@@ -283,16 +350,23 @@ async def put_integration(
     *,
     name: str,
     config: dict[str, object],
+    client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
     return await http_json(
         "PUT",
         f"{base_url(server)}/api/integrations/{integration_type}/config",
         {"name": name, "config": config},
+        client=client,
     )
 
 
-async def enable_integration(server: object, integration_type: str) -> JsonObject:
-    return await http_json("POST", f"{base_url(server)}/api/integrations/{integration_type}/enable", {})
+async def enable_integration(
+    server: object,
+    integration_type: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> JsonObject:
+    return await http_json("POST", f"{base_url(server)}/api/integrations/{integration_type}/enable", {}, client=client)
 
 
 async def create_route(
@@ -302,11 +376,13 @@ async def create_route(
     pattern: str,
     actor_id: str,
     enabled: bool = True,
+    client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
     return await http_json(
         "POST",
         f"{base_url(server)}/api/routes",
         {"id": route_id, "pattern": pattern, "actor_id": actor_id, "enabled": enabled},
+        client=client,
     )
 
 

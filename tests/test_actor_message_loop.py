@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
+from support.integration_app import reset_actor_app_state
 from yuubot.actor import ActorConfig
 from yuubot.domain import ActorMessage, ConversationContext, LLMInput, ModelCard, StreamEvent
 from yuubot.llm import merge_catalog, scripted_reply
@@ -76,68 +78,85 @@ async def test_actor_inbound_without_conversation_reuses_default_conversation(tm
         scripted_reply("ok"),
     )
     try:
-        await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
-        first_conversation = actor._mailbox_conversation
-        assert first_conversation is not None
-
-        await actor.handle_mailbox_message(ActorMessage(text="second", source={"inbound_kind": "actor_inbound"}))
-
-        assert actor._mailbox_conversation == first_conversation
-        items = await app.runtime.history.load_interaction_wrapped(first_conversation)
-        assert _input_roles(items) == ["user", "user"]
+        yield app, workspace
     finally:
         await app.shutdown()
 
 
+@pytest.fixture(autouse=True)
+async def _reset_actor_loop_module_state(actor_loop_app: tuple[Yuubot, Path]) -> AsyncIterator[None]:
+    yield
+    await reset_actor_app_state(actor_loop_app[0])
+
+
 @pytest.mark.asyncio
-async def test_actor_inbound_without_conversation_creates_new_default_after_ttl(tmp_path) -> None:
-    app = await Yuubot.create(tmp_path / "data")
+async def test_actor_inbound_without_conversation_reuses_default_conversation(actor_loop_app: tuple[Yuubot, Path]) -> None:
+    app, workspace = actor_loop_app
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
-            workspace=str(tmp_path / "workspace"),
+            workspace=str(workspace),
             model=ModelCard(selector="fake"),
         ),
         scripted_reply("ok"),
     )
-    try:
-        await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
-        first_conversation = actor._mailbox_conversation
-        assert first_conversation is not None
+    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+    first_conversation = actor._mailbox_conversation
+    assert first_conversation is not None
 
-        app.runtime.conversations.ttl_s = -1
-        await actor.handle_mailbox_message(ActorMessage(text="second", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(ActorMessage(text="second", source={"inbound_kind": "actor_inbound"}))
 
-        assert actor._mailbox_conversation is not None
-        assert actor._mailbox_conversation != first_conversation
-    finally:
-        await app.shutdown()
+    assert actor._mailbox_conversation == first_conversation
+    items = await app.runtime.history.load_interaction_wrapped(first_conversation)
+    assert _input_roles(items) == ["user", "user"]
 
 
 @pytest.mark.asyncio
-async def test_actor_explicit_conversation_and_callback_roles(tmp_path) -> None:
-    app = await Yuubot.create(tmp_path / "data")
+async def test_actor_inbound_without_conversation_creates_new_default_after_ttl(actor_loop_app: tuple[Yuubot, Path]) -> None:
+    app, workspace = actor_loop_app
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
-            workspace=str(tmp_path / "workspace"),
+            workspace=str(workspace),
             model=ModelCard(selector="fake"),
         ),
         scripted_reply("ok"),
     )
-    try:
-        await actor.handle_mailbox_message(
-            ActorMessage(text="hello", conversation_id="explicit", source={"inbound_kind": "actor_inbound"})
+    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+    first_conversation = actor._mailbox_conversation
+    assert first_conversation is not None
+
+    app.runtime.conversations.ttl_s = -1
+    await actor.handle_mailbox_message(ActorMessage(text="second", source={"inbound_kind": "actor_inbound"}))
+
+    assert actor._mailbox_conversation is not None
+    assert actor._mailbox_conversation != first_conversation
+
+
+@pytest.mark.asyncio
+async def test_actor_explicit_conversation_and_callback_roles(actor_loop_app: tuple[Yuubot, Path]) -> None:
+    app, workspace = actor_loop_app
+    actor = app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(workspace),
+            model=ModelCard(selector="fake"),
+        ),
+        scripted_reply("ok"),
+    )
+    await actor.handle_mailbox_message(
+        ActorMessage(text="hello", conversation_id="explicit", source={"inbound_kind": "actor_inbound"})
+    )
+    await actor.handle_mailbox_message(
+        ActorMessage(
+            text="task done",
+            conversation_id="explicit",
+            source={"inbound_kind": "conversation_callback"},
         )
-        await actor.handle_mailbox_message(
-            ActorMessage(
-                text="task done",
-                conversation_id="explicit",
-                source={"inbound_kind": "conversation_callback"},
-            )
-        )
+    )
 
         items = await app.runtime.history.load_interaction_wrapped("explicit")
         assert _input_roles(items) == ["user", "developer"]

@@ -11,7 +11,6 @@ from support.api import (
     conversation_summary,
     disable_actor,
     enable_actor,
-    enable_integration,
     post_inbound,
     wait_for_history_kind,
     ws_conversation_send,
@@ -19,6 +18,7 @@ from support.api import (
 from support.assertions import interaction_kinds, payload as history_payload, text_content, tool_result_text
 from support.llm_rules import all_of, call_tool, has_tool_spec, messages_contain_tool_result, reply_text, user_message_contains
 from support.llm_fakes import scripted_reply
+from support.exec_py import ExecPyModuleContext
 from support.prompt_conditioned_llm import PromptConditionedProvider
 
 
@@ -92,7 +92,62 @@ async def test_http_actor_blocked_state_visible_in_bootstrap(test_context: Share
     assert summary["last_error"] == {"reason": "length"}
 
 
-async def test_http_execute_python_receives_enabled_integration_context(test_context: SharedTestContext) -> None:
+async def test_http_two_actors_use_distinct_workspaces(test_context: SharedTestContext) -> None:
+    actor_a = await test_context.setup_actor(
+        PromptConditionedProvider(
+            rules=[
+                (messages_contain_tool_result("write"), reply_text("done-a")),
+                (
+                    all_of(has_tool_spec("write"), user_message_contains("write note a")),
+                    call_tool("write", {"path": "note-a.txt", "content": "alpha"}),
+                ),
+            ]
+        ),
+        actor_id=test_context.name("actor-a"),
+        provider_id=test_context.name("provider-a"),
+        workspace=test_context.workspace,
+    )
+    actor_b = await test_context.setup_actor(
+        PromptConditionedProvider(
+            rules=[
+                (messages_contain_tool_result("write"), reply_text("done-b")),
+                (
+                    all_of(has_tool_spec("write"), user_message_contains("write note b")),
+                    call_tool("write", {"path": "note-b.txt", "content": "beta"}),
+                ),
+            ]
+        ),
+        actor_id=test_context.name("actor-b"),
+        provider_id=test_context.name("provider-b"),
+        workspace=test_context.workspace_alt,
+    )
+    conversation_a = test_context.conversation_id("multi-a")
+    conversation_b = test_context.conversation_id("multi-b")
+    await ws_conversation_send(
+        test_context.server,
+        command_id="m1",
+        actor_id=actor_a,
+        conversation_id=conversation_a,
+        content="write note a",
+    )
+    await ws_conversation_send(
+        test_context.server,
+        command_id="m2",
+        actor_id=actor_b,
+        conversation_id=conversation_b,
+        content="write note b",
+    )
+    assert (test_context.workspace / "note-a.txt").read_text(encoding="utf-8") == "alpha"
+    assert (test_context.workspace_alt / "note-b.txt").read_text(encoding="utf-8") == "beta"
+    assert not (test_context.workspace / "note-b.txt").exists()
+    assert not (test_context.workspace_alt / "note-a.txt").exists()
+    snapshot = await bootstrap(test_context.server)
+    actor_ids = {item["id"] for item in cast(list[JsonObject], snapshot["actors"])}
+    assert actor_a in actor_ids
+    assert actor_b in actor_ids
+
+
+async def test_http_execute_python_receives_enabled_integration_context(exec_py_context: ExecPyModuleContext) -> None:
     code = (
         "import asyncio\n"
         "import yext.github\n"
@@ -103,15 +158,16 @@ async def test_http_execute_python_receives_enabled_integration_context(test_con
         "import os\n"
         "print(os.environ['YEXT_WEB_MAX_READ_CHARS'])\n"
     )
-    await test_context.put_integration(
+    await exec_py_context.reset_state()
+    await exec_py_context.put_integration(
         "github",
         name="gh",
         config={"access_token": "token", "default_owner": "yuulabs", "default_repo": "yuubot"},
     )
-    await enable_integration(test_context.server, "github")
-    await test_context.put_integration("tavily_web", name="web", config={"api_key": "web-token", "max_read_chars": 42})
-    await enable_integration(test_context.server, "tavily_web")
-    actor_id = await test_context.setup_actor(
+    await exec_py_context.enable_integration("github")
+    await exec_py_context.put_integration("tavily_web", name="web", config={"api_key": "web-token", "max_read_chars": 42})
+    await exec_py_context.enable_integration("tavily_web")
+    await exec_py_context.activate(
         PromptConditionedProvider(
             rules=[
                 (messages_contain_tool_result("execute_python"), reply_text("done")),
@@ -123,18 +179,31 @@ async def test_http_execute_python_receives_enabled_integration_context(test_con
             ]
         )
     )
-    conversation_id = test_context.conversation_id("py-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="inspect github context")
-    await ws_conversation_send(test_context.server, command_id="m2", actor_id=actor_id, conversation_id=conversation_id, content="continue")
-    history = await conversation_history(test_context.server, conversation_id)
+    conversation_id = exec_py_context.conversation_id("py-c1")
+    await ws_conversation_send(
+        exec_py_context.server,
+        command_id="m1",
+        actor_id=exec_py_context.actor_id,
+        conversation_id=conversation_id,
+        content="inspect github context",
+    )
+    await ws_conversation_send(
+        exec_py_context.server,
+        command_id="m2",
+        actor_id=exec_py_context.actor_id,
+        conversation_id=conversation_id,
+        content="continue",
+    )
+    history = await conversation_history(exec_py_context.server, conversation_id)
     developer_messages = [item for item in history if item["kind"] == "input" and history_payload(item).get("role") == "developer"]
     assert tool_result_text(history) == "yuulabs/yuubot\ntoken\n42\n"
     assert len(developer_messages) == 1
     assert "execute_python session has been reset" in text_content(developer_messages[0])
 
 
-async def test_http_execute_python_returns_ipython_traceback(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(
+async def test_http_execute_python_returns_ipython_traceback(exec_py_context: ExecPyModuleContext) -> None:
+    await exec_py_context.reset_state()
+    await exec_py_context.activate(
         PromptConditionedProvider(
             rules=[
                 (messages_contain_tool_result("execute_python"), reply_text("done")),
@@ -145,9 +214,15 @@ async def test_http_execute_python_returns_ipython_traceback(test_context: Share
             ]
         )
     )
-    conversation_id = test_context.conversation_id("py-error")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="show error")
-    history = await conversation_history(test_context.server, conversation_id)
+    conversation_id = exec_py_context.conversation_id("py-error")
+    await ws_conversation_send(
+        exec_py_context.server,
+        command_id="m1",
+        actor_id=exec_py_context.actor_id,
+        conversation_id=conversation_id,
+        content="show error",
+    )
+    history = await conversation_history(exec_py_context.server, conversation_id)
     text = tool_result_text([item for item in history if item["kind"] == "tool_result"])
     assert "ZeroDivisionError" in text
     assert "execute_python failed" not in text

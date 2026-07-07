@@ -277,7 +277,7 @@ async def test_http_bootstrap_exposes_integration_schemas(shared_server: object)
 
 async def test_http_serves_actor_workspace_files_with_containment(test_context: SharedTestContext, tmp_path: Path) -> None:
     workspace = test_context.workspace
-    workspace.mkdir()
+    workspace.mkdir(exist_ok=True)
     workspace.joinpath("notes").mkdir()
     workspace.joinpath("notes", "memo.txt").write_text("hello", encoding="utf-8")
     tmp_path.joinpath("outside.txt").write_text("secret", encoding="utf-8")

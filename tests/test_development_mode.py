@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import cast
 
@@ -12,23 +9,7 @@ from yuubot.runtime.logging_config import LOG_FILENAME, configure_logging
 from yuubot.runtime.shares import ShareRegistry
 from yuubot.web.errors import INTERNAL_ERROR_MESSAGE
 
-from support.api import base_url, boot_app, bootstrap, enable_actor, http_json, put_actor, put_provider
-from yuubot.web import make_server
-
-
-@contextlib.asynccontextmanager
-async def running_server(app: object, *, development: bool = False) -> AsyncIterator[object]:
-    server = make_server(app, port=0, development=development)
-    serve_task = asyncio.create_task(server.serve())
-    for _ in range(100):
-        if server._server.started:
-            break
-        await asyncio.sleep(0.01)
-    try:
-        yield server
-    finally:
-        server.shutdown()
-        await serve_task
+from support.api import base_url, boot_app, running_server, bootstrap, enable_actor, http_json, put_actor, put_provider
 
 
 @pytest.mark.asyncio
