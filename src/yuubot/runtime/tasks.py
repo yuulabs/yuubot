@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal
 import msgspec
 from attrs import define, field
 
+from .pty_runner import run_pty_process
 from .streams import TaskCoroFactory, TextStream
 from .wakeup import WakeupPayload, WakeupTarget
 
@@ -26,7 +27,6 @@ _log = logging.getLogger(__name__)
 TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
 DeliveryState = Literal["pending", "delivered", "skipped"]
 EmitFn = Callable[..., None]
-STDERR_CAPTURE_MAX_BYTES = 65536
 
 
 def make_owner(*, actor_id: str, conversation_id: str) -> str:
@@ -42,6 +42,14 @@ def new_task_id() -> str:
     return f"t-{uuid.uuid4().hex[:12]}"
 
 
+def _iso_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+class TaskNotRunningError(RuntimeError):
+    pass
+
+
 class TaskSnapshot(msgspec.Struct, frozen=True, kw_only=True):
     id: str
     owner: str
@@ -52,7 +60,11 @@ class TaskSnapshot(msgspec.Struct, frozen=True, kw_only=True):
     error: str | None
     exit_code: int | None
     delivery_state: str
+    interactive: bool = True
     stdout_tail: str = ""
+    created_at: str = ""
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 @define
@@ -64,12 +76,16 @@ class RuntimeTaskRecord:
     intro: str = ""
     shell: str = ""
     status: TaskStatus = "pending"
+    interactive: bool = True
     stdin: TextStream = field(factory=TextStream)
     stdout: TextStream = field(factory=TextStream)
     error: str | None = None
     result: object | None = None
     exit_code: int | None = None
     delivery_state: DeliveryState = "pending"
+    created_at: str = field(factory=_iso_now)
+    started_at: str | None = None
+    finished_at: str | None = None
     _terminal: asyncio.Event = field(factory=asyncio.Event, init=False)
 
     def is_terminal(self) -> bool:
@@ -82,6 +98,19 @@ class RuntimeTaskRecord:
 
     def mark_terminal(self) -> None:
         self._terminal.set()
+
+
+@define
+class TaskDeliveryQueue:
+    _pending: dict[str, list[str]] = field(factory=dict)
+
+    def enqueue(self, conversation_id: str, task_id: str) -> None:
+        items = self._pending.setdefault(conversation_id, [])
+        if task_id not in items:
+            items.append(task_id)
+
+    def pop_all(self, conversation_id: str) -> list[str]:
+        return self._pending.pop(conversation_id, [])
 
 
 @define
@@ -126,6 +155,7 @@ class TaskScheduler:
         if record.id in self._asyncio_tasks:
             raise ValueError(f"task already scheduled: {record.id}")
         record.status = "running"
+        record.started_at = _iso_now()
         self.emit(
             "task.started",
             task_id=record.id,
@@ -187,6 +217,7 @@ class TaskScheduler:
         elif asyncio_task.exception() is not None and record.status != "cancelled":
             record.error = str(asyncio_task.exception())
             record.status = "failed"
+        record.finished_at = _iso_now()
         record.mark_terminal()
         self.emit(
             "task.finished",
@@ -199,76 +230,25 @@ class TaskScheduler:
         )
 
 
-async def _terminate_shell_process(proc: asyncio.subprocess.Process) -> None:
-    if proc.returncode is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        proc.kill()
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=5.0)
-    except TimeoutError:
-        pass
-
-
 def shell_coro_factory(*, shell: str, workspace: Path, tmp_dir: Path) -> TaskCoroFactory:
-    async def run(_stdin: TextStream, stdout: TextStream) -> int:
+    async def run(stdin: TextStream, stdout: TextStream) -> int:
         env = os.environ.copy()
         env["TMPDIR"] = str(tmp_dir)
-        proc = await asyncio.create_subprocess_exec(
-            "bash",
-            "-lc",
-            shell,
+        return await run_pty_process(
+            argv=["bash", "-lc", shell],
             cwd=workspace,
             env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
+            stdin_stream=stdin,
+            stdout_stream=stdout,
         )
-        assert proc.stdout is not None
-        assert proc.stderr is not None
-        stderr_chunks: list[bytes] = []
-        stderr_size = 0
-        saw_stdout = False
-
-        async def pump_stdout(stream: asyncio.StreamReader) -> None:
-            nonlocal saw_stdout
-            while True:
-                chunk = await stream.read(4096)
-                if not chunk:
-                    break
-                saw_stdout = True
-                stdout.write(chunk.decode("utf-8", errors="replace"))
-
-        async def pump_stderr(stream: asyncio.StreamReader) -> None:
-            nonlocal stderr_size
-            while True:
-                chunk = await stream.read(4096)
-                if not chunk:
-                    break
-                if stderr_size >= STDERR_CAPTURE_MAX_BYTES:
-                    continue
-                take = chunk[: STDERR_CAPTURE_MAX_BYTES - stderr_size]
-                stderr_chunks.append(take)
-                stderr_size += len(take)
-
-        try:
-            await asyncio.gather(
-                pump_stdout(proc.stdout),
-                pump_stderr(proc.stderr),
-            )
-            code = await proc.wait()
-        except asyncio.CancelledError:
-            await _terminate_shell_process(proc)
-            raise
-        if stderr_chunks:
-            stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
-            if stderr_text.strip():
-                stdout.write(stderr_text if saw_stdout else stderr_text)
-        return code
 
     return run
+
+
+def write_task_stdin(record: RuntimeTaskRecord, text: str) -> None:
+    if record.status != "running":
+        raise TaskNotRunningError(f"task is not running: {record.status}")
+    record.stdin.write(text)
 
 
 def register_shell_task(
@@ -287,6 +267,7 @@ def register_shell_task(
         name=name,
         intro=intro,
         shell=shell,
+        interactive=True,
     )
     runtime.tasks.put(record)
     runtime.scheduler.schedule(
@@ -339,6 +320,32 @@ async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> No
     record.delivery_state = "delivered"
 
 
+async def schedule_task_delivery(runtime: Runtime, record: RuntimeTaskRecord) -> None:
+    _, conversation_id = parse_owner(record.owner)
+    conversation = runtime.conversations.get_if_present(conversation_id)
+    if conversation is not None and conversation.running:
+        runtime.task_delivery_queue.enqueue(conversation_id, record.id)
+        return
+    await deliver_task_result(runtime, record)
+
+
+async def drain_pending_task_deliveries(runtime: Runtime, conversation_id: str) -> None:
+    for task_id in runtime.task_delivery_queue.pop_all(conversation_id):
+        if task_id not in runtime.tasks:
+            continue
+        record = runtime.tasks.get(task_id)
+        if record.delivery_state != "pending":
+            continue
+        if record.status == "cancelled":
+            record.delivery_state = "skipped"
+            continue
+        try:
+            await deliver_task_result(runtime, record)
+        except Exception:
+            _log.exception("queued task delivery failed for %s", record.id)
+            record.delivery_state = "skipped"
+
+
 @define
 class TaskDeliveryListener:
     _runtime: Runtime
@@ -361,7 +368,7 @@ class TaskDeliveryListener:
             record.delivery_state = "skipped"
             return
         try:
-            await deliver_task_result(self._runtime, record)
+            await schedule_task_delivery(self._runtime, record)
         except Exception:
             _log.exception("task delivery failed for %s", record.id)
             record.delivery_state = "skipped"
@@ -378,5 +385,9 @@ def task_record_snapshot(record: RuntimeTaskRecord, *, include_stdout: bool = Fa
         error=record.error,
         exit_code=record.exit_code,
         delivery_state=record.delivery_state,
+        interactive=record.interactive,
         stdout_tail=record.stdout.tail(max_bytes=65536) if include_stdout else "",
+        created_at=record.created_at,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
     )

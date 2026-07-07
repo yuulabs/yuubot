@@ -59,7 +59,12 @@ class RuntimeTaskRecord:
 
 ### Shell metadata
 
-`kind == "shell"` 时额外字段：`name`, `intro`, `shell`, `exit_code`。
+`kind == "shell"` 时额外字段：`name`, `intro`, `shell`, `exit_code`, `interactive`,
+`created_at`, `started_at`, `finished_at`。
+
+Shell runner 使用 **PTY**（`pty_runner.run_pty_process`）：stdout 写入 `TextStream`；
+外部经 stdin API 写入 `record.stdin`，runner 泵入进程。适用于交互式 CLI init / login /
+bind；**禁止**用 `bash` tool + `timeout_s` 处理同类流程。
 
 ### Facade（`execute_python` only）
 
@@ -67,13 +72,14 @@ class RuntimeTaskRecord:
 class Task:
   id: str
   name: str
-  status: TaskStatus
   intro: str
 
-  def output(self, *, max_bytes: int = 65536) -> str: ...
-  def error(self) -> str | None: ...
-  def exit_code(self) -> int | None: ...
-  def cancel(self) -> None: ...
+  async def status(self) -> TaskStatus: ...
+  async def output(self, *, max_bytes: int = 65536) -> str: ...
+  async def error(self) -> str | None: ...
+  async def exit_code(self) -> int | None: ...
+  async def write(self, text: str) -> None: ...
+  async def cancel(self) -> None: ...
 ```
 
 ### Event kinds
@@ -92,6 +98,7 @@ class Task:
 | 进程 shutdown | `scheduler.shutdown()`：对 `running`/`pending` 调用 `asyncio.Task.cancel()`；终态统一为 `cancelled`（或 `failed` 若取消前已失败） |
 | Actor disable | 取消该 actor 下所有 `running`/`pending` task；终态 `cancelled`；不投递 `task_delivery` |
 | `task_delivery` | **至多一次**：`TaskDeliveryListener` 成功 `wakeup.deliver` 后设 `delivery_state=delivered`；mailbox 失败记日志 + `delivery_state=skipped`，不无限重试 |
+| `task_delivery` busy | owner conversation `running` 时入 `TaskDeliveryQueue`；`run_loop` / `append_developer_notice` 结束后 `drain_pending_task_deliveries` |
 | Harness timeout | 不取消已注册 task；仅结束当前 `execute_python` tool call |
 | Server restart | 运行中任务**丢弃**；无恢复、无「标记 failed」的 durable 记录 |
 
@@ -144,7 +151,7 @@ class TaskDeliveryListener:
     record = runtime.tasks.get(payload["task_id"])
     if record.delivery_state != "pending":
       return
-    await deliver_task_result(record)
+    await schedule_task_delivery(record)
 ```
 
 ```text
@@ -217,6 +224,7 @@ POST /api/tasks                    # loopback only；yb.tasks.submit
 GET  /api/tasks                    # admin UI + yb.tasks.list_tasks
 GET  /api/tasks/{task_id}          # admin UI + yb.tasks.find
 POST /api/tasks/{task_id}/cancel   # admin UI + Task.cancel
+POST /api/tasks/{task_id}/stdin    # admin UI + yb.tasks.write
 ```
 
 **`POST /api/tasks` → `200`** — body：`name`, `shell`, `intro`；`owner` 由 facade 从
@@ -251,7 +259,7 @@ loopback；管理面 UI 不暴露创建入口。
 | 404 | `not_found` | 未知 task_id（含重启后旧 id） |
 | 409 | `conflict` | task 已终态且不可 cancel（可选；v1 cancel 已终态幂等 200） |
 
-WS `task.subscribe` / `task.cancel` 帧顺序见 [02-admin-boundary.md](02-admin-boundary.md#websocket-contract)。
+WS `task.subscribe` / `task.stdin` / `task.cancel` 帧顺序见 [02-admin-boundary.md](02-admin-boundary.md#websocket-contract)。
 
 ## Script API（`execute_python` only）
 
