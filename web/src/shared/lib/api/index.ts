@@ -11,4 +11,5 @@ export * from "./cron";
 export * from "./notifications";
 export * from "./shares";
 export * from "./skills";
+export * from "./update";
 export * from "./ws";

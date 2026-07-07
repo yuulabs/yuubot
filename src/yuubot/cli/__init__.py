@@ -66,6 +66,17 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
     db_info = db_subcommands.add_parser("info")
     db_info.add_argument("config")
     db_info.add_argument("--json", action="store_true")
+    upgrade = subcommands.add_parser("upgrade")
+    upgrade_subcommands = upgrade.add_subparsers(dest="upgrade_command", required=True)
+    upgrade_check = upgrade_subcommands.add_parser("check")
+    upgrade_check.add_argument("config")
+    upgrade_check.add_argument("--json", action="store_true")
+    upgrade_apply = upgrade_subcommands.add_parser("apply")
+    upgrade_apply.add_argument("config")
+    upgrade_apply.add_argument("--host", default=DEFAULT_HOST)
+    upgrade_apply.add_argument("--port", type=int, default=DEFAULT_PORT)
+    upgrade_apply.add_argument("--skip-web-build", action="store_true")
+    upgrade_apply.add_argument("--json", action="store_true")
     subcommands.add_parser("version")
     args = parser.parse_args(argv)
 
@@ -113,6 +124,17 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
         return commands.stop(Path(args.config), json_output=bool(args.json))
     if args.command == "db" and args.db_command == "info":
         return await commands.db_info(Path(args.config), json_output=bool(args.json))
+    if args.command == "upgrade" and args.upgrade_command == "check":
+        return await commands.upgrade_check(json_output=bool(args.json))
+    if args.command == "upgrade" and args.upgrade_command == "apply":
+        return await commands.upgrade_apply(
+            app_loader,
+            Path(args.config),
+            host=str(args.host),
+            port=int(args.port),
+            json_output=bool(args.json),
+            skip_web_build=bool(args.skip_web_build),
+        )
     if args.command == "version":
         print(commands.version())
         return 0

@@ -1,0 +1,14 @@
+steps:
+  - id: python
+    cwd: .
+    run: uv sync
+  - id: web
+    cwd: web
+    run: |
+      if [[ -f pnpm-lock.yaml ]]; then
+        pnpm install --frozen-lockfile
+      else
+        pnpm install --no-frozen-lockfile
+      fi
+      pnpm run build
+    skip_when: SKIP_WEB_BUILD

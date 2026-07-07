@@ -413,3 +413,19 @@ export interface ShareGrant {
 export interface ItemsResponse<T> {
   items: T[];
 }
+
+export interface UpdateStatus {
+  supported: boolean;
+  install_kind: string;
+  current_version: string;
+  current_commit?: string | null;
+  remote_commit?: string | null;
+  update_available: boolean;
+  message?: string;
+}
+
+export interface UpdateApplyResult {
+  status: string;
+  log_path?: string | null;
+  message?: string;
+}

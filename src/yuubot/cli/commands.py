@@ -18,6 +18,7 @@ import yaml
 from ..app import load_process_config
 from ..db import Database, inspect_legacy, migrate_legacy, migration_files, pending_versions
 from ..db.migrate import current_version
+from ..upgrade import apply_update, check_update, project_root
 from ..web.server import UvicornServer, make_server
 from ..web.run_state import ServerRunState
 from ..web.run_state import read as read_run_state
@@ -479,3 +480,62 @@ def version() -> str:
         return importlib.metadata.version("yuubot")
     except importlib.metadata.PackageNotFoundError:
         return "0.1.0"
+
+
+async def upgrade_check(*, json_output: bool) -> int:
+    status = await check_update(project_root())
+    emit(msgspec.to_builtins(status), json_output=json_output)
+    return 0
+
+
+async def upgrade_apply(
+    app_loader: AppLoader,
+    config: Path,
+    *,
+    host: str,
+    port: int,
+    json_output: bool,
+    skip_web_build: bool,
+) -> int:
+    if run_state_for_config(config) is not None:
+        emit(
+            {
+                "ok": False,
+                "error": "server is running; apply updates from Settings or run `yuubot stop` first",
+            },
+            json_output=json_output,
+        )
+        return 3
+
+    root = project_root()
+    try:
+        apply_update(
+            config_path=config,
+            data_dir=config_data_dir(config),
+            host=host,
+            port=port,
+            skip_web_build=skip_web_build,
+            root=root,
+        )
+    except ValueError as exc:
+        emit(error_payload(exc), json_output=json_output)
+        return 1
+
+    # The scheduled script ends with `exec ybot serve`; wait until the server is up.
+    for _ in range(200):
+        run_state = run_state_for_config(config)
+        if run_state is not None:
+            emit(
+                {
+                    "ok": True,
+                    "config": str(config),
+                    "server": {"host": run_state.host, "port": run_state.port, "pid": run_state.pid},
+                    "status": "scheduled",
+                },
+                json_output=json_output,
+            )
+            return 0
+        await asyncio.sleep(0.1)
+
+    emit({"ok": False, "error": "update was scheduled but the server did not start"}, json_output=json_output)
+    return 1

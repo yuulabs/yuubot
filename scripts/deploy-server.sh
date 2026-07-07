@@ -141,19 +141,8 @@ EOF
 }
 
 install_app_dependencies() {
-    info "Installing Python workspace dependencies"
-    (cd "$REPO_ROOT" && uv sync)
-
-    info "Building Admin UI"
-    (
-        cd "$REPO_ROOT/web"
-        if [[ -f pnpm-lock.yaml ]]; then
-            pnpm install --frozen-lockfile
-        else
-            pnpm install --no-frozen-lockfile
-        fi
-        pnpm run build
-    )
+    info "Installing project dependencies"
+    "$REPO_ROOT/scripts/install-deps.sh"
 
     info "Validating bootstrap config"
     (
