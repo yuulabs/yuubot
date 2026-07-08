@@ -63,10 +63,13 @@ async def test_public_surface_exposes_public_routes_only(tmp_path: Path) -> None
     async with surface_server(app, deployment) as server:
         async with httpx.AsyncClient(base_url=base_url(server)) as client:
             api = await client.get("/api/bootstrap")
+            oauth_callback = await client.get("/api/mcp-oauth/missing/callback?code=code-1")
             spa = await client.get("/")
             missing_share = await client.get("/s/missing")
 
     assert api.status_code == 404
+    assert oauth_callback.status_code == 404
+    assert "Authorization attempt not found" in oauth_callback.text
     assert spa.status_code == 404
     assert missing_share.status_code == 404
 

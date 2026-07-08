@@ -343,10 +343,13 @@ $admin_domain {
 }
 
 $public_domain {
-    @admin_api path /api/*
-    respond @admin_api 404
+    @mcp_oauth_callback path_regexp ^/api/mcp-oauth/[^/]+/callback$
 
-    reverse_proxy 127.0.0.1:$YUUBOT_PUBLIC_PORT
+    route {
+        reverse_proxy @mcp_oauth_callback 127.0.0.1:$YUUBOT_PUBLIC_PORT
+        respond /api/* 404
+        reverse_proxy 127.0.0.1:$YUUBOT_PUBLIC_PORT
+    }
 }
 EOF
     else
@@ -437,6 +440,56 @@ validate_deploy() {
     log_step "Deployment validation complete"
 }
 
+migrate_caddy_public_oauth_callback() {
+    [[ -f "$CADDY_SITE_FILE" ]] || return 0
+
+    local tmp result
+    tmp="$(mktemp)"
+    run_sudo cat "$CADDY_SITE_FILE" >"$tmp"
+    result="$(
+        cd "$REPO_ROOT"
+        uv run python - "$tmp" "$YUUBOT_PUBLIC_PORT" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+public_port = sys.argv[2]
+old = f"""    @admin_api path /api/*
+    respond @admin_api 404
+
+    reverse_proxy 127.0.0.1:{public_port}
+"""
+new = f"""    @mcp_oauth_callback path_regexp ^/api/mcp-oauth/[^/]+/callback$
+
+    route {{
+        reverse_proxy @mcp_oauth_callback 127.0.0.1:{public_port}
+        respond /api/* 404
+        reverse_proxy 127.0.0.1:{public_port}
+    }}
+"""
+content = path.read_text(encoding="utf-8")
+updated = content.replace(old, new, 1)
+if updated == content:
+    print("unchanged")
+else:
+    path.write_text(updated, encoding="utf-8")
+    print("changed")
+PY
+    )"
+    if [[ "$result" != "changed" ]]; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    info "Updating Caddy public MCP OAuth callback route"
+    run_sudo install -m 0644 "$tmp" "$CADDY_SITE_FILE"
+    rm -f "$tmp"
+    if [[ -f "$CADDYFILE" ]] && need_cmd caddy; then
+        run_sudo caddy validate --config "$CADDYFILE"
+        run_sudo systemctl reload caddy
+    fi
+}
+
 install_systemd_units() {
     info "Installing systemd units"
     local uv_path uv_dir service_path
@@ -493,6 +546,7 @@ upgrade_existing_deployment() {
     fi
     pull_git_update
     install_app_dependencies
+    migrate_caddy_public_oauth_callback
     log_step "Stopping yuubot.service before migrations"
     run_sudo systemctl stop yuubot.service >/dev/null 2>&1 || true
     run_database_migrations

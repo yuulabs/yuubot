@@ -87,6 +87,17 @@ def test_build_apply_script_uses_install_deps(tmp_path: Path) -> None:
     assert "--skip-web-build" in script
 
 
+def test_deploy_caddy_public_vhost_allows_mcp_oauth_callback() -> None:
+    content = Path("scripts/deploy-server.sh").read_text(encoding="utf-8")
+    oauth_index = content.index("@mcp_oauth_callback path_regexp ^/api/mcp-oauth/[^/]+/callback$")
+    api_404_index = content.index("respond /api/* 404")
+    upgrade_index = content.index("    migrate_caddy_public_oauth_callback")
+    restart_index = content.index('log_step "Stopping yuubot.service before migrations"')
+    assert oauth_index < api_404_index
+    assert upgrade_index < restart_index
+    assert "reverse_proxy @mcp_oauth_callback 127.0.0.1:$YUUBOT_PUBLIC_PORT" in content
+
+
 def test_apply_update_rejects_unsupported_install(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()

@@ -113,8 +113,8 @@ After the interactive setup, `trusted_admin_server.url_base` and
 Auth, then forwards `X-Forwarded-User` to yuubot.
 
 When `public_server` is enabled, the deploy script also writes a second Caddy
-vhost that proxies Share pages and app webhooks to `127.0.0.1:8766` and returns
-`404` for `/api/*`.
+vhost that proxies Share pages, app webhooks, and MCP OAuth browser callbacks to
+`127.0.0.1:8766`, while returning `404` for other `/api/*` paths.
 
 ### Data layout
 
