@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import msgspec
 
 from ..domain.messages import ModelCard
-from ..domain.stream import StreamEvent
+from ..domain.stream import StreamEvent, Usage
 from ..domain.records import LifecycleError, RouteRecord
 from ..integrations import integration_health
 from ..llm.records import ProviderRecord
@@ -33,6 +33,7 @@ class ActorSnapshot(msgspec.Struct, frozen=True, kw_only=True):
     workspace: str
     provider: str
     model: ModelCard
+    context_compression_tokens: int
     last_error: LifecycleError | None = None
 
 
@@ -61,6 +62,9 @@ class ConversationSummary(msgspec.Struct, frozen=True, kw_only=True):
     message_count: int = 0
     last_seq: int | None = None
     last_error: dict[str, object] | None = None
+    last_input_tokens: int = 0
+    last_cached_input_tokens: int = 0
+    last_output_tokens: int = 0
 
 
 class RuntimeEventView(msgspec.Struct, frozen=True, kw_only=True):
@@ -134,6 +138,7 @@ async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
                 workspace=record.workspace or record.id,
                 provider=record.provider,
                 model=record.model,
+                context_compression_tokens=record.context_compression_tokens,
             )
         )
     for actor_id, actor in app.actors.items():
@@ -149,6 +154,7 @@ async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
                 workspace=actor.config.workspace,
                 provider="",
                 model=actor.config.model,
+                context_compression_tokens=actor.config.context_compression_tokens,
             )
         )
     return snapshots
@@ -160,6 +166,7 @@ async def conversation_summary(app: "Yuubot", conversation_id: str) -> Conversat
     if record is None and history is None:
         return None
     if record is not None:
+        usage = await _last_cost_usage(app, record.id)
         return ConversationSummary(
             id=record.id,
             actor_id=record.actor_id,
@@ -170,12 +177,19 @@ async def conversation_summary(app: "Yuubot", conversation_id: str) -> Conversat
             last_error=record.last_error,
             message_count=int(history.get("message_count", 0)) if history is not None else 0,
             last_seq=history.get("last_seq") if history is not None else None,
+            last_input_tokens=usage.input_tokens,
+            last_cached_input_tokens=usage.cached_input_tokens,
+            last_output_tokens=usage.output_tokens,
         )
+    usage = await _last_cost_usage(app, conversation_id)
     return ConversationSummary(
         id=str(history["id"]),
         message_count=int(history.get("message_count", 0)),
         last_seq=history.get("last_seq"),
         last_active_at=history.get("last_active_at"),
+        last_input_tokens=usage.input_tokens,
+        last_cached_input_tokens=usage.cached_input_tokens,
+        last_output_tokens=usage.output_tokens,
     )
 
 
@@ -184,6 +198,7 @@ async def conversation_summaries(app: "Yuubot") -> list[ConversationSummary]:
     summaries: list[ConversationSummary] = []
     for record in await app.runtime.state.list_conversations():
         history = by_id.pop(record.id, {})
+        usage = await _last_cost_usage(app, record.id)
         summaries.append(
             ConversationSummary(
                 id=record.id,
@@ -195,18 +210,32 @@ async def conversation_summaries(app: "Yuubot") -> list[ConversationSummary]:
                 last_error=record.last_error,
                 message_count=int(history.get("message_count", 0)),
                 last_seq=history.get("last_seq"),
+                last_input_tokens=usage.input_tokens,
+                last_cached_input_tokens=usage.cached_input_tokens,
+                last_output_tokens=usage.output_tokens,
             )
         )
     for item in by_id.values():
+        usage = await _last_cost_usage(app, str(item["id"]))
         summaries.append(
             ConversationSummary(
                 id=str(item["id"]),
                 message_count=int(item.get("message_count", 0)),
                 last_seq=item.get("last_seq"),
                 last_active_at=item.get("last_active_at"),
+                last_input_tokens=usage.input_tokens,
+                last_cached_input_tokens=usage.cached_input_tokens,
+                last_output_tokens=usage.output_tokens,
             )
         )
     return summaries
+
+
+async def _last_cost_usage(app: "Yuubot", conversation_id: str) -> Usage:
+    costs = await app.runtime.state.load_costs(conversation_id)
+    if not costs:
+        return Usage()
+    return costs[-1].usage
 
 
 async def integration_snapshots(app: "Yuubot") -> list[IntegrationSnapshot]:
@@ -341,6 +370,18 @@ def _runtime_event_copy(kind: str, payload: dict[str, object]) -> tuple[str, str
         return ("Actor busy", "Conversation is already running")
     if kind == "actor.blocked":
         return ("Actor blocked", _optional_str(payload.get("reason"), "Blocked"))
+    if kind == "actor.context_compacted":
+        tokens = _optional_int(payload.get("input_tokens"))
+        threshold = _optional_int(payload.get("threshold"))
+        if tokens is not None and threshold is not None:
+            return ("Actor context compacted", f"{tokens}/{threshold} input tokens")
+        return ("Actor context compacted", "")
+    if kind == "actor.context_compaction_stopped":
+        tokens = _optional_int(payload.get("input_tokens"))
+        threshold = _optional_int(payload.get("threshold"))
+        if tokens is not None and threshold is not None:
+            return ("Actor compaction stopped", f"{tokens}/{threshold} input tokens")
+        return ("Actor compaction stopped", "")
     if kind == "incoming.message":
         return ("Inbound message received", _optional_str(payload.get("route"), ""))
     if kind == "gateway.dispatch":
@@ -396,6 +437,16 @@ def _runtime_event_context(kind: str, payload: dict[str, object]) -> dict[str, o
         )
     if kind.startswith("task."):
         return _copy_keys(payload, "task_id", "owner", "kind", "name", "status", "exit_code")
+    if kind.startswith("actor.context_"):
+        return _copy_keys(
+            payload,
+            "actor_id",
+            "old_conversation_id",
+            "new_conversation_id",
+            "conversation_id",
+            "input_tokens",
+            "threshold",
+        )
     return _compact_payload(payload)
 
 

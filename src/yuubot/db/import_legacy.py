@@ -559,10 +559,6 @@ def _provider_protocol(value: str) -> str:
     return normalized
 
 
-def _provider(value: str) -> str:
-    return value or "openai_compatible"
-
-
 def _integration_type_from_source(value: str) -> str:
     if ":" not in value or value.startswith("*"):
         return ""

@@ -21,6 +21,7 @@ export function ActorNewPage() {
     persona: "",
     model: { selector: "", toolcall: true, json: true },
     provider: firstProvider,
+    context_compression_tokens: 262144,
   };
   return (
     <Page title="New Actor" sub="Create an ActorRecord directly against the new backend API.">

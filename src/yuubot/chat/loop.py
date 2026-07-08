@@ -73,6 +73,7 @@ class Conversation:
     runtime: "Runtime"
     stop_event: asyncio.Event = field(factory=asyncio.Event)
     _running: bool = field(default=False, init=False)
+    last_stop: StreamStop | None = field(default=None, init=False)
 
     @property
     def running(self) -> bool:
@@ -88,10 +89,12 @@ class Conversation:
         if self._running:
             raise ConversationBusy(self.id)
         self._running = True
+        self.runtime.conversations.mark_running(self.id)
         self.stop_event.clear()
         try:
             await self._mark_status("active")
             if input.role == "user":
+                self.runtime.allow_task_deliveries(self.id)
                 if session_mode is not None:
                     input = augment_user_message(input, mode=session_mode)
                 await self.runtime.state.set_conversation_title_if_empty(
@@ -110,18 +113,21 @@ class Conversation:
             raise
         finally:
             self._running = False
+            self.runtime.conversations.mark_idle(self.id)
             await self.runtime.drain_pending_task_deliveries(self.id)
 
     async def run_continuation(self, on_event: StreamCallback | None = None) -> list[GenOutput]:
         if self._running:
             raise ConversationBusy(self.id)
         self._running = True
+        self.runtime.conversations.mark_running(self.id)
         self.stop_event.clear()
         try:
             await self._mark_status("active")
             return await self._run_loop(on_event)
         finally:
             self._running = False
+            self.runtime.conversations.mark_idle(self.id)
             await self.runtime.drain_pending_task_deliveries(self.id)
 
     async def append_developer_notice(
@@ -134,6 +140,7 @@ class Conversation:
         if self._running:
             raise ConversationBusy(self.id)
         self._running = True
+        self.runtime.conversations.mark_running(self.id)
         self.stop_event.clear()
         try:
             await self._mark_status("active")
@@ -141,11 +148,18 @@ class Conversation:
             return await self._run_loop(on_event)
         finally:
             self._running = False
+            self.runtime.conversations.mark_idle(self.id)
             await self.runtime.drain_pending_task_deliveries(self.id)
+
+    async def append_items(self, items: Sequence[HistoryItem]) -> None:
+        if self._running:
+            raise ConversationBusy(self.id)
+        await self._extend(items)
 
     def interrupt(self) -> bool:
         if not self._running:
             return False
+        self.runtime.suppress_task_deliveries(self.id)
         self.stop_event.set()
         return True
 
@@ -186,6 +200,7 @@ class Conversation:
                             event=chunk,
                         )
                 outputs, stop = merge(chunks)
+                self.last_stop = stop
                 await self._extend(outputs)
                 await self._record_cost(stop)
                 self.runtime.emit("conversation.output", conversation_id=self.id, reason=stop.reason)
@@ -249,7 +264,6 @@ class Conversation:
     async def _extend(self, items: Sequence[HistoryItem]) -> None:
         self.history.extend(items)
         wrapped_items = await self.runtime.history.extend(self.id, items)
-        self.runtime.conversations.touch(self.id)
         for item in wrapped_items:
             if str(item["kind"]) not in PREFIX_KINDS:
                 self.runtime.emit("conversation.history.append", conversation_id=self.id, item=item)
@@ -289,37 +303,38 @@ class ConversationManager:
     """
 
     ttl_s: float = 3600
-    _items: dict[str, tuple[Conversation, float]] = field(factory=dict)
+    _items: dict[str, Conversation] = field(factory=dict)
+    _idle_since: dict[str, float] = field(factory=dict)
     _create_lock: asyncio.Lock = field(factory=asyncio.Lock, init=False)
     _sweeper: BackgroundSweeper = field(factory=BackgroundSweeper, init=False)
 
     async def get_or_create(self, creator: ConversationCreator, conversation_id: str | None = None) -> Conversation:
         async with self._create_lock:
             if conversation_id and conversation_id in self._items:
-                conversation, _ = self._items[conversation_id]
-                self._items[conversation_id] = (conversation, time.time())
-                return conversation
+                return self._items[conversation_id]
             conversation = await creator.spawn_conversation(conversation_id)
-            self._items[conversation.id] = (conversation, time.time())
+            self._items[conversation.id] = conversation
+            self._idle_since[conversation.id] = time.time()
             return conversation
 
-    def touch(self, conversation_id: str) -> None:
+    def mark_running(self, conversation_id: str) -> None:
         if conversation_id in self._items:
-            conversation, _ = self._items[conversation_id]
-            self._items[conversation_id] = (conversation, time.time())
+            self._idle_since.pop(conversation_id, None)
+
+    def mark_idle(self, conversation_id: str) -> None:
+        if conversation_id in self._items:
+            self._idle_since[conversation_id] = time.time()
 
     def interrupt(self, conversation_id: str) -> bool:
         if conversation_id not in self._items:
             return False
-        conversation, _ = self._items[conversation_id]
-        self.touch(conversation_id)
+        conversation = self._items[conversation_id]
         return conversation.interrupt()
 
     def interrupt_all(self) -> list[str]:
         interrupted: list[str] = []
-        for conversation_id, (conversation, _) in list(self._items.items()):
+        for conversation_id, conversation in list(self._items.items()):
             if conversation.interrupt():
-                self.touch(conversation_id)
                 interrupted.append(conversation_id)
         return interrupted
 
@@ -330,20 +345,18 @@ class ConversationManager:
         item = self._items.get(conversation_id)
         if item is None:
             return None
-        conversation, _ = item
-        self._items[conversation_id] = (conversation, time.time())
-        return conversation
+        return item
 
     async def discard(self, conversation_id: str) -> bool:
-        item = self._items.pop(conversation_id, None)
-        if item is None:
+        conversation = self._items.pop(conversation_id, None)
+        self._idle_since.pop(conversation_id, None)
+        if conversation is None:
             return False
-        conversation, _ = item
         await conversation.close()
         return True
 
     async def close_for_actor(self, actor_id: str) -> None:
-        for conversation_id in [cid for cid, (conv, _) in self._items.items() if conv.context.actor == actor_id]:
+        for conversation_id in [cid for cid, conv in self._items.items() if conv.context.actor == actor_id]:
             await self.discard(conversation_id)
 
     async def close_all(self) -> None:
@@ -352,7 +365,7 @@ class ConversationManager:
 
     async def sweep(self) -> None:
         now = time.time()
-        for conversation_id in [cid for cid, (_, seen) in self._items.items() if now - seen > self.ttl_s]:
+        for conversation_id in [cid for cid, idle_since in self._idle_since.items() if now - idle_since > self.ttl_s]:
             await self.discard(conversation_id)
 
     async def start_background_cleanup(self, interval_s: float = 60) -> None:

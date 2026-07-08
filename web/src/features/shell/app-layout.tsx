@@ -10,6 +10,7 @@ import {
   Clock,
   DatabaseZap,
   FolderOpen,
+  LogOut,
   Menu,
   MessageSquare,
   PanelLeftClose,
@@ -23,6 +24,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { logout } from "@/shared/lib/api";
 import { useBootstrap, useNotificationListener, useRefreshBootstrap, useSidebar } from "@/shared/hooks";
 
 interface TopbarActionsContextValue {
@@ -57,6 +59,18 @@ export const navItems = [
 
 export function AppLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  if (pathname === "/login") {
+    return (
+      <>
+        <Outlet />
+        <Toaster richColors closeButton position="bottom-right" />
+      </>
+    );
+  }
+  return <ShellLayout pathname={pathname} />;
+}
+
+function ShellLayout({ pathname }: { pathname: string }) {
   const { data } = useBootstrap();
   const refresh = useRefreshBootstrap();
   useNotificationListener();
@@ -66,6 +80,7 @@ export function AppLayout() {
   const current = navItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
   const sidebarCollapsed = collapsed && !isMobile;
   const conversationTitle = getConversationTitle(pathname, data);
+  const showLogout = data?.auth?.mode === "builtin";
 
   useEffect(() => {
     if (isMobile) {
@@ -158,6 +173,12 @@ export function AppLayout() {
           </div>
           <div className="topbar__actions">
             {topbarActions}
+            {showLogout && (
+              <Button variant="outline" size="sm" onClick={() => void handleLogout()}>
+                <LogOut size={14} />
+                <span>Logout</span>
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={refresh}>
               <RefreshCw size={14} />
               <span>Refresh</span>
@@ -170,6 +191,11 @@ export function AppLayout() {
     </div>
     </TopbarActionsContext.Provider>
   );
+}
+
+async function handleLogout(): Promise<void> {
+  await logout();
+  window.location.assign("/login");
 }
 
 function getConversationTitle(

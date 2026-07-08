@@ -20,55 +20,17 @@ from .base import ToolConfig, ToolSpec
 
 DESCRIPTION = """Run Python code in a persistent IPython session for the current user turn.
 
-This is the preferred tool for multi-step local work, data shaping, and integration facade calls. The session supports native top-level `await`, so async integration APIs can be called directly.
+The working directory is the actor workspace. Standard output and standard error are captured and returned as text. An empty capture returns `ok`. The session supports native top-level `await`.
 
-The working directory is the actor workspace. Standard output and standard error are captured and returned as text. An empty capture returns `ok`.
+Enabled integrations inject credentials into the process environment for `yext` facades, for example `await yext.web.search(query)` and `repo = yext.github.repo(); await repo.issues.list_recent()`.
 
-Enabled integrations inject credentials and defaults into the process environment for `yext` facades. Import and use them explicitly, for example:
-- `await yext.web.search(query)`
-- `await yext.web.read(url)`
-- `await yext.web.download(url)`
-- `repo = yext.github.repo(); await repo.issues.list_recent()`
-- `yb.office.pdf.to_markdown(path)`
+The session resets after each user turn. Variables, imports, and in-memory side effects do not survive; a developer notice appears when a prior session is gone.
 
-For long-running shell work, use the runtime task facade instead of blocking shell in this session:
-- `task = await yb.tasks.submit(name, shell, intro)` registers a fire-and-forget shell task with Runtime and returns a Task handle immediately.
-- Shell tasks run in a PTY with live stdout and stdin. Use this for interactive CLI init, login, or bind flows.
-- Task execution continues under Runtime after this tool call ends; when the task finishes, yuubot appends a developer message and automatically continues the owner conversation.
-- Query with `await yb.tasks.find(task_id)`, `await yb.tasks.list_tasks(name_glob=...)`, `await task.output()`, and `await task.status()`.
-- Send interactive input with `await task.write(text)` (include newlines when the prompt expects them).
-- Cancel with `await task.cancel()`.
-- Do not use the `bash` tool with `timeout_s` for interactive or long-running init; timeouts kill the process and can leave partial setup behind.
-- Do not call daemon HTTP endpoints such as `/api/tasks`, `/api/inbound`, or admin/public APIs directly; use the `yb.tasks` facade.
+The runtime is headless: `plt.show()` does not reach the user. Save generated files under the workspace, normally `artifacts/`. For images, embed the saved file as a Markdown image in your final response.
 
-MCP data sources:
-- Use `import yb.mcps`, then `await yb.mcps.search(query)` to discover enabled MCP tools/resources/prompts.
-- Search results intentionally omit parameter schemas. Use `client = yb.mcps.get_client(server_id)` and `await client.get_spec(name)` before invoking a tool.
-- Call tools with `await client.invoke(name, **kwargs)` and read resources with `await client.read_resource(uri)`.
-- Secrets and raw credentials are daemon-managed and are never available in this Python session.
+After `uv add` or `uv remove`, call `restart_kernel` before expecting new imports.
 
-Scheduled jobs (durable cron):
-- Import `yb.tasks` or `yb.tasks.cron`; `yb.tasks.cron` is available as the cron facade.
-- `await yb.tasks.cron.add(name, timezone=..., cron=..., action=...)` or `at=...` for one-shot schedules. `timezone` must be an explicit IANA name such as `Asia/Shanghai`; `at` accepts a local ISO datetime like `2026-07-06T11:30:00` or a short relative delay such as `+1m`.
-- Action dict examples: `{"kind":"shell","name":"...","shell":"...","intro":"..."}`, `{"kind":"actor_message","text":"..."}`, `{"kind":"conversation_callback","text":"..."}`, `{"kind":"reminder","title":"...","body":"...","channels":[{"kind":"browser"},{"kind":"web_push"}]}`.
-- Use `actor_message` for standalone scheduled actor work. Use `conversation_callback` when the scheduled result should continue this exact conversation.
-- Manage with `await yb.tasks.cron.list_jobs()`, `await yb.tasks.cron.find(job_id)`, `await yb.tasks.cron.pause(job_id)`, `await yb.tasks.cron.delete(job_id)`.
-- Do not call `/api/cron-jobs` directly; use the `yb.tasks.cron` facade.
-
-Dynamic admin pages:
-- You may write HTML/CSS/JS under the workspace (for example `projects/.../form.html`). When an admin opens the page in the management UI, page JavaScript may call admin KV and inbound endpoints with AdminAuth.
-- `GET` / `PUT` / `DELETE` `/api/actors/{actor_id}/kv/{key}` (`{key}` is URL-encoded; supports `ETag` / `If-Match`)
-- `POST` `/api/actors/{actor_id}/inbound` (`text` plus optional `conversation_id`)
-- Recommended submit flow: persist draft state to KV, then POST inbound with structured JSON `text` containing `submitted_at`, `source_page`, `purpose` or `context`, optional `kv_key`, and `payload`.
-- Do not loopback-call admin HTTP from this session; dynamic pages are browser-driven.
-
-The Python session is reset after each user turn. Variables, imports, open files, and in-memory side effects do not survive into the next turn. A developer notice is added when a previous session is no longer available.
-
-After changing dependencies with `uv add` or `uv remove`, call the `restart_kernel` tool, then continue from workspace files; do not assume packages imported before a dependency change remain available without rerunning imports.
-
-The runtime is headless: `plt.show()` and inline notebook display do not reach the user. Save generated files under the workspace, normally under `artifacts/`. For images, embed the saved file as a Markdown image in your final response when the user should see it inline.
-
-Avoid printing huge outputs; filter to the relevant data before returning."""
+Runtime facades (`yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions."""
 
 
 class ExecutePythonPayload(msgspec.Struct, frozen=True, kw_only=True):

@@ -70,7 +70,7 @@ def create_admin_app(
 
     register_auth_routes(api, deployment, sessions)
     register_admin_ops_routes(api, app, client_is_loopback=client_is_loopback, on_shutdown=on_shutdown)
-    register_bootstrap_routes(api, app)
+    register_bootstrap_routes(api, app, deployment)
     register_mcp_routes(api, app, deployment)
     register_credential_routes(api, app)
     register_skill_routes(api, app)

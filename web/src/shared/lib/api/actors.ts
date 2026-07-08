@@ -9,7 +9,7 @@ import type {
   UploadResponse,
   WorkspaceDirectorySnapshot,
 } from "@/shared/types/api";
-import { BASE, request } from "./client";
+import { authenticatedFetch, BASE, request } from "./client";
 import { getBootstrap } from "./bootstrap";
 
 export function listActors(): Promise<BootstrapSnapshot["actors"]> {
@@ -101,7 +101,7 @@ export function sendActorInbound(actorId: string, body: ActorInboundBody): Promi
 }
 
 export async function getActorKv(actorId: string, key: string): Promise<EtagResponse<KvDocument>> {
-  const response = await fetch(`${BASE}/actors/${encodeURIComponent(actorId)}/kv/${encodeURIComponent(key)}`);
+  const response = await authenticatedFetch(`${BASE}/actors/${encodeURIComponent(actorId)}/kv/${encodeURIComponent(key)}`);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const detail = body.detail ?? body.message ?? body.reason ?? response.statusText;
@@ -116,7 +116,7 @@ export async function putActorKv(
   body: KvPutBody,
   etag?: string | null,
 ): Promise<EtagResponse<KvDocument>> {
-  const response = await fetch(`${BASE}/actors/${encodeURIComponent(actorId)}/kv/${encodeURIComponent(key)}`, {
+  const response = await authenticatedFetch(`${BASE}/actors/${encodeURIComponent(actorId)}/kv/${encodeURIComponent(key)}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",

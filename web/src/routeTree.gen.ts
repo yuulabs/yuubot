@@ -18,6 +18,7 @@ import { Route as RoutesRouteImport } from './routes/routes'
 import { Route as ProvidersRouteImport } from './routes/providers'
 import { Route as MonitorRouteImport } from './routes/monitor'
 import { Route as McpServersRouteImport } from './routes/mcp-servers'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as IntegrationsRouteImport } from './routes/integrations'
 import { Route as CronRouteImport } from './routes/cron'
 import { Route as CredentialsRouteImport } from './routes/credentials'
@@ -77,6 +78,11 @@ const MonitorRoute = MonitorRouteImport.update({
 const McpServersRoute = McpServersRouteImport.update({
   id: '/mcp-servers',
   path: '/mcp-servers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IntegrationsRoute = IntegrationsRouteImport.update({
@@ -162,6 +168,7 @@ export interface FileRoutesByFullPath {
   '/credentials': typeof CredentialsRoute
   '/cron': typeof CronRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
+  '/login': typeof LoginRoute
   '/mcp-servers': typeof McpServersRoute
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -188,6 +195,7 @@ export interface FileRoutesByTo {
   '/credentials': typeof CredentialsRoute
   '/cron': typeof CronRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
+  '/login': typeof LoginRoute
   '/mcp-servers': typeof McpServersRoute
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -215,6 +223,7 @@ export interface FileRoutesById {
   '/credentials': typeof CredentialsRoute
   '/cron': typeof CronRouteWithChildren
   '/integrations': typeof IntegrationsRouteWithChildren
+  '/login': typeof LoginRoute
   '/mcp-servers': typeof McpServersRoute
   '/monitor': typeof MonitorRoute
   '/providers': typeof ProvidersRouteWithChildren
@@ -243,6 +252,7 @@ export interface FileRouteTypes {
     | '/credentials'
     | '/cron'
     | '/integrations'
+    | '/login'
     | '/mcp-servers'
     | '/monitor'
     | '/providers'
@@ -269,6 +279,7 @@ export interface FileRouteTypes {
     | '/credentials'
     | '/cron'
     | '/integrations'
+    | '/login'
     | '/mcp-servers'
     | '/monitor'
     | '/providers'
@@ -295,6 +306,7 @@ export interface FileRouteTypes {
     | '/credentials'
     | '/cron'
     | '/integrations'
+    | '/login'
     | '/mcp-servers'
     | '/monitor'
     | '/providers'
@@ -322,6 +334,7 @@ export interface RootRouteChildren {
   CredentialsRoute: typeof CredentialsRoute
   CronRoute: typeof CronRouteWithChildren
   IntegrationsRoute: typeof IntegrationsRouteWithChildren
+  LoginRoute: typeof LoginRoute
   McpServersRoute: typeof McpServersRoute
   MonitorRoute: typeof MonitorRoute
   ProvidersRoute: typeof ProvidersRouteWithChildren
@@ -397,6 +410,13 @@ declare module '@tanstack/react-router' {
       path: '/mcp-servers'
       fullPath: '/mcp-servers'
       preLoaderRoute: typeof McpServersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/integrations': {
@@ -587,6 +607,7 @@ const rootRouteChildren: RootRouteChildren = {
   CredentialsRoute: CredentialsRoute,
   CronRoute: CronRouteWithChildren,
   IntegrationsRoute: IntegrationsRouteWithChildren,
+  LoginRoute: LoginRoute,
   McpServersRoute: McpServersRoute,
   MonitorRoute: MonitorRoute,
   ProvidersRoute: ProvidersRouteWithChildren,

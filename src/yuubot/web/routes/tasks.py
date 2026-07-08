@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from ...app import Yuubot
-from ...runtime.tasks import TaskNotRunningError, task_record_snapshot
+from ...runtime.tasks import TaskNotRunningError, normalize_task_ttl, task_record_snapshot
 from ..files import actor_workspace
 from ..request import bad_request, read_json
 from ..responses import error_response, json_response
@@ -41,6 +41,10 @@ def register_task_routes(
             body = await read_json(request, SubmitTaskBody)
         except (msgspec.DecodeError, msgspec.ValidationError) as exc:
             return bad_request(exc)
+        try:
+            ttl_s = normalize_task_ttl(body.delivery, body.ttl_s, require_manual_ttl=True)
+        except ValueError as exc:
+            return bad_request(exc)
         actor_id = body.owner.split(":conv:", 1)[0].removeprefix("actor:")
         workspace = actor_workspace(app, actor_id)
         if workspace is None:
@@ -52,6 +56,8 @@ def register_task_routes(
             owner=body.owner,
             workspace=workspace,
             wait_s=body.wait_s,
+            delivery=body.delivery,
+            ttl_s=ttl_s,
         )
         return json_response(snapshot)
 

@@ -3,17 +3,29 @@
 from __future__ import annotations
 
 import msgspec
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from ...app import Yuubot
+from ...app.deployment import DeploymentConfig
+from ..auth import AuthContext
 from ..responses import error_response, json_response
 
 
-def register_bootstrap_routes(api: FastAPI, app: Yuubot) -> None:
+def register_bootstrap_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfig) -> None:
     @api.get("/api/bootstrap")
-    async def api_bootstrap() -> Response:
-        return json_response(await app.bootstrap_snapshot())
+    async def api_bootstrap(request: Request) -> Response:
+        payload = msgspec.to_builtins(await app.bootstrap_snapshot())
+        if isinstance(payload, dict):
+            state = request.scope.get("state")
+            auth = state.get("auth") if isinstance(state, dict) else None
+            payload["auth"] = {
+                "surface": deployment.surface,
+                "mode": "none" if deployment.surface == "local_admin" else deployment.admin_auth.mode,
+                "method": auth.auth_method if isinstance(auth, AuthContext) else None,
+                "csrf_header": deployment.admin_auth.builtin.csrf_header,
+            }
+        return json_response(payload)
 
     @api.get("/api/integrations")
     async def api_integrations() -> Response:

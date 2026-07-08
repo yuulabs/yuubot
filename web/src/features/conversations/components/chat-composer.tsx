@@ -22,6 +22,7 @@ export function ChatComposer({
   onInterrupt,
   phase = "idle",
   totalCost = 0,
+  contextUsageLabel = "",
   canInterrupt = false,
   disabled = false,
   disabledReason = "",
@@ -43,6 +44,7 @@ export function ChatComposer({
   onInterrupt: () => void;
   phase?: ConversationPhase;
   totalCost?: number;
+  contextUsageLabel?: string;
   canInterrupt?: boolean;
   disabled?: boolean;
   disabledReason?: string;
@@ -105,6 +107,11 @@ export function ChatComposer({
             <Paperclip size={16} />
           </button>
           <div className="composer__toolbar-end">
+            {contextUsageLabel && (
+              <span className="text-sm text-muted-foreground tabular-nums" title="Latest input tokens / model max context tokens">
+                {contextUsageLabel}
+              </span>
+            )}
             <TurnPill phase={phase} />
             <CostBadge totalCost={totalCost} />
           </div>

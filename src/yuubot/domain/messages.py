@@ -12,6 +12,7 @@ InputRole = Literal["user", "developer"]
 class ModelCard(msgspec.Struct, frozen=True, kw_only=True):
     selector: str
     reasoning_effort: str = ""
+    max_context_tokens: int | None = None
     vision: bool = False
     toolcall: bool = True
     json: bool = True

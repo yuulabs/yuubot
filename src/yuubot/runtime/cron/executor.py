@@ -86,6 +86,7 @@ class CronExecutor:
                     intro=job.action.intro,
                     owner=job.owner,
                     workspace=workspace,
+                    delivery="actor",
                 )
             elif isinstance(job.action, WakeupAction):
                 await self._runtime.wakeup.deliver(

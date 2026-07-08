@@ -4,7 +4,7 @@ from pathlib import Path
 
 import httpx
 
-from support.api import base_url, http_json, put_actor, put_provider, running_server
+from support.api import base_url, http_json, running_server
 from yuubot import Yuubot
 from yuubot.domain import ModelCard
 from yuubot.llm import ProviderInput
@@ -61,12 +61,26 @@ async def test_actor_put_accepts_model_with_zero_pricing(tmp_path: Path) -> None
             "deepseek",
             ModelCard(
                 selector="deepseek-chat",
+                max_context_tokens=128000,
                 input_price_per_million=0,
                 cached_input_price_per_million=0,
                 output_price_per_million=0,
             ),
         )
         async with running_server(app) as server:
-            await put_actor(server, "amy", workspace=tmp_path / "workspace", provider="deepseek", model="deepseek-chat")
+            snapshot = await http_json(
+                "PUT",
+                f"{base_url(server)}/api/actors/amy",
+                {
+                    "name": "Amy",
+                    "workspace": str(tmp_path / "workspace"),
+                    "provider": "deepseek",
+                    "model": {"selector": "deepseek-chat"},
+                    "context_compression_tokens": 64000,
+                },
+            )
+            actor = next(item for item in snapshot["actors"] if item["id"] == "amy")
+            assert actor["context_compression_tokens"] == 64000
+            assert actor["model"]["max_context_tokens"] == 128000
     finally:
         await app.shutdown()

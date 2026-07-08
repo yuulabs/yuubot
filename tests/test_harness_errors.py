@@ -32,8 +32,12 @@ class BrokenTool:
         return None
 
 
+def _noop_emit(*_args: object, **_kwargs: object) -> None:
+    return None
+
+
 async def test_harness_tool_errors_include_exception_type_and_cause() -> None:
-    harness = Harness(tools={"execute_python": BrokenTool()})
+    harness = Harness(tools={"execute_python": BrokenTool()}, emit=_noop_emit, conversation_id="c1")
     results = await harness.gather(
         [ToolCall(id="call-1", name="execute_python", arguments="{}")],
         asyncio.Event(),
@@ -73,7 +77,11 @@ class LeakyListTool:
 
 
 async def test_harness_redacts_secret_patterns_in_tool_results() -> None:
-    harness = Harness(tools={"leaky": LeakyTool(), "leaky_list": LeakyListTool()})
+    harness = Harness(
+        tools={"leaky": LeakyTool(), "leaky_list": LeakyListTool()},
+        emit=_noop_emit,
+        conversation_id="c1",
+    )
     results = await harness.gather(
         [
             ToolCall(id="call-1", name="leaky", arguments="{}"),

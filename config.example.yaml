@@ -29,17 +29,35 @@ data_dir: ~/.yuubot-data
 #     critical_used_pct: 95
 #   spans_retention_days: 30
 
-# Optional deployment boundary. Providers, integrations, actors, and routes are
-# configured from the Admin UI and persisted in the database under data_dir.
-# admin_url_base: http://127.0.0.1:8765
-# public_url_base: http://127.0.0.1:8765
+# Optional deployment listeners. Providers, integrations, actors, and routes are
+# configured from the Admin UI and persisted in data_dir/db/yuubot.db. Runtime
+# logs are written under data_dir/logs/.
+#
+# local_admin_server:
+#   enabled: true
+#   host: 127.0.0.1
+#   port: 8765
+#   url_base: http://127.0.0.1:8765
+#
+# public_server:
+#   enabled: false
+#   host: 0.0.0.0
+#   port: 8766
+#   url_base: https://public.example.com
+#
+# trusted_admin_server:
+#   enabled: false
+#   host: 127.0.0.1
+#   port: 8767
+#   url_base: https://admin.example.com
+#   auth:
+#     mode: builtin  # builtin | proxy
+#     builtin:
+#       session_cookie_name: yuubot_session
+#       csrf_header: X-CSRF-Token
+#       password: change-me
+#     proxy:
+#       user_header: X-Forwarded-User
+#       groups_header: X-Forwarded-Groups
+#
 # trusted_proxies: [127.0.0.1]
-# admin_auth:
-#   mode: loopback_bypass  # proxy | builtin | loopback_bypass
-#   builtin:
-#     session_cookie_name: yuubot_session
-#     csrf_header: X-CSRF-Token
-#     password: change-me
-#   proxy:
-#     user_header: X-Forwarded-User
-#     groups_header: X-Forwarded-Groups

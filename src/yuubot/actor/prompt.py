@@ -7,6 +7,7 @@ from typing import Literal
 from ..domain.messages import ContentItem, InputMessage
 from ..integrations.registry import Integration
 from ..runtime.skills import SkillSummary
+from .prompt_docs import ADMIN_PAGES
 
 _RUNTIME_FACADE_PACKAGES = ("yb.tasks", "yb.tasks.cron", "yb.mcps", "yb.skills")
 
@@ -20,18 +21,17 @@ def developer_prompt(
     workspace: Path,
     integrations: list[Integration],
     *,
+    actor_id: str = "",
     has_python: bool,
-    enabled_mcp_servers: int = 0,
     global_skills: list[SkillSummary] | None = None,
 ) -> str:
     sections = [
         "# Persona\n" + (persona.strip() or "You are a yuubot actor."),
         "# System Instructions\n" + _system_instructions(has_python),
-        "# Workspace Instructions\n" + _workspace_instructions(workspace),
+        "# Workspace Instructions\n" + _workspace_instructions(workspace, actor_id=actor_id),
     ]
     if has_python:
         sections.append("# Tool Suggestions\n" + _tool_suggestions())
-        sections.append("# MCP Data Sources\n" + _mcp_data_sources(enabled_mcp_servers))
     extra_packages = _RUNTIME_FACADE_PACKAGES if has_python else ()
     integration_docs = _integration_docs(integrations, extra_packages)
     if integration_docs:
@@ -48,14 +48,16 @@ def _system_instructions(has_python: bool) -> str:
         "Do not expose secrets, raw integration credentials, or daemon implementation details to users.",
     ]
     if has_python:
-        lines.append("execute_python is reset after each user turn. A developer notice will be added when a previous Python session is no longer available.")
+        lines.append("execute_python resets after each user turn; a developer notice appears when a prior session is gone.")
     return "\n".join(lines)
 
 
-def _workspace_instructions(workspace: Path) -> str:
-    return "\n".join(
+def _workspace_instructions(workspace: Path, *, actor_id: str = "") -> str:
+    lines = [f"Workspace path: {workspace}"]
+    if actor_id:
+        lines.append(f"Actor id: {actor_id}")
+    lines.extend(
         [
-            f"Workspace path: {workspace}",
             "- `artifacts/`: user-visible outputs.",
             "- `uploads/`: uploaded files grouped by MIME type.",
             "- `projects/`: actor-managed project files.",
@@ -64,50 +66,20 @@ def _workspace_instructions(workspace: Path) -> str:
             "- `.agents/skills/`: skill files you may inspect with the read tool.",
         ]
     )
+    return "\n".join(lines)
 
 
 def _tool_suggestions() -> str:
     return "\n".join(
         [
-            "Prefer execute_python for multi-step local work, data shaping, and integration facade calls.",
-            "execute_python runs an IPython interactive session with native top-level await. Use it like a notebook cell.",
+            "Prefer execute_python for multi-step local work, data shaping, and integration facade calls. It runs an IPython session with native top-level await.",
             "Examples: `await yext.web.search(...)`, `await yext.web.read(...)`, `yext.github.repo().issues.list_recent(...)`, and `yb.office.pdf.to_markdown(...)`.",
-            "For long-running shell work, use `await yb.tasks.submit(name, shell, intro)` instead of blocking shell inside execute_python.",
-            "For interactive CLI init, login, or bind flows, submit the command as a task and use `await task.output()` plus `await task.write(text)` across later turns.",
-            "Do not use the `bash` tool with `timeout_s` for interactive or long-running init; timeouts kill the process.",
-            "For MCP data sources, use the `yb.mcps` facade. Search first, then inspect a specific tool signature with `await client.get_spec(name)` before invoking.",
-            "submit is fire-and-forget: it registers the task with Runtime and returns a Task handle; execution continues after the tool call ends.",
-            "Shell tasks run in a PTY with live stdout and stdin.",
-            "When the task finishes, yuubot appends a developer message and automatically continues this conversation.",
-            "Use `await yb.tasks.find(...)`, `await yb.tasks.list_tasks(...)`, `await task.output()`, `await task.status()`, `await task.write(...)`, and `await task.cancel()` for query and control.",
-            "Do not call daemon HTTP endpoints such as `/api/tasks`, `/api/inbound`, or admin/public APIs directly; use the yb.tasks facade.",
-            "For durable schedules, use `await yb.tasks.cron.add(...)` with an explicit IANA timezone. One-shot `at` accepts a local ISO datetime or a short relative delay such as `+1m`.",
-            "For daily or standalone scheduled actor work, use cron action `{\"kind\":\"actor_message\",\"text\":\"...\"}`; it enters the actor's default inbound loop as a user message.",
-            "For scheduled results that must continue this exact conversation, use cron action `{\"kind\":\"conversation_callback\",\"text\":\"...\"}`; yuubot appends it as a developer notice and continues the owner conversation.",
-            "Use `await yb.tasks.cron.list_jobs(...)`, `find(...)`, `pause(...)`, `resume(...)`, and `delete(...)` to manage cron jobs. Do not call `/api/cron-jobs` directly.",
-            "For interactive admin pages, write HTML/CSS/JS under the workspace (for example `projects/.../form.html`).",
-            "When an admin opens the page in the management UI, page JavaScript may call admin KV and inbound endpoints with AdminAuth:",
-            "- `GET` / `PUT` / `DELETE` `/api/actors/{actor_id}/kv/{key}` (`{key}` is URL-encoded; supports `ETag` / `If-Match`)",
-            "- `POST` `/api/actors/{actor_id}/inbound` (`text` plus optional `conversation_id`)",
-            "Recommended submit flow: persist draft state to KV, then POST inbound with structured JSON `text` containing `submitted_at`, `source_page`, `purpose` or `context`, optional `kv_key`, and `payload`.",
-            "Do not loopback-call admin HTTP from execute_python; dynamic pages are browser-driven.",
+            "Use the `bash` tool for commands that may prompt, block, or need stdin. It runs in a PTY, streams output, detaches when idle, and returns a task id for `task.output()`, `task.write(text)`, and `task.cancel()`.",
+            "Register background shell work with `await yb.tasks.submit(name, shell, intro, delivery=...)`. `manual` — poll with `task.output()` / `task.status()` yourself (`ttl_s <= 3600`). `conversation` — completion wakes this chat. `actor` — completion goes to the actor mailbox.",
+            "Task output is an expiring offload buffer. For long jobs, write resumable workspace scripts that persist their own state and artifacts.",
+            "MCP data sources: use `yb.mcps` (see Integration SDKs). Durable schedules: use `yb.tasks.cron`.",
+            ADMIN_PAGES,
             "After `uv add` or `uv remove`, call the `restart_kernel` tool before expecting new imports in execute_python.",
-        ]
-    )
-
-
-def _mcp_data_sources(enabled_servers: int) -> str:
-    if enabled_servers <= 0:
-        return "No MCP servers are currently configured."
-    return "\n".join(
-        [
-            "MCP data sources are available through `yb.mcps`.",
-            "Use `await yb.mcps.search(query)` to discover relevant servers/tools/resources.",
-            "Search results intentionally omit parameter details.",
-            "Before calling a tool, use `client = yb.mcps.get_client(server_id)` and `await client.get_spec(name)`.",
-            "Call tools with `await client.invoke(name, **kwargs)`.",
-            "Read resources with `await client.read_resource(uri)`.",
-            "Secrets and raw credentials are managed by daemon and are never available.",
         ]
     )
 

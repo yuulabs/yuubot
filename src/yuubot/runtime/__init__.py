@@ -35,12 +35,14 @@ from .shares import (
 from .streams import TaskCoroFactory, TextStream
 from .tasks import (
     RuntimeTaskRecord,
+    TaskDelivery,
     TaskDeliveryListener,
     TaskRegistry,
     TaskScheduler,
     TaskSnapshot,
     register_shell_task,
     task_record_snapshot,
+    wait_until_terminal_or_idle,
     wait_until_terminal_or_timeout,
 )
 from .wakeup import WakeupDelivery, WakeupPayload, WakeupTarget
@@ -77,6 +79,7 @@ __all__ = [
     "SkillRecord",
     "SkillSummary",
     "TaskCoroFactory",
+    "TaskDelivery",
     "TaskDeliveryListener",
     "TaskRegistry",
     "TaskScheduler",
@@ -93,6 +96,7 @@ __all__ = [
     "register_shell_task",
     "share_grant_snapshot",
     "task_record_snapshot",
+    "wait_until_terminal_or_idle",
     "wait_until_terminal_or_timeout",
 ]
 

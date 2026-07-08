@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 import { Loader2 } from "lucide-react";
 
 import type { ConversationPhase } from "../lib/conversation-transcript";
@@ -8,23 +8,45 @@ import { ChatTurn } from "./chat-turn";
 export function ChatTranscript({
   items,
   phase,
+  scrollResetKey,
   waitingForResponse,
 }: {
   items: DisplayItem[];
   phase: ConversationPhase;
+  scrollResetKey: string;
   waitingForResponse: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shouldFollowBottomRef = useRef(true);
+  const didInitialScrollRef = useRef(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    shouldFollowBottomRef.current = true;
+    didInitialScrollRef.current = false;
+  }, [scrollResetKey]);
+
+  useLayoutEffect(() => {
     const node = scrollRef.current;
     if (!node) return;
-    node.scrollTop = node.scrollHeight;
-  }, [items, waitingForResponse]);
+    if (!didInitialScrollRef.current) {
+      node.scrollTop = node.scrollHeight;
+      didInitialScrollRef.current = true;
+      return;
+    }
+    if (shouldFollowBottomRef.current) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [items, scrollResetKey, waitingForResponse]);
+
+  const updateShouldFollowBottom = useCallback(() => {
+    const node = scrollRef.current;
+    if (!node) return;
+    shouldFollowBottomRef.current = isNearBottom(node);
+  }, []);
 
   if (!items.length && !waitingForResponse) {
     return (
-      <div className="chat__scroll" ref={scrollRef}>
+      <div className="chat__scroll" ref={scrollRef} onScroll={updateShouldFollowBottom}>
         <div className="chat__empty">
           <div className="chat__empty-inner">
             <div className="chat__empty-icon">
@@ -39,7 +61,7 @@ export function ChatTranscript({
   }
 
   return (
-    <div className="chat__scroll" ref={scrollRef}>
+    <div className="chat__scroll" ref={scrollRef} onScroll={updateShouldFollowBottom}>
       <div className="chat__transcript">
         {items.map((item) => (
           <ChatTurn key={item.key} item={item} />
@@ -58,4 +80,8 @@ export function ChatTranscript({
       </div>
     </div>
   );
+}
+
+function isNearBottom(node: HTMLDivElement): boolean {
+  return node.scrollHeight - node.scrollTop - node.clientHeight <= 48;
 }

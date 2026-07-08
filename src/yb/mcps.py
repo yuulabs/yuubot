@@ -1,10 +1,10 @@
 """MCP data source facade for execute_python.
 
 Use ``await search(query)`` to discover enabled MCP server capabilities. Search
-results intentionally omit parameter schemas. Before calling a tool, create a
-client with ``get_client(server_id)``, then call ``await client.get_spec(name)``
-for the compressed Python signature and ``await client.invoke(name, **kwargs)``.
-Raw credentials are owned by the daemon and are never available here.
+results omit parameter schemas. Before calling a tool, use
+``client = get_client(server_id)`` and ``await client.get_spec(name)``, then
+``await client.invoke(name, **kwargs)``. Read resources with
+``await client.read_resource(uri)``. Credentials are daemon-managed.
 """
 
 from __future__ import annotations

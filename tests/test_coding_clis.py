@@ -283,8 +283,8 @@ def test_coding_cli_prompt_doc_contains_usage_guidance() -> None:
 
     assert "await cli.help()" in doc
     assert 'await cli.cli("debug", "config")' in doc
-    assert "auth.json" in doc
-    assert "Do NOT" in doc
+    assert "credential files" in doc
+    assert "Do not invoke" in doc
     assert "opencode providers login" in doc
 
 
@@ -295,7 +295,7 @@ def test_coding_cli_prompt_docs_arrive_through_integration_docs(tmp_path: Path) 
     assert "yext.codex:\nThin wrapper over the official codex CLI." in prompt
     assert "await cli.help()" in prompt
     assert 'await cli.cli("debug", "config")' in prompt
-    assert "auth.json" in prompt
+    assert "credential files" in prompt
     assert "# Coding CLIs" not in prompt
 
 

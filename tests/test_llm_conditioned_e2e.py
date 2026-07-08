@@ -35,7 +35,7 @@ INTEGRATION_INSPECT_CODE = (
 def _tasks_inspect_code(task_name: str) -> str:
     return (
         "import yb.tasks\n"
-        f"task = await yb.tasks.submit({task_name!r}, 'echo task-probe', 'prompt test')\n"
+        f"task = await yb.tasks.submit({task_name!r}, 'echo task-probe', 'prompt test', delivery='manual', ttl_s=3600)\n"
         "print(task.name)\n"
         "print(await task.status())\n"
         f"tasks = await yb.tasks.list_tasks(name_glob={task_name!r})\n"

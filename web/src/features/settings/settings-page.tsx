@@ -13,7 +13,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState, ErrorState, LoadingState, Page, Panel } from "@/shared/components";
-import { applyUpdate, checkHealthz, getUpdateStatus, requestBrowserNotificationPermission, subscribePushNotifications } from "@/shared/lib/api";
+import {
+  applyUpdate,
+  authenticatedFetch,
+  checkHealthz,
+  getUpdateStatus,
+  requestBrowserNotificationPermission,
+  subscribePushNotifications,
+} from "@/shared/lib/api";
 import { useBootstrap } from "@/shared/hooks";
 
 const updateQueryKey = ["update-status"] as const;
@@ -197,10 +204,10 @@ export function SettingsPage() {
         <Panel>
           <h2 className="text-lg font-semibold">Admin Actions</h2>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => fetch("/api/admin/interrupt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ all: true }) })}>
+            <Button variant="outline" onClick={() => void authenticatedFetch("/api/admin/interrupt", { method: "POST", body: JSON.stringify({ all: true }) })}>
               Interrupt All
             </Button>
-            <Button variant="outline" onClick={() => fetch("/api/admin/shutdown", { method: "POST" })}>
+            <Button variant="outline" onClick={() => void authenticatedFetch("/api/admin/shutdown", { method: "POST" })}>
               Shutdown
             </Button>
           </div>

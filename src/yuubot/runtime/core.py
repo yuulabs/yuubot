@@ -28,7 +28,14 @@ from .credentials import CredentialStore
 from .auth_attempts import AuthAttempt
 from .mcp import McpManager
 from .skills import SkillRecord, SkillSummary, skill_summary
-from .tasks import TaskDeliveryQueue, TaskRegistry, TaskScheduler, drain_pending_task_deliveries, wait_until_terminal_or_timeout
+from .tasks import (
+    TaskDeliveryQueue,
+    TaskRegistry,
+    TaskScheduler,
+    drain_pending_task_deliveries,
+    suppress_conversation_task_deliveries,
+    wait_until_terminal_or_timeout,
+)
 from .wakeup import WakeupDelivery
 from .resource_config import ResourceConfig
 from .resources import ResourceSupervisor, resolve_tmp_dir
@@ -308,12 +315,18 @@ class Runtime:
         self.scheduler.cancel(record)
 
     def write_runtime_task_stdin(self, task_id: str, text: str) -> None:
-        from .tasks import TaskNotRunningError, write_task_stdin
+        from .tasks import write_task_stdin
 
         write_task_stdin(self.tasks.get(task_id), text)
 
     async def drain_pending_task_deliveries(self, conversation_id: str) -> None:
         await drain_pending_task_deliveries(self, conversation_id)
+
+    def allow_task_deliveries(self, conversation_id: str) -> None:
+        self.task_delivery_queue.allow(conversation_id)
+
+    def suppress_task_deliveries(self, conversation_id: str) -> None:
+        suppress_conversation_task_deliveries(self, conversation_id)
 
     async def wait_until_terminal_or_timeout(self, task_id: str, *, timeout: float) -> None:
         await wait_until_terminal_or_timeout(self.tasks, task_id, timeout=timeout)

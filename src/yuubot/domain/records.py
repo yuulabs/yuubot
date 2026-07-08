@@ -5,6 +5,8 @@ import msgspec
 from .messages import ModelCard
 from .stream import Usage
 
+DEFAULT_CONTEXT_COMPRESSION_TOKENS = 262144
+
 
 class LifecycleError(msgspec.Struct, frozen=True, kw_only=True):
     type: str
@@ -49,11 +51,20 @@ class ActorRecord(msgspec.Struct, frozen=True, kw_only=True):
     persona: str = ""
     model: ModelCard
     provider: str
+    context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
 
 
 class ActorModelInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     selector: str
     reasoning_effort: str = ""
+    max_context_tokens: int | None = None
+    vision: bool = False
+    toolcall: bool = True
+    json: bool = True
+    input_price_per_million: float | None = None
+    cached_input_price_per_million: float | None = None
+    output_price_per_million: float | None = None
+    configured: bool = False
 
 
 class ActorInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
@@ -63,6 +74,8 @@ class ActorInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_field
     persona: str = ""
     model: ActorModelInput
     provider: str
+    context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
+    tools: dict[str, object] = msgspec.field(default_factory=dict)
 
 
 class ActorConfigError(ValueError):
@@ -132,5 +145,3 @@ class RouteBody(msgspec.Struct, frozen=True, kw_only=True):
             actor_id=self.actor_id,
             enabled=self.enabled,
         )
-
-

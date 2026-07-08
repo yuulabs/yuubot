@@ -62,6 +62,7 @@ export interface ActorSnapshot {
   workspace: string;
   provider: string;
   model: ModelCard;
+  context_compression_tokens: number;
 }
 
 export interface IntegrationSnapshot {
@@ -99,9 +100,18 @@ export interface ConversationSummary {
   last_error?: Record<string, unknown> | null;
   message_count?: number;
   last_seq?: number | null;
+  last_input_tokens?: number;
+  last_cached_input_tokens?: number;
+  last_output_tokens?: number;
 }
 
 export interface BootstrapSnapshot {
+  auth?: {
+    surface: "local_dev" | "local_admin" | "trusted_admin" | "public";
+    mode: "none" | "proxy" | "builtin" | "loopback_bypass";
+    method?: "proxy" | "builtin_session" | "loopback_bypass" | null;
+    csrf_header: string;
+  };
   development?: boolean;
   schema_version: number;
   workspace_dir: string;
@@ -115,6 +125,7 @@ export interface BootstrapSnapshot {
 export interface ModelCard {
   selector: string;
   reasoning_effort?: string;
+  max_context_tokens?: number | null;
   vision?: boolean;
   toolcall?: boolean;
   json?: boolean;
@@ -132,6 +143,7 @@ export interface ActorRecord {
   persona?: string;
   model: ModelCard;
   provider: string;
+  context_compression_tokens?: number;
 }
 
 export interface ActorInboundBody {
@@ -348,6 +360,7 @@ export interface TaskRecord {
   status: string;
   error?: string | null;
   exit_code?: number | null;
+  delivery?: "manual" | "conversation" | "actor";
   delivery_state?: string;
   interactive?: boolean;
   stdout_tail?: string;

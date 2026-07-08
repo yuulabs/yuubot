@@ -16,7 +16,7 @@ import msgspec
 import yaml
 
 from ..app import load_process_config
-from ..db import Database, inspect_legacy, migrate_legacy, migration_files, pending_versions
+from ..db import Database, auto_legacy_db, inspect_legacy, migrate_legacy, migration_files, pending_versions
 from ..db.migrate import current_version
 from ..upgrade import apply_update, check_update, project_root
 from ..web.server import UvicornServer, make_server
@@ -265,11 +265,6 @@ def legacy_db_from_old_config(info: dict[str, object]) -> Path | None:
     if data_dir:
         return Path(data_dir).expanduser() / "yuubot" / "yuubot.db"
     return None
-
-
-def auto_legacy_db(data_dir: Path) -> Path | None:
-    candidate = data_dir / "yuubot" / "yuubot.db"
-    return candidate if candidate.exists() else None
 
 
 async def migrate_command(

@@ -2,14 +2,16 @@
 
 import re
 import secrets
+import time
 from typing import Literal
+from urllib.parse import quote
 
 import msgspec
 from attrs import define, field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..app.deployment import AdminAuthConfig, DeploymentConfig
-from .client_ip import client_ip_from_scope, header_value, is_loopback
+from .client_ip import header_value
 from .responses import error_response
 
 AuthMethod = Literal["proxy", "builtin_session", "loopback_bypass"]
@@ -31,23 +33,51 @@ class BuiltinSession:
     user_id: str
     display_name: str | None
     csrf_token: str
+    created_at: float
+    last_seen_at: float
 
 
 @define
 class SessionStore:
     _sessions: dict[str, BuiltinSession] = field(factory=dict)
+    ttl_seconds: int = 7 * 24 * 60 * 60
+    _now: object = time.time
 
     def create(self, *, user_id: str, display_name: str | None) -> tuple[str, str]:
         session_id = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
-        self._sessions[session_id] = BuiltinSession(user_id=user_id, display_name=display_name, csrf_token=csrf_token)
+        now = self._time()
+        self._sessions[session_id] = BuiltinSession(
+            user_id=user_id,
+            display_name=display_name,
+            csrf_token=csrf_token,
+            created_at=now,
+            last_seen_at=now,
+        )
         return session_id, csrf_token
 
     def get(self, session_id: str) -> BuiltinSession | None:
-        return self._sessions.get(session_id)
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        if self._time() - session.last_seen_at > self.ttl_seconds:
+            self.delete(session_id)
+            return None
+        return session
+
+    def touch(self, session_id: str) -> None:
+        session = self.get(session_id)
+        if session is not None:
+            session.last_seen_at = self._time()
 
     def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
+
+    def _time(self) -> float:
+        now = self._now
+        if callable(now):
+            return float(now())
+        return time.time()
 
 
 ACTOR_INBOUND_PATH = re.compile(r"^/api/actors/[^/]+/inbound$")
@@ -66,7 +96,7 @@ def is_auth_exempt(scope: Scope) -> bool:
         return False
     method = scope.get("method")
     path = scope.get("path")
-    return method == "POST" and path == "/api/auth/login"
+    return (method == "POST" and path == "/api/auth/login") or (method == "GET" and path == "/login")
 
 
 def scope_headers(scope: Scope) -> dict[bytes, bytes]:
@@ -81,17 +111,9 @@ def authenticate_scope(
     deployment: DeploymentConfig,
     sessions: SessionStore,
 ) -> AuthContext | None:
-    trusted = frozenset(deployment.trusted_proxies)
-    client_ip = client_ip_from_scope(scope, trusted)
     auth = deployment.admin_auth
 
-    if auth.mode == "loopback_bypass" and is_loopback(client_ip):
-        return AuthContext(user_id="loopback", auth_method="loopback_bypass")
-
-    if is_actor_inbound(scope) and is_loopback(client_ip):
-        return AuthContext(user_id="loopback-inbound", auth_method="loopback_bypass")
-
-    if is_auth_exempt(scope):
+    if auth.mode == "builtin" and is_auth_exempt(scope):
         return AuthContext(user_id="login", auth_method="builtin_session")
 
     if auth.mode == "proxy":
@@ -176,6 +198,8 @@ class AdminAuthMiddleware:
                 if session is not None and not require_csrf(scope, self.deployment, session):
                     await _reject_forbidden(scope, receive, send)
                     return
+                if session is not None:
+                    self.sessions.touch(session_id)
 
         state = scope.setdefault("state", {})
         if isinstance(state, dict):
@@ -192,6 +216,10 @@ def _session_id_from_scope(scope: Scope, cookie_name: str) -> str | None:
 
 
 async def _reject_unauthorized(scope: Scope, receive: Receive, send: Send) -> None:
+    if _wants_login_redirect(scope):
+        location = _login_redirect_location(scope)
+        await _send_response(scope, receive, send, 303, b"", None, extra_headers=[(b"location", location.encode("latin-1"))])
+        return
     response = error_response(401, "unauthorized", "authentication required")
     body = bytes(response.body)
     await _send_response(scope, receive, send, response.status_code, body, response.media_type)
@@ -210,6 +238,7 @@ async def _send_response(
     status: int,
     body: bytes,
     media_type: str | None,
+    extra_headers: list[tuple[bytes, bytes]] | None = None,
 ) -> None:
     if scope["type"] == "websocket":
         while True:
@@ -221,5 +250,31 @@ async def _send_response(
     headers: list[tuple[bytes, bytes]] = []
     if media_type is not None:
         headers.append((b"content-type", media_type.encode("ascii")))
+    if extra_headers:
+        headers.extend(extra_headers)
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": body})
+
+
+def _wants_login_redirect(scope: Scope) -> bool:
+    if scope["type"] != "http":
+        return False
+    if scope.get("method") != "GET":
+        return False
+    path = scope.get("path")
+    if not isinstance(path, str) or path.startswith("/api/"):
+        return False
+    headers = scope_headers(scope)
+    accept = header_value(headers, "accept") or ""
+    return "text/html" in accept or "*/*" in accept
+
+
+def _login_redirect_location(scope: Scope) -> str:
+    path = scope.get("path")
+    query = scope.get("query_string")
+    target = path if isinstance(path, str) and path else "/"
+    if isinstance(query, bytes) and query:
+        target = f"{target}?{query.decode('latin-1')}"
+    if target == "/login":
+        return "/login"
+    return f"/login?redirect={quote(target, safe='')}"

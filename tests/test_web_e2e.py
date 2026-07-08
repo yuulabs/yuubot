@@ -129,6 +129,7 @@ async def test_http_config_mutations_return_bootstrap_without_yaml(tmp_path: Pat
         assert editable_actor["model"] == {
             "selector": "fake-model",
             "reasoning_effort": "high",
+            "max_context_tokens": None,
             "vision": False,
             "toolcall": True,
             "json": True,
@@ -706,9 +707,45 @@ async def test_ws_subscribes_task_stdout_and_status(test_context: SharedTestCont
             "shell": "sleep 0.05 && echo ready",
             "intro": "test",
             "owner": f"actor:{actor_id}:conv:{conversation_id}",
+            "delivery": "manual",
             "wait_s": 0,
+            "ttl_s": 3600,
         },
     )
+    frames = await recv_ws_frames(
+        test_context.server,
+        [{"id": "t1", "type": "task.subscribe", "payload": {"task_id": task["id"]}}],
+        stop_when=lambda frame, _: (
+            frame.get("type") == "task.event"
+            and cast(JsonObject, frame["payload"])["status"] == "done"
+            and "ready" in str(cast(JsonObject, frame["payload"]).get("stdout", ""))
+        ),
+    )
+
+    task_events = [frame for frame in frames if frame["type"] == "task.event"]
+    assert any("ready" in str(cast(JsonObject, frame["payload"])["stdout"]) for frame in task_events)
+    assert cast(JsonObject, task_events[-1]["payload"])["status"] == "done"
+
+
+async def test_ws_subscribes_completed_task_with_stdout(test_context: SharedTestContext) -> None:
+    actor_id = await test_context.setup_actor()
+    conversation_id = test_context.conversation_id("task-c1")
+    task = await http_json(
+        "POST",
+        f"{base_url(test_context.server)}/api/tasks",
+        {
+            "name": test_context.name("demo"),
+            "shell": "echo ready",
+            "intro": "test",
+            "owner": f"actor:{actor_id}:conv:{conversation_id}",
+            "delivery": "manual",
+            "wait_s": 5,
+            "ttl_s": 3600,
+        },
+    )
+    assert task["status"] == "done"
+    assert "ready" in str(task["stdout_tail"])
+
     frames = await recv_ws_frames(
         test_context.server,
         [{"id": "t1", "type": "task.subscribe", "payload": {"task_id": task["id"]}}],
@@ -717,8 +754,55 @@ async def test_ws_subscribes_task_stdout_and_status(test_context: SharedTestCont
     )
 
     task_events = [frame for frame in frames if frame["type"] == "task.event"]
-    assert any("ready" in str(cast(JsonObject, frame["payload"])["stdout"]) for frame in task_events)
     assert cast(JsonObject, task_events[-1]["payload"])["status"] == "done"
+    assert "ready" in str(cast(JsonObject, task_events[-1]["payload"])["stdout"])
+
+
+async def test_http_manual_task_requires_ttl(test_context: SharedTestContext) -> None:
+    actor_id = await test_context.setup_actor()
+    conversation_id = test_context.conversation_id("task-ttl-c1")
+    body: JsonObject = {
+        "name": test_context.name("demo"),
+        "shell": "true",
+        "intro": "test",
+        "owner": f"actor:{actor_id}:conv:{conversation_id}",
+        "delivery": "manual",
+        "wait_s": 0,
+    }
+
+    await http_json("POST", f"{base_url(test_context.server)}/api/tasks", body, expected_status=400)
+    await http_json(
+        "POST",
+        f"{base_url(test_context.server)}/api/tasks",
+        {**body, "ttl_s": 3601},
+        expected_status=400,
+    )
+
+
+async def test_http_expired_manual_task_returns_404(test_context: SharedTestContext) -> None:
+    actor_id = await test_context.setup_actor()
+    conversation_id = test_context.conversation_id("task-expire-c1")
+    app = getattr(test_context.server, "app")
+    assert isinstance(app, Yuubot)
+    now = 0.0
+    app.runtime.tasks.terminal_records.now = lambda: now
+    task = await http_json(
+        "POST",
+        f"{base_url(test_context.server)}/api/tasks",
+        {
+            "name": test_context.name("expire"),
+            "shell": "echo expiring",
+            "intro": "test",
+            "owner": f"actor:{actor_id}:conv:{conversation_id}",
+            "delivery": "manual",
+            "wait_s": 5,
+            "ttl_s": 1,
+        },
+    )
+
+    assert "expiring" in str(task["stdout_tail"])
+    now = 1.0
+    await http_json("GET", f"{base_url(test_context.server)}/api/tasks/{task['id']}", expected_status=404)
 
 
 async def test_http_disable_actor_closes_active_conversation(test_context: SharedTestContext) -> None:

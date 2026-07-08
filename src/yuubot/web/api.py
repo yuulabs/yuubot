@@ -2,11 +2,11 @@
 
 from collections.abc import Callable
 
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..app import Yuubot
 from ..app.deployment import DeploymentConfig
-from .auth import SessionStore
+from .auth import AdminAuthMiddleware, AuthContext, SessionStore
 from .boundary import create_boundary_app
 from .public_api import create_public_app
 from .routes.admin import create_admin_app
@@ -21,6 +21,59 @@ def create_asgi_app(
 ) -> ASGIApp:
     resolved_deployment = deployment or DeploymentConfig()
     session_store = sessions or SessionStore()
-    admin_app = create_admin_app(app, resolved_deployment, session_store, on_shutdown=on_shutdown)
+    if resolved_deployment.surface == "public":
+        return create_public_app(app)
+    if resolved_deployment.surface == "local_admin":
+        return create_local_admin_app(app, deployment=resolved_deployment, on_shutdown=on_shutdown, sessions=session_store)
+    if resolved_deployment.surface == "trusted_admin":
+        return create_trusted_admin_app(app, deployment=resolved_deployment, on_shutdown=on_shutdown, sessions=session_store)
+    return create_local_dev_app(app, deployment=resolved_deployment, on_shutdown=on_shutdown, sessions=session_store)
+
+
+def create_local_admin_app(
+    app: Yuubot,
+    *,
+    deployment: DeploymentConfig,
+    on_shutdown: Callable[[], None] | None = None,
+    sessions: SessionStore | None = None,
+) -> ASGIApp:
+    admin_app = create_admin_app(app, deployment, sessions or SessionStore(), on_shutdown=on_shutdown)
+    return LocalAdminTrustMiddleware(admin_app)
+
+
+def create_trusted_admin_app(
+    app: Yuubot,
+    *,
+    deployment: DeploymentConfig,
+    on_shutdown: Callable[[], None] | None = None,
+    sessions: SessionStore | None = None,
+) -> ASGIApp:
+    session_store = sessions or SessionStore()
+    admin_app = create_admin_app(app, deployment, session_store, on_shutdown=on_shutdown)
+    return AdminAuthMiddleware(admin_app, deployment, session_store)
+
+
+def create_local_dev_app(
+    app: Yuubot,
+    *,
+    deployment: DeploymentConfig,
+    on_shutdown: Callable[[], None] | None = None,
+    sessions: SessionStore | None = None,
+) -> ASGIApp:
+    session_store = sessions or SessionStore()
+    admin_app = create_admin_app(app, deployment, session_store, on_shutdown=on_shutdown)
     public_app = create_public_app(app)
-    return create_boundary_app(resolved_deployment, admin_app, public_app, sessions=session_store)
+    trusted_admin = LocalAdminTrustMiddleware(admin_app)
+    return create_boundary_app(deployment, trusted_admin, public_app, sessions=session_store, protect_admin=False)
+
+
+class LocalAdminTrustMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in {"http", "websocket"}:
+            state = scope.setdefault("state", {})
+            if isinstance(state, dict):
+                state["auth"] = AuthContext(user_id="local-admin", auth_method="loopback_bypass")
+        await self.app(scope, receive, send)

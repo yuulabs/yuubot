@@ -7,6 +7,8 @@ import type { ActorRecord, BootstrapSnapshot, ModelCard } from "@/shared/types/a
 import { Button } from "@/components/ui/button";
 import { DenseSection } from "@/shared/components";
 
+const DEFAULT_CONTEXT_COMPRESSION_TOKENS = 262144;
+
 export function ActorForm({
   initial,
   bootstrap,
@@ -25,6 +27,9 @@ export function ActorForm({
   const [persona, setPersona] = useState(initial.persona ?? "");
   const [provider, setProvider] = useState(initial.provider);
   const [model, setModel] = useState<ModelCard>(initial.model);
+  const [contextCompressionTokens, setContextCompressionTokens] = useState(
+    initial.context_compression_tokens ?? DEFAULT_CONTEXT_COMPRESSION_TOKENS,
+  );
   const [message, setMessage] = useState("");
   const [saveError, setSaveError] = useState("");
   const providerDetail = useQuery({
@@ -105,6 +110,17 @@ export function ActorForm({
               onChange={(event) => setModel({ ...model, reasoning_effort: event.target.value })}
             />
           </label>
+          <label className="grid gap-1">
+            <span className="text-sm font-medium">Compression threshold</span>
+            <input
+              className="input"
+              type="number"
+              min="1"
+              step="1"
+              value={contextCompressionTokens}
+              onChange={(event) => setContextCompressionTokens(Number(event.target.value))}
+            />
+          </label>
         </div>
         {pricingHint && <p className="text-sm text-muted-foreground">{pricingHint}</p>}
         {providerDetail.error && <p className="text-sm text-destructive">{describeApiError(providerDetail.error)}</p>}
@@ -134,6 +150,7 @@ export function ActorForm({
                   persona,
                   provider,
                   model,
+                  context_compression_tokens: contextCompressionTokens,
                 });
               } catch (err) {
                 setSaveError(describeApiError(err));

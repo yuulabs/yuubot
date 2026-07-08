@@ -1,6 +1,7 @@
 """ASGI server lifecycle: bind socket, publish run state, serve, clean shutdown."""
 
 import asyncio
+import contextlib
 import socket
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import uvicorn
 from attrs import define, field
 
 from ..app import DEFAULT_HOST, DEFAULT_PORT, Yuubot
-from ..app.deployment import DeploymentConfig, ServerConfig, load_deployment_config, origin_for
+from ..app.deployment import DeploymentConfig, ServerConfig, load_listener_deployments, origin_for
 from ..runtime.logging_config import configure_logging
 from .api import create_asgi_app
 from .auth import SessionStore
@@ -26,6 +27,8 @@ class UvicornServer:
     _socket: socket.socket
     development: bool = False
     _sessions: SessionStore = field(factory=SessionStore)
+    _manage_lifecycle: bool = True
+    _write_run_state: bool = True
     _server: uvicorn.Server = field(init=False)
 
     @_server.default
@@ -55,6 +58,7 @@ class UvicornServer:
         port: int = DEFAULT_PORT,
         deployment: DeploymentConfig | None = None,
         development: bool = False,
+        sessions: SessionStore | None = None,
     ) -> "UvicornServer":
         bound = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         bound.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -67,14 +71,21 @@ class UvicornServer:
             origin = origin_for(host, server_port)
             resolved = DeploymentConfig(
                 server=ServerConfig(host=host, port=server_port),
+                surface="local_dev",
                 admin_url_base=origin,
                 public_url_base=origin,
             )
         else:
+            admin_url_base = deployment.admin_url_base or origin_for(host, server_port)
+            public_url_base = deployment.public_url_base or admin_url_base
             resolved = DeploymentConfig(
                 server=ServerConfig(host=host, port=server_port),
-                admin_url_base=deployment.admin_url_base,
-                public_url_base=deployment.public_url_base,
+                surface=deployment.surface,
+                public_server=deployment.public_server,
+                local_admin_server=deployment.local_admin_server,
+                trusted_admin_server=deployment.trusted_admin_server,
+                admin_url_base=admin_url_base,
+                public_url_base=public_url_base,
                 trusted_proxies=deployment.trusted_proxies,
                 admin_auth=deployment.admin_auth,
             )
@@ -85,7 +96,66 @@ class UvicornServer:
             deployment=resolved,
             socket=bound,
             development=development,
+            sessions=sessions or SessionStore(),
         )
+
+    async def serve(self) -> None:
+        if self._manage_lifecycle:
+            self.app.runtime.development = self.development
+            log_path = configure_logging(
+                self.app.runtime.logs_dir,
+                development=self.development,
+                max_bytes=self.app.runtime.resources_config.logs.max_bytes,
+                backup_count=self.app.runtime.resources_config.logs.backup_count,
+            )
+            print(f"Logs: {log_path}", flush=True)
+            await self.app.startup()
+        if self._write_run_state:
+            write_run_state(self.app.runtime.data_dir, self.host, self.server_port)
+        try:
+            await self._server.serve(sockets=[self._socket])
+        finally:
+            if self._write_run_state:
+                clear_run_state(self.app.runtime.data_dir)
+            if self._manage_lifecycle:
+                await self.app.shutdown()
+
+    def serve_forever(self) -> None:
+        asyncio.run(self.serve())
+
+    def shutdown(self) -> None:
+        self._server.should_exit = True
+
+
+@define
+class MultiUvicornServer:
+    app: Yuubot
+    servers: tuple[UvicornServer, ...]
+    development: bool = False
+
+    @classmethod
+    def create(
+        cls,
+        app: Yuubot,
+        *,
+        deployments: tuple[DeploymentConfig, ...],
+        development: bool = False,
+    ) -> "MultiUvicornServer":
+        sessions = SessionStore()
+        servers: list[UvicornServer] = []
+        for deployment in deployments:
+            server = UvicornServer.create(
+                app,
+                host=deployment.server.host,
+                port=deployment.server.port,
+                deployment=deployment,
+                development=development,
+                sessions=sessions,
+            )
+            server._manage_lifecycle = False
+            server._write_run_state = deployment.surface in {"local_admin", "local_dev"}
+            servers.append(server)
+        return cls(app=app, servers=tuple(servers), development=development)
 
     async def serve(self) -> None:
         self.app.runtime.development = self.development
@@ -96,19 +166,29 @@ class UvicornServer:
             backup_count=self.app.runtime.resources_config.logs.backup_count,
         )
         print(f"Logs: {log_path}", flush=True)
+        for server in self.servers:
+            print(f"{server.deployment.surface}: http://{server.host}:{server.server_port}", flush=True)
         await self.app.startup()
-        write_run_state(self.app.runtime.data_dir, self.host, self.server_port)
+        tasks = [asyncio.create_task(server.serve()) for server in self.servers]
         try:
-            await self._server.serve(sockets=[self._socket])
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                await task
+            for server in self.servers:
+                server.shutdown()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
         finally:
-            clear_run_state(self.app.runtime.data_dir)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*tasks, return_exceptions=True)
             await self.app.shutdown()
 
-    def serve_forever(self) -> None:
-        asyncio.run(self.serve())
-
     def shutdown(self) -> None:
-        self._server.should_exit = True
+        for server in self.servers:
+            server.shutdown()
 
 
 def make_server(
@@ -131,8 +211,8 @@ async def serve_async(
 ) -> None:
     config_path = Path(config)
     app = await app_loader(config_path)
-    deployment = load_deployment_config(str(config_path), host=host, port=port)
-    await make_server(app, host=host, port=port, deployment=deployment).serve()
+    deployments = load_listener_deployments(str(config_path), host=host, port=port)
+    await MultiUvicornServer.create(app, deployments=deployments).serve()
 
 
 def serve(

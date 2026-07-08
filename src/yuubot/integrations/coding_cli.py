@@ -272,10 +272,8 @@ def _coding_cli_prompt_doc(*, command: str, package_path: str, login_command: st
             'Run:     await cli.cli("debug", "config")  -> Result(stdout, stderr, exit_code)',
             'Task:    await cli.run("fix the bug")',
             "",
-            "When unsure: help() -> cli(subcommand, ...) -> read result.stdout. Do not re-run via bash.",
-            "",
-            f"Do NOT: invoke {command} via bash; read auth.json or credential stores;",
-            f"        interactive login ({login_command}) — ask admin to use Admin Terminal.",
-            "Output is redacted; *** means secret. needs_action -> tell admin the login command.",
+            "When unsure: help() -> cli(subcommand, ...) -> read result.stdout.",
+            f"Auth is redacted (***). If needs_action, tell admin to run `{login_command}` in Admin Terminal.",
+            f"Do not invoke {command} via bash or read credential files.",
         ]
     )

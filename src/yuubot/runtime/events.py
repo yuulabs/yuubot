@@ -55,6 +55,8 @@ class EventBus:
 
 
 def _should_buffer_event(event: RuntimeEvent) -> bool:
+    if event.kind == "conversation.tool_progress":
+        return False
     if event.kind != "conversation.stream":
         return True
     stream_event = event.payload.get("event")

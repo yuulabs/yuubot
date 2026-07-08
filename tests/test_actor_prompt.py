@@ -8,6 +8,7 @@ from yuubot.actor.prompt import (
     developer_prompt,
     user_visible_text,
 )
+from yuubot.actor.prompt_docs import ADMIN_PAGES_INTRO, ADMIN_PAGES_SUBMIT_FLOW
 from yuubot.domain.messages import InputMessage, text_content
 
 
@@ -15,7 +16,7 @@ def test_developer_prompt_documents_cron_facade(tmp_path: Path) -> None:
     prompt = developer_prompt("", tmp_path, [], has_python=True)
 
     assert "yb.tasks.cron:\n" in prompt
-    assert "await yb.tasks.cron.add" in prompt
+    assert "await add" in prompt
     assert "actor_message" in prompt
     assert "conversation_callback" in prompt
     assert "+1m" in prompt
@@ -24,9 +25,27 @@ def test_developer_prompt_documents_cron_facade(tmp_path: Path) -> None:
 def test_developer_prompt_documents_interactive_tasks(tmp_path: Path) -> None:
     prompt = developer_prompt("", tmp_path, [], has_python=True)
 
-    assert "await task.write" in prompt
-    assert "Do not use the `bash` tool with `timeout_s`" in prompt
+    assert "task.write" in prompt
     assert "PTY" in prompt
+    assert "yb.tasks.submit" in prompt
+
+
+def test_developer_prompt_documents_task_retention(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "ttl_s <= 3600" in prompt
+    assert "expiring offload buffer" in prompt
+    assert "resumable workspace scripts" in prompt
+
+
+def test_developer_prompt_documents_actor_id_for_kv_urls(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], actor_id="amy", has_python=True)
+
+    assert "Actor id: amy" in prompt
+    assert ADMIN_PAGES_INTRO in prompt
+    assert ADMIN_PAGES_SUBMIT_FLOW in prompt
+    assert "`{actor_id}` is your Actor id" in prompt
+    assert "/api/actors/{actor_id}/kv/{key}" in prompt
 
 
 def test_developer_prompt_real_time_data_is_static(tmp_path: Path) -> None:

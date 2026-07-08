@@ -197,7 +197,7 @@ async def _task_subscribe(
             await task.wait_terminal()
         except asyncio.CancelledError:
             pass
-        await ws_listener.send_task_terminal(task_id, task.status)
+        await ws_listener.send_task_terminal(task_id, task.status, task.stdout.tail(max_bytes=65536))
     finally:
         ws_listener.stop_task_stdout()
 

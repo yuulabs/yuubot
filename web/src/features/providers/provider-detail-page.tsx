@@ -66,6 +66,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
   const [optionsText, setOptionsText] = useState("{}");
   const [card, setCard] = useState<ModelCard>({
     selector: id === "new" ? defaultPreset.model : "",
+    max_context_tokens: null,
     toolcall: true,
     json: true,
     vision: false,
@@ -88,6 +89,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
     setOptionsText(JSON.stringify(detail.data.config.options ?? {}, null, 2));
     setCard(detail.data.model_cards[0] ?? {
       selector: "",
+      max_context_tokens: null,
       toolcall: true,
       json: true,
       vision: false,
@@ -324,6 +326,7 @@ export function ProviderDetailPage({ id }: { id: string }) {
                   { label: "Input $/M", value: priceValue(card.input_price_per_million) },
                   { label: "Cached $/M", value: priceValue(card.cached_input_price_per_million) },
                   { label: "Output $/M", value: priceValue(card.output_price_per_million) },
+                  { label: "Max context", value: tokenValue(card.max_context_tokens) },
                 ]}
               />
               <label className="grid gap-1">
@@ -345,6 +348,11 @@ export function ProviderDetailPage({ id }: { id: string }) {
                 </label>
               </div>
               <div className="dense-form-grid dense-form-grid--compact">
+                <TokenInput
+                  label="Max context tokens"
+                  value={card.max_context_tokens}
+                  onChange={(value) => setCard({ ...card, max_context_tokens: value })}
+                />
                 <PriceInput label="Input $/M" value={card.input_price_per_million} onChange={(value) => setCard({ ...card, input_price_per_million: value })} />
                 <PriceInput label="Cached input $/M" value={card.cached_input_price_per_million} onChange={(value) => setCard({ ...card, cached_input_price_per_million: value })} />
                 <PriceInput label="Output $/M" value={card.output_price_per_million} onChange={(value) => setCard({ ...card, output_price_per_million: value })} />
@@ -388,9 +396,31 @@ function PriceInput({ label, value, onChange }: { label: string; value: number |
   );
 }
 
+function TokenInput({ label, value, onChange }: { label: string; value: number | null | undefined; onChange: (value: number | null) => void }) {
+  return (
+    <label className="grid gap-1">
+      <span className="text-sm font-medium">{label}</span>
+      <input
+        className="input"
+        type="number"
+        min="1"
+        step="1"
+        value={value ?? ""}
+        placeholder="unknown"
+        onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)}
+      />
+    </label>
+  );
+}
+
 function priceValue(value: number | null | undefined): string {
   if (value === null || value === undefined) return "not set";
   return `$${value.toFixed(2)}`;
+}
+
+function tokenValue(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "unknown";
+  return value.toLocaleString();
 }
 
 function parseOptions(text: string): Record<string, unknown> {
@@ -427,5 +457,6 @@ function defaultActor(providerId: string, providerName: string, model: ModelCard
     persona: "You are a concise, practical assistant.",
     provider: providerId,
     model,
+    context_compression_tokens: 262144,
   };
 }

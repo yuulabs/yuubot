@@ -9,6 +9,7 @@ CONFIG_FILE="${YUUBOT_CONFIG:-$CONFIG_DIR/config.yaml}"
 ENV_FILE="${YUUBOT_ENV_FILE:-$CONFIG_DIR/yuubot.env}"
 DATA_DIR="${YUU_DATA_DIR:-/var/lib/yuubot}"
 YUUBOT_PORT="${YUUBOT_PORT:-8765}"
+YUUBOT_TRUSTED_ADMIN_PORT="${YUUBOT_TRUSTED_ADMIN_PORT:-8767}"
 CADDYFILE="${YUUBOT_CADDYFILE:-/etc/caddy/Caddyfile}"
 CADDY_CONF_DIR="${YUUBOT_CADDY_CONF_DIR:-/etc/caddy/conf.d}"
 CADDY_SITE_FILE="${YUUBOT_CADDY_SITE_FILE:-$CADDY_CONF_DIR/yuubot.caddy}"
@@ -119,15 +120,26 @@ ensure_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         sudo_write "$CONFIG_FILE" 0640 <<EOF
 data_dir: $DATA_DIR
-admin_url_base: http://127.0.0.1:$YUUBOT_PORT
-public_url_base: http://127.0.0.1:$YUUBOT_PORT
+local_admin_server:
+  enabled: true
+  host: 127.0.0.1
+  port: $YUUBOT_PORT
+  url_base: http://127.0.0.1:$YUUBOT_PORT
+public_server:
+  enabled: false
+trusted_admin_server:
+  enabled: true
+  host: 127.0.0.1
+  port: $YUUBOT_TRUSTED_ADMIN_PORT
+  url_base: http://127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT
+  auth:
+    mode: proxy
 trusted_proxies: [127.0.0.1]
-admin_auth:
-  mode: loopback_bypass
 EOF
         sudo chown "root:$SERVICE_GROUP" "$CONFIG_FILE"
     else
         info "Keeping existing $CONFIG_FILE"
+        reject_legacy_config
     fi
 
     if [[ ! -f "$ENV_FILE" ]]; then
@@ -140,11 +152,31 @@ EOF
     fi
 }
 
+reject_legacy_config() {
+    if sudo grep -Eq '^[[:space:]]*(admin|database|paths|secrets):[[:space:]]*$' "$CONFIG_FILE"; then
+        die "$CONFIG_FILE uses the old split-service config shape. Replace it with the single-process config from docs/server-deploy.md."
+    fi
+}
+
 install_app_dependencies() {
     info "Installing project dependencies"
     "$REPO_ROOT/scripts/install-deps.sh"
+}
 
-    info "Validating bootstrap config"
+run_database_migrations() {
+    info "Running database migrations"
+    (
+        set -a
+        # shellcheck disable=SC1090
+        source "$ENV_FILE"
+        set +a
+        cd "$REPO_ROOT"
+        uv run ybot migrate "$CONFIG_FILE" --json
+    )
+}
+
+validate_deploy() {
+    info "Validating deployment"
     (
         set -a
         # shellcheck disable=SC1090
@@ -186,8 +218,11 @@ WantedBy=multi-user.target
 EOF
 
     sudo systemctl daemon-reload
-    sudo systemctl disable yuubot-daemon.service yuubot-admin.service >/dev/null 2>&1 || true
+    sudo systemctl disable --now yuubot-daemon.service yuubot-admin.service >/dev/null 2>&1 || true
     sudo systemctl enable yuubot.service
+    sudo systemctl stop yuubot.service >/dev/null 2>&1 || true
+    run_database_migrations
+    validate_deploy
     sudo systemctl restart yuubot.service
 }
 
@@ -240,7 +275,9 @@ $domain {
         $username $hash
     }
 
-    reverse_proxy 127.0.0.1:$YUUBOT_PORT
+    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT {
+        header_up X-Forwarded-User {http.auth.user.id}
+    }
 }
 EOF
 

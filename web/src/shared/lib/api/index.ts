@@ -1,4 +1,6 @@
+export * from "./client";
 export * from "./bootstrap";
+export * from "./auth";
 export * from "./providers";
 export * from "./actors";
 export * from "./integrations";

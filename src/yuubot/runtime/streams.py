@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 from attrs import define, field
@@ -17,12 +18,16 @@ class TextStream:
     max_bytes: int = DEFAULT_STREAM_MAX_BYTES
     chunks: list[str] = field(factory=list)
     _subscribers: set[asyncio.Queue[str]] = field(factory=set)
+    updated_at: float = field(factory=time.monotonic)
+    _wait_event: asyncio.Event = field(factory=asyncio.Event, init=False)
 
     def write(self, text: str) -> None:
         if not text:
             return
         self.chunks.append(text)
         self._trim()
+        self.updated_at = time.monotonic()
+        self._wait_event.set()
         for subscriber in list(self._subscribers):
             subscriber.put_nowait(text)
 
@@ -47,3 +52,13 @@ class TextStream:
                 yield await queue.get()
         finally:
             self._subscribers.discard(queue)
+
+    async def await_next(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for new output. Returns True when output arrives."""
+        event = self._wait_event
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except TimeoutError:
+            return False
+        self._wait_event = asyncio.Event()
+        return True

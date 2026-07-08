@@ -29,6 +29,7 @@ from support.llm_rules import (
     user_message_contains,
 )
 from support.prompt_conditioned_llm import PromptConditionedProvider
+from yuubot.actor.prompt_docs import ADMIN_PAGES_INTRO, ADMIN_PAGES_SUBMIT_FLOW
 
 RulePredicate = Callable[[LLMInput], bool]
 RuleBuilder = Callable[[LLMInput], list[StreamEvent]]
@@ -106,18 +107,6 @@ WAKEUP_MARKDOWN = f"""# Wakeup context
 """
 
 
-def _tool_description_contains(name: str, text: str) -> RulePredicate:
-    def matches(inp: LLMInput) -> bool:
-        for spec in inp.tool_specs:
-            function = spec.get("function")
-            if isinstance(function, dict) and function.get("name") == name:
-                description = function.get("description")
-                return isinstance(description, str) and text in description
-        return False
-
-    return matches
-
-
 def _tool_call_contains(name: str, text: str) -> RulePredicate:
     def matches(inp: LLMInput) -> bool:
         return any(isinstance(item, GenToolCall) and item.name == name and text in item.arguments for item in inp.messages)
@@ -164,9 +153,8 @@ def _approval_html(actor_id: str, conversation_id: str) -> str:
 
 def _dynamic_page_llm(approval_html: str) -> PromptConditionedProvider:
     dynamic_page_guidance = all_of(
-        prompt_contains("For interactive admin pages, write HTML/CSS/JS under the workspace"),
-        prompt_contains("Recommended submit flow: persist draft state to KV, then POST inbound"),
-        _tool_description_contains("execute_python", "Dynamic admin pages"),
+        prompt_contains(ADMIN_PAGES_INTRO),
+        prompt_contains(ADMIN_PAGES_SUBMIT_FLOW),
     )
     return PromptConditionedProvider(
         rules=[

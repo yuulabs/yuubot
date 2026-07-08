@@ -14,6 +14,10 @@ from yuubot.domain.stream import ToolCall
 from yuubot.tools.base import ToolConfig
 
 
+def _noop_emit(*_args: object, **_kwargs: object) -> None:
+    return None
+
+
 class Payload(msgspec.Struct, frozen=True, kw_only=True):
     pass
 
@@ -51,6 +55,9 @@ async def test_harness_starts_prepare_from_config(monkeypatch: pytest.MonkeyPatc
         del configs, context, runtime
         return {"slow": tool}
 
+    class _Runtime:
+        emit = staticmethod(_noop_emit)
+
     monkeypatch.setattr(harness_module, "build_tools", fake_build_tools)
     harness = Harness.from_config(
         HarnessConfig(tools={"slow": ToolConfig(type="slow")}),
@@ -60,7 +67,7 @@ async def test_harness_starts_prepare_from_config(monkeypatch: pytest.MonkeyPatc
             actor="a1",
             workspace=tmp_path,
         ),
-        cast(Any, None),
+        cast(Any, _Runtime()),
     )
 
     await tool.prepare_started.wait()
@@ -72,7 +79,7 @@ async def test_harness_starts_prepare_from_config(monkeypatch: pytest.MonkeyPatc
 async def test_harness_prepare_wait_is_not_part_of_tool_timeout() -> None:
     tool = SlowPrepareTool()
     prepare_task = asyncio.create_task(tool.prepare())
-    harness = Harness(tools={"slow": tool}, prepare_tasks={"slow": prepare_task})
+    harness = Harness(tools={"slow": tool}, emit=_noop_emit, conversation_id="c1", prepare_tasks={"slow": prepare_task})
     gather_task = asyncio.create_task(
         harness.gather(
             [ToolCall(id="call-1", name="slow", arguments="{}")],

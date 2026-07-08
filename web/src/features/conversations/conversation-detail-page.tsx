@@ -201,6 +201,11 @@ export function ConversationDetailPage({
   const attachmentPaths = attachments.map((item) => item.path ?? "").filter(Boolean);
   const activeConversationId = session.activeConversationId || conversationId;
   const totalCost = sumConversationCost(costs.data?.items ?? []);
+  const costItems = costs.data?.items ?? [];
+  const latestCostUsage = costItems.length ? costItems[costItems.length - 1].usage : undefined;
+  const latestInputTokens = durableSummary?.last_input_tokens ?? numericUsage(latestCostUsage?.input_tokens);
+  const maxContextTokens = selectedActorSnapshot?.model.max_context_tokens;
+  const contextUsageLabel = `${formatTokens(latestInputTokens ?? 0)} / ${maxContextTokens ? formatTokens(maxContextTokens) : "unknown"}`;
   const displayItems = session.displayItems;
   const hasAcceptedDraftState = !isDraft
     && (
@@ -264,6 +269,7 @@ export function ConversationDetailPage({
           <ChatTranscript
             items={displayItems}
             phase={session.phase}
+            scrollResetKey={activeConversationId}
             waitingForResponse={session.waitingForResponse || awaitingFirstSend}
           />
           <ChatComposer
@@ -283,6 +289,7 @@ export function ConversationDetailPage({
             onInterrupt={() => session.interrupt(interruptTarget)}
             phase={session.phase}
             totalCost={totalCost}
+            contextUsageLabel={contextUsageLabel}
             canInterrupt={Boolean(interruptTarget)}
             disabled={Boolean(disabledReason) || upload.isPending}
             disabledReason={disabledReason}
@@ -333,4 +340,12 @@ export function ConversationDetailPage({
     setAttachments([]);
     return true;
   }
+}
+
+function numericUsage(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatTokens(value: number): string {
+  return Math.trunc(value).toLocaleString();
 }

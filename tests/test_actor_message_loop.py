@@ -13,6 +13,8 @@ from yuubot.llm import merge_catalog, scripted_reply
 from yuubot.llm.types import AccountSnapshot, ValidationResult
 from yuubot.app import Yuubot
 from yuubot.runtime.cache import CachePool
+from support.llm_rules import prompt_contains, reply_text, user_message_contains
+from support.prompt_conditioned_llm import PromptConditionedProvider
 
 
 def _input_roles(items: list[dict[str, object]]) -> list[str]:
@@ -24,6 +26,23 @@ def _input_roles(items: list[dict[str, object]]) -> list[str]:
         if isinstance(payload, dict):
             roles.append(str(payload.get("role")))
     return roles
+
+
+def _input_texts(items: list[dict[str, object]]) -> list[str]:
+    texts: list[str] = []
+    for item in items:
+        if item.get("kind") != "input":
+            continue
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        content = payload.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("kind") == "text":
+                texts.append(str(part.get("text")))
+    return texts
 
 
 class BlockingProvider:
@@ -65,18 +84,10 @@ class BlockingProvider:
         return None
 
 
-@pytest.mark.asyncio
-async def test_actor_inbound_without_conversation_reuses_default_conversation(tmp_path) -> None:
+@pytest.fixture
+async def actor_loop_app(tmp_path) -> AsyncIterator[tuple[Yuubot, Path]]:
     app = await Yuubot.create(tmp_path / "data")
-    actor = app.create_actor(
-        ActorConfig(
-            id="amy",
-            name="Amy",
-            workspace=str(tmp_path / "workspace"),
-            model=ModelCard(selector="fake"),
-        ),
-        scripted_reply("ok"),
-    )
+    workspace = tmp_path / "workspace"
     try:
         yield app, workspace
     finally:
@@ -158,10 +169,105 @@ async def test_actor_explicit_conversation_and_callback_roles(actor_loop_app: tu
         )
     )
 
-        items = await app.runtime.history.load_interaction_wrapped("explicit")
-        assert _input_roles(items) == ["user", "developer"]
-    finally:
-        await app.shutdown()
+    items = await app.runtime.history.load_interaction_wrapped("explicit")
+    assert _input_roles(items) == ["user", "developer"]
+
+
+@pytest.mark.asyncio
+async def test_actor_mailbox_compacts_once_and_continues(actor_loop_app: tuple[Yuubot, Path]) -> None:
+    app, workspace = actor_loop_app
+    actor = app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(workspace),
+            model=ModelCard(selector="fake"),
+            context_compression_tokens=5,
+        ),
+        PromptConditionedProvider(
+            rules=[
+                (prompt_contains("Summarize the current work"), reply_text("summary text", usage={"input_tokens": 1})),
+                (
+                    user_message_contains("automatic context compression continuation"),
+                    reply_text("continued", usage={"input_tokens": 1}),
+                ),
+                (user_message_contains("first"), reply_text("old done", usage={"input_tokens": 5})),
+            ]
+        ),
+    )
+
+    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+
+    new_conversation = actor._mailbox_conversation
+    assert new_conversation is not None
+    compacted_event = next(event for event in app.runtime.eventbus.events if event.kind == "actor.context_compacted")
+    old_conversation = str(compacted_event.payload["old_conversation_id"])
+    assert new_conversation == compacted_event.payload["new_conversation_id"]
+
+    old_items = await app.runtime.history.load_interaction_wrapped(old_conversation)
+    new_items = await app.runtime.history.load_interaction_wrapped(new_conversation)
+    assert _input_roles(old_items) == ["user", "developer"]
+    assert _input_roles(new_items) == ["developer", "user"]
+    assert _input_texts(new_items)[0] == "summary text"
+    assert "first" in _input_texts(new_items)[1]
+
+
+@pytest.mark.asyncio
+async def test_actor_mailbox_second_compaction_trigger_discards_runtime_conversation(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> None:
+    app, workspace = actor_loop_app
+    actor = app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(workspace),
+            model=ModelCard(selector="fake"),
+            context_compression_tokens=5,
+        ),
+        PromptConditionedProvider(
+            rules=[
+                (prompt_contains("Summarize the current work"), reply_text("summary text", usage={"input_tokens": 1})),
+                (
+                    user_message_contains("automatic context compression continuation"),
+                    reply_text("continued", usage={"input_tokens": 5}),
+                ),
+                (user_message_contains("first"), reply_text("old done", usage={"input_tokens": 5})),
+            ]
+        ),
+    )
+
+    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+
+    stopped_event = next(event for event in app.runtime.eventbus.events if event.kind == "actor.context_compaction_stopped")
+    stopped_conversation = str(stopped_event.payload["conversation_id"])
+    assert actor._mailbox_conversation is None
+    assert actor.status == "idle"
+    assert not app.runtime.conversations.has(stopped_conversation)
+    assert await app.runtime.history.conversation_meta(stopped_conversation) is not None
+    assert await app.runtime.state.load_costs(stopped_conversation)
+
+
+@pytest.mark.asyncio
+async def test_actor_explicit_conversation_does_not_compact(actor_loop_app: tuple[Yuubot, Path]) -> None:
+    app, workspace = actor_loop_app
+    actor = app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(workspace),
+            model=ModelCard(selector="fake"),
+            context_compression_tokens=5,
+        ),
+        PromptConditionedProvider(rules=[(user_message_contains("first"), reply_text("ok", usage={"input_tokens": 5}))]),
+    )
+
+    await actor.handle_mailbox_message(
+        ActorMessage(text="first", conversation_id="explicit", source={"inbound_kind": "actor_inbound"})
+    )
+
+    assert actor._mailbox_conversation is None
+    assert all(event.kind != "actor.context_compacted" for event in app.runtime.eventbus.events)
 
 
 @pytest.mark.asyncio

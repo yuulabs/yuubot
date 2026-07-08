@@ -6,6 +6,7 @@ handed back to the model; nothing propagates to the conversation.
 """
 
 import asyncio
+from contextvars import Token
 from typing import cast
 
 import msgspec
@@ -14,7 +15,9 @@ from attrs import define, field
 from ..domain.messages import ContentItem, ConversationContext, ToolResult
 from ..domain.stream import ToolCall
 from ..runtime.core import Runtime
+from ..runtime.tasks import EmitFn
 from ..tools import Tool, ToolConfig, build_tools
+from ..tools.progress import ToolProgress, bind_progress
 from ..util.secrets import redact_value
 
 TOOL_TIMEOUT_S = 240
@@ -27,6 +30,8 @@ class HarnessConfig(msgspec.Struct, frozen=True, kw_only=True):
 @define
 class Harness:
     tools: dict[str, Tool]
+    emit: EmitFn
+    conversation_id: str
     prepare_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
 
     @classmethod
@@ -34,6 +39,8 @@ class Harness:
         tools = build_tools(config.tools, context, runtime)
         return cls(
             tools=tools,
+            emit=runtime.emit,
+            conversation_id=context.conversation_id,
             prepare_tasks={name: asyncio.create_task(tool.prepare()) for name, tool in tools.items()},
         )
 
@@ -96,6 +103,12 @@ class Harness:
         except Exception as exc:
             return _result(call.id, f"{call.name} prepare failed: {_exception_detail(exc)}")
         task = asyncio.create_task(tool.execute(payload))
+        progress_token = _bind_tool_progress(
+            emit=self.emit,
+            conversation_id=self.conversation_id,
+            tool_call_id=call.id,
+            tool_name=call.name,
+        )
         try:
             value = await asyncio.wait_for(task, timeout=timeout)
             return _tool_result(call.id, value)
@@ -108,12 +121,39 @@ class Harness:
             raise
         except Exception as exc:
             return _result(call.id, f"{call.name} failed: {_exception_detail(exc)}")
+        finally:
+            _reset_tool_progress(progress_token)
 
     async def _wait_prepared(self, name: str) -> None:
         task = self.prepare_tasks.get(name)
         if task is None:
             return
         await asyncio.shield(task)
+
+
+def _bind_tool_progress(
+    *,
+    emit: EmitFn,
+    conversation_id: str,
+    tool_call_id: str,
+    tool_name: str,
+) -> Token[ToolProgress | None]:
+    from ..tools import progress as progress_module
+
+    return progress_module._current_progress.set(
+        bind_progress(
+            emit=emit,
+            conversation_id=conversation_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+        )
+    )
+
+
+def _reset_tool_progress(token: Token[ToolProgress | None]) -> None:
+    from ..tools import progress as progress_module
+
+    progress_module._current_progress.reset(token)
 
 
 def _result(tool_call_id: str, text: str) -> ToolResult:

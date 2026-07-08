@@ -13,7 +13,9 @@ from ..domain.stream import StreamEvent
 
 WSCommandSend = Callable[[dict[str, object]], Awaitable[None]]
 
-_STREAM_KINDS = frozenset({"conversation.stream", "conversation.output", "conversation.tool_results"})
+_STREAM_KINDS = frozenset(
+    {"conversation.stream", "conversation.output", "conversation.tool_results", "conversation.tool_progress"}
+)
 
 
 def _wire_value(value: object) -> object:
@@ -136,6 +138,15 @@ class WsListener:
                 "count": payload.get("count"),
                 "results": payload.get("results", []),
             }
+        elif kind == "conversation.tool_progress":
+            frame["type"] = "conversation.tool_progress"
+            frame["payload"] = {
+                "conversation_id": conversation_id,
+                "tool_call_id": payload.get("tool_call_id"),
+                "tool_name": payload.get("tool_name"),
+                "text": payload.get("text"),
+                "task": payload.get("task"),
+            }
         else:
             return
         await self._send(frame)
@@ -159,7 +170,7 @@ class WsListener:
         self._closed = True
         self.stop_task_stdout()
 
-    async def send_task_terminal(self, task_id: str, status: str) -> None:
+    async def send_task_terminal(self, task_id: str, status: str, stdout: str = "") -> None:
         if self._closed:
             return
-        await self._send({"type": "task.event", "payload": {"task_id": task_id, "status": status, "stdout": ""}})
+        await self._send({"type": "task.event", "payload": {"task_id": task_id, "status": status, "stdout": stdout}})

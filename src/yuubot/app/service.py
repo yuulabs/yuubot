@@ -15,8 +15,7 @@ from ..actor import Actor, ActorConfig
 from ..actor.prompt import SessionMode
 from ..actor.workspace import resolve_actor_workspace_path, resolve_workspace_path
 from ..chat import Conversation
-from ..db import Database
-from .import_legacy import maybe_import_legacy
+from ..db import Database, auto_legacy_db, migrate_legacy
 from ..integrations import Integration, IntegrationHealth, IntegrationRecord, integration_health
 from ..runtime.inbound import (
     InboundEnvelope,
@@ -68,7 +67,14 @@ from .deployment import DEFAULT_HOST, DEFAULT_PORT, ProcessConfig, load_process_
 from ..python import PythonKernelsConfig
 from ..runtime.resource_config import ResourceConfig
 from ..runtime.streams import TextStream
-from ..runtime.tasks import TaskDeliveryListener, TaskSnapshot, register_shell_task, task_record_snapshot, wait_until_terminal_or_timeout
+from ..runtime.tasks import (
+    TaskDelivery,
+    TaskDeliveryListener,
+    TaskSnapshot,
+    register_shell_task,
+    task_record_snapshot,
+    wait_until_terminal_or_timeout,
+)
 from ..util.secrets import merge_redacted_config
 from ..util.time import utc_now_iso
 from ..domain.records import ActorConfigError, ActorInput, ActorRecord, CostRow, LifecycleError, RouteRecord, lifecycle_error
@@ -114,7 +120,9 @@ class Yuubot:
     ) -> "Yuubot":
         root = Path(data_dir)
         db = await Database.open(root / "db")
-        await maybe_import_legacy(root, db)
+        legacy_db = auto_legacy_db(root) if not (root / "db" / "yuubot.db").exists() else None
+        if legacy_db is not None:
+            await migrate_legacy(db, data_dir=root, legacy_db=legacy_db)
         app = cls(Runtime.create(root, db, kernels=python_kernels, resources=resources))
         await app._load_application_state()
         return app
@@ -315,6 +323,8 @@ class Yuubot:
     async def put_model_card(self, provider_id: str, body: ModelCardInput) -> ModelCard:
         if provider_id not in self.provider_records:
             raise KeyError(provider_id)
+        if body.max_context_tokens is not None and body.max_context_tokens <= 0:
+            raise ValueError("max context tokens must be greater than zero")
         card = model_card_from_input(body)
         await self.runtime.state.upsert_model_card(provider_id, card)
         return card
@@ -784,6 +794,12 @@ class Yuubot:
                 f"model pricing is required before binding an actor: {body.model.selector}",
                 {"provider_id": body.provider, "selector": body.model.selector},
             )
+        if body.context_compression_tokens <= 0:
+            raise ActorConfigError(
+                "context_compression_tokens_invalid",
+                "context compression token threshold must be greater than zero",
+                {"context_compression_tokens": body.context_compression_tokens},
+            )
         record = ActorRecord(
             id=actor_id,
             name=body.name,
@@ -793,6 +809,7 @@ class Yuubot:
             model=ModelCard(
                 selector=card.selector,
                 reasoning_effort=body.model.reasoning_effort.strip(),
+                max_context_tokens=card.max_context_tokens,
                 vision=card.vision,
                 toolcall=card.toolcall,
                 json=card.json,
@@ -801,6 +818,7 @@ class Yuubot:
                 output_price_per_million=card.output_price_per_million,
             ),
             provider=body.provider,
+            context_compression_tokens=body.context_compression_tokens,
         )
         await self.update_actor(record)
         return record
@@ -834,6 +852,7 @@ class Yuubot:
             workspace=str(workspace),
             persona=record.persona,
             model=record.model,
+            context_compression_tokens=record.context_compression_tokens,
         )
 
     # -- Conversations -------------------------------------------------------
@@ -1043,6 +1062,8 @@ class Yuubot:
         owner: str,
         workspace: Path,
         wait_s: float = 20,
+        delivery: TaskDelivery = "manual",
+        ttl_s: float | None = None,
     ) -> TaskSnapshot:
         record = register_shell_task(
             self.runtime,
@@ -1051,6 +1072,8 @@ class Yuubot:
             intro=intro,
             owner=owner,
             workspace=workspace,
+            delivery=delivery,
+            ttl_s=ttl_s,
         )
         if wait_s > 0:
             await wait_until_terminal_or_timeout(self.runtime.tasks, record.id, timeout=wait_s)

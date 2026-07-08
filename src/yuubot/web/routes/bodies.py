@@ -1,5 +1,6 @@
 import msgspec
 
+from ...runtime.tasks import TaskDelivery
 from ...runtime.mcp import McpAuthMode, McpTransport
 from ...runtime.auth_attempts import AuthAttemptStatus
 
@@ -36,7 +37,9 @@ class SubmitTaskBody(msgspec.Struct, frozen=True, kw_only=True):
     shell: str
     intro: str
     owner: str
+    delivery: TaskDelivery
     wait_s: float = 20
+    ttl_s: float | None = None
 
 
 class TaskStdinBody(msgspec.Struct, frozen=True, kw_only=True):

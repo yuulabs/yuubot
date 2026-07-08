@@ -95,6 +95,7 @@ def create_boundary_app(
     public_app: ASGIApp,
     *,
     sessions: object,
+    protect_admin: bool = True,
 ) -> ASGIApp:
-    protected_admin = wrap_admin_auth(admin_app, deployment, sessions)
+    protected_admin = wrap_admin_auth(admin_app, deployment, sessions) if protect_admin else admin_app
     return BoundaryApp(deployment, protected_admin, public_app)

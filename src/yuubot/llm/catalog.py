@@ -17,6 +17,7 @@ def default_model_card(selector: str) -> ModelCard:
 def model_card_from_input(body: ModelCardInput) -> ModelCard:
     return ModelCard(
         selector=body.selector,
+        max_context_tokens=body.max_context_tokens,
         vision=body.vision,
         toolcall=body.toolcall,
         json=body.json,

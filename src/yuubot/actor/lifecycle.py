@@ -15,7 +15,8 @@ from ..chat import Conversation, ConversationBlocked, ConversationBusy
 from ..chat.harness import HarnessConfig
 from ..chat.history import HistoryHelper
 from ..llm import Provider
-from ..domain.messages import ActorMessage, ConversationContext, InputMessage, ModelCard, text_content
+from ..domain.messages import ActorMessage, ConversationContext, GenReasoning, GenText, InputMessage, ModelCard, text_content
+from ..domain.records import DEFAULT_CONTEXT_COMPRESSION_TOKENS
 from ..python import KernelPool
 from ..tools import all_tool_configs, tool_specs
 from .prompt import developer_prompt
@@ -32,6 +33,27 @@ class ActorConfig(msgspec.Struct, frozen=True, kw_only=True):
     workspace: str
     persona: str = ""
     model: ModelCard
+    context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
+
+
+CONTEXT_COMPACTION_SUMMARY_PROMPT = """\
+Summarize the current work so another run can continue immediately.
+
+Include:
+- current goal
+- completed work
+- critical files, decisions, and constraints
+- remaining actions
+
+Do not call tools. Return only the summary."""
+
+
+def _context_compaction_continue_message(original_user_text: str) -> str:
+    return (
+        "This is an automatic context compression continuation. Continue running from the summary above.\n\n"
+        "Most recent original user message:\n"
+        f"{original_user_text}"
+    )
 
 
 def _daemon_url(runtime: Runtime) -> str:
@@ -77,6 +99,7 @@ class Actor:
     _active: Conversation | None = field(default=None, init=False)
     _mailbox_conversation: str | None = field(default=None, init=False)
     _mailbox_conversation_touched_at: float = field(default=0.0, init=False)
+    _mailbox_context_compactions: int = field(default=0, init=False)
 
     @classmethod
     def from_config(cls, config: ActorConfig, runtime: Runtime, provider: Provider) -> Actor:
@@ -99,8 +122,8 @@ class Actor:
             self.config.persona,
             context.workspace,
             list(self.runtime.integrations.values()),
+            actor_id=context.actor,
             has_python=self._has_python,
-            enabled_mcp_servers=len(self.runtime.mcps.enabled_records()),
             global_skills=self.runtime.skill_summaries(),
         )
         history = await HistoryHelper.load(
@@ -138,6 +161,7 @@ class Actor:
     async def handle_mailbox_message(self, message: ActorMessage) -> None:
         conversation = await self._conversation_for_message(message)
         inbound_kind = message.source.get("inbound_kind")
+        can_compact = message.conversation_id is None and inbound_kind not in {"task_delivery", "conversation_callback"}
         self._active = conversation
         try:
             if inbound_kind in {"task_delivery", "conversation_callback"}:
@@ -157,6 +181,8 @@ class Actor:
                 conversation_id=conversation.id,
                 outputs=len(outputs),
             )
+            if can_compact:
+                await self._compact_or_continue_mailbox(conversation, message.text)
         finally:
             self._active = None
 
@@ -180,6 +206,7 @@ class Actor:
             conversation = await self.runtime.conversations.get_or_create(self, conversation_id)
         else:
             conversation = await self.runtime.conversations.get_or_create(self)
+            self._mailbox_context_compactions = 0
         self._mailbox_conversation = conversation.id
         self._mailbox_conversation_touched_at = now
         return conversation
@@ -187,3 +214,73 @@ class Actor:
     @property
     def _has_python(self) -> bool:
         return any(config.type == "execute_python" for config in all_tool_configs().values())
+
+    def _reached_context_compression_threshold(self, conversation: Conversation) -> bool:
+        stop = conversation.last_stop
+        return stop is not None and stop.usage.input_tokens >= self.config.context_compression_tokens
+
+    async def _compact_or_continue_mailbox(self, conversation: Conversation, original_user_text: str) -> None:
+        if not self._reached_context_compression_threshold(conversation):
+            return
+        if self._mailbox_context_compactions >= 1:
+            await self._stop_mailbox_context_compaction(conversation)
+            return
+
+        old_conversation_id = conversation.id
+        trigger_input_tokens = conversation.last_stop.usage.input_tokens if conversation.last_stop is not None else 0
+        summary = await self._summarize_for_context_compaction(conversation)
+        compacted = await self.runtime.conversations.get_or_create(self)
+        await compacted.append_items(
+            [
+                InputMessage(role="developer", name="yuubot", content=text_content(summary)),
+            ]
+        )
+        self._mailbox_conversation = compacted.id
+        self._mailbox_conversation_touched_at = time.time()
+        self._mailbox_context_compactions = 1
+        self.runtime.emit(
+            "actor.context_compacted",
+            actor_id=self.config.id,
+            old_conversation_id=old_conversation_id,
+            new_conversation_id=compacted.id,
+            input_tokens=trigger_input_tokens,
+            threshold=self.config.context_compression_tokens,
+        )
+
+        self._active = compacted
+        continuation = InputMessage(
+            role="user",
+            name=self.config.id,
+            content=text_content(_context_compaction_continue_message(original_user_text)),
+        )
+        outputs = await compacted.run_loop(continuation, session_mode="actor")
+        self.runtime.emit(
+            "actor.output",
+            actor_id=self.config.id,
+            conversation_id=compacted.id,
+            outputs=len(outputs),
+        )
+        await self._compact_or_continue_mailbox(compacted, original_user_text)
+
+    async def _summarize_for_context_compaction(self, conversation: Conversation) -> str:
+        self._active = conversation
+        outputs = await conversation.append_developer_notice(CONTEXT_COMPACTION_SUMMARY_PROMPT)
+        summary = "\n".join(item.text for item in outputs if isinstance(item, (GenText, GenReasoning))).strip()
+        if summary:
+            return summary
+        return "No summary was produced during automatic context compression."
+
+    async def _stop_mailbox_context_compaction(self, conversation: Conversation) -> None:
+        await self.runtime.conversations.discard(conversation.id)
+        self._mailbox_conversation = None
+        self._mailbox_conversation_touched_at = 0.0
+        self._mailbox_context_compactions = 0
+        self.status = "idle"
+        await self.runtime.state.set_actor_status(self.config.id, "idle")
+        self.runtime.emit(
+            "actor.context_compaction_stopped",
+            actor_id=self.config.id,
+            conversation_id=conversation.id,
+            input_tokens=conversation.last_stop.usage.input_tokens if conversation.last_stop is not None else 0,
+            threshold=self.config.context_compression_tokens,
+        )
