@@ -7,6 +7,7 @@ there is no connection-level bookkeeping to race with.
 """
 
 import asyncio
+import logging
 
 import msgspec
 
@@ -15,7 +16,7 @@ from ..runtime.tasks import TaskNotRunningError
 from ..chat import ConversationBlocked, ConversationBusy
 from ..domain.messages import InputMessage
 from ..chat.listener import WsListener
-from .errors import internal_error_detail, internal_error_message
+from .errors import internal_error_detail, internal_error_message, log_internal_error
 from .types import WSCommandSend
 from .ws_commands import (
     ConversationHistorySubscribeCommand,
@@ -32,6 +33,8 @@ from .ws_commands import (
     TaskSubscribePayload,
     WSCommand,
 )
+
+_log = logging.getLogger(__name__)
 
 
 async def handle_ws_command(
@@ -121,6 +124,8 @@ async def _conversation_send(
     except ConversationBlocked as exc:
         await send_error(send, command_id, "conversation_blocked", "conversation blocked", {"reason": str(exc)})
     except Exception as exc:
+        log_context = f"conversation.send actor={actor_id} conversation={conversation_id}"
+        log_internal_error(_log, exc, log_context)
         await send_error(
             send,
             command_id,

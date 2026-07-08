@@ -29,6 +29,10 @@ info() {
     printf '\n==> %s\n' "$*"
 }
 
+log_step() {
+    printf '    %s\n' "$*"
+}
+
 die() {
     printf 'error: %s\n' "$*" >&2
     exit 1
@@ -379,14 +383,32 @@ install_app_dependencies() {
         args+=(--skip-web-build)
     fi
     "$REPO_ROOT/scripts/install-deps.sh" "${args[@]}"
+    log_step "Dependency refresh complete"
+}
+
+git_revision() {
+    (
+        cd "$REPO_ROOT"
+        git rev-parse --short HEAD
+    )
 }
 
 pull_git_update() {
     info "Pulling git updates"
+    local before after
+    before="$(git_revision)"
+    log_step "Before pull: $before"
     (
         cd "$REPO_ROOT"
         git pull --ff-only
     )
+    after="$(git_revision)"
+    log_step "After pull:  $after"
+    if [[ "$before" == "$after" ]]; then
+        log_step "Repository was already at the latest fetched revision"
+    else
+        log_step "Updated repository from $before to $after"
+    fi
 }
 
 run_database_migrations() {
@@ -399,6 +421,7 @@ run_database_migrations() {
         cd "$REPO_ROOT"
         uv run ybot migrate "$CONFIG_FILE" --json
     )
+    log_step "Database migrations complete"
 }
 
 validate_deploy() {
@@ -411,6 +434,7 @@ validate_deploy() {
         cd "$REPO_ROOT"
         uv run ybot check "$CONFIG_FILE" --json
     )
+    log_step "Deployment validation complete"
 }
 
 install_systemd_units() {
@@ -446,10 +470,13 @@ EOF
     sudo systemctl daemon-reload
     sudo systemctl disable --now yuubot-daemon.service yuubot-admin.service >/dev/null 2>&1 || true
     sudo systemctl enable yuubot.service
+    log_step "Stopping yuubot.service before validation"
     sudo systemctl stop yuubot.service >/dev/null 2>&1 || true
     run_database_migrations
     validate_deploy
+    log_step "Restarting yuubot.service"
     sudo systemctl restart yuubot.service
+    log_step "yuubot.service restarted at git $(git_revision)"
 }
 
 upgrade_existing_deployment() {
@@ -466,10 +493,13 @@ upgrade_existing_deployment() {
     fi
     pull_git_update
     install_app_dependencies
+    log_step "Stopping yuubot.service before migrations"
     run_sudo systemctl stop yuubot.service >/dev/null 2>&1 || true
     run_database_migrations
     validate_deploy
+    log_step "Restarting yuubot.service"
     run_sudo systemctl restart yuubot.service
+    log_step "yuubot.service restarted at git $(git_revision)"
 }
 
 prompt_caddy_config() {

@@ -3,12 +3,14 @@
 from collections.abc import Callable
 
 from fastapi import FastAPI
+from fastapi import Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ...app import Yuubot
 from ...app.deployment import DeploymentConfig
 from ..auth import SessionStore
+from ..errors import unhandled_exception_response
 from ..html import html_page
 from ..responses import error_response, json_response
 from ._helpers import make_client_is_loopback, react_dist_dir
@@ -44,6 +46,10 @@ def create_admin_app(
     api.state.deployment = deployment
     api.state.sessions = sessions
     client_is_loopback = make_client_is_loopback(frozenset(deployment.trusted_proxies))
+
+    @api.exception_handler(Exception)
+    async def unhandled_exception(request: Request, exc: Exception) -> Response:
+        return await unhandled_exception_response(request, exc, app.runtime.development)
 
     react_dist = react_dist_dir()
     if (react_dist / "assets").exists():

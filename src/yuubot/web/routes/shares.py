@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import msgspec
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
@@ -14,10 +16,12 @@ from ...runtime.shares import (
     SharePublishError,
     share_grant_snapshot,
 )
-from ..errors import internal_error_detail, internal_error_message
+from ..errors import internal_error_detail, internal_error_message, log_internal_error
 from ..request import bad_request, read_json
 from ..responses import error_response, json_response
 from .bodies import PublishShareBody
+
+_log = logging.getLogger(__name__)
 
 
 def register_share_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfig) -> None:
@@ -35,6 +39,7 @@ def register_share_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfi
         except ShareBadRequestError as exc:
             return bad_request(exc)
         except (SharePublishError, OSError) as exc:
+            log_internal_error(_log, exc, "POST /api/shares")
             return error_response(
                 500,
                 "internal_error",

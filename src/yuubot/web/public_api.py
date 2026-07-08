@@ -1,6 +1,7 @@
 """Public HTTP boundary: explicit whitelist without AdminAuth."""
 
 import time
+import logging
 from collections import defaultdict, deque
 from collections.abc import Callable
 from html import escape, escape as html_escape
@@ -17,7 +18,9 @@ from ..runtime.inbound import EnvSecretResolver, InboundBadRequestError, Inbound
 from ..runtime.shares import INDEX_CANDIDATES, ShareNotFoundError, share_content_type
 from .client_ip import client_ip_from_scope
 from .responses import error_response, json_response
-from .errors import internal_error_detail, internal_error_message
+from .errors import internal_error_detail, internal_error_message, log_internal_error, unhandled_exception_response
+
+_log = logging.getLogger(__name__)
 
 
 class PublicWebhookRateLimiter:
@@ -51,6 +54,10 @@ def create_public_app(app: Yuubot, deployment: DeploymentConfig | None = None) -
     require_signature = deployment is not None and deployment.surface == "public"
     trusted_proxies = frozenset(deployment.trusted_proxies) if deployment is not None else frozenset()
     limiter = PublicWebhookRateLimiter()
+
+    @public.exception_handler(Exception)
+    async def unhandled_exception(request: Request, exc: Exception) -> Response:
+        return await unhandled_exception_response(request, exc, app.runtime.development)
 
     @public.get("/s/{share_id}")
     @public.get("/s/{share_id}/{path:path}")
@@ -91,6 +98,7 @@ def create_public_app(app: Yuubot, deployment: DeploymentConfig | None = None) -
         try:
             result = await app.deliver_app_webhook(integration_type, envelope)
         except Exception as exc:
+            log_internal_error(_log, exc, f"POST /webhooks/app/{integration_type}")
             return error_response(
                 500,
                 "internal_error",

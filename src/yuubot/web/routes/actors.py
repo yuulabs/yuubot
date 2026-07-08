@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import mimetypes
+import logging
 
 import msgspec
 from fastapi import FastAPI, File, Request, UploadFile
@@ -12,11 +13,13 @@ from ...app import Yuubot
 from ...domain.messages import ActorMessage
 from ...domain.records import ActorConfigError, ActorInput
 from ...runtime.inbound import MailboxUnavailableError
-from ..errors import internal_error_detail, internal_error_message
+from ..errors import internal_error_detail, internal_error_message, log_internal_error
 from ..files import actor_workspace, delete_entries, directory_snapshot, make_directory, move_entries, rename_entry, save_uploads, workspace_path
 from ..request import bad_request, read_json
 from ..responses import error_response, json_response
 from .bodies import WorkspaceDeleteBody, WorkspaceMkdirBody, WorkspaceMoveBody, WorkspaceRenameBody
+
+_log = logging.getLogger(__name__)
 
 
 def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
@@ -170,6 +173,7 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
                 return error_response(400, "bad_request", "text is required")
             result = await app.deliver_actor_inbound(actor_id, body)
         except MailboxUnavailableError as exc:
+            log_internal_error(_log, exc, f"POST /api/actors/{actor_id}/inbound")
             return error_response(
                 500,
                 "internal_error",
@@ -178,4 +182,12 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             )
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
+        except Exception as exc:
+            log_internal_error(_log, exc, f"POST /api/actors/{actor_id}/inbound")
+            return error_response(
+                500,
+                "internal_error",
+                internal_error_message(exc, app.runtime.development),
+                internal_error_detail(exc, app.runtime.development),
+            )
         return json_response(result)
