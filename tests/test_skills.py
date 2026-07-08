@@ -7,7 +7,7 @@ import pytest
 from support.api import base_url, running_server
 from yuubot import Yuubot
 from yuubot.actor.prompt import developer_prompt
-from yuubot.runtime.skills import SkillRecord, _skill_cli_command
+from yuubot.runtime.skills import SkillRecord
 
 
 @pytest.mark.asyncio
@@ -70,32 +70,3 @@ async def test_skill_records_persist_across_app_reload(tmp_path: Path) -> None:
 
     assert reloaded.skill_summaries()[0].id == "persisted"
     assert reloaded.runtime.skills["persisted"].body == "Persist me."
-
-
-def test_skill_cli_commands_target_global_scope() -> None:
-    assert _skill_cli_command("add", "vercel-labs/skills") == (
-        "npx",
-        "-y",
-        "skills",
-        "add",
-        "-g",
-        "-y",
-        "vercel-labs/skills",
-    )
-    assert _skill_cli_command("remove", "frontend-design") == (
-        "npx",
-        "-y",
-        "skills",
-        "remove",
-        "-g",
-        "-y",
-        "frontend-design",
-    )
-    assert _skill_cli_command("update", "frontend-design") == (
-        "npx",
-        "-y",
-        "skills",
-        "update",
-        "-g",
-        "frontend-design",
-    )

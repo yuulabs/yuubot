@@ -1,12 +1,15 @@
 import asyncio
 import contextlib
+import datetime as dt
 import errno
 import importlib.metadata
 import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
+import tarfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -24,6 +27,9 @@ from ..web.run_state import ServerRunState
 from ..web.run_state import read as read_run_state
 from ..web.types import AppLoader
 from .io import admin_post, bootstrap_snapshot, emit, error_payload, not_running_payload
+
+SYSTEMD_UNITS = ("yuubot.service", "yuubot-daemon.service", "yuubot-admin.service")
+SYSTEMD_UNIT_PATHS = tuple(Path("/etc/systemd/system") / unit for unit in SYSTEMD_UNITS)
 
 
 async def chat(app_loader: AppLoader, config: Path, actor: str, message: str, conversation_id: str | None) -> None:
@@ -47,9 +53,106 @@ async def deploy(app_loader: AppLoader, config: Path, dry_run: bool, json_output
         "logs_dir": app.runtime.logs_dir,
         "db_dir": app.runtime.db_dir,
     }
-    payload = {"ok": True, "config": str(config), "dry_run": dry_run, "paths": {key: str(value) for key, value in paths.items()}}
+    payload: dict[str, object] = {
+        "ok": True,
+        "config": str(config),
+        "dry_run": dry_run,
+        "paths": {key: str(value) for key, value in paths.items()},
+    }
     emit(payload, json_output=json_output)
     await app.shutdown()
+    return 0
+
+
+def uninstall(config: Path, remove_data_files: bool, json_output: bool) -> int:
+    try:
+        data_dir = config_data_dir(config)
+    except Exception as exc:
+        emit(error_payload(exc), json_output=json_output)
+        return 4
+
+    operations: list[dict[str, object]] = []
+    for args in (
+        ("systemctl", "disable", "--now", "yuubot.service"),
+        ("systemctl", "disable", "--now", "yuubot-daemon.service", "yuubot-admin.service"),
+        ("rm", "-f", *(str(path) for path in SYSTEMD_UNIT_PATHS)),
+        ("systemctl", "daemon-reload"),
+        ("rm", "-f", str(caddy_site_file())),
+        ("systemctl", "reload", "caddy"),
+    ):
+        operations.append(run_system_command(args))
+
+    data_removed = False
+    if remove_data_files:
+        try:
+            remove_data_dir(data_dir)
+        except Exception as exc:
+            emit(error_payload(exc), json_output=json_output)
+            return 4
+        data_removed = True
+
+    payload: dict[str, object] = {
+        "ok": True,
+        "config": str(config),
+        "data_dir": str(data_dir),
+        "data_removed": data_removed,
+        "service_units": [str(path) for path in SYSTEMD_UNIT_PATHS],
+        "caddy_site_file": str(caddy_site_file()),
+        "operations": operations,
+    }
+    emit(payload, json_output=json_output)
+    return 0
+
+
+def export_data_dir(config: Path, output_path: Path | None, json_output: bool) -> int:
+    try:
+        data_dir = config_data_dir(config)
+    except Exception as exc:
+        emit(error_payload(exc), json_output=json_output)
+        return 4
+    if read_run_state(data_dir) is not None:
+        emit({"ok": False, "error": {"code": "service_running", "message": "stop yuubot before exporting data_dir"}}, json_output=json_output)
+        return 5
+    if not data_dir.is_dir():
+        emit(
+            {
+                "ok": False,
+                "error": {"code": "data_dir_missing", "message": f"data_dir does not exist: {data_dir}"},
+            },
+            json_output=json_output,
+        )
+        return 4
+
+    archive = resolve_export_path(output_path)
+    if archive.is_relative_to(data_dir.resolve()):
+        emit(
+            {
+                "ok": False,
+                "error": {"code": "invalid_export_path", "message": "export path must be outside data_dir"},
+            },
+            json_output=json_output,
+        )
+        return 4
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    tmp_archive = archive.with_name(f".{archive.name}.tmp")
+    if tmp_archive.exists():
+        tmp_archive.unlink()
+    try:
+        with tarfile.open(tmp_archive, "w:gz") as tar:
+            tar.add(data_dir, arcname=data_dir.name)
+        tmp_archive.replace(archive)
+    finally:
+        if tmp_archive.exists():
+            tmp_archive.unlink()
+
+    payload: dict[str, object] = {
+        "ok": True,
+        "config": str(config),
+        "data_dir": str(data_dir),
+        "path": str(archive),
+        "size_bytes": archive.stat().st_size,
+    }
+    emit(payload, json_output=json_output)
     return 0
 
 
@@ -59,7 +162,7 @@ async def check(app_loader: AppLoader, config: Path, json_output: bool) -> int:
     except Exception as exc:
         emit(error_payload(exc), json_output=json_output)
         return 4
-    payload = {
+    payload: dict[str, object] = {
         "ok": True,
         "config": str(config),
         "data_dir": str(app.runtime.data_dir),
@@ -239,6 +342,66 @@ def config_data_dir(config: Path) -> Path:
     return Path(load_process_config(config).data_dir)
 
 
+def resolve_export_path(output_path: Path | None) -> Path:
+    filename = f"yuubot-data-{dt.datetime.now(dt.UTC).strftime('%Y%m%d-%H%M%S')}.tar.gz"
+    if output_path is None:
+        return (Path.cwd() / filename).resolve()
+    expanded = Path(os.path.expanduser(os.path.expandvars(str(output_path))))
+    if expanded.exists() and expanded.is_dir():
+        return (expanded / filename).resolve()
+    if str(output_path).endswith(os.sep):
+        return (expanded / filename).resolve()
+    if expanded.name in {"", "."}:
+        return (expanded / filename).resolve()
+    return expanded.resolve()
+
+
+def caddy_site_file() -> Path:
+    raw_site = os.environ.get("YUUBOT_CADDY_SITE_FILE")
+    if raw_site:
+        return Path(raw_site)
+    conf_dir = Path(os.environ.get("YUUBOT_CADDY_CONF_DIR", "/etc/caddy/conf.d"))
+    return conf_dir / "yuubot.caddy"
+
+
+def run_system_command(args: tuple[str, ...]) -> dict[str, object]:
+    command = sudo_args(args)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError as exc:
+        return {
+            "command": list(args),
+            "ok": False,
+            "returncode": 127,
+            "stderr": str(exc),
+        }
+    return {
+        "command": command,
+        "ok": result.returncode == 0,
+        "returncode": result.returncode,
+        "stderr": result.stderr.strip(),
+    }
+
+
+def sudo_args(args: tuple[str, ...]) -> list[str]:
+    if os.geteuid() == 0:
+        return list(args)
+    if args[0] == "systemctl" or any(path.startswith("/etc/") for path in args[1:]):
+        return ["sudo", *args]
+    return list(args)
+
+
+def remove_data_dir(data_dir: Path) -> None:
+    resolved = data_dir.resolve()
+    if resolved in {Path("/"), Path.home().resolve()}:
+        raise ValueError(f"refusing to remove unsafe data_dir: {resolved}")
+    if not resolved.exists():
+        return
+    if not resolved.is_dir():
+        raise ValueError(f"data_dir is not a directory: {resolved}")
+    shutil.rmtree(resolved)
+
+
 def old_config_data(config: Path | None) -> dict[str, object]:
     if config is None:
         return {}
@@ -280,6 +443,7 @@ async def migrate_command(
     except Exception as exc:
         emit(error_payload(exc), json_output=json_output)
         return 4
+    payload: dict[str, object]
 
     if dry_run:
         db_path = data_dir / "db" / "yuubot.db"
@@ -377,7 +541,7 @@ def status(config: Path, json_output: bool) -> int:
     except (OSError, urllib.error.URLError, msgspec.DecodeError, TypeError) as exc:
         emit(error_payload(exc), json_output=json_output)
         return 3
-    payload = {
+    payload: dict[str, object] = {
         "ok": True,
         "config": str(config),
         "server": {"host": run_state.host, "port": run_state.port, "pid": run_state.pid},
@@ -433,17 +597,37 @@ async def db_info(config: Path, json_output: bool) -> int:
             schema_version = await current_version(db)
         finally:
             await db.close()
-    payload = {
+    tables: dict[str, int] = await table_counts(path) if path.exists() else {}
+    payload: dict[str, object] = {
         "ok": True,
         "config": str(config),
+        "data_dir": str(data_dir),
+        "db_dir": str(data_dir / "db"),
+        "logs_dir": str(data_dir / "logs"),
         "path": str(path),
         "exists": path.exists(),
         "size_bytes": path.stat().st_size if path.exists() else 0,
         "schema_version": schema_version,
-        "tables": await table_counts(path) if path.exists() else {},
+        "tables": tables,
     }
+    if not json_output:
+        print_db_info(payload)
+        return 0
     emit(payload, json_output=json_output)
     return 0
+
+
+def print_db_info(payload: dict[str, object]) -> None:
+    print("ok")
+    for key in ("config", "data_dir", "db_dir", "logs_dir", "path", "exists", "size_bytes", "schema_version"):
+        print(f"{key}: {payload[key]}")
+    tables = payload["tables"]
+    if isinstance(tables, dict) and tables:
+        print("tables:")
+        for name, count in tables.items():
+            print(f"  {name}: {count}")
+    else:
+        print("tables: none")
 
 
 def run_state_for_config(config: Path) -> ServerRunState | None:

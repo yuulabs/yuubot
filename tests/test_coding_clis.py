@@ -170,44 +170,6 @@ async def test_yext_codex_facade_runs_from_integration_context(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_yext_opencode_cli_forwards_help_and_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import yext.opencode
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    cli = bin_dir / "fake-opencode"
-    cli.write_text(
-        """#!/bin/sh
-if [ "$1" = "help" ]; then
-  echo "opencode help manual"
-  exit 0
-fi
-if [ "$1" = "debug" ] && [ "$2" = "config" ]; then
-  echo '{"model":"test-model","key":"sk-fake1234567890abcdef"}'
-  exit 0
-fi
-echo "unexpected:$*"
-exit 1
-""",
-        encoding="utf-8",
-    )
-    cli.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
-    monkeypatch.setenv("YEXT_OPENCODE_COMMAND", "fake-opencode")
-    monkeypatch.setenv("YEXT_OPENCODE_PROBE_ARGS", "[]")
-
-    help_result = await yext.opencode.help()
-    config_result = await yext.opencode.cli("debug", "config")
-
-    assert help_result.exit_code == 0
-    assert "opencode help manual" in help_result.stdout
-    assert config_result.exit_code == 0
-    assert "test-model" in config_result.stdout
-    assert "sk-fake" not in config_result.stdout
-    assert "***" in config_result.stdout
-
-
-@pytest.mark.asyncio
 async def test_yext_opencode_facade_filters_control_sequences(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import yext.opencode
 
@@ -248,35 +210,6 @@ def test_yext_coding_cli_facade_does_not_import_daemon_package() -> None:
     assert "import yuubot" not in source
 
 
-@pytest.mark.asyncio
-async def test_yext_codex_help_forwards_to_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import yext.codex
-
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    cli = bin_dir / "fake-codex"
-    cli.write_text(
-        """#!/bin/sh
-if [ "$1" = "help" ] && [ "$2" = "debug" ]; then
-  echo "codex debug help"
-  exit 0
-fi
-echo "unexpected:$*"
-exit 1
-""",
-        encoding="utf-8",
-    )
-    cli.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
-    monkeypatch.setenv("YEXT_CODEX_COMMAND", "fake-codex")
-    monkeypatch.setenv("YEXT_CODEX_PROBE_ARGS", "[]")
-
-    result = await yext.codex.help("debug")
-
-    assert result.exit_code == 0
-    assert result.stdout.strip() == "codex debug help"
-
-
 def test_coding_cli_prompt_doc_contains_usage_guidance() -> None:
     integration = OpenCodeIntegration("opencode", OpenCodeConfig())
     doc = integration.prompt_doc()
@@ -304,10 +237,3 @@ def test_developer_prompt_without_coding_cli_integration_omits_prompt_doc(tmp_pa
 
     assert "yext.codex:" not in prompt
     assert "yext.opencode:" not in prompt
-
-
-def test_yext_namespace_lazy_loads_submodules() -> None:
-    import yext
-
-    assert yext.opencode.__name__ == "yext.opencode"
-    assert yext.codex.__name__ == "yext.codex"

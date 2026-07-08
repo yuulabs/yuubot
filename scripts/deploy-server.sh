@@ -9,7 +9,10 @@ CONFIG_FILE="${YUUBOT_CONFIG:-$CONFIG_DIR/config.yaml}"
 ENV_FILE="${YUUBOT_ENV_FILE:-$CONFIG_DIR/yuubot.env}"
 DATA_DIR="${YUU_DATA_DIR:-/var/lib/yuubot}"
 YUUBOT_PORT="${YUUBOT_PORT:-8765}"
+YUUBOT_PUBLIC_PORT="${YUUBOT_PUBLIC_PORT:-8766}"
 YUUBOT_TRUSTED_ADMIN_PORT="${YUUBOT_TRUSTED_ADMIN_PORT:-8767}"
+ADMIN_DOMAIN="${YUUBOT_ADMIN_DOMAIN:-}"
+PUBLIC_URL="${YUUBOT_PUBLIC_URL:-}"
 CADDYFILE="${YUUBOT_CADDYFILE:-/etc/caddy/Caddyfile}"
 CADDY_CONF_DIR="${YUUBOT_CADDY_CONF_DIR:-/etc/caddy/conf.d}"
 CADDY_SITE_FILE="${YUUBOT_CADDY_SITE_FILE:-$CADDY_CONF_DIR/yuubot.caddy}"
@@ -158,6 +161,153 @@ reject_legacy_config() {
     fi
 }
 
+normalize_url_base() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    value="${value%/}"
+    if [[ "$value" != http://* && "$value" != https://* ]]; then
+        value="https://$value"
+    fi
+    printf '%s' "$value"
+}
+
+host_from_url_base() {
+    local value="$1"
+    value="${value#https://}"
+    value="${value#http://}"
+    value="${value%%/*}"
+    value="${value%%:*}"
+    printf '%s' "$value"
+}
+
+update_listener_config() {
+    local admin_url_base="$1"
+    local public_enabled="$2"
+    local public_url_base="$3"
+    local tmp
+    tmp="$(mktemp)"
+    sudo cat "$CONFIG_FILE" >"$tmp"
+    (
+        cd "$REPO_ROOT"
+        uv run python - "$tmp" "$admin_url_base" "$public_enabled" "$public_url_base" "$YUUBOT_PUBLIC_PORT" "$YUUBOT_TRUSTED_ADMIN_PORT" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+config_path = Path(sys.argv[1])
+admin_url_base = sys.argv[2]
+public_enabled = sys.argv[3] == "true"
+public_url_base = sys.argv[4]
+public_port = int(sys.argv[5])
+trusted_port = int(sys.argv[6])
+
+with config_path.open(encoding="utf-8") as handle:
+    data = yaml.safe_load(handle) or {}
+if not isinstance(data, dict):
+    raise SystemExit("config must be a mapping")
+
+trusted = data.get("trusted_admin_server")
+if not isinstance(trusted, dict):
+    trusted = {}
+trusted["enabled"] = True
+trusted.setdefault("host", "127.0.0.1")
+trusted["port"] = trusted_port
+trusted["url_base"] = admin_url_base
+trusted.setdefault("auth", {"mode": "proxy"})
+data["trusted_admin_server"] = trusted
+
+data["public_server"] = {
+    "enabled": public_enabled,
+    "host": "127.0.0.1",
+    "port": public_port,
+    "url_base": public_url_base if public_enabled else "",
+}
+
+with config_path.open("w", encoding="utf-8") as handle:
+    yaml.safe_dump(data, handle, sort_keys=False)
+PY
+    )
+    sudo install -m 0640 -o root -g "$SERVICE_GROUP" "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+}
+
+prompt_public_server() {
+    if [[ -n "$PUBLIC_URL" ]]; then
+        PUBLIC_URL="$(normalize_url_base "$PUBLIC_URL")"
+        return 0
+    fi
+
+    local answer public_input
+    read -r -p "Enable public server for Share pages and app webhooks? [y/N]: " answer
+    case "$answer" in
+        y|Y|yes|YES)
+            ;;
+        *)
+            PUBLIC_URL=""
+            return 0
+            ;;
+    esac
+
+    read -r -p "Public URL, e.g. public.example.com or https://public.example.com: " public_input
+    [[ -n "$public_input" ]] || die "public URL is required when public server is enabled"
+    PUBLIC_URL="$(normalize_url_base "$public_input")"
+}
+
+write_caddy_site() {
+    local admin_domain="$1"
+    local username="$2"
+    local hash="$3"
+    local public_domain="${4:-}"
+
+    sudo install -d -m 0755 "$CADDY_CONF_DIR"
+    if [[ -n "$public_domain" ]]; then
+        sudo_write "$CADDY_SITE_FILE" 0644 <<EOF
+$admin_domain {
+    basic_auth {
+        $username $hash
+    }
+
+    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT {
+        header_up X-Forwarded-User {http.auth.user.id}
+    }
+}
+
+$public_domain {
+    @admin_api path /api/*
+    respond @admin_api 404
+
+    reverse_proxy 127.0.0.1:$YUUBOT_PUBLIC_PORT
+}
+EOF
+    else
+        sudo_write "$CADDY_SITE_FILE" 0644 <<EOF
+$admin_domain {
+    basic_auth {
+        $username $hash
+    }
+
+    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT {
+        header_up X-Forwarded-User {http.auth.user.id}
+    }
+}
+EOF
+    fi
+
+    if [[ ! -f "$CADDYFILE" ]]; then
+        sudo_write "$CADDYFILE" 0644 <<EOF
+import $CADDY_CONF_DIR/*.caddy
+EOF
+    elif ! sudo grep -Eq "^[[:space:]]*import[[:space:]]+$CADDY_CONF_DIR/\\*\\.caddy" "$CADDYFILE"; then
+        printf '\nimport %s/*.caddy\n' "$CADDY_CONF_DIR" | sudo tee -a "$CADDYFILE" >/dev/null
+    fi
+
+    sudo caddy validate --config "$CADDYFILE"
+    sudo systemctl enable --now caddy
+    sudo systemctl reload caddy
+}
+
 install_app_dependencies() {
     info "Installing project dependencies"
     "$REPO_ROOT/scripts/install-deps.sh"
@@ -227,23 +377,26 @@ EOF
 }
 
 prompt_caddy_config() {
-    info "Configuring Caddy HTTPS and Basic Auth"
-    local domain username password password_confirm hash
+    info "Configuring listeners, yuubot config, and Caddy HTTPS"
+    local domain username password password_confirm hash admin_url_base public_domain
 
     if [[ -f "$CADDY_SITE_FILE" ]]; then
         local target_pattern answer
         target_pattern="^[[:space:]]*reverse_proxy[[:space:]]+127\\.0\\.0\\.1:$YUUBOT_TRUSTED_ADMIN_PORT([[:space:]]|\\{|$)"
         if sudo grep -Eq "$target_pattern" "$CADDY_SITE_FILE"; then
-            read -r -p "Existing $CADDY_SITE_FILE found. Reconfigure Caddy? [y/N]: " answer
+            read -r -p "Existing $CADDY_SITE_FILE found. Reconfigure Caddy and listeners? [y/N]: " answer
             case "$answer" in
                 y|Y|yes|YES)
                     ;;
                 *)
                     info "Keeping existing Caddy yuubot site config"
-                    sudo caddy validate --config "$CADDYFILE"
-                    sudo systemctl enable --now caddy
-                    sudo systemctl reload caddy
-                    return
+                    reject_legacy_config
+                    if [[ -f "$CADDYFILE" ]]; then
+                        sudo caddy validate --config "$CADDYFILE"
+                        sudo systemctl enable --now caddy
+                        sudo systemctl reload caddy
+                    fi
+                    return 0
                     ;;
             esac
         else
@@ -251,8 +404,21 @@ prompt_caddy_config() {
         fi
     fi
 
-    read -r -p "Admin domain, e.g. admin.example.com: " domain
-    [[ -n "$domain" ]] || die "domain is required"
+    if [[ -n "$ADMIN_DOMAIN" ]]; then
+        domain="$ADMIN_DOMAIN"
+    else
+        read -r -p "Admin domain, e.g. admin.example.com: " domain
+    fi
+    [[ -n "$domain" ]] || die "admin domain is required"
+    admin_url_base="$(normalize_url_base "$domain")"
+    domain="$(host_from_url_base "$admin_url_base")"
+
+    prompt_public_server
+    if [[ -n "$PUBLIC_URL" ]]; then
+        public_domain="$(host_from_url_base "$PUBLIC_URL")"
+    else
+        public_domain=""
+    fi
 
     read -r -p "Admin username [admin]: " username
     username="${username:-admin}"
@@ -273,46 +439,41 @@ prompt_caddy_config() {
     hash="$(caddy hash-password --plaintext "$password")"
     unset password password_confirm
 
-    sudo install -d -m 0755 "$CADDY_CONF_DIR"
-    sudo_write "$CADDY_SITE_FILE" 0644 <<EOF
-$domain {
-    basic_auth {
-        $username $hash
-    }
-
-    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT {
-        header_up X-Forwarded-User {http.auth.user.id}
-    }
-}
-EOF
-
-    if [[ ! -f "$CADDYFILE" ]]; then
-        sudo_write "$CADDYFILE" 0644 <<EOF
-import $CADDY_CONF_DIR/*.caddy
-EOF
-    elif ! sudo grep -Eq "^[[:space:]]*import[[:space:]]+$CADDY_CONF_DIR/\\*\\.caddy" "$CADDYFILE"; then
-        printf '\nimport %s/*.caddy\n' "$CADDY_CONF_DIR" | sudo tee -a "$CADDYFILE" >/dev/null
-    fi
-
-    sudo caddy validate --config "$CADDYFILE"
-    sudo systemctl enable --now caddy
-    sudo systemctl reload caddy
+    update_listener_config "$admin_url_base" "$([[ -n "$PUBLIC_URL" ]] && printf true || printf false)" "${PUBLIC_URL:-}"
+    write_caddy_site "$domain" "$username" "$hash" "$public_domain"
 
     cat <<EOF
 
 Cloudflare / DNS remaining work:
   1. Add an A record: $domain -> this server's public IPv4.
+EOF
+    if [[ -n "$public_domain" ]]; then
+        cat <<EOF
+  2. Add an A record: $public_domain -> this server's public IPv4.
+  3. For first certificate issuance, use DNS only. After HTTPS works, Proxied is OK.
+  4. Set Cloudflare SSL/TLS mode to Full (strict).
+  5. Ensure the server firewall allows 80/tcp and 443/tcp.
+EOF
+    else
+        cat <<EOF
   2. For first certificate issuance, use DNS only. After HTTPS works, Proxied is OK.
   3. Set Cloudflare SSL/TLS mode to Full (strict).
   4. Ensure the server firewall allows 80/tcp and 443/tcp.
+EOF
+    fi
+
+    cat <<EOF
 
 Service checks:
   sudo systemctl status yuubot caddy
   sudo journalctl -u yuubot -f
 
 Open:
-  https://$domain
+  $admin_url_base
 EOF
+    if [[ -n "$PUBLIC_URL" ]]; then
+        printf '  %s\n' "$PUBLIC_URL"
+    fi
 }
 
 main() {
@@ -323,8 +484,8 @@ main() {
     install_caddy
     ensure_config
     install_app_dependencies
-    install_systemd_units
     prompt_caddy_config
+    install_systemd_units
 }
 
 main "$@"

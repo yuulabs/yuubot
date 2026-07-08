@@ -39,6 +39,22 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
     deploy = subcommands.add_parser("deploy")
     deploy.add_argument("config")
     deploy.add_argument("--dry-run", action="store_true")
+    uninstall = subcommands.add_parser(
+        "uninstall",
+        help="Remove the installed yuubot system service",
+        description="Stop, disable, and remove the installed yuubot systemd service and generated Caddy site file.",
+    )
+    uninstall.add_argument("config")
+    uninstall.add_argument("--remove-data-files", action="store_true", help="Also delete config data_dir after uninstalling the service")
+    uninstall.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    export = subcommands.add_parser(
+        "export",
+        help="Create a compressed archive of data_dir",
+        description="Create a .tar.gz backup of config data_dir. Refuses to run while yuubot is running.",
+    )
+    export.add_argument("config")
+    export.add_argument("--path", default=None, help="Output archive path, or an existing directory for an auto-named archive")
+    export.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     check = subcommands.add_parser("check")
     check.add_argument("config")
     check.add_argument("--json", action="store_true")
@@ -61,9 +77,23 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
     stop = subcommands.add_parser("stop")
     stop.add_argument("config")
     stop.add_argument("--json", action="store_true")
-    db = subcommands.add_parser("db")
+    db = subcommands.add_parser(
+        "db",
+        help="Inspect the yuubot SQLite database",
+        description=(
+            "Inspect yuubot persistence under config data_dir.\n\n"
+            "The active database is data_dir/db/yuubot.db. Runtime logs are in data_dir/logs/."
+        ),
+    )
     db_subcommands = db.add_subparsers(dest="db_command", required=True)
-    db_info = db_subcommands.add_parser("info")
+    db_info = db_subcommands.add_parser(
+        "info",
+        help="Show database path, schema version, size, and table row counts",
+        description=(
+            "Show where yuubot stores SQLite data, whether the database exists, "
+            "the schema version, and per-table row counts."
+        ),
+    )
     db_info.add_argument("config")
     db_info.add_argument("--json", action="store_true")
     upgrade = subcommands.add_parser("upgrade")
@@ -99,6 +129,18 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
         )
     if args.command == "deploy":
         return await commands.deploy(app_loader, Path(args.config), dry_run=bool(args.dry_run), json_output=False)
+    if args.command == "uninstall":
+        return commands.uninstall(
+            Path(args.config),
+            remove_data_files=bool(args.remove_data_files),
+            json_output=bool(args.json),
+        )
+    if args.command == "export":
+        return commands.export_data_dir(
+            Path(args.config),
+            output_path=Path(args.path) if args.path else None,
+            json_output=bool(args.json),
+        )
     if args.command == "check":
         return await commands.check(app_loader, Path(args.config), json_output=bool(args.json))
     if args.command == "migrate":
