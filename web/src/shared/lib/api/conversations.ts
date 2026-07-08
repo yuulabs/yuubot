@@ -44,8 +44,8 @@ export function getConversationHistory(
   );
 }
 
-export function deleteConversation(conversationId: string): Promise<{ deleted: boolean }> {
-  return request<{ deleted: boolean }>(`${BASE}/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
+export function deleteConversation(conversationId: string): Promise<{ id: string; deleted: boolean }> {
+  return request<{ id: string; deleted: boolean }>(`${BASE}/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
 }
 
 export function getConversationCosts(conversationId: string): Promise<ItemsResponse<ConversationCostRecord>> {

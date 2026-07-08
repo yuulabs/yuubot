@@ -2,6 +2,7 @@ import type {
   AccountSnapshot,
   ItemsResponse,
   ModelCard,
+  ModelCardInput,
   ProviderDetail,
   ProviderInput,
   ProviderProtocolSpec,
@@ -49,10 +50,10 @@ export function listProviderModelCards(providerId: string): Promise<ModelCard[]>
   return request<ItemsResponse<ModelCard>>(`${BASE}/providers/${encodeURIComponent(providerId)}/model-cards`).then((res) => res.items);
 }
 
-export function putProviderModelCard(providerId: string, card: ModelCard): Promise<ModelCard> {
-  return request<ModelCard>(`${BASE}/providers/${encodeURIComponent(providerId)}/model-cards/${encodeURIComponent(card.selector)}`, {
+export function putProviderModelCard(providerId: string, selector: string, input: ModelCardInput): Promise<ModelCard> {
+  return request<ModelCard>(`${BASE}/providers/${encodeURIComponent(providerId)}/model-cards/${encodeURIComponent(selector)}`, {
     method: "PUT",
-    body: JSON.stringify(card),
+    body: JSON.stringify(input),
   });
 }
 

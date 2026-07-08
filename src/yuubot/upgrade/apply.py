@@ -9,34 +9,32 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .install import install_deps_script, project_root
+from .install import project_root
 from .types import UpdateApplyResult
 
 
 def build_apply_script(
     root: Path,
     config_path: Path,
-    host: str,
+    data_dir: Path,
     port: int,
     log_path: Path,
     skip_web_build: bool,
 ) -> str:
     root_q = shlex.quote(str(root))
     config_q = shlex.quote(str(config_path))
-    host_q = shlex.quote(host)
     port_q = shlex.quote(str(port))
+    data_q = shlex.quote(str(data_dir))
     log_q = shlex.quote(str(log_path))
-    install_q = shlex.quote(str(install_deps_script(root)))
+    deploy_q = shlex.quote(str(root / "scripts" / "deploy-server.sh"))
     skip_flag = " --skip-web-build" if skip_web_build else ""
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 exec > >(tee -a {log_q}) 2>&1
 sleep 2
 cd {root_q}
-git pull --ff-only
-{install_q}{skip_flag}
-uv run ybot migrate {config_q}
-exec uv run ybot serve {config_q} --host {host_q} --port {port_q}
+export YUUBOT_NONINTERACTIVE=1
+exec {deploy_q} --upgrade-only --config {config_q} --data-dir {data_q} --port {port_q}{skip_flag}
 """
 
 
@@ -45,7 +43,6 @@ def schedule_apply(
     root: Path | None = None,
     config_path: Path,
     data_dir: Path,
-    host: str,
     port: int,
     skip_web_build: bool = False,
     on_shutdown: Callable[[], None] | None = None,
@@ -62,7 +59,7 @@ def schedule_apply(
         build_apply_script(
             resolved_root,
             config_path,
-            host,
+            data_dir,
             port,
             log_path,
             skip_web_build,

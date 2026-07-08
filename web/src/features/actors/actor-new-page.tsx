@@ -29,10 +29,10 @@ export function ActorNewPage() {
         initial={initialActor}
         bootstrap={data}
         saveLabel="Create Actor"
-        onSave={async (actor) => {
-          await putActor(actor);
+        onSave={async (actorId, input) => {
+          await putActor(actorId, input);
           refreshBootstrap();
-          await navigate({ to: "/actors/$id", params: { id: actor.id } });
+          await navigate({ to: "/actors/$id", params: { id: actorId } });
         }}
       />}
     </Page>

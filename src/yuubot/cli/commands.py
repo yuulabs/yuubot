@@ -667,27 +667,16 @@ async def upgrade_check(json_output: bool) -> int:
 async def upgrade_apply(
     app_loader: AppLoader,
     config: Path,
-    host: str,
     port: int,
     json_output: bool,
     skip_web_build: bool,
 ) -> int:
-    if run_state_for_config(config) is not None:
-        emit(
-            {
-                "ok": False,
-                "error": "server is running; apply updates from Settings or run `yuubot stop` first",
-            },
-            json_output=json_output,
-        )
-        return 3
-
+    initial_run_state = run_state_for_config(config)
     root = project_root()
     try:
         apply_update(
             config,
             config_data_dir(config),
-            host,
             port,
             skip_web_build,
             root=root,
@@ -696,10 +685,10 @@ async def upgrade_apply(
         emit(error_payload(exc), json_output=json_output)
         return 1
 
-    # The scheduled script ends with `exec ybot serve`; wait until the server is up.
-    for _ in range(200):
+    # The scheduled script restarts the service; wait for a fresh run state.
+    for _ in range(3000):
         run_state = run_state_for_config(config)
-        if run_state is not None:
+        if run_state is not None and (initial_run_state is None or run_state.pid != initial_run_state.pid):
             emit(
                 {
                     "ok": True,

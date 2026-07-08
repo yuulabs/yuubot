@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .apply import schedule_apply
 from .git import check_git_update
-from .install import INSTALL_KIND_GIT, INSTALL_KIND_PACKAGE, detect_install, project_root
+from .install import INSTALL_KIND_GIT, detect_install, project_root
 from .types import UpdateApplyResult, UpdateStatus
 
 
@@ -57,7 +57,6 @@ async def check_update(root: Path | None = None) -> UpdateStatus:
 def apply_update(
     config_path: Path,
     data_dir: Path,
-    host: str,
     port: int,
     skip_web_build: bool = False,
     on_shutdown: Callable[[], None] | None = None,
@@ -71,7 +70,6 @@ def apply_update(
         root=resolved_root,
         config_path=config_path,
         data_dir=data_dir,
-        host=host,
         port=port,
         skip_web_build=skip_web_build,
         on_shutdown=on_shutdown,

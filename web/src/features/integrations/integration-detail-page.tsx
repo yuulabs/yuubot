@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { SquareTerminal } from "lucide-react";
 
 import { configureIntegration, disableIntegration, enableIntegration } from "@/shared/lib/api";
-import type { IntegrationRecord } from "@/shared/types/api";
+import type { IntegrationConfigInput } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import { DenseMeta, DenseSection, ErrorState, LoadingState, Page, ResourceList, ResourceListPrimary, Status } from "@/shared/components";
 import { useApiMutation, useBootstrap } from "@/shared/hooks";
@@ -11,7 +11,7 @@ import { useApiMutation, useBootstrap } from "@/shared/hooks";
 export function IntegrationDetailPage({ id }: { id: string }) {
   const navigate = useNavigate();
   const { data, error, isLoading } = useBootstrap();
-  const save = useApiMutation((record: IntegrationRecord) => configureIntegration(record));
+  const save = useApiMutation((input: IntegrationConfigInput) => configureIntegration(id, input));
   const enable = useApiMutation((type: string) => enableIntegration(type));
   const disable = useApiMutation((type: string) => disableIntegration(type));
   const existing = data?.integrations.find((integration) => integration.type === id);
@@ -98,7 +98,7 @@ export function IntegrationDetailPage({ id }: { id: string }) {
               onClick={async () => {
                 try {
                   const parsed = parseObject(advancedText);
-                  await save.mutateAsync({ id, type: id, name, config: parsed });
+                  await save.mutateAsync({ name, config: parsed });
                   await navigate({ to: "/integrations" });
                 } catch (err) {
                   setMessage(err instanceof Error ? err.message : String(err));

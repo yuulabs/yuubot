@@ -1,4 +1,4 @@
-import type { IntegrationDetail, IntegrationRecord, IntegrationSnapshot } from "@/shared/types/api";
+import type { IntegrationConfigInput, IntegrationDetail, IntegrationSnapshot } from "@/shared/types/api";
 import { BASE, request } from "./client";
 import { getBootstrap } from "./bootstrap";
 
@@ -10,10 +10,10 @@ export function getIntegration(integrationType: string): Promise<IntegrationDeta
   return request<IntegrationDetail>(`${BASE}/integrations/${encodeURIComponent(integrationType)}`);
 }
 
-export function configureIntegration(record: IntegrationRecord): Promise<IntegrationSnapshot> {
-  return request<IntegrationSnapshot>(`${BASE}/integrations/${encodeURIComponent(record.type)}/config`, {
+export function configureIntegration(integrationType: string, input: IntegrationConfigInput): Promise<IntegrationSnapshot> {
+  return request<IntegrationSnapshot>(`${BASE}/integrations/${encodeURIComponent(integrationType)}/config`, {
     method: "PUT",
-    body: JSON.stringify(record),
+    body: JSON.stringify(input),
   });
 }
 

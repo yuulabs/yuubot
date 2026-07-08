@@ -82,6 +82,11 @@ export interface IntegrationSnapshot {
 
 export type IntegrationDetail = IntegrationSnapshot;
 
+export interface IntegrationConfigInput {
+  name?: string;
+  config: Record<string, unknown>;
+}
+
 export interface RouteRecord {
   id: string;
   integration_type: string;
@@ -89,6 +94,16 @@ export interface RouteRecord {
   actor_id: string;
   enabled: boolean;
 }
+
+export interface RouteCreateInput {
+  id?: string;
+  integration_type?: string;
+  pattern: string;
+  actor_id: string;
+  enabled?: boolean;
+}
+
+export type RouteUpdateInput = Omit<RouteRecord, "id">;
 
 export interface ConversationSummary {
   id: string;
@@ -135,6 +150,8 @@ export interface ModelCard {
   configured?: boolean;
 }
 
+export type ModelCardInput = Omit<ModelCard, "selector" | "reasoning_effort" | "configured">;
+
 export interface ActorRecord {
   id: string;
   name: string;
@@ -145,6 +162,8 @@ export interface ActorRecord {
   provider: string;
   context_compression_tokens?: number;
 }
+
+export type ActorInput = Omit<ActorRecord, "id">;
 
 export interface ActorInboundBody {
   text: string;
@@ -192,13 +211,6 @@ export interface KvPutBody {
 export interface EtagResponse<T> {
   data: T;
   etag: string | null;
-}
-
-export interface IntegrationRecord {
-  id: string;
-  type: string;
-  name: string;
-  config?: Record<string, unknown>;
 }
 
 export type McpAuthMode = "none" | "api_key" | "oauth_auto" | "oauth_manual" | "auto" | "oauth";
@@ -291,6 +303,8 @@ export interface SkillRecord {
   created_at?: string;
   updated_at?: string;
 }
+
+export type SkillInput = Pick<SkillRecord, "name" | "description" | "body" | "scope">;
 
 export type SkillCliAction = "add" | "remove" | "update";
 

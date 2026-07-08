@@ -1,4 +1,4 @@
-import type { ItemsResponse, SkillCliAction, SkillCliCommandResult, SkillRecord, SkillSummary } from "@/shared/types/api";
+import type { ItemsResponse, SkillCliAction, SkillCliCommandResult, SkillInput, SkillRecord, SkillSummary } from "@/shared/types/api";
 import { BASE, request } from "./client";
 
 export function listSkills(): Promise<SkillSummary[]> {
@@ -20,10 +20,10 @@ export function getSkill(skillId: string): Promise<SkillRecord> {
   return request<SkillRecord>(`${BASE}/skills/${encodeURIComponent(skillId)}`);
 }
 
-export function putSkill(skill: Pick<SkillRecord, "id" | "name" | "description" | "body">): Promise<{ record: SkillRecord; summary: SkillSummary }> {
-  return request<{ record: SkillRecord; summary: SkillSummary }>(`${BASE}/skills/${encodeURIComponent(skill.id)}`, {
+export function putSkill(skillId: string, input: SkillInput): Promise<{ record: SkillRecord; summary: SkillSummary }> {
+  return request<{ record: SkillRecord; summary: SkillSummary }>(`${BASE}/skills/${encodeURIComponent(skillId)}`, {
     method: "PUT",
-    body: JSON.stringify(skill),
+    body: JSON.stringify(input),
   });
 }
 

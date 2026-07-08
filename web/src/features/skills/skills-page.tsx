@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, Plus, RefreshCw, Save, Trash2 } from "lucide-react";
 
 import { deleteSkill, getSkill, listInstalledSkills, listSkills, putSkill, runSkillCommand } from "@/shared/lib/api";
-import type { SkillCliAction, SkillRecord, SkillSummary } from "@/shared/types/api";
+import type { SkillCliAction, SkillInput, SkillRecord, SkillSummary } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,7 +36,7 @@ export function SkillsPage() {
   const [draft, setDraft] = useState(emptyDraft);
   const [message, setMessage] = useState("");
   const save = useMutation({
-    mutationFn: (skill: typeof draft) => putSkill(skill),
+    mutationFn: (skill: typeof draft) => putSkill(skill.id, skillInput(skill)),
     onSuccess: ({ record }) => {
       setDraft(toDraft(record));
       setMessage(`saved ${record.id}`);
@@ -217,6 +217,15 @@ export function SkillsPage() {
       </div>
     </Page>
   );
+}
+
+function skillInput(skill: typeof emptyDraft): SkillInput {
+  return {
+    name: skill.name,
+    description: skill.description,
+    body: skill.body,
+    scope: "global",
+  };
 }
 
 function SkillActions({

@@ -41,7 +41,6 @@ def register_update_routes(
             result = apply_update(
                 app.config_path,
                 app.runtime.data_dir,
-                app.server_host,
                 app.server_port,
                 app.runtime.development,
                 on_shutdown=on_shutdown,

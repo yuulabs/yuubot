@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getProvider } from "@/shared/lib/api";
 import { describeApiError } from "@/shared/lib/api-errors";
-import type { ActorRecord, BootstrapSnapshot, ModelCard } from "@/shared/types/api";
+import type { ActorInput, ActorRecord, BootstrapSnapshot, ModelCard } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import { DenseSection } from "@/shared/components";
 
@@ -18,7 +18,7 @@ export function ActorForm({
   initial: ActorRecord;
   bootstrap: BootstrapSnapshot;
   saveLabel: string;
-  onSave: (record: ActorRecord) => Promise<unknown>;
+  onSave: (actorId: string, input: ActorInput) => Promise<unknown>;
 }) {
   const [id, setId] = useState(initial.id);
   const [name, setName] = useState(initial.name);
@@ -142,8 +142,7 @@ export function ActorForm({
               try {
                 setMessage("");
                 setSaveError("");
-                await onSave({
-                  id,
+                await onSave(id, {
                   name,
                   description,
                   workspace,

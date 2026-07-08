@@ -8,7 +8,7 @@ from support.api import base_url, boot_app, http_json, running_server
 from yuubot.upgrade import apply_update, check_update
 from yuubot.upgrade.apply import build_apply_script, schedule_apply
 from yuubot.upgrade.git import check_git_update
-from yuubot.upgrade.install import detect_install, install_deps_script
+from yuubot.upgrade.install import detect_install
 
 
 def _write_install_assets(root: Path) -> None:
@@ -74,16 +74,17 @@ def test_build_apply_script_uses_install_deps(tmp_path: Path) -> None:
     script = build_apply_script(
         root,
         tmp_path / "config.yaml",
-        "127.0.0.1",
+        tmp_path / "data",
         8765,
         tmp_path / "update.log",
         True,
     )
-    assert "git pull --ff-only" in script
-    assert str(install_deps_script(root)) in script
+    assert "deploy-server.sh" in script
+    assert "--upgrade-only" in script
+    assert "YUUBOT_NONINTERACTIVE=1" in script
+    assert f"--config {tmp_path / 'config.yaml'}" in script
+    assert f"--data-dir {tmp_path / 'data'}" in script
     assert "--skip-web-build" in script
-    assert "uv run ybot migrate" in script
-    assert "exec uv run ybot serve" in script
 
 
 def test_apply_update_rejects_unsupported_install(tmp_path: Path) -> None:
@@ -93,7 +94,6 @@ def test_apply_update_rejects_unsupported_install(tmp_path: Path) -> None:
         apply_update(
             tmp_path / "config.yaml",
             tmp_path / "data",
-            "127.0.0.1",
             8765,
             root=root,
         )
@@ -202,7 +202,6 @@ async def test_schedule_apply_writes_script(tmp_path: Path, monkeypatch: pytest.
         root=root,
         config_path=tmp_path / "config.yaml",
         data_dir=tmp_path / "data",
-        host="127.0.0.1",
         port=8765,
         skip_web_build=False,
     )
@@ -211,4 +210,5 @@ async def test_schedule_apply_writes_script(tmp_path: Path, monkeypatch: pytest.
     script_path = Path(launched[0][1])
     assert script_path.is_file()
     content = script_path.read_text(encoding="utf-8")
-    assert "install-deps.sh" in content
+    assert "deploy-server.sh" in content
+    assert "--upgrade-only" in content

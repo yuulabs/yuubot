@@ -1,6 +1,7 @@
 import type {
   ActorInboundBody,
   ActorInboundResponse,
+  ActorInput,
   ActorRecord,
   ActorSnapshot,
   EtagResponse,
@@ -20,10 +21,10 @@ export function getActor(actorId: string): Promise<ActorRecord> {
   return request<ActorRecord>(`${BASE}/actors/${encodeURIComponent(actorId)}`);
 }
 
-export function putActor(actor: ActorRecord): Promise<ActorSnapshot> {
-  return request<ActorSnapshot>(`${BASE}/actors/${encodeURIComponent(actor.id)}`, {
+export function putActor(actorId: string, input: ActorInput): Promise<ActorSnapshot> {
+  return request<ActorSnapshot>(`${BASE}/actors/${encodeURIComponent(actorId)}`, {
     method: "PUT",
-    body: JSON.stringify(actor),
+    body: JSON.stringify(input),
   });
 }
 

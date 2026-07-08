@@ -143,21 +143,22 @@ above.
 
 ## Updating
 
-For a server git checkout, prefer rerunning the deploy script:
+For a server git checkout, use the deploy script's upgrade mode:
 
 ```bash
-git pull --ff-only
-./scripts/deploy-server.sh
+./scripts/deploy-server.sh --upgrade-only
 ```
 
-Rerunning keeps existing config and Caddy credentials, refreshes dependencies
-and the web build, stops `yuubot.service`, applies database migrations,
-validates the deployment, and restarts the service.
+Upgrade mode pulls git updates with `--ff-only`, keeps existing config and Caddy
+credentials, refreshes dependencies and the web build, stops `yuubot.service`,
+applies database migrations, validates the deployment, and restarts the service.
 
 The Admin UI Settings page can check for git updates on any admin listener.
 **Apply** only works from loopback (`local_admin_server`), because the update
-endpoint requires a loopback client. On a systemd deployment, use the deploy
-script or SSH in and apply from `http://127.0.0.1:8765`.
+endpoint requires a loopback client. It schedules the same deploy-script upgrade
+path used by `ybot upgrade apply`. Background apply runs sudo non-interactively;
+if the service user cannot restart `yuubot.service` without a password prompt,
+SSH in and run `./scripts/deploy-server.sh --upgrade-only` manually.
 
 Update logs are written under `/var/lib/yuubot/logs/update-*.log`.
 

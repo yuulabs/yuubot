@@ -103,7 +103,6 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
     upgrade_check.add_argument("--json", action="store_true")
     upgrade_apply = upgrade_subcommands.add_parser("apply")
     upgrade_apply.add_argument("config")
-    upgrade_apply.add_argument("--host", default=DEFAULT_HOST)
     upgrade_apply.add_argument("--port", type=int, default=DEFAULT_PORT)
     upgrade_apply.add_argument("--skip-web-build", action="store_true")
     upgrade_apply.add_argument("--json", action="store_true")
@@ -172,7 +171,6 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
         return await commands.upgrade_apply(
             app_loader,
             Path(args.config),
-            host=str(args.host),
             port=int(args.port),
             json_output=bool(args.json),
             skip_web_build=bool(args.skip_web_build),

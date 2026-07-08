@@ -18,6 +18,8 @@ CADDY_CONF_DIR="${YUUBOT_CADDY_CONF_DIR:-/etc/caddy/conf.d}"
 CADDY_SITE_FILE="${YUUBOT_CADDY_SITE_FILE:-$CADDY_CONF_DIR/yuubot.caddy}"
 SERVICE_USER="${YUUBOT_SERVICE_USER:-$(id -un)}"
 SERVICE_GROUP="${YUUBOT_SERVICE_GROUP:-$(id -gn)}"
+MODE="install"
+SKIP_WEB_BUILD="${SKIP_WEB_BUILD:-0}"
 
 need_cmd() {
     command -v "$1" >/dev/null 2>&1
@@ -30,6 +32,68 @@ info() {
 die() {
     printf 'error: %s\n' "$*" >&2
     exit 1
+}
+
+run_sudo() {
+    if [[ "${YUUBOT_NONINTERACTIVE:-0}" == "1" ]]; then
+        sudo -n "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+usage() {
+    cat <<EOF
+Usage: deploy-server.sh [--upgrade-only] [--skip-web-build] [--config PATH] [--data-dir PATH] [--port PORT]
+
+Install or update a yuubot systemd deployment.
+
+Options:
+  --upgrade-only     Pull git updates, refresh app deps, migrate, validate, and restart yuubot.service.
+  --skip-web-build   Skip the React admin UI build during dependency refresh.
+  --config PATH      Config file path. Default: $CONFIG_FILE
+  --data-dir PATH    Runtime data directory. Default: $DATA_DIR
+  --port PORT        Local admin listener port. Default: $YUUBOT_PORT
+EOF
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --upgrade-only)
+                MODE="upgrade"
+                shift
+                ;;
+            --skip-web-build)
+                SKIP_WEB_BUILD=1
+                export SKIP_WEB_BUILD
+                shift
+                ;;
+            --config)
+                [[ $# -ge 2 ]] || die "--config requires a path"
+                CONFIG_FILE="$2"
+                shift 2
+                ;;
+            --data-dir)
+                [[ $# -ge 2 ]] || die "--data-dir requires a path"
+                DATA_DIR="$2"
+                export YUU_DATA_DIR="$DATA_DIR"
+                shift 2
+                ;;
+            --port)
+                [[ $# -ge 2 ]] || die "--port requires a value"
+                YUUBOT_PORT="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown argument: $1"
+                ;;
+        esac
+    done
 }
 
 sudo_write() {
@@ -310,7 +374,19 @@ EOF
 
 install_app_dependencies() {
     info "Installing project dependencies"
-    "$REPO_ROOT/scripts/install-deps.sh"
+    local args=()
+    if [[ "$SKIP_WEB_BUILD" == "1" ]]; then
+        args+=(--skip-web-build)
+    fi
+    "$REPO_ROOT/scripts/install-deps.sh" "${args[@]}"
+}
+
+pull_git_update() {
+    info "Pulling git updates"
+    (
+        cd "$REPO_ROOT"
+        git pull --ff-only
+    )
 }
 
 run_database_migrations() {
@@ -374,6 +450,26 @@ EOF
     run_database_migrations
     validate_deploy
     sudo systemctl restart yuubot.service
+}
+
+upgrade_existing_deployment() {
+    require_linux
+    need_cmd git || die "git is required"
+    need_cmd uv || die "uv is required; run full deploy first"
+    if [[ "$SKIP_WEB_BUILD" != "1" ]]; then
+        need_cmd pnpm || die "pnpm is required; run full deploy first"
+    fi
+    [[ -f "$CONFIG_FILE" ]] || die "missing config: $CONFIG_FILE"
+    [[ -f "$ENV_FILE" ]] || die "missing environment file: $ENV_FILE"
+    if grep -Eq '^[[:space:]]*(admin|database|paths|secrets):[[:space:]]*$' "$CONFIG_FILE"; then
+        die "$CONFIG_FILE uses the old split-service config shape. Replace it with the single-process config from docs/server-deploy.md."
+    fi
+    pull_git_update
+    install_app_dependencies
+    run_sudo systemctl stop yuubot.service >/dev/null 2>&1 || true
+    run_database_migrations
+    validate_deploy
+    run_sudo systemctl restart yuubot.service
 }
 
 prompt_caddy_config() {
@@ -477,6 +573,11 @@ EOF
 }
 
 main() {
+    parse_args "$@"
+    if [[ "$MODE" == "upgrade" ]]; then
+        upgrade_existing_deployment
+        return
+    fi
     require_linux
     install_system_packages
     install_uv

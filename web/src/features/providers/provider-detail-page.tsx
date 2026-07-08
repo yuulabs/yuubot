@@ -13,7 +13,7 @@ import {
   validateProvider,
 } from "@/shared/lib/api";
 import { describeApiError } from "@/shared/lib/api-errors";
-import type { ActorRecord, ModelCard, ProviderInput } from "@/shared/types/api";
+import type { ActorInput, ActorRecord, ModelCard, ModelCardInput, ProviderInput } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import { DenseMeta, DenseSection, ErrorState, LoadingState, Page, ResourceList, ResourceListPrimary, Status } from "@/shared/components";
 import { useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
@@ -127,12 +127,12 @@ export function ProviderDetailPage({ id }: { id: string }) {
     await putProvider(providerId, input);
     let savedCard: ModelCard | null = null;
     if (card.selector.trim()) {
-      savedCard = await putProviderModelCard(providerId, { ...card, selector: card.selector.trim() });
+      savedCard = await putProviderModelCard(providerId, card.selector.trim(), modelCardInput(card));
     }
     if (firstProvider && createDefaultActor && savedCard?.configured) {
       const actor = defaultActor(providerId, name, savedCard);
       if (!bootstrap?.actors.some((item) => item.id === actor.id)) {
-        await putActor(actor);
+        await putActor(actor.id, actorInput(actor));
       }
     }
   };
@@ -458,5 +458,29 @@ function defaultActor(providerId: string, providerName: string, model: ModelCard
     provider: providerId,
     model,
     context_compression_tokens: 262144,
+  };
+}
+
+function actorInput(actor: ActorRecord): ActorInput {
+  return {
+    name: actor.name,
+    description: actor.description,
+    workspace: actor.workspace,
+    persona: actor.persona,
+    provider: actor.provider,
+    model: actor.model,
+    context_compression_tokens: actor.context_compression_tokens,
+  };
+}
+
+function modelCardInput(card: ModelCard): ModelCardInput {
+  return {
+    max_context_tokens: card.max_context_tokens,
+    vision: card.vision,
+    toolcall: card.toolcall,
+    json: card.json,
+    input_price_per_million: card.input_price_per_million,
+    cached_input_price_per_million: card.cached_input_price_per_million,
+    output_price_per_million: card.output_price_per_million,
   };
 }

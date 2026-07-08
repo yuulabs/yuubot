@@ -41,14 +41,14 @@ export function ActorEditPage({ id }: { id: string }) {
         initial={draft}
         bootstrap={bootstrap.data}
         saveLabel="Save Actor"
-        onSave={async (record) => {
-          await putActor(record);
+        onSave={async (actorId, input) => {
+          await putActor(actorId, input);
           refreshBootstrap();
-          client.setQueryData(["actor", record.id], record);
-          if (record.id !== id) {
+          client.setQueryData(["actor", actorId], { id: actorId, ...input });
+          if (actorId !== id) {
             client.removeQueries({ queryKey: ["actor", id] });
           }
-          await navigate({ to: "/actors/$id", params: { id: record.id } });
+          await navigate({ to: "/actors/$id", params: { id: actorId } });
         }}
       />
     </Page>

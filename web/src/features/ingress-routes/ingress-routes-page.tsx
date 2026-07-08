@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 
 import { createRoute, deleteRoute, updateRoute } from "@/shared/lib/api";
-import type { RouteRecord } from "@/shared/types/api";
+import type { RouteRecord, RouteUpdateInput } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import {
   DeleteButton,
@@ -22,7 +22,7 @@ const emptyRoute: RouteRecord = { id: "", integration_type: "", pattern: "", act
 export function IngressRoutesPage() {
   const { data, error, isLoading } = useBootstrap();
   const create = useApiMutation((record: RouteRecord) => createRoute(record));
-  const update = useApiMutation((record: RouteRecord) => updateRoute(record));
+  const update = useApiMutation((record: RouteRecord) => updateRoute(record.id, routeUpdateInput(record)));
   const remove = useApiMutation((id: string) => deleteRoute(id));
   const [draft, setDraft] = useState<RouteRecord>(emptyRoute);
   const [edits, setEdits] = useState<Record<string, RouteRecord>>({});
@@ -116,6 +116,15 @@ export function IngressRoutesPage() {
   function setEdit(routeId: string, record: RouteRecord) {
     setEdits((current) => ({ ...current, [routeId]: record }));
   }
+}
+
+function routeUpdateInput(record: RouteRecord): RouteUpdateInput {
+  return {
+    pattern: record.pattern,
+    actor_id: record.actor_id,
+    integration_type: record.integration_type,
+    enabled: record.enabled,
+  };
 }
 
 function ActorSelect({
