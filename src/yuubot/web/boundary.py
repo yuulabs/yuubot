@@ -10,6 +10,7 @@ from .responses import error_response
 PUBLIC_PATHS = (
     re.compile(r"^/s/[^/]+(?:/.*)?$"),
     re.compile(r"^/webhooks/app/[^/]+$"),
+    re.compile(r"^/api/mcp-oauth/[^/]+/callback$"),
 )
 
 
@@ -93,7 +94,6 @@ def create_boundary_app(
     deployment: DeploymentConfig,
     admin_app: ASGIApp,
     public_app: ASGIApp,
-    *,
     sessions: object,
     protect_admin: bool = True,
 ) -> ASGIApp:

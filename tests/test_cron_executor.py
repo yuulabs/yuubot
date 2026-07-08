@@ -53,8 +53,8 @@ async def test_cron_executor_emits_notification_event(cron_app: tuple[Yuubot, Pa
     job = await app.runtime.cron_jobs.build_new(
         owner="actor:amy:conv:c1",
         name="notify",
-        schedule=CronSchedule(kind="at", timezone="UTC", at="2099-01-01T09:00:00"),
-        action=ReminderAction(title="Ping", body="Reminder body", channels=()),
+        schedule=CronSchedule("at", "UTC", at="2099-01-01T09:00:00"),
+        action=ReminderAction("Ping", "Reminder body", ()),
         once=True,
     )
     await app.runtime.cron_jobs.put(job)
@@ -74,8 +74,8 @@ async def test_cron_executor_actor_message_uses_actor_inbound_without_conversati
     job = await app.runtime.cron_jobs.build_new(
         owner="actor:amy:conv:owner-conv",
         name="daily",
-        schedule=CronSchedule(kind="at", timezone="UTC", at="2099-01-01T09:00:00"),
-        action=ActorMessageAction(text="run daily"),
+        schedule=CronSchedule("at", "UTC", at="2099-01-01T09:00:00"),
+        action=ActorMessageAction("run daily"),
         once=True,
     )
     await app.runtime.cron_jobs.put(job)
@@ -96,8 +96,8 @@ async def test_cron_executor_conversation_callback_uses_owner_conversation(cron_
     job = await app.runtime.cron_jobs.build_new(
         owner="actor:amy:conv:owner-conv",
         name="callback",
-        schedule=CronSchedule(kind="at", timezone="UTC", at="2099-01-01T09:00:00"),
-        action=ConversationCallbackAction(text="continue here"),
+        schedule=CronSchedule("at", "UTC", at="2099-01-01T09:00:00"),
+        action=ConversationCallbackAction("continue here"),
         once=True,
     )
     await app.runtime.cron_jobs.put(job)
@@ -118,8 +118,8 @@ async def test_cron_executor_legacy_wakeup_is_actor_message(cron_app: tuple[Yuub
     job = await app.runtime.cron_jobs.build_new(
         owner="actor:amy:conv:owner-conv",
         name="legacy",
-        schedule=CronSchedule(kind="at", timezone="UTC", at="2099-01-01T09:00:00"),
-        action=WakeupAction(text="old wake", conversation_id="ignored-conv"),
+        schedule=CronSchedule("at", "UTC", at="2099-01-01T09:00:00"),
+        action=WakeupAction("old wake", "ignored-conv"),
         once=True,
     )
     await app.runtime.cron_jobs.put(job)
@@ -140,8 +140,8 @@ async def test_cron_scheduler_allows_short_runtime_delay(cron_app: tuple[Yuubot,
     job = await app.runtime.cron_jobs.build_new(
         owner="actor:amy:conv:c1",
         name="notify",
-        schedule=CronSchedule(kind="at", timezone="UTC", at="2099-01-01T09:00:00"),
-        action=ReminderAction(title="Ping", body="Reminder body", channels=()),
+        schedule=CronSchedule("at", "UTC", at="2099-01-01T09:00:00"),
+        action=ReminderAction("Ping", "Reminder body", ()),
         once=True,
     )
 

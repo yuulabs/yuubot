@@ -7,7 +7,6 @@ LOG_FILENAME = "yuubot.log"
 
 def configure_logging(
     logs_dir: Path,
-    *,
     development: bool,
     max_bytes: int = 50 * 1024 * 1024,
     backup_count: int = 5,

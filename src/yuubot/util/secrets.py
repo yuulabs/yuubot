@@ -14,15 +14,15 @@ _SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
-def is_secret_field(key: str, *, secret_fields: frozenset[str] | None = None) -> bool:
+def is_secret_field(key: str, secret_fields: frozenset[str] | None = None) -> bool:
     if secret_fields is not None and key in secret_fields:
         return True
     return SECRET_FIELD_RE.search(key) is not None
 
 
-def redact_config(config: dict[str, object], *, secret_fields: frozenset[str] | None = None) -> dict[str, object]:
+def redact_config(config: dict[str, object], secret_fields: frozenset[str] | None = None) -> dict[str, object]:
     return {
-        key: "***" if is_secret_field(key, secret_fields=secret_fields) and value else value
+        key: "***" if is_secret_field(key, secret_fields) and value else value
         for key, value in config.items()
     }
 
@@ -30,7 +30,6 @@ def redact_config(config: dict[str, object], *, secret_fields: frozenset[str] | 
 def merge_redacted_config(
     incoming: dict[str, object],
     stored: dict[str, object] | None,
-    *,
     secret_fields: frozenset[str] | None = None,
 ) -> dict[str, object]:
     merged = dict(stored or {})
@@ -39,7 +38,7 @@ def merge_redacted_config(
         return merged
     keys = set(incoming) | set(stored)
     for key in keys:
-        if not is_secret_field(key, secret_fields=secret_fields):
+        if not is_secret_field(key, secret_fields):
             continue
         value = incoming.get(key)
         if value is None or value == "***":

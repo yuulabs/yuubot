@@ -39,7 +39,6 @@ class LegacyImportError(RuntimeError):
 
 async def migrate_legacy(
     db: Database,
-    *,
     data_dir: Path,
     legacy_db: Path | None,
     old_config: Path | None = None,
@@ -50,9 +49,9 @@ async def migrate_legacy(
     source = legacy_db or _legacy_db_from_config(old_config_info) or auto_legacy_db(data_dir)
     report = await inspect_legacy(
         db,
-        data_dir=data_dir,
-        legacy_db=source,
-        old_config_info=old_config_info,
+        data_dir,
+        source,
+        old_config_info,
     )
     if dry_run or source is None:
         return report
@@ -66,7 +65,7 @@ async def migrate_legacy(
 
     backup_path = _backup_legacy_db(source)
     report["backup_path"] = str(backup_path)
-    imported = await _import(db, data_dir=data_dir, legacy_db=source, old_config_info=old_config_info, report=report)
+    imported = await _import(db, data_dir, source, old_config_info, report)
     await db.execute(
         "insert or replace into legacy_imports (source_path, imported_at, report) values (?, ?, ?)",
         (str(source), _now(), msgspec.json.encode(imported)),
@@ -79,7 +78,6 @@ async def migrate_legacy(
 
 async def inspect_legacy(
     db: Database | None,
-    *,
     data_dir: Path,
     legacy_db: Path | None,
     old_config_info: dict[str, object] | None = None,
@@ -165,7 +163,6 @@ def _legacy_db_from_config(info: dict[str, object]) -> Path | None:
 
 async def _import(
     db: Database,
-    *,
     data_dir: Path,
     legacy_db: Path,
     old_config_info: dict[str, object],
@@ -212,7 +209,7 @@ async def _import_llms(db: Database, old: aiosqlite.Connection, tables: set[str]
             "api_key": "",
             "options": {key: value for key, value in provider_options.items() if key not in {"base_url", "endpoint", "api_key"}},
         }
-        record = ProviderRecord(id=name, name=name, protocol=protocol, config=config)
+        record = ProviderRecord(name, name, protocol, config)
         await db.execute(
             """
             insert or replace into llm_providers (id, name, protocol, config, last_error, updated_at)
@@ -225,7 +222,7 @@ async def _import_llms(db: Database, old: aiosqlite.Connection, tables: set[str]
             insert or replace into model_cards (provider_id, selector, payload, updated_at)
             values (?, ?, ?, ?)
             """,
-            (name, model, msgspec.json.encode(ModelCard(selector=model)), _timestamp(data.get("updated_at"))),
+            (name, model, msgspec.json.encode(ModelCard(model)), _timestamp(data.get("updated_at"))),
         )
 
 
@@ -247,7 +244,7 @@ async def _import_integrations(
             enabled = False
             last_error = {"type": type(exc).__name__, "message": "legacy encrypted secret could not be decrypted"}
             _append(report, "manual_actions", {"type": "integration_secret", "integration": data.get("id"), "reason": str(exc)})
-        record = IntegrationRecord(id=_string(data.get("id") or data.get("name")), type=_string(data.get("name")), name=_string(data.get("name")), config=config)
+        record = IntegrationRecord(_string(data.get("id") or data.get("name")), _string(data.get("name")), _string(data.get("name")), config)
         await db.execute(
             "insert or replace into app_integrations (type, payload, enabled, last_error, updated_at) values (?, ?, ?, ?, ?)",
             (record.type, msgspec.json.encode(record), int(enabled), msgspec.json.encode(last_error) if last_error else None, _timestamp(data.get("updated_at"))),
@@ -275,7 +272,7 @@ async def _import_actors(
             workspace=workspace,
             persona=_string(data.get("persona_prompt")),
             provider=_string(data.get("llm_backend_id")),
-            model=ModelCard(selector=_string(data.get("model") or "default")),
+            model=ModelCard(_string(data.get("model") or "default")),
         )
         await db.execute(
             "insert or replace into app_actors (id, payload, enabled, status, last_error, updated_at) values (?, ?, ?, ?, ?, ?)",
@@ -330,7 +327,7 @@ async def _import_history(
     report: dict[str, object],
 ) -> dict[str, int]:
     counts: dict[str, int] = {}
-    rows = await _rows(old, "conversation_history_items", tables, order_by="conversation_id, id")
+    rows = await _rows(old, "conversation_history_items", tables, "conversation_id, id")
     for row in rows:
         data = dict(row)
         conversation_id = _string(data.get("conversation_id"))
@@ -356,7 +353,7 @@ async def _import_messages(
     history_counts: dict[str, int],
     report: dict[str, object],
 ) -> None:
-    rows = await _rows(old, "conversation_messages", tables, order_by="conversation_id, timestamp, id")
+    rows = await _rows(old, "conversation_messages", tables, "conversation_id, timestamp, id")
     for row in rows:
         data = dict(row)
         conversation_id = _string(data.get("conversation_id"))
@@ -380,7 +377,7 @@ def _convert_history_item(data: dict[str, object]) -> tuple[str, bytes] | None:
     raw = _json_any(data.get("item_json"), None)
     if item_kind == "tools":
         specs = raw if isinstance(raw, list) else raw.get("tools", []) if isinstance(raw, dict) else []
-        return "tool_specs", msgspec.json.encode(HistoryToolSpecs(specs=[x for x in specs if isinstance(x, dict)]))
+        return "tool_specs", msgspec.json.encode(HistoryToolSpecs([x for x in specs if isinstance(x, dict)]))
     if item_kind != "message":
         return None
     if not isinstance(raw, dict):
@@ -394,9 +391,9 @@ def _legacy_message_dict_to_history(raw: dict[str, object]) -> tuple[str, bytes]
     name = _string(raw.get("name") or role or "legacy")
     if role in {"user", "developer", "system"}:
         input_role = "developer" if role == "system" else role
-        return "input", msgspec.json.encode(InputMessage(role=input_role, name=name, content=_content_items(content)))
+        return "input", msgspec.json.encode(InputMessage(input_role, name, _content_items(content)))
     if role == "assistant":
-        return "gen_text", msgspec.json.encode(GenText(text=_content_text(content)))
+        return "gen_text", msgspec.json.encode(GenText(_content_text(content)))
     if role == "tool":
         return "tool_result", msgspec.json.encode(ToolResult(tool_call_id=_string(raw.get("tool_call_id") or raw.get("id") or "legacy"), content=_content_items(content)))
     return None
@@ -406,13 +403,13 @@ def _message_to_history(data: dict[str, object]) -> tuple[str, bytes] | None:
     role = _string(data.get("role"))
     content = _string(data.get("raw_content"))
     if role in {"user", "developer", "system"}:
-        return "input", msgspec.json.encode(InputMessage(role="developer" if role == "system" else role, name=role or "legacy", content=_content_items(content)))
+        return "input", msgspec.json.encode(InputMessage("developer" if role == "system" else role, role or "legacy", _content_items(content)))
     if role == "assistant":
-        return "gen_text", msgspec.json.encode(GenText(text=content))
+        return "gen_text", msgspec.json.encode(GenText(content))
     return None
 
 
-async def _rows(old: aiosqlite.Connection, table: str, tables: set[str], *, order_by: str = "rowid") -> list[aiosqlite.Row]:
+async def _rows(old: aiosqlite.Connection, table: str, tables: set[str], order_by: str = "rowid") -> list[aiosqlite.Row]:
     if table not in tables:
         return []
     cursor = await old.execute(f'select * from "{table}" order by {order_by}')
@@ -572,7 +569,7 @@ def _legacy_secret_ref(name: str) -> str:
 
 def _content_items(value: object) -> list[ContentItem]:
     text = _content_text(value)
-    return [ContentItem(kind="text", text=text)] if text else []
+    return [ContentItem("text", text)] if text else []
 
 
 def _content_text(value: object) -> str:

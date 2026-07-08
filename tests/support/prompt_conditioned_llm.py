@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 
 from attrs import define, field
 
-from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent
+from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent, StreamStopPayload
 from yuubot.llm import merge_catalog
 from yuubot.llm.types import AccountSnapshot, ValidationResult
 from yuubot.runtime.cache import CachePool
@@ -33,12 +33,11 @@ class PromptConditionedProvider:
         return None
 
     async def validate(self) -> ValidationResult:
-        return ValidationResult(ok=True)
+        return ValidationResult(True)
 
     async def stream(
         self,
         input: LLMInput,
-        *,
         model: ModelCard,
         context: ConversationContext,
         cache: CachePool,
@@ -46,7 +45,7 @@ class PromptConditionedProvider:
     ) -> AsyncIterator[StreamEvent]:
         del model, context, cache
         if stop_event.is_set():
-            yield StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "interrupted"})
+            yield StreamEvent("stop", "stream_stop", StreamStopPayload("interrupted"))
             return
         for matches, build_events in self.rules:
             if matches(input):

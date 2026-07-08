@@ -5,7 +5,6 @@ from urllib.parse import unquote
 def safe_workspace_path(
     root: Path,
     rel: str,
-    *,
     url_decode: bool = False,
     allow_absolute: bool = False,
     escape_error: type[Exception] = ValueError,
@@ -24,7 +23,7 @@ def safe_workspace_path(
     return resolved
 
 
-def ensure_contained(root: Path, path: Path, *, escape_error: type[Exception] = ValueError) -> None:
+def ensure_contained(root: Path, path: Path, escape_error: type[Exception] = ValueError) -> None:
     resolved = path.resolve()
     resolved_root = root.resolve()
     if resolved != resolved_root and resolved_root not in resolved.parents:

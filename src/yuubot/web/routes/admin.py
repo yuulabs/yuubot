@@ -38,7 +38,6 @@ def create_admin_app(
     app: Yuubot,
     deployment: DeploymentConfig,
     sessions: SessionStore,
-    *,
     on_shutdown: Callable[[], None] | None = None,
 ) -> FastAPI:
     api = FastAPI()
@@ -69,7 +68,7 @@ def create_admin_app(
         return json_response({"status": "ok"})
 
     register_auth_routes(api, deployment, sessions)
-    register_admin_ops_routes(api, app, client_is_loopback=client_is_loopback, on_shutdown=on_shutdown)
+    register_admin_ops_routes(api, app, client_is_loopback, on_shutdown)
     register_bootstrap_routes(api, app, deployment)
     register_mcp_routes(api, app, deployment)
     register_credential_routes(api, app)
@@ -80,14 +79,14 @@ def create_admin_app(
     register_integration_routes(api, app)
     register_conversation_routes(api, app)
     register_route_table_routes(api, app)
-    register_task_routes(api, app, client_is_loopback=client_is_loopback)
+    register_task_routes(api, app, client_is_loopback)
     register_cron_routes(api, app)
     register_notification_routes(api, app)
     register_share_routes(api, app, deployment)
     register_kv_routes(api, app)
     register_websocket_routes(api, app)
     register_terminal_routes(api, app)
-    register_update_routes(api, app, deployment, on_shutdown=on_shutdown)
+    register_update_routes(api, app, deployment, on_shutdown)
 
     @api.get("/{path:path}", response_class=HTMLResponse)
     async def react_app(path: str):

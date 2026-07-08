@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import msgspec
 import pytest
 from attrs import define, field
 from openai.types.chat import ChatCompletionChunk
@@ -50,8 +51,8 @@ async def test_openai_provider_passes_actor_reasoning_effort(tmp_path: Path, mon
     kwargs = await _completion_kwargs(
         tmp_path,
         monkeypatch,
-        model=ModelCard(selector="gpt-test", reasoning_effort="high"),
-        options={"reasoning_effort": "medium"},
+        ModelCard("gpt-test", "high"),
+        {"reasoning_effort": "medium"},
     )
 
     assert kwargs["model"] == "gpt-test"
@@ -62,7 +63,7 @@ async def test_openai_provider_omits_empty_reasoning_effort(tmp_path: Path, monk
     kwargs = await _completion_kwargs(
         tmp_path,
         monkeypatch,
-        model=ModelCard(selector="gpt-test"),
+        ModelCard("gpt-test"),
     )
 
     assert kwargs["model"] == "gpt-test"
@@ -72,13 +73,13 @@ async def test_openai_provider_omits_empty_reasoning_effort(tmp_path: Path, monk
 def test_openai_provider_replays_reasoning_content(tmp_path: Path) -> None:
     messages = _messages(
         [
-            InputMessage(role="user", name="actor", content=text_content("hello")),
-            GenReasoning(text="hidden chain"),
-            GenText(text="visible answer"),
-            InputMessage(role="user", name="actor", content=text_content("continue")),
+            InputMessage("user", "actor", text_content("hello")),
+            GenReasoning("hidden chain"),
+            GenText("visible answer"),
+            InputMessage("user", "actor", text_content("continue")),
         ],
-        workspace=tmp_path,
-        cache=CachePool(),
+        tmp_path,
+        CachePool(),
     )
 
     assert messages == [
@@ -96,13 +97,13 @@ def test_openai_provider_caches_image_data_url_with_explicit_size(tmp_path: Path
     messages = _messages(
         [
             InputMessage(
-                role="user",
-                name="actor",
-                content=[ContentItem(kind="image", path="image.png", mime="image/png")],
+                "user",
+                "actor",
+                [ContentItem("image", path="image.png", mime="image/png")],
             )
         ],
-        workspace=tmp_path,
-        cache=cache,
+        tmp_path,
+        cache,
     )
 
     expected_url = "data:image/png;base64,aW1hZ2UtYnl0ZXM="
@@ -169,7 +170,7 @@ def test_openai_provider_keeps_tool_argument_chunks_without_repeated_type() -> N
     events = [*_events_from_chunk(first, tool_state), *_events_from_chunk(second, tool_state)]
 
     assert [event.kind for event in events] == ["tool_name", "tool_arguments_delta"]
-    assert events[1].payload == {"text": '{"code": "print(1)"}'}
+    assert msgspec.to_builtins(events[1].payload) == {"text": '{"code": "print(1)"}'}
     assert tool_state.seen == {0}
     assert tool_state.named == {0}
 
@@ -210,7 +211,7 @@ def test_openai_provider_waits_for_tool_name_when_id_arrives_first() -> None:
     events = [*_events_from_chunk(first, tool_state), *_events_from_chunk(second, tool_state)]
 
     assert [event.kind for event in events] == ["tool_name"]
-    assert events[0].payload == {"id": "call-1", "name": "execute_python"}
+    assert msgspec.to_builtins(events[0].payload) == {"id": "call-1", "name": "execute_python"}
     assert tool_state.seen == {0}
     assert tool_state.named == {0}
 
@@ -255,7 +256,7 @@ def test_openai_provider_buffers_tool_arguments_until_tool_name() -> None:
     events = [*_events_from_chunk(first, tool_state), *_events_from_chunk(second, tool_state)]
 
     assert [event.kind for event in events] == ["tool_name", "tool_arguments_delta", "tool_arguments_delta"]
-    assert [event.payload for event in events] == [
+    assert [msgspec.to_builtins(event.payload) for event in events] == [
         {"id": "tool-0", "name": "execute_python"},
         {"text": '{"code": "'},
         {"text": "print(1)\"}"},
@@ -284,8 +285,8 @@ def test_openai_provider_accepts_legacy_streaming_function_call() -> None:
     events = _events_from_chunk(chunk, tool_state)
 
     assert [event.kind for event in events] == ["tool_name", "tool_arguments_delta"]
-    assert events[0].payload == {"id": "tool-0", "name": "execute_python"}
-    assert events[1].payload == {"text": '{"code": "print(1)"}'}
+    assert msgspec.to_builtins(events[0].payload) == {"id": "tool-0", "name": "execute_python"}
+    assert msgspec.to_builtins(events[1].payload) == {"text": '{"code": "print(1)"}'}
     assert tool_state.seen == {0}
     assert tool_state.named == {0}
 
@@ -316,13 +317,12 @@ def test_presets_for_endpoint() -> None:
 async def _completion_kwargs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    *,
     model: ModelCard,
     options: dict[str, object] | None = None,
 ) -> dict[str, object]:
     provider = OpenAIProvider(OpenAIProviderConfig(api_key="test-key", options=options or {}))
     completions = RecordingCompletions()
-    client = RecordingClient(chat=RecordingChat(completions=completions))
+    client = RecordingClient(RecordingChat(completions))
 
     def sdk_client(self: OpenAIProvider) -> Any:
         del self
@@ -330,7 +330,7 @@ async def _completion_kwargs(
 
     monkeypatch.setattr(OpenAIProvider, "_sdk_client", sdk_client)
     await provider._completion_stream(
-        LLMInput(tool_specs=[], messages=[]),
+        LLMInput([], []),
         model,
         _context(tmp_path, model),
         CachePool(),
@@ -340,8 +340,8 @@ async def _completion_kwargs(
 
 def _context(tmp_path: Path, model: ModelCard) -> ConversationContext:
     return ConversationContext(
-        model=model,
-        conversation_id="conversation",
-        actor="actor",
-        workspace=tmp_path,
+        model,
+        "conversation",
+        "actor",
+        tmp_path,
     )

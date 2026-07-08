@@ -51,3 +51,7 @@ Prompt the user to run npx -y @dbalabka/chrome-wsl if you find chrome dev mcp fa
 ## Compatibility
 
 **NO Backward Compatibility** except database migration. Any compatibility layer is a tech debt.
+
+## Coding Style
+
+Prefer Positional arguments over Keyword-only arguments. Enforce keyword-only arguments when truely neccessary.

@@ -26,7 +26,7 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             body = await read_json(request, ActorInput)
             await app.put_actor(actor_id, body)
         except ActorConfigError as exc:
-            return error_response(422, exc.code, str(exc), detail=exc.detail)
+            return error_response(422, exc.code, str(exc), exc.detail)
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
         snapshot = await app.actor_snapshot(actor_id)
@@ -98,7 +98,7 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
         if workspace is None:
             return error_response(404, "not_found", "actor not found")
         try:
-            return json_response({"files": await save_uploads(workspace, file, destination=path)})
+            return json_response({"files": await save_uploads(workspace, file, path)})
         except ValueError as exc:
             return bad_request(exc)
 
@@ -109,7 +109,7 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             return error_response(404, "not_found", "actor not found")
         try:
             body = await read_json(request, WorkspaceMkdirBody)
-            return json_response(make_directory(workspace, body.path), status=201)
+            return json_response(make_directory(workspace, body.path), 201)
         except FileExistsError as exc:
             return error_response(409, "conflict", str(exc))
         except FileNotFoundError as exc:
@@ -173,8 +173,8 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             return error_response(
                 500,
                 "internal_error",
-                internal_error_message(exc, development=app.runtime.development),
-                detail=internal_error_detail(exc, development=app.runtime.development),
+                internal_error_message(exc, app.runtime.development),
+                internal_error_detail(exc, app.runtime.development),
             )
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)

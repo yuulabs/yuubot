@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from ..runtime.core import Runtime
 
 
-class ToolConfig(msgspec.Struct, frozen=True, kw_only=True):
+class ToolConfig(msgspec.Struct, frozen=True):
     type: str
     options: dict[str, object] = msgspec.field(default_factory=dict)
 
@@ -42,7 +42,6 @@ class ToolSpec:
 
 
 def workspace_tool(
-    *,
     payload_type: type[msgspec.Struct],
     description: str,
     execute: WorkspaceExecute,
@@ -72,4 +71,4 @@ def workspace_tool(
 
         return _WorkspaceTool(root=workspace(context.workspace), bound=context_bindings(context))
 
-    return ToolSpec(payload_type=payload_cls, description=description, factory=factory)
+    return ToolSpec(payload_cls, description, factory)

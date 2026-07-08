@@ -10,7 +10,7 @@ import pytest
 from yuubot.actor import ActorConfig
 from yuubot.app import Yuubot
 from yuubot.chat import harness as harness_module
-from yuubot.domain import ConversationContext, InputMessage, LLMInput, ModelCard, StreamEvent, Usage, text_content
+from yuubot.domain import ConversationContext, InputMessage, LLMInput, ModelCard, StreamEvent, TextDeltaPayload, Usage, text_content
 from yuubot.llm import merge_catalog, scripted_reply
 from yuubot.llm.types import AccountSnapshot, ValidationResult
 from yuubot.runtime.cache import CachePool
@@ -35,12 +35,11 @@ class BlockingProvider:
         return None
 
     async def validate(self) -> ValidationResult:
-        return ValidationResult(ok=True)
+        return ValidationResult(True)
 
     async def stream(
         self,
         input: LLMInput,
-        *,
         model: ModelCard,
         context: ConversationContext,
         cache: CachePool,
@@ -50,8 +49,8 @@ class BlockingProvider:
         self.started.set()
         await self.release.wait()
         reason = "interrupted" if stop_event.is_set() else "stop"
-        yield StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "done"})
-        yield stream_stop_event(reason, Usage(), {}, cost_estimated=False)
+        yield StreamEvent("text-1", "text_delta", TextDeltaPayload("done"))
+        yield stream_stop_event(reason, Usage(), {}, False)
 
     async def close(self) -> None:
         return None
@@ -76,13 +75,13 @@ async def test_terminal_turn_marks_closed_when_harness_close_fails(
                 id="amy",
                 name="Amy",
                 workspace=str(tmp_path / "workspace"),
-                model=ModelCard(selector="fake"),
+                model=ModelCard("fake"),
             ),
             scripted_reply("done"),
         )
         await app.run_user_message(
             "amy",
-            InputMessage(role="user", name="amy", content=text_content("hi")),
+            InputMessage("user", "amy", text_content("hi")),
             conversation_id,
         )
         rows = await app.runtime.state.list_conversations()
@@ -103,14 +102,14 @@ async def test_running_conversation_is_not_swept_until_it_becomes_idle(tmp_path:
                 id="amy",
                 name="Amy",
                 workspace=str(tmp_path / "workspace"),
-                model=ModelCard(selector="fake"),
+                model=ModelCard("fake"),
             ),
             provider,
         )
         task = asyncio.create_task(
             app.run_user_message(
                 "amy",
-                InputMessage(role="user", name="amy", content=text_content("hi")),
+                InputMessage("user", "amy", text_content("hi")),
                 conversation_id,
             )
         )
@@ -139,7 +138,7 @@ async def test_history_append_does_not_refresh_conversation_idle_ttl(tmp_path: P
                 id="amy",
                 name="Amy",
                 workspace=str(tmp_path / "workspace"),
-                model=ModelCard(selector="fake"),
+                model=ModelCard("fake"),
             ),
             scripted_reply("done"),
         )
@@ -147,7 +146,7 @@ async def test_history_append_does_not_refresh_conversation_idle_ttl(tmp_path: P
         app.runtime.conversations.ttl_s = 10
         app.runtime.conversations._idle_since[conversation_id] = 0.0
 
-        await conversation.append_items([InputMessage(role="developer", name="yuubot", content=text_content("note"))])
+        await conversation.append_items([InputMessage("developer", "yuubot", text_content("note"))])
         await app.runtime.conversations.sweep()
 
         assert not app.runtime.conversations.has(conversation_id)

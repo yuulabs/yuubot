@@ -22,18 +22,18 @@ async def test_bash_fast_command_returns_sync_result(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = ConversationContext(
-        model=ModelCard(selector="test"),
-        conversation_id="bash-fast",
-        actor="amy",
-        workspace=workspace,
+        ModelCard("test"),
+        "bash-fast",
+        "amy",
+        workspace,
     )
     harness = Harness.from_config(
-        HarnessConfig(tools={"bash": ToolConfig(type="bash")}),
+        HarnessConfig({"bash": ToolConfig("bash")}),
         context,
         app.runtime,
     )
     results = await harness.gather(
-        [ToolCall(id="call-1", name="bash", arguments='{"command":"echo hello-sync"}')],
+        [ToolCall("call-1", "bash", '{"command":"echo hello-sync"}')],
         asyncio.Event(),
     )
     await harness.close()
@@ -50,22 +50,22 @@ async def test_bash_detaches_on_stdout_idle(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = ConversationContext(
-        model=ModelCard(selector="test"),
-        conversation_id="bash-idle",
-        actor="amy",
-        workspace=workspace,
+        ModelCard("test"),
+        "bash-idle",
+        "amy",
+        workspace,
     )
     harness = Harness.from_config(
-        HarnessConfig(tools={"bash": ToolConfig(type="bash")}),
+        HarnessConfig({"bash": ToolConfig("bash")}),
         context,
         app.runtime,
     )
     results = await harness.gather(
         [
             ToolCall(
-                id="call-1",
-                name="bash",
-                arguments='{"command":"sleep 30","idle_timeout_s":0.2}',
+                "call-1",
+                "bash",
+                '{"command":"sleep 30","idle_timeout_s":0.2}',
             )
         ],
         asyncio.Event(),
@@ -87,25 +87,23 @@ async def test_bash_detaches_for_stdin_waiting_command(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = ConversationContext(
-        model=ModelCard(selector="test"),
-        conversation_id="bash-stdin",
-        actor="amy",
-        workspace=workspace,
+        ModelCard("test"),
+        "bash-stdin",
+        "amy",
+        workspace,
     )
     harness = Harness.from_config(
-        HarnessConfig(tools={"bash": ToolConfig(type="bash")}),
+        HarnessConfig({"bash": ToolConfig("bash")}),
         context,
         app.runtime,
     )
     results = await harness.gather(
         [
             ToolCall(
-                id="call-1",
-                name="bash",
-                arguments=(
-                    '{"command":"python3 -c \\"import sys; print(\\\\\\"prompt\\\\\\"); '
-                    'sys.stdout.flush(); sys.stdin.readline()\\"","idle_timeout_s":0.3}'
-                ),
+                "call-1",
+                "bash",
+                '{"command":"python3 -c \\"import sys; print(\\\\\\"prompt\\\\\\"); '
+                'sys.stdout.flush(); sys.stdin.readline()\\"","idle_timeout_s":0.3}',
             )
         ],
         asyncio.Event(),

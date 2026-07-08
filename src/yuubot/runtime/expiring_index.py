@@ -35,17 +35,16 @@ class ExpiringIndex(Generic[T]):
         self,
         key: str,
         item: T,
-        *,
         min_retain_until: float | None = None,
         expires_at: float | None = None,
     ) -> None:
         now = self.now()
         self._items[key] = item
         self._metadata[key] = ExpiringIndexMetadata(
-            created_at=self._metadata.get(key, ExpiringIndexMetadata(now, now, None, now)).created_at,
-            min_retain_until=now if min_retain_until is None else min_retain_until,
-            expires_at=expires_at,
-            last_touched_at=now,
+            self._metadata.get(key, ExpiringIndexMetadata(now, now, None, now)).created_at,
+            now if min_retain_until is None else min_retain_until,
+            expires_at,
+            now,
         )
         self.evict()
 
@@ -67,26 +66,25 @@ class ExpiringIndex(Generic[T]):
     def touch(self, key: str) -> None:
         metadata = self._metadata[key]
         self._metadata[key] = ExpiringIndexMetadata(
-            created_at=metadata.created_at,
-            min_retain_until=metadata.min_retain_until,
-            expires_at=metadata.expires_at,
-            last_touched_at=self.now(),
+            metadata.created_at,
+            metadata.min_retain_until,
+            metadata.expires_at,
+            self.now(),
         )
 
     def update_retention(
         self,
         key: str,
-        *,
         min_retain_until: float | None = None,
         expires_at: float | None = None,
     ) -> None:
         self.evict()
         metadata = self._metadata[key]
         self._metadata[key] = ExpiringIndexMetadata(
-            created_at=metadata.created_at,
-            min_retain_until=metadata.min_retain_until if min_retain_until is None else min_retain_until,
-            expires_at=expires_at,
-            last_touched_at=self.now(),
+            metadata.created_at,
+            metadata.min_retain_until if min_retain_until is None else min_retain_until,
+            expires_at,
+            self.now(),
         )
         self.evict()
 

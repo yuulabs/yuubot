@@ -14,7 +14,6 @@ from .types import UpdateApplyResult
 
 
 def build_apply_script(
-    *,
     root: Path,
     config_path: Path,
     host: str,
@@ -61,12 +60,12 @@ def schedule_apply(
     log_path = logs_dir / f"update-{stamp}.log"
     script_path.write_text(
         build_apply_script(
-            root=resolved_root,
-            config_path=config_path,
-            host=host,
-            port=port,
-            log_path=log_path,
-            skip_web_build=skip_web_build,
+            resolved_root,
+            config_path,
+            host,
+            port,
+            log_path,
+            skip_web_build,
         ),
         encoding="utf-8",
     )
@@ -79,4 +78,4 @@ def schedule_apply(
     )
     if on_shutdown is not None:
         on_shutdown()
-    return UpdateApplyResult(status="scheduled", log_path=str(log_path), message="update scheduled")
+    return UpdateApplyResult("scheduled", str(log_path), "update scheduled")

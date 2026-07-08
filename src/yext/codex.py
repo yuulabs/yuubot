@@ -19,7 +19,7 @@ async def status() -> Status:
     return await _status(_config())
 
 
-async def run(prompt: str, *, extra_args: tuple[str, ...] = (), timeout_s: float | None = None) -> Result:
+async def run(prompt: str, extra_args: tuple[str, ...] = (), timeout_s: float | None = None) -> Result:
     return await _run(_config(), prompt, extra_args=extra_args, timeout_s=timeout_s)
 
 

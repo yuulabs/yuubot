@@ -14,10 +14,10 @@ from support.api import SharedTestContext
 async def _seed_history(app: Yuubot, conversation_id: str, count: int) -> list[int]:
     await app.runtime.history.extend(
         conversation_id,
-        [HistoryToolSpecs(specs=[]), SystemPrompt(text="system")],
+        [HistoryToolSpecs([]), SystemPrompt("system")],
     )
     items = [
-        InputMessage(role="user", name="user", content=[ContentItem(kind="text", text=f"msg-{index}")])
+        InputMessage("user", "user", [ContentItem("text", f"msg-{index}")])
         for index in range(count)
     ]
     wrapped = await app.runtime.history.extend(conversation_id, items)
@@ -77,10 +77,10 @@ async def test_http_conversation_history_pagination_metadata(test_context: Share
     for index in range(3):
         await ws_conversation_send(
             test_context.server,
-            command_id=f"m{index}",
-            actor_id=actor_id,
-            conversation_id=conversation_id,
-            content=f"hello-{index}",
+            f"m{index}",
+            actor_id,
+            conversation_id,
+            f"hello-{index}",
         )
 
     url = base_url(test_context.server)

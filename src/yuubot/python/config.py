@@ -11,7 +11,7 @@ DEFAULT_EXECUTION_TIMEOUT_S = 120.0
 RECYCLE_EXIT_CODE = 75
 
 
-class PythonKernelsConfig(msgspec.Struct, frozen=True, kw_only=True):
+class PythonKernelsConfig(msgspec.Struct, frozen=True):
     max_workers: int = DEFAULT_MAX_WORKERS
     acquire_timeout_s: float = DEFAULT_ACQUIRE_TIMEOUT_S
     max_rss_bytes: int = DEFAULT_MAX_RSS_BYTES

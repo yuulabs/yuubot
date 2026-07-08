@@ -25,7 +25,15 @@ from ..domain.messages import (
     ModelCard,
     ToolResult,
 )
-from ..domain.stream import StreamEvent, Usage, estimate_cost
+from ..domain.stream import (
+    ReasoningDeltaPayload,
+    StreamEvent,
+    TextDeltaPayload,
+    ToolArgumentsDeltaPayload,
+    ToolNamePayload,
+    Usage,
+    estimate_cost,
+)
 from ..util.paths import safe_workspace_path
 from ..util.stream import stream_stop_event
 from ..runtime.cache import CachePool
@@ -35,15 +43,15 @@ from .records import ProviderRecord
 from .types import AccountSnapshot, ValidationResult
 
 
-class OpenAIProviderConfig(msgspec.Struct, frozen=True, kw_only=True):
+class OpenAIProviderConfig(msgspec.Struct, frozen=True):
     endpoint: str = ""
     api_key: str = ""
     options: dict[str, Any] = msgspec.field(default_factory=dict)
 
 
 _OPENAI_PRESETS: tuple[ModelCard, ...] = (
-    ModelCard(selector="gpt-4o", vision=True, input_price_per_million=2.5, output_price_per_million=10.0),
-    ModelCard(selector="gpt-4o-mini", vision=True, input_price_per_million=0.15, output_price_per_million=0.6),
+    ModelCard("gpt-4o", vision=True, input_price_per_million=2.5, output_price_per_million=10.0),
+    ModelCard("gpt-4o-mini", vision=True, input_price_per_million=0.15, output_price_per_million=0.6),
 )
 
 
@@ -64,14 +72,14 @@ class _CachedImageDataUrl:
 
 
 _DEEPSEEK_PRESETS: tuple[ModelCard, ...] = (
-    ModelCard(selector="deepseek-chat", input_price_per_million=0.27, output_price_per_million=1.1),
-    ModelCard(selector="deepseek-reasoner", toolcall=False, input_price_per_million=0.55, output_price_per_million=2.19),
+    ModelCard("deepseek-chat", input_price_per_million=0.27, output_price_per_million=1.1),
+    ModelCard("deepseek-reasoner", toolcall=False, input_price_per_million=0.55, output_price_per_million=2.19),
 )
 
 
 def make_openai_provider(record: ProviderRecord, config: OpenAIProviderConfig) -> Provider:
     del record
-    return OpenAIProvider(config=config)
+    return OpenAIProvider(config)
 
 
 @define
@@ -94,17 +102,16 @@ class OpenAIProvider:
 
     async def validate(self) -> ValidationResult:
         if not self.config.api_key:
-            return ValidationResult(ok=False, message="api_key is required")
+            return ValidationResult(False, "api_key is required")
         try:
             await self.list_remote_models()
         except Exception as exc:
-            return ValidationResult(ok=False, message=str(exc), detail={"type": type(exc).__name__})
-        return ValidationResult(ok=True)
+            return ValidationResult(False, str(exc), {"type": type(exc).__name__})
+        return ValidationResult(True)
 
     async def stream(
         self,
         input: LLMInput,
-        *,
         model: ModelCard,
         context: ConversationContext,
         cache: CachePool,
@@ -112,7 +119,7 @@ class OpenAIProvider:
     ) -> AsyncIterator[StreamEvent]:
         usage = Usage()
         if stop_event.is_set():
-            yield stream_stop_event("interrupted", usage, {}, cost_estimated=False)
+            yield stream_stop_event("interrupted", usage, {}, False)
             return
         upstream = await self._completion_stream(input, model, context, cache)
         tool_state = ToolStreamState()
@@ -120,7 +127,7 @@ class OpenAIProvider:
         try:
             async for chunk in upstream:
                 if stop_event.is_set():
-                    yield stream_stop_event("interrupted", usage, {}, cost_estimated=False)
+                    yield stream_stop_event("interrupted", usage, {}, False)
                     return
                 for event in _events_from_chunk(chunk, tool_state):
                     yield event
@@ -132,13 +139,13 @@ class OpenAIProvider:
         finally:
             await upstream.close()
         for index in sorted(tool_state.named):
-            yield StreamEvent(group_id=f"tool-{index}", kind="tool_arguments_end")
+            yield StreamEvent(f"tool-{index}", "tool_arguments_end")
         payg = usage.payg_cost
         cost_estimated = False
         if payg is None and _has_tokens(usage):
             payg = estimate_cost(model, usage)
             cost_estimated = True
-        yield stream_stop_event(finish_reason, _usage_with_payg(usage, payg), {}, cost_estimated=cost_estimated)
+        yield stream_stop_event(finish_reason, _usage_with_payg(usage, payg), {}, cost_estimated)
 
     async def close(self) -> None:
         if self._client is not None:
@@ -157,7 +164,7 @@ class OpenAIProvider:
         reasoning_effort = model.reasoning_effort.strip()
         if reasoning_effort:
             options["reasoning_effort"] = reasoning_effort
-        messages = _messages(input.messages, workspace=context.workspace, cache=cache)
+        messages = _messages(input.messages, context.workspace, cache)
         if input.tool_specs:
             options["tools"] = cast(list[ChatCompletionToolParam], input.tool_specs)
         completion = await self._sdk_client().chat.completions.create(
@@ -201,10 +208,10 @@ def _timeout(config: OpenAIProviderConfig) -> float:
 
 def _usage_with_payg(usage: Usage, payg: float | None) -> Usage:
     return Usage(
-        input_tokens=usage.input_tokens,
-        cached_input_tokens=usage.cached_input_tokens,
-        output_tokens=usage.output_tokens,
-        payg_cost=payg,
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.output_tokens,
+        payg,
     )
 
 
@@ -220,14 +227,14 @@ def _usage_from_chunk(usage: object) -> Usage:
     if details is not None:
         cached = getattr(details, "cached_tokens", None) or 0
     return Usage(
-        input_tokens=int(prompt_tokens),
-        cached_input_tokens=int(cached),
-        output_tokens=int(completion_tokens),
-        payg_cost=None,
+        int(prompt_tokens),
+        int(cached),
+        int(completion_tokens),
+        None,
     )
 
 
-def _messages(history: list[HistoryItem], *, workspace: Path, cache: CachePool) -> list[ChatCompletionMessageParam]:
+def _messages(history: list[HistoryItem], workspace: Path, cache: CachePool) -> list[ChatCompletionMessageParam]:
     messages: list[dict[str, object]] = []
     assistant: dict[str, object] | None = None
 
@@ -240,7 +247,7 @@ def _messages(history: list[HistoryItem], *, workspace: Path, cache: CachePool) 
     for item in history:
         if isinstance(item, InputMessage):
             flush_assistant()
-            content = _input_content(item.content, workspace=workspace, cache=cache)
+            content = _input_content(item.content, workspace, cache)
             if item.role == "developer":
                 messages.append({"role": "system", "content": content})
             else:
@@ -275,7 +282,7 @@ def _content_text(content: list[ContentItem]) -> str:
     return "\n".join(item.text for item in content if item.text)
 
 
-def _input_content(content: list[ContentItem], *, workspace: Path, cache: CachePool) -> str | list[dict[str, object]]:
+def _input_content(content: list[ContentItem], workspace: Path, cache: CachePool) -> str | list[dict[str, object]]:
     parts: list[dict[str, object]] = []
     for item in content:
         if item.kind == "text" and item.text:
@@ -283,7 +290,7 @@ def _input_content(content: list[ContentItem], *, workspace: Path, cache: CacheP
         elif item.kind == "image" and item.url:
             parts.append({"type": "image_url", "image_url": {"url": item.url}})
         elif item.kind == "image" and item.path:
-            parts.append({"type": "image_url", "image_url": {"url": _image_data_url(item, workspace=workspace, cache=cache)}})
+            parts.append({"type": "image_url", "image_url": {"url": _image_data_url(item, workspace, cache)}})
     if not parts:
         return ""
     if len(parts) == 1 and parts[0]["type"] == "text":
@@ -291,7 +298,7 @@ def _input_content(content: list[ContentItem], *, workspace: Path, cache: CacheP
     return parts
 
 
-def _image_data_url(item: ContentItem, *, workspace: Path, cache: CachePool) -> str:
+def _image_data_url(item: ContentItem, workspace: Path, cache: CachePool) -> str:
     path = _content_path(item.path, workspace)
     stat = path.stat()
     mime = item.mime if item.mime.startswith("image/") else "image/*"
@@ -317,18 +324,34 @@ def _emit_tool_name(index: int, tool_id: str, name: str, state: ToolStreamState,
     if tool_id:
         state.ids.setdefault(index, tool_id)
     events.append(
-        StreamEvent(group_id=group_id, kind="tool_name", payload={"id": state.ids.get(index, group_id), "name": name})
+        StreamEvent(
+            group_id,
+            "tool_name",
+            ToolNamePayload(id=state.ids.get(index, group_id), name=name),
+        )
     )
     state.named.add(index)
     for arguments in state.pending_arguments.pop(index, []):
-        events.append(StreamEvent(group_id=group_id, kind="tool_arguments_delta", payload={"text": arguments}))
+        events.append(
+            StreamEvent(
+                group_id,
+                "tool_arguments_delta",
+                ToolArgumentsDeltaPayload(arguments),
+            )
+        )
 
 
 def _emit_tool_arguments(index: int, arguments: str, state: ToolStreamState, events: list[StreamEvent]) -> None:
     if not arguments:
         return
     if index in state.named:
-        events.append(StreamEvent(group_id=f"tool-{index}", kind="tool_arguments_delta", payload={"text": arguments}))
+        events.append(
+            StreamEvent(
+                f"tool-{index}",
+                "tool_arguments_delta",
+                ToolArgumentsDeltaPayload(arguments),
+            )
+        )
     else:
         state.pending_arguments.setdefault(index, []).append(arguments)
 
@@ -338,10 +361,18 @@ def _events_from_chunk(chunk: ChatCompletionChunk, state: ToolStreamState) -> li
     for choice in chunk.choices:
         delta = choice.delta
         if delta.content:
-            events.append(StreamEvent(group_id="text-0", kind="text_delta", payload={"text": delta.content}))
+            events.append(
+                StreamEvent("text-0", "text_delta", TextDeltaPayload(delta.content))
+            )
         reasoning = getattr(delta, "reasoning_content", None)
         if isinstance(reasoning, str) and reasoning:
-            events.append(StreamEvent(group_id="reasoning-0", kind="reasoning_delta", payload={"text": reasoning}))
+            events.append(
+                StreamEvent(
+                    "reasoning-0",
+                    "reasoning_delta",
+                    ReasoningDeltaPayload(reasoning),
+                )
+            )
         if delta.function_call is not None:
             state.seen.add(0)
             state.ids.setdefault(0, "tool-0")

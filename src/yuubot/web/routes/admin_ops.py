@@ -16,7 +16,6 @@ from ..responses import error_response, json_response
 def register_admin_ops_routes(
     api: FastAPI,
     app: Yuubot,
-    *,
     client_is_loopback: Callable[[Request], bool],
     on_shutdown: Callable[[], None] | None = None,
 ) -> None:

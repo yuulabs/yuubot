@@ -86,7 +86,7 @@ async def _main_async(argv: Sequence[str] | None, app_loader: AppLoader) -> int:
     if args.command == "serve":
         from ..web.server import serve_async
 
-        await serve_async(Path(args.config), host=str(args.host), port=int(args.port), app_loader=app_loader)
+        await serve_async(Path(args.config), str(args.host), int(args.port), app_loader)
         return 0
     if args.command == "dev":
         return await commands.dev(

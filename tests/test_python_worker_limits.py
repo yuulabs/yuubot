@@ -25,15 +25,15 @@ class FakeKernelClient:
         return self._messages.pop(0)
 
 
-def _worker(client: FakeKernelClient, *, max_output_bytes: int = 8, execution_timeout_s: float = 5.0) -> KernelWorker:
+def _worker(client: FakeKernelClient, max_output_bytes: int = 8, execution_timeout_s: float = 5.0) -> KernelWorker:
     return KernelWorker(
-        workspace=Path("/tmp"),
-        env={},
-        max_rss_bytes=1024,
-        max_output_bytes=max_output_bytes,
-        execution_timeout_s=execution_timeout_s,
-        manager=cast(Any, object()),
-        client=cast(Any, client),
+        Path("/tmp"),
+        {},
+        1024,
+        max_output_bytes,
+        execution_timeout_s,
+        cast(Any, object()),
+        cast(Any, client),
     )
 
 
@@ -140,7 +140,7 @@ async def test_execute_filters_terminal_control_sequences(monkeypatch: pytest.Mo
             },
         ]
     )
-    worker = _worker(client, max_output_bytes=128)
+    worker = _worker(client, 128)
     worker._started = True
     monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
 
@@ -172,7 +172,7 @@ async def test_execute_streams_filtered_output_to_callback(monkeypatch: pytest.M
             },
         ]
     )
-    worker = _worker(client, max_output_bytes=128)
+    worker = _worker(client, 128)
     worker._started = True
     monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
     streamed: list[str] = []

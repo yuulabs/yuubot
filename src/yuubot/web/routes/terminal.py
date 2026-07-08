@@ -6,6 +6,7 @@ import msgspec
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from ...app import Yuubot
+from ...runtime.event_payloads import TerminalClosedPayload, TerminalOpenedPayload
 from ...runtime.terminal import TerminalSession
 from ..auth import AuthContext
 from ..terminal_commands import (
@@ -41,18 +42,19 @@ def register_terminal_routes(api: FastAPI, app: Yuubot) -> None:
                             if session is not None:
                                 raise ValueError("terminal session is already open")
                             session = TerminalSession(
-                                send=send,
-                                auth_user=auth_user,
-                                command=payload.command,
-                                cwd=payload.cwd or "~",
-                                rows=payload.rows,
-                                cols=payload.cols,
+                                send,
+                                auth_user,
+                                payload.command,
+                                payload.cwd or "~",
+                                payload.rows,
+                                payload.cols,
                             )
                             app.runtime.emit(
-                                "terminal.opened",
-                                auth_user=auth_user,
-                                cwd=session.cwd,
-                                command=session.command,
+                                TerminalOpenedPayload(
+                                    auth_user,
+                                    session.cwd,
+                                    session.command,
+                                )
                             )
                             await session.start()
                         case TerminalInputCommand(payload=payload):
@@ -67,7 +69,7 @@ def register_terminal_routes(api: FastAPI, app: Yuubot) -> None:
                             if session is None:
                                 raise ValueError("terminal session is not open")
                             await session.close()
-                            app.runtime.emit("terminal.closed", auth_user=auth_user)
+                            app.runtime.emit(TerminalClosedPayload(auth_user))
                             session = None
                 except (msgspec.DecodeError, msgspec.ValidationError, ValueError, RuntimeError) as exc:
                     await send({"type": "terminal.error", "payload": {"message": str(exc)}})

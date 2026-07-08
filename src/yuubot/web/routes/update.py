@@ -19,7 +19,6 @@ def register_update_routes(
     api: FastAPI,
     app: Yuubot,
     deployment: DeploymentConfig,
-    *,
     on_shutdown: Callable[[], None] | None = None,
 ) -> None:
     trusted = frozenset(deployment.trusted_proxies)
@@ -40,14 +39,13 @@ def register_update_routes(
             return error_response(500, "internal_error", "server config path is unavailable")
         try:
             result = apply_update(
-                config_path=app.config_path,
-                data_dir=app.runtime.data_dir,
-                host=app.server_host,
-                port=app.server_port,
-                skip_web_build=app.runtime.development,
+                app.config_path,
+                app.runtime.data_dir,
+                app.server_host,
+                app.server_port,
+                app.runtime.development,
                 on_shutdown=on_shutdown,
             )
         except ValueError as exc:
             return error_response(422, "upgrade_unsupported", str(exc))
         return json_response(msgspec.to_builtins(result))
-

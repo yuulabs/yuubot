@@ -26,7 +26,6 @@ def task_owner() -> str:
 async def request_json(
     method: str,
     url: str,
-    *,
     params: dict[str, str] | None = None,
     json: dict[str, object] | None = None,
     timeout_s: float = 30.0,

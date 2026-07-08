@@ -5,12 +5,19 @@ import uuid
 from collections.abc import Callable
 from typing import cast
 
+import msgspec
+
 from yuubot.domain import (
     GenToolCall,
     InputMessage,
     LLMInput,
     StreamEvent,
     ToolResult,
+    TextDeltaPayload,
+    ToolNamePayload,
+    ToolArgumentsDeltaPayload,
+    StreamStopPayload,
+    Usage,
 )
 from yuubot.actor.prompt import user_visible_text
 
@@ -130,30 +137,30 @@ def all_of(*predicates: RulePredicate) -> RulePredicate:
     return matches
 
 
-def call_tool(name: str, args: dict[str, object], *, call_id: str | None = None) -> RuleBuilder:
+def call_tool(name: str, args: dict[str, object], call_id: str | None = None) -> RuleBuilder:
     tool_call_id = call_id or f"call-{uuid.uuid4().hex[:8]}"
 
     def build(inp: LLMInput) -> list[StreamEvent]:
         del inp
         return [
-            StreamEvent(group_id=tool_call_id, kind="tool_name", payload={"id": tool_call_id, "name": name}),
-            StreamEvent(group_id=tool_call_id, kind="tool_arguments_delta", payload={"text": json.dumps(args)}),
-            StreamEvent(group_id=tool_call_id, kind="tool_arguments_end"),
-            StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "tool_calls"}),
+            StreamEvent(tool_call_id, "tool_name", ToolNamePayload(id=tool_call_id, name=name)),
+            StreamEvent(tool_call_id, "tool_arguments_delta", ToolArgumentsDeltaPayload(json.dumps(args))),
+            StreamEvent(tool_call_id, "tool_arguments_end"),
+            StreamEvent("stop", "stream_stop", StreamStopPayload("tool_calls")),
         ]
 
     return build
 
 
-def reply_text(text: str, *, usage: dict[str, object] | None = None) -> RuleBuilder:
+def reply_text(text: str, usage: dict[str, object] | None = None) -> RuleBuilder:
     def build(inp: LLMInput) -> list[StreamEvent]:
         del inp
-        payload: dict[str, object] = {"reason": "stop"}
+        stop_payload = StreamStopPayload("stop")
         if usage is not None:
-            payload["usage"] = usage
+            stop_payload = StreamStopPayload("stop", msgspec.convert(usage, Usage))
         return [
-            StreamEvent(group_id="text-1", kind="text_delta", payload={"text": text}),
-            StreamEvent(group_id="stop", kind="stream_stop", payload=payload),
+            StreamEvent("text-1", "text_delta", TextDeltaPayload(text)),
+            StreamEvent("stop", "stream_stop", stop_payload),
         ]
 
     return build
@@ -163,8 +170,8 @@ def reply_blocked(reason: str = "length") -> RuleBuilder:
     def build(inp: LLMInput) -> list[StreamEvent]:
         del inp
         return [
-            StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "partial"}),
-            StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": reason}),
+            StreamEvent("text-1", "text_delta", TextDeltaPayload("partial")),
+            StreamEvent("stop", "stream_stop", StreamStopPayload(reason)),  # type: ignore[arg-type]
         ]
 
     return build

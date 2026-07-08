@@ -15,13 +15,12 @@ async def test_pool_acquire_releases_slot_when_cancelled_during_spawn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    limiter = KernelLimiter(PythonKernelsConfig(max_workers=1, acquire_timeout_s=0.05))
-    pool = KernelPool(PythonKernelsConfig(max_workers=1, acquire_timeout_s=0.05), limiter)
+    limiter = KernelLimiter(PythonKernelsConfig(1, 0.05))
+    pool = KernelPool(PythonKernelsConfig(1, 0.05), limiter)
     started = asyncio.Event()
 
     async def wait_forever(
         cls: type[KernelWorker],
-        *,
         workspace: Path,
         env: dict[str, str],
         max_rss_bytes: int,
@@ -49,8 +48,8 @@ async def test_pool_acquire_drops_spawned_worker_when_cancelled_before_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    limiter = KernelLimiter(PythonKernelsConfig(max_workers=1, acquire_timeout_s=0.05))
-    pool = KernelPool(PythonKernelsConfig(max_workers=1, acquire_timeout_s=0.05), limiter)
+    limiter = KernelLimiter(PythonKernelsConfig(1, 0.05))
+    pool = KernelPool(PythonKernelsConfig(1, 0.05), limiter)
     shutdown_called = False
     entered_second_lock = asyncio.Event()
     release_second_lock = asyncio.Event()
@@ -82,7 +81,7 @@ async def test_pool_acquire_drops_spawned_worker_when_cancelled_before_lease(
 
     worker = FakeWorker()
 
-    async def spawn_worker(self: KernelPool, workspace: Path, *, env: dict[str, str]) -> FakeWorker:
+    async def spawn_worker(self: KernelPool, workspace: Path, env: dict[str, str]) -> FakeWorker:
         del workspace, env
         self._workers.append(cast(KernelWorker, worker))  # noqa: SLF001
         return worker

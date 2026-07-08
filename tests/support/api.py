@@ -14,7 +14,7 @@ from typing import cast
 import httpx
 import websockets
 from yuubot import Yuubot
-from yuubot.domain import StreamEvent
+from yuubot.domain import StreamEvent, StreamStopPayload
 from yuubot.llm import Provider, ScriptedProvider, scripted_reply
 from yuubot.web import make_server
 
@@ -28,7 +28,7 @@ def _test_prefix(test_name: str) -> str:
     return f"{stem}-{uuid.uuid4().hex[:8]}"
 
 
-async def boot_app(data_dir: Path, *, provider: Provider | None = None) -> Yuubot:
+async def boot_app(data_dir: Path, provider: Provider | None = None) -> Yuubot:
     app = await Yuubot.create(data_dir)
     if provider is not None:
         app.provider_instances["fake"] = provider
@@ -36,7 +36,7 @@ async def boot_app(data_dir: Path, *, provider: Provider | None = None) -> Yuubo
 
 
 @contextlib.asynccontextmanager
-async def running_server(app: Yuubot, *, development: bool = False) -> AsyncIterator[object]:
+async def running_server(app: Yuubot, development: bool = False) -> AsyncIterator[object]:
     server = make_server(app, port=0, development=development)
     ready = asyncio.Event()
     serve_task = asyncio.create_task(server.serve())
@@ -97,7 +97,6 @@ class SharedTestContext:
     async def put_provider(
         self,
         provider: Provider | None = None,
-        *,
         provider_id: str | None = None,
         model: str = "fake",
     ) -> str:
@@ -113,7 +112,6 @@ class SharedTestContext:
     async def setup_actor(
         self,
         provider: Provider | None = None,
-        *,
         actor_id: str | None = None,
         provider_id: str | None = None,
         workspace: Path | None = None,
@@ -138,7 +136,7 @@ class SharedTestContext:
             await enable_actor(self.server, resolved_actor, client=self._http)
         return resolved_actor
 
-    async def put_integration(self, integration_type: str, *, name: str, config: dict[str, object]) -> JsonObject:
+    async def put_integration(self, integration_type: str, name: str, config: dict[str, object]) -> JsonObject:
         self._integrations.add(integration_type)
         return await put_integration(
             self.server,
@@ -148,15 +146,15 @@ class SharedTestContext:
             client=self._http,
         )
 
-    async def create_route(self, *, route_id: str, pattern: str, actor_id: str, enabled: bool = True) -> JsonObject:
+    async def create_route(self, route_id: str, pattern: str, actor_id: str, enabled: bool = True) -> JsonObject:
         if route_id not in self._routes:
             self._routes.append(route_id)
         return await create_route(
             self.server,
-            route_id=route_id,
-            pattern=pattern,
-            actor_id=actor_id,
-            enabled=enabled,
+            route_id,
+            pattern,
+            actor_id,
+            enabled,
             client=self._http,
         )
 
@@ -218,7 +216,6 @@ async def _try_http_json(
     method: str,
     url: str,
     body: JsonObject | bytes | None = None,
-    *,
     client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
     try:
@@ -241,7 +238,6 @@ async def http_json(
     method: str,
     url: str,
     body: JsonObject | bytes | None = None,
-    *,
     content_type: str = "application/json",
     expected_status: int = 200,
     client: httpx.AsyncClient | None = None,
@@ -281,14 +277,13 @@ def multipart_body(boundary: str, filename: str, content_type: str, data: bytes)
 async def put_provider(
     server: object,
     provider_id: str = "fake",
-    *,
     model: str = "fake",
     client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
     app = getattr(server, "app", None)
     injected = app.provider_instances.get(provider_id) if isinstance(app, Yuubot) else None
     if injected is None:
-        injected = ScriptedProvider([[StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "stop"})]])
+        injected = ScriptedProvider([[StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))]])
     result = await http_json(
         "PUT",
         f"{base_url(server)}/api/providers/{provider_id}",
@@ -317,7 +312,6 @@ async def put_provider(
 async def put_actor(
     server: object,
     actor_id: str,
-    *,
     workspace: Path,
     provider: str = "fake",
     model: str = "fake",
@@ -336,18 +330,17 @@ async def put_actor(
     )
 
 
-async def enable_actor(server: object, actor_id: str, *, client: httpx.AsyncClient | None = None) -> JsonObject:
+async def enable_actor(server: object, actor_id: str, client: httpx.AsyncClient | None = None) -> JsonObject:
     return await http_json("POST", f"{base_url(server)}/api/actors/{actor_id}/enable", {}, client=client)
 
 
-async def disable_actor(server: object, actor_id: str, *, client: httpx.AsyncClient | None = None) -> JsonObject:
+async def disable_actor(server: object, actor_id: str, client: httpx.AsyncClient | None = None) -> JsonObject:
     return await http_json("POST", f"{base_url(server)}/api/actors/{actor_id}/disable", {}, client=client)
 
 
 async def put_integration(
     server: object,
     integration_type: str,
-    *,
     name: str,
     config: dict[str, object],
     client: httpx.AsyncClient | None = None,
@@ -363,7 +356,6 @@ async def put_integration(
 async def enable_integration(
     server: object,
     integration_type: str,
-    *,
     client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
     return await http_json("POST", f"{base_url(server)}/api/integrations/{integration_type}/enable", {}, client=client)
@@ -371,7 +363,6 @@ async def enable_integration(
 
 async def create_route(
     server: object,
-    *,
     route_id: str,
     pattern: str,
     actor_id: str,
@@ -393,7 +384,6 @@ async def bootstrap(server: object) -> JsonObject:
 async def conversation_history(
     server: object,
     conversation_id: str,
-    *,
     after_seq: int | None = None,
     limit: int | None = None,
 ) -> list[JsonObject]:
@@ -420,7 +410,6 @@ async def post_inbound(
     server: object,
     route: str,
     text: str,
-    *,
     conversation_id: str | None = None,
     integration_type: str = "github",
 ) -> JsonObject:
@@ -445,7 +434,6 @@ async def _ensure_webhook_integration(server: object, integration_type: str) -> 
 async def recv_ws_frames(
     server: object,
     commands: list[JsonObject],
-    *,
     stop_when: Callable[[JsonObject, list[JsonObject]], bool] | None = None,
 ) -> list[JsonObject]:
     frames: list[JsonObject] = []
@@ -464,7 +452,6 @@ async def recv_ws_frames(
 
 async def ws_conversation_send(
     server: object,
-    *,
     command_id: str,
     actor_id: str,
     conversation_id: str,
@@ -502,14 +489,13 @@ async def ws_conversation_send(
                 },
             }
         ],
-        stop_when=stop,
+        stop,
     )
 
 
 async def setup_amy(
     server: object,
     tmp_path: Path,
-    *,
     enable: bool = True,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -523,7 +509,6 @@ async def wait_for_history_kind(
     server: object,
     conversation_id: str,
     kind: str,
-    *,
     attempts: int = 200,
 ) -> list[JsonObject]:
     for _ in range(attempts):

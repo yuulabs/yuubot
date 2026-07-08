@@ -21,8 +21,7 @@ from .resource_config import ResourceConfig
 
 _log = logging.getLogger(__name__)
 
-DiskAlertLevel = Literal["ok", "warning", "critical"]
-EmitFn = Callable[..., None]
+from .event_payloads import EmitFn, ResourceDiskCriticalPayload, ResourceDiskOkPayload, ResourceDiskWarningPayload
 
 
 def resolve_tmp_dir(data_dir: Path, config: ResourceConfig) -> Path:
@@ -31,7 +30,7 @@ def resolve_tmp_dir(data_dir: Path, config: ResourceConfig) -> Path:
     return data_dir / "tmp"
 
 
-def prune_old_files(root: Path, *, max_age_s: float, now: float | None = None) -> int:
+def prune_old_files(root: Path, max_age_s: float, now: float | None = None) -> int:
     if not root.is_dir():
         return 0
     cutoff = (now if now is not None else time.time()) - max_age_s
@@ -55,7 +54,6 @@ def prune_old_files(root: Path, *, max_age_s: float, now: float | None = None) -
 
 
 def prune_system_tmp(
-    *,
     globs: tuple[str, ...],
     max_age_s: float,
     now: float | None = None,
@@ -84,7 +82,7 @@ def prune_system_tmp(
     return removed
 
 
-def prune_rotated_logs(logs_dir: Path, *, retention_days: int, now: datetime | None = None) -> int:
+def prune_rotated_logs(logs_dir: Path, retention_days: int, now: datetime | None = None) -> int:
     if retention_days <= 0:
         return 0
     current = now or datetime.now(UTC)
@@ -102,7 +100,7 @@ def prune_rotated_logs(logs_dir: Path, *, retention_days: int, now: datetime | N
     return removed
 
 
-async def prune_app_spans(db: Database, *, retention_days: int) -> int:
+async def prune_app_spans(db: Database, retention_days: int) -> int:
     if retention_days <= 0:
         return 0
     cursor = await db.execute("select name from sqlite_master where type = 'table' and name = 'app_spans'")
@@ -114,7 +112,7 @@ async def prune_app_spans(db: Database, *, retention_days: int) -> int:
     return result.rowcount if result.rowcount is not None else 0
 
 
-def disk_alert_level(*, used_pct: float, warn_used_pct: float, critical_used_pct: float) -> DiskAlertLevel:
+def disk_alert_level(used_pct: float, warn_used_pct: float, critical_used_pct: float) -> DiskAlertLevel:
     if used_pct >= critical_used_pct:
         return "critical"
     if used_pct >= warn_used_pct:
@@ -156,22 +154,22 @@ class ResourceSupervisor:
     async def sweep(self) -> None:
         self._refresh_host_stats()
         self._check_disk_alert()
-        prune_old_files(self.tmp_dir, max_age_s=self.config.tmp_max_age_s)
-        prune_system_tmp(globs=self.config.tmp_globs, max_age_s=self.config.tmp_max_age_s)
-        prune_rotated_logs(self.logs_dir, retention_days=self.config.logs.retention_days)
-        await prune_app_spans(self.db, retention_days=self.config.spans_retention_days)
+        prune_old_files(self.tmp_dir, self.config.tmp_max_age_s)
+        prune_system_tmp(self.config.tmp_globs, self.config.tmp_max_age_s)
+        prune_rotated_logs(self.logs_dir, self.config.logs.retention_days)
+        await prune_app_spans(self.db, self.config.spans_retention_days)
 
     def _refresh_host_stats(self) -> None:
-        self._host_stats = collect_host_stats(disk_path=self.data_dir)
+        self._host_stats = collect_host_stats(self.data_dir)
 
     def _check_disk_alert(self) -> None:
         stats = self._host_stats
         if stats is None:
             return
         next_level = disk_alert_level(
-            used_pct=stats.disk_percent,
-            warn_used_pct=self.config.disk_alert.warn_used_pct,
-            critical_used_pct=self.config.disk_alert.critical_used_pct,
+            stats.disk_percent,
+            self.config.disk_alert.warn_used_pct,
+            self.config.disk_alert.critical_used_pct,
         )
         if next_level == self._disk_alert_level:
             return
@@ -179,24 +177,27 @@ class ResourceSupervisor:
         self._disk_alert_level = next_level
         if next_level == "critical":
             self.emit(
-                "resource.disk_critical",
-                disk_path=stats.disk_path,
-                disk_percent=stats.disk_percent,
-                disk_free_bytes=stats.disk_free_bytes,
+                ResourceDiskCriticalPayload(
+                    stats.disk_path,
+                    stats.disk_percent,
+                    stats.disk_free_bytes,
+                )
             )
             return
         if next_level == "warning":
             self.emit(
-                "resource.disk_warning",
-                disk_path=stats.disk_path,
-                disk_percent=stats.disk_percent,
-                disk_free_bytes=stats.disk_free_bytes,
+                ResourceDiskWarningPayload(
+                    stats.disk_path,
+                    stats.disk_percent,
+                    stats.disk_free_bytes,
+                )
             )
             return
         if previous in {"warning", "critical"}:
             self.emit(
-                "resource.disk_ok",
-                disk_path=stats.disk_path,
-                disk_percent=stats.disk_percent,
-                disk_free_bytes=stats.disk_free_bytes,
+                ResourceDiskOkPayload(
+                    stats.disk_path,
+                    stats.disk_percent,
+                    stats.disk_free_bytes,
+                )
             )

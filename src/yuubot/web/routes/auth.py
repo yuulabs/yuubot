@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from urllib.parse import urlparse
 
 import msgspec
@@ -26,7 +27,9 @@ def register_auth_routes(api: FastAPI, deployment: DeploymentConfig, sessions: S
         except (msgspec.DecodeError, msgspec.ValidationError) as exc:
             return bad_request(exc)
         expected = deployment.admin_auth.builtin.password
-        if expected and body.password != expected:
+        if not expected.strip():
+            return error_response(500, "server_misconfigured", "builtin auth password is not configured")
+        if not secrets.compare_digest(body.password, expected):
             return error_response(401, "unauthorized", "invalid credentials")
         session_id, csrf_token = sessions.create(user_id="admin", display_name="Admin")
         response = json_response({"csrf_token": csrf_token})

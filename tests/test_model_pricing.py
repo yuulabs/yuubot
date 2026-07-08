@@ -16,14 +16,14 @@ async def test_actor_put_rejects_model_without_pricing(tmp_path: Path) -> None:
         await app.put_provider(
             "deepseek",
             ProviderInput(
-                name="DeepSeek",
-                protocol="openai-compatible",
-                config={"endpoint": "https://api.deepseek.com", "api_key": "test-key", "options": {}},
+                "DeepSeek",
+                "openai-compatible",
+                {"endpoint": "https://api.deepseek.com", "api_key": "test-key", "options": {}},
             ),
         )
         await app.runtime.state.upsert_model_card(
             "deepseek",
-            ModelCard(selector="deepseek-v4-flash"),
+            ModelCard("deepseek-v4-flash"),
         )
         async with running_server(app) as server:
             url = f"{base_url(server)}/api/actors/amy"
@@ -52,15 +52,15 @@ async def test_actor_put_accepts_model_with_zero_pricing(tmp_path: Path) -> None
         await app.put_provider(
             "deepseek",
             ProviderInput(
-                name="DeepSeek",
-                protocol="openai-compatible",
-                config={"endpoint": "https://api.deepseek.com", "api_key": "test-key", "options": {}},
+                "DeepSeek",
+                "openai-compatible",
+                {"endpoint": "https://api.deepseek.com", "api_key": "test-key", "options": {}},
             ),
         )
         await app.runtime.state.upsert_model_card(
             "deepseek",
             ModelCard(
-                selector="deepseek-chat",
+                "deepseek-chat",
                 max_context_tokens=128000,
                 input_price_per_million=0,
                 cached_input_price_per_million=0,

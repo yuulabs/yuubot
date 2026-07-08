@@ -31,13 +31,29 @@ Examples::
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal
+
+import msgspec
 
 from yb._daemon import daemon_url, request_json, task_owner
 
 TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
 TaskDelivery = Literal["manual", "conversation", "actor"]
 _TASK_STATUSES: set[str] = {"pending", "running", "done", "failed", "cancelled"}
+
+
+class _TaskWire(msgspec.Struct, frozen=True):
+    id: str
+    name: str = ""
+    status: str = "pending"
+    intro: str = ""
+    stdout_tail: str = ""
+    error: str | None = None
+    exit_code: int | None = None
+
+
+class _TaskListResponse(msgspec.Struct, frozen=True):
+    items: list[_TaskWire] = msgspec.field(default_factory=list)
 
 
 class Task:
@@ -47,7 +63,6 @@ class Task:
 
     def __init__(
         self,
-        *,
         id: str,
         name: str,
         status: TaskStatus,
@@ -62,29 +77,24 @@ class Task:
 
     async def refresh(self) -> None:
         payload = await request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
-        self._status = _task_status(payload.get("status"))
+        self._status = _task_status(msgspec.convert(payload, _TaskWire).status)
 
     async def status(self) -> TaskStatus:
         await self.refresh()
         return self._status
 
-    async def output(self, *, max_bytes: int = 65536) -> str:
-        payload = await request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
-        self._status = _task_status(payload.get("status"))
-        stdout = payload.get("stdout_tail", "")
-        if not isinstance(stdout, str):
-            return ""
-        return stdout[:max_bytes]
+    async def output(self, max_bytes: int = 65536) -> str:
+        wire = msgspec.convert(await request_json("GET", f"{self._base_url}/api/tasks/{self.id}"), _TaskWire)
+        self._status = _task_status(wire.status)
+        return wire.stdout_tail[:max_bytes]
 
     async def error(self) -> str | None:
-        payload = await request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
-        error = payload.get("error")
-        return error if isinstance(error, str) and error else None
+        wire = msgspec.convert(await request_json("GET", f"{self._base_url}/api/tasks/{self.id}"), _TaskWire)
+        return wire.error if wire.error else None
 
     async def exit_code(self) -> int | None:
-        payload = await request_json("GET", f"{self._base_url}/api/tasks/{self.id}")
-        code = payload.get("exit_code")
-        return code if isinstance(code, int) else None
+        wire = msgspec.convert(await request_json("GET", f"{self._base_url}/api/tasks/{self.id}"), _TaskWire)
+        return wire.exit_code
 
     async def write(self, text: str) -> None:
         await request_json(
@@ -95,7 +105,7 @@ class Task:
 
     async def cancel(self) -> None:
         payload = await request_json("POST", f"{self._base_url}/api/tasks/{self.id}/cancel")
-        self._status = _task_status(payload.get("status"))
+        self._status = _task_status(msgspec.convert(payload, _TaskWire).status)
 
 
 MAX_MANUAL_TTL_S = 3600.0
@@ -105,7 +115,6 @@ async def submit(
     name: str,
     shell: str,
     intro: str,
-    *,
     delivery: TaskDelivery,
     ttl_s: float | None = None,
 ) -> Task:
@@ -132,39 +141,40 @@ async def submit(
         f"{base_url}/api/tasks",
         json=body,
     )
-    return _task_from_payload(payload, base_url=base_url)
+    return _task_from_payload(payload, base_url)
 
 
 async def find(task_id: str) -> Task:
     base_url = daemon_url()
     payload = await request_json("GET", f"{base_url}/api/tasks/{task_id}")
-    return _task_from_payload(payload, base_url=base_url)
+    return _task_from_payload(payload, base_url)
 
 
-async def list_tasks(*, name_glob: str = "") -> list[Task]:
+async def list_tasks(name_glob: str = "") -> list[Task]:
     base_url = daemon_url()
     params: dict[str, str] = {"owner": task_owner()}
     if name_glob:
         params["name_glob"] = name_glob
     payload = await request_json("GET", f"{base_url}/api/tasks", params=params)
-    items = payload.get("items", [])
-    if not isinstance(items, list):
-        return []
-    return [_task_from_payload(cast(dict[str, object], item), base_url=base_url) for item in items if isinstance(item, dict)]
+    return [_task_from_wire(item, base_url) for item in msgspec.convert(payload, _TaskListResponse).items]
 
 
-def _task_from_payload(payload: dict[str, object], *, base_url: str) -> Task:
+def _task_from_wire(wire: _TaskWire, base_url: str) -> Task:
     return Task(
-        id=str(payload["id"]),
-        name=str(payload.get("name", "")),
-        status=_task_status(payload.get("status")),
-        intro=str(payload.get("intro", "")),
-        _base_url=base_url,
+        wire.id,
+        wire.name,
+        _task_status(wire.status),
+        wire.intro,
+        base_url,
     )
 
 
-def _task_status(value: object) -> TaskStatus:
-    return cast(TaskStatus, value if isinstance(value, str) and value in _TASK_STATUSES else "pending")
+def _task_from_payload(payload: dict[str, object], base_url: str) -> Task:
+    return _task_from_wire(msgspec.convert(payload, _TaskWire), base_url)
+
+
+def _task_status(value: str) -> TaskStatus:
+    return value if value in _TASK_STATUSES else "pending"
 
 
 from . import cron as cron  # noqa: E402  # expose yb.tasks.cron after helpers are defined

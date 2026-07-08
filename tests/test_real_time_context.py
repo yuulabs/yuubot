@@ -64,11 +64,11 @@ async def test_mailbox_user_message_includes_actor_mode_context(real_time_app: t
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
-    await actor.handle_mailbox_message(ActorMessage(text="webhook ping", source={"inbound_kind": "app_webhook"}))
+    await actor.handle_mailbox_message(ActorMessage("webhook ping", source={"inbound_kind": "app_webhook"}))
     conversation_id = actor._mailbox_conversation
     assert conversation_id is not None
     items = await app.runtime.history.load_wrapped(conversation_id)
@@ -91,7 +91,7 @@ async def test_direct_user_message_includes_conversation_mode_context(real_time_
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
@@ -112,15 +112,15 @@ async def test_developer_callback_does_not_attach_mode_context(real_time_app: tu
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
     await actor.handle_mailbox_message(
         ActorMessage(
-            text="task done",
-            conversation_id="explicit",
-            source={"inbound_kind": "conversation_callback"},
+            "task done",
+            "explicit",
+            {"inbound_kind": "conversation_callback"},
         )
     )
     items = await app.runtime.history.load_wrapped("explicit")

@@ -8,12 +8,12 @@ from .stream import Usage
 DEFAULT_CONTEXT_COMPRESSION_TOKENS = 262144
 
 
-class LifecycleError(msgspec.Struct, frozen=True, kw_only=True):
+class LifecycleError(msgspec.Struct, frozen=True):
     type: str
     message: str
 
 
-class ConversationRow(msgspec.Struct, frozen=True, kw_only=True):
+class ConversationRow(msgspec.Struct, frozen=True):
     id: str
     actor_id: str
     status: str
@@ -23,7 +23,7 @@ class ConversationRow(msgspec.Struct, frozen=True, kw_only=True):
     title: str = ""
 
 
-class CostRow(msgspec.Struct, frozen=True, kw_only=True):
+class CostRow(msgspec.Struct, frozen=True):
     conversation_id: str
     seq: int
     usage: Usage
@@ -32,13 +32,13 @@ class CostRow(msgspec.Struct, frozen=True, kw_only=True):
     created_at: str
 
 
-class ActorStatus(msgspec.Struct, frozen=True, kw_only=True):
+class ActorStatus(msgspec.Struct, frozen=True):
     enabled: bool
     status: str
     last_error: LifecycleError | None = None
 
 
-class IntegrationStatus(msgspec.Struct, frozen=True, kw_only=True):
+class IntegrationStatus(msgspec.Struct, frozen=True):
     enabled: bool
     last_error: LifecycleError | None = None
 
@@ -54,7 +54,7 @@ class ActorRecord(msgspec.Struct, frozen=True, kw_only=True):
     context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
 
 
-class ActorModelInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
+class ActorModelInput(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     selector: str
     reasoning_effort: str = ""
     max_context_tokens: int | None = None
@@ -111,10 +111,10 @@ def decode_lifecycle_error(payload: bytes | None) -> LifecycleError | None:
 
 
 def lifecycle_error(exc: Exception) -> LifecycleError:
-    return LifecycleError(type=type(exc).__name__, message=str(exc))
+    return LifecycleError(type(exc).__name__, str(exc))
 
 
-class RouteInput(msgspec.Struct, frozen=True, kw_only=True):
+class RouteInput(msgspec.Struct, frozen=True):
     pattern: str
     actor_id: str
     integration_type: str = ""
@@ -130,7 +130,7 @@ class RouteInput(msgspec.Struct, frozen=True, kw_only=True):
         )
 
 
-class RouteBody(msgspec.Struct, frozen=True, kw_only=True):
+class RouteBody(msgspec.Struct, frozen=True):
     pattern: str
     actor_id: str
     id: str = ""

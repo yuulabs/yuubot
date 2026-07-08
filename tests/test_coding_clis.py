@@ -15,9 +15,9 @@ from yuubot.integrations.registry import default_registry
 async def test_coding_cli_missing_binary_returns_recovery_action() -> None:
     state = await probe_coding_cli(
         CodexConfig(
-            command="definitely-not-installed-yuubot-cli",
-            probe_args=("auth", "status"),
-            login_command="missing login",
+            "definitely-not-installed-yuubot-cli",
+            ("auth", "status"),
+            "missing login",
         )
     )
 
@@ -41,7 +41,7 @@ async def test_coding_cli_probe_uses_user_bin_path(tmp_path: Path, monkeypatch: 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-    state = await probe_coding_cli(CodexConfig(command="fake-cli", probe_args=("health",)))
+    state = await probe_coding_cli(CodexConfig("fake-cli", ("health",)))
 
     assert state.status == "ready"
     assert state.binary_path == str(bin_dir / "fake-cli")
@@ -86,10 +86,10 @@ async def test_enable_records_missing_binary_health(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
     await app.configure_integration(
         IntegrationRecord(
-            id="codex",
-            type="codex",
-            name="codex",
-            config={"command": "definitely-not-installed-yuubot-cli", "login_command": "missing login"},
+            "codex",
+            "codex",
+            "codex",
+            {"command": "definitely-not-installed-yuubot-cli", "login_command": "missing login"},
         )
     )
 
@@ -121,10 +121,10 @@ async def test_enable_records_probe_auth_health(tmp_path: Path, monkeypatch: pyt
     app = await Yuubot.create(tmp_path / "data")
     await app.configure_integration(
         IntegrationRecord(
-            id="codex",
-            type="codex",
-            name="codex",
-            config={
+            "codex",
+            "codex",
+            "codex",
+            {
                 "command": "fake-cli",
                 "probe_args": ["auth", "status"],
                 "login_command": "fake-cli login",
@@ -155,8 +155,8 @@ async def test_yext_codex_facade_runs_from_integration_context(monkeypatch: pyte
     import yext.codex
 
     integration = CodexIntegration(
-        name="codex",
-        config=CodexConfig(command="printf", probe_args=(), run_args_prefix=()),
+        "codex",
+        CodexConfig("printf", (), run_args_prefix=()),
     )
     for key, value in integration.session_context().items():
         monkeypatch.setenv(key, value)
@@ -278,7 +278,7 @@ exit 1
 
 
 def test_coding_cli_prompt_doc_contains_usage_guidance() -> None:
-    integration = OpenCodeIntegration(name="opencode", config=OpenCodeConfig())
+    integration = OpenCodeIntegration("opencode", OpenCodeConfig())
     doc = integration.prompt_doc()
 
     assert "await cli.help()" in doc
@@ -289,7 +289,7 @@ def test_coding_cli_prompt_doc_contains_usage_guidance() -> None:
 
 
 def test_coding_cli_prompt_docs_arrive_through_integration_docs(tmp_path: Path) -> None:
-    integration = CodexIntegration(name="codex", config=CodexConfig())
+    integration = CodexIntegration("codex", CodexConfig())
     prompt = developer_prompt("", tmp_path, [integration], has_python=True)
 
     assert "yext.codex:\nThin wrapper over the official codex CLI." in prompt

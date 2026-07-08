@@ -5,7 +5,7 @@ from __future__ import annotations
 import msgspec
 
 
-class UpdateStatus(msgspec.Struct, frozen=True, kw_only=True):
+class UpdateStatus(msgspec.Struct, frozen=True):
     supported: bool
     install_kind: str
     current_version: str
@@ -15,7 +15,7 @@ class UpdateStatus(msgspec.Struct, frozen=True, kw_only=True):
     message: str = ""
 
 
-class UpdateApplyResult(msgspec.Struct, frozen=True, kw_only=True):
+class UpdateApplyResult(msgspec.Struct, frozen=True):
     status: str
     log_path: str | None = None
     message: str = ""

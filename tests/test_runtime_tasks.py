@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
 from yuubot.app import Yuubot
+from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent, StreamStopPayload, TextDeltaPayload
+from yuubot.llm import merge_catalog, scripted_reply
+from yuubot.llm.types import AccountSnapshot, ValidationResult
+from yuubot.runtime.cache import CachePool
 from yuubot.runtime.tasks import (
-    DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S,
+    PENDING_DELIVERY_TASK_RETENTION_S,
     RuntimeTaskRecord,
-    TaskDeliveryListener,
-    TaskDeliveryQueue,
     TaskNotRunningError,
     register_shell_task,
-    schedule_task_delivery,
     wait_until_terminal_or_idle,
     write_task_stdin,
 )
@@ -30,6 +32,87 @@ class Clock:
         self.value += seconds
 
 
+class BlockingProvider:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def list_presets(self) -> list[ModelCard]:
+        return []
+
+    async def list_remote_models(self) -> list[str]:
+        return []
+
+    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
+        return merge_catalog(presets, remote)
+
+    async def get_balance(self) -> AccountSnapshot | None:
+        return None
+
+    async def validate(self) -> ValidationResult:
+        return ValidationResult(True)
+
+    async def stream(
+        self,
+        input: LLMInput,
+        model: ModelCard,
+        context: ConversationContext,
+        cache: CachePool,
+        stop_event: asyncio.Event,
+    ) -> AsyncIterator[StreamEvent]:
+        del input, model, context, cache, stop_event
+        self.started.set()
+        await self.release.wait()
+        yield StreamEvent("text-1", "text_delta", TextDeltaPayload("ok"))
+        yield StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))
+
+    async def close(self) -> None:
+        return None
+
+
+async def wait_for_delivery_state(record: RuntimeTaskRecord, state: str) -> None:
+    for _ in range(100):
+        if record.delivery_state == state:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"task {record.id} did not reach delivery_state={state}, got {record.delivery_state}")
+
+
+async def wait_for_pending_delivery(conversation, task_id: str) -> None:
+    for _ in range(100):
+        if task_id in conversation.pending_task_delivery_ids():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"task {task_id} was not queued for conversation delivery")
+
+
+@pytest.mark.asyncio
+async def test_actor_task_registry_clears_completed_task_and_allows_restart(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    first_done = asyncio.Event()
+    second_done = asyncio.Event()
+
+    async def first_run(_stdin, _stdout) -> None:
+        first_done.set()
+
+    async def second_run(_stdin, _stdout) -> None:
+        second_done.set()
+
+    try:
+        app.runtime.start_actor_task("amy", first_run)
+        await first_done.wait()
+        for _ in range(100):
+            if "actor:amy" not in app.runtime._actor_tasks:
+                break
+            await asyncio.sleep(0.01)
+        assert "actor:amy" not in app.runtime._actor_tasks
+
+        app.runtime.start_actor_task("amy", second_run)
+        await second_done.wait()
+    finally:
+        await app.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_shell_task_runs_in_pty_and_streams_stdout(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
@@ -37,11 +120,11 @@ async def test_shell_task_runs_in_pty_and_streams_stdout(tmp_path: Path) -> None
     workspace.mkdir()
     record = register_shell_task(
         app.runtime,
-        name="echo",
-        shell="echo hello-pty",
-        intro="pty test",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
+        "echo",
+        "echo hello-pty",
+        "pty test",
+        "actor:amy:conv:c1",
+        workspace,
     )
     await record.wait_terminal()
     assert record.status == "done"
@@ -56,6 +139,30 @@ async def test_shell_task_runs_in_pty_and_streams_stdout(tmp_path: Path) -> None
     assert record.id in app.runtime.tasks.terminal_records
 
 
+_READLINE_SHELL = (
+    "python3 -c 'import sys; line=sys.stdin.readline(); print(f\"got:{line.strip()}\")'"
+)
+
+
+@pytest.mark.asyncio
+async def test_shell_task_stdin_written_before_pty_subscribes(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    record = register_shell_task(
+        app.runtime,
+        "read-early",
+        _READLINE_SHELL,
+        "stdin race test",
+        "actor:amy:conv:c1",
+        workspace,
+    )
+    write_task_stdin(record, "answer\n")
+    await record.wait_terminal()
+    assert record.status == "done"
+    assert "got:answer" in record.stdout.tail(max_bytes=1024)
+
+
 @pytest.mark.asyncio
 async def test_shell_task_accepts_stdin(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
@@ -63,17 +170,13 @@ async def test_shell_task_accepts_stdin(tmp_path: Path) -> None:
     workspace.mkdir()
     record = register_shell_task(
         app.runtime,
-        name="read",
-        shell="python3 -c 'import sys; line=sys.stdin.readline(); print(f\"got:{line.strip()}\")'",
-        intro="stdin test",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
+        "read",
+        _READLINE_SHELL,
+        "stdin test",
+        "actor:amy:conv:c1",
+        workspace,
     )
-    for _ in range(100):
-        if record.is_terminal():
-            break
-        await asyncio.sleep(0.02)
-    assert not record.is_terminal()
+    await asyncio.sleep(0)
     write_task_stdin(record, "answer\n")
     await record.wait_terminal()
     assert record.status == "done"
@@ -90,17 +193,17 @@ async def test_running_task_is_not_size_evicted(tmp_path: Path) -> None:
     app.runtime.tasks.terminal_records.max_size_bytes = 1
     running = register_shell_task(
         app.runtime,
-        name="sleep",
-        shell="sleep 30",
-        intro="running",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
+        "sleep",
+        "sleep 30",
+        "running",
+        "actor:amy:conv:c1",
+        workspace,
     )
     terminal = RuntimeTaskRecord(
-        id="t-terminal",
-        owner="actor:amy:conv:c1",
-        kind="shell",
-        name="terminal",
+        "t-terminal",
+        "actor:amy:conv:c1",
+        "shell",
+        "terminal",
         status="done",
         delivery="actor",
         delivery_state="delivered",
@@ -125,13 +228,13 @@ async def test_manual_terminal_task_expires_after_ttl(tmp_path: Path) -> None:
     app.runtime.tasks.terminal_records.now = clock
     record = register_shell_task(
         app.runtime,
-        name="ttl",
-        shell="echo ttl",
-        intro="ttl",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
-        delivery="manual",
-        ttl_s=5,
+        "ttl",
+        "echo ttl",
+        "ttl",
+        "actor:amy:conv:c1",
+        workspace,
+        "manual",
+        5,
     )
     await record.wait_terminal()
 
@@ -149,10 +252,10 @@ async def test_large_terminal_stdout_evicted_after_protection_expires(tmp_path: 
     app.runtime.tasks.terminal_records.now = clock
     app.runtime.tasks.terminal_records.max_size_bytes = 10
     record = RuntimeTaskRecord(
-        id="t-large",
-        owner="actor:amy:conv:c1",
-        kind="shell",
-        name="large",
+        "t-large",
+        "actor:amy:conv:c1",
+        "shell",
+        "large",
         status="done",
         delivery="actor",
         delivery_state="delivered",
@@ -167,17 +270,39 @@ async def test_large_terminal_stdout_evicted_after_protection_expires(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_pending_delivery_terminal_task_expires_after_retention(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    clock = Clock()
+    app.runtime.tasks.terminal_records.now = clock
+    record = RuntimeTaskRecord(
+        "t-pending",
+        "actor:amy:conv:c1",
+        "shell",
+        "pending",
+        status="done",
+        delivery="conversation",
+        delivery_state="pending",
+    )
+
+    app.runtime.tasks.mark_terminal(record)
+    assert record.id in app.runtime.tasks
+
+    clock.advance(PENDING_DELIVERY_TASK_RETENTION_S)
+    assert record.id not in app.runtime.tasks
+
+
+@pytest.mark.asyncio
 async def test_write_task_stdin_rejects_terminal_task(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     record = register_shell_task(
         app.runtime,
-        name="done",
-        shell="true",
-        intro="done",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
+        "done",
+        "true",
+        "done",
+        "actor:amy:conv:c1",
+        workspace,
     )
     await record.wait_terminal()
     with pytest.raises(TaskNotRunningError):
@@ -187,44 +312,104 @@ async def test_write_task_stdin_rejects_terminal_task(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_task_delivery_queues_while_conversation_busy(tmp_path: Path) -> None:
     from yuubot.actor import ActorConfig
-    from yuubot.domain import ModelCard
-    from yuubot.llm import scripted_reply
 
     app = await Yuubot.create(tmp_path / "data")
+    provider = BlockingProvider()
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
-        scripted_reply("ok"),
+        provider,
     )
-    conversation = await app.runtime.conversations.get_or_create(actor, "busy-c1")
-    conversation._running = True
-    record = register_shell_task(
-        app.runtime,
-        name="bg",
-        shell="true",
-        intro="delivery queue",
-        owner="actor:amy:conv:busy-c1",
-        workspace=Path(actor.config.workspace),
-        delivery="conversation",
-    )
-    await record.wait_terminal()
-    await schedule_task_delivery(app.runtime, record)
-    assert record.delivery_state == "pending"
-    assert app.runtime.task_delivery_queue._pending.get("busy-c1") == [record.id]
-    conversation._running = False
-    await app.runtime.drain_pending_task_deliveries("busy-c1")
-    assert str(record.delivery_state) == "delivered"
+    try:
+        chat_task = asyncio.create_task(app.chat("amy", "first", conversation_id="busy-c1"))
+        await provider.started.wait()
+        conversation = app.runtime.conversations.get_if_present("busy-c1")
+        assert conversation is not None
+        record = register_shell_task(
+            app.runtime,
+            "bg",
+            "true",
+            "delivery queue",
+            "actor:amy:conv:busy-c1",
+            Path(actor.config.workspace),
+            "conversation",
+        )
+        await record.wait_terminal()
+        await wait_for_pending_delivery(conversation, record.id)
+        assert record.delivery_state == "queued"
+
+        provider.release.set()
+        await chat_task
+        await wait_for_delivery_state(record, "delivered")
+        assert conversation.pending_task_delivery_ids() == []
+    finally:
+        provider.release.set()
+        await app.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_suppressed_conversation_delivery_skips_pending_and_future_tasks(tmp_path: Path) -> None:
     from yuubot.actor import ActorConfig
-    from yuubot.domain import ModelCard
-    from yuubot.llm import scripted_reply
+
+    app = await Yuubot.create(tmp_path / "data")
+    provider = BlockingProvider()
+    actor = app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(tmp_path / "workspace"),
+            model=ModelCard("fake"),
+        ),
+        provider,
+    )
+    try:
+        chat_task = asyncio.create_task(app.chat("amy", "first", conversation_id="stop-c1"))
+        await provider.started.wait()
+        conversation = app.runtime.conversations.get_if_present("stop-c1")
+        assert conversation is not None
+        queued = register_shell_task(
+            app.runtime,
+            "queued",
+            "true",
+            "queued",
+            "actor:amy:conv:stop-c1",
+            Path(actor.config.workspace),
+            "conversation",
+        )
+        await queued.wait_terminal()
+        await wait_for_pending_delivery(conversation, queued.id)
+        assert queued.delivery_state == "queued"
+
+        app.runtime.suppress_task_deliveries("stop-c1")
+        assert queued.delivery_state == "skipped"
+        assert conversation.pending_task_delivery_ids() == []
+
+        future = register_shell_task(
+            app.runtime,
+            "future",
+            "true",
+            "future",
+            "actor:amy:conv:stop-c1",
+            Path(actor.config.workspace),
+            "conversation",
+        )
+        await future.wait_terminal()
+        await wait_for_delivery_state(future, "skipped")
+
+        provider.release.set()
+        await chat_task
+    finally:
+        provider.release.set()
+        await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_discarded_conversation_skips_queued_task_deliveries(tmp_path: Path) -> None:
+    from yuubot.actor import ActorConfig
 
     app = await Yuubot.create(tmp_path / "data")
     actor = app.create_actor(
@@ -232,54 +417,31 @@ async def test_suppressed_conversation_delivery_skips_pending_and_future_tasks(t
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
-    conversation = await app.runtime.conversations.get_or_create(actor, "stop-c1")
-    conversation._running = True
-    queued = register_shell_task(
-        app.runtime,
-        name="queued",
-        shell="true",
-        intro="queued",
-        owner="actor:amy:conv:stop-c1",
-        workspace=Path(actor.config.workspace),
-        delivery="conversation",
-    )
-    await queued.wait_terminal()
-    await schedule_task_delivery(app.runtime, queued)
-    assert app.runtime.task_delivery_queue._pending.get("stop-c1") == [queued.id]
+    try:
+        conversation = await app.runtime.conversations.get_or_create(actor, "discard-c1")
+        record = RuntimeTaskRecord(
+            "t-queued",
+            "actor:amy:conv:discard-c1",
+            "shell",
+            "queued",
+            status="done",
+            delivery="conversation",
+            delivery_state="queued",
+        )
+        app.runtime.tasks.mark_terminal(record)
+        conversation.queue_task_delivery(record.id)
 
-    app.runtime.suppress_task_deliveries("stop-c1")
-    assert queued.delivery_state == "skipped"
-    assert app.runtime.task_delivery_queue._pending.get("stop-c1") is None
+        assert await app.runtime.conversations.discard("discard-c1")
 
-    future = register_shell_task(
-        app.runtime,
-        name="future",
-        shell="true",
-        intro="future",
-        owner="actor:amy:conv:stop-c1",
-        workspace=Path(actor.config.workspace),
-        delivery="conversation",
-    )
-    await future.wait_terminal()
-    await schedule_task_delivery(app.runtime, future)
-    assert future.delivery_state == "skipped"
-
-
-def test_task_delivery_suppression_expires() -> None:
-    clock = Clock()
-    queue = TaskDeliveryQueue(now=clock)
-
-    assert queue.suppress("stop-c1") == []
-    assert queue.is_suppressed("stop-c1") is True
-
-    clock.advance(DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S)
-
-    assert queue.is_suppressed("stop-c1") is False
-    assert queue._suppressed == {}
+        assert record.delivery_state == "skipped"
+        assert conversation.pending_task_delivery_ids() == []
+        assert not app.runtime.conversations.has("discard-c1")
+    finally:
+        await app.shutdown()
 
 
 @pytest.mark.asyncio
@@ -289,13 +451,13 @@ async def test_wait_until_terminal_or_idle_returns_terminal(tmp_path: Path) -> N
     workspace.mkdir()
     record = register_shell_task(
         app.runtime,
-        name="fast",
-        shell="echo terminal-outcome",
-        intro="terminal",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
+        "fast",
+        "echo terminal-outcome",
+        "terminal",
+        "actor:amy:conv:c1",
+        workspace,
     )
-    outcome = await wait_until_terminal_or_idle(record, idle_s=10.0, hard_timeout_s=30.0)
+    outcome = await wait_until_terminal_or_idle(record, 10.0, 30.0)
     assert outcome == "terminal"
     assert record.status == "done"
 
@@ -307,13 +469,13 @@ async def test_wait_until_terminal_or_idle_returns_idle(tmp_path: Path) -> None:
     workspace.mkdir()
     record = register_shell_task(
         app.runtime,
-        name="sleepy",
-        shell="sleep 30",
-        intro="idle",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
+        "sleepy",
+        "sleep 30",
+        "idle",
+        "actor:amy:conv:c1",
+        workspace,
     )
-    outcome = await wait_until_terminal_or_idle(record, idle_s=0.2, hard_timeout_s=30.0)
+    outcome = await wait_until_terminal_or_idle(record, 0.2, 30.0)
     assert outcome == "idle"
     assert record.status == "running"
 
@@ -325,13 +487,13 @@ async def test_wait_until_terminal_or_idle_returns_timeout(tmp_path: Path) -> No
     workspace.mkdir()
     record = register_shell_task(
         app.runtime,
-        name="chatty",
-        shell="while true; do echo tick; sleep 0.05; done",
-        intro="timeout",
-        owner="actor:amy:conv:c1",
-        workspace=workspace,
+        "chatty",
+        "while true; do echo tick; sleep 0.05; done",
+        "timeout",
+        "actor:amy:conv:c1",
+        workspace,
     )
-    outcome = await wait_until_terminal_or_idle(record, idle_s=10.0, hard_timeout_s=0.3)
+    outcome = await wait_until_terminal_or_idle(record, 10.0, 0.3)
     assert outcome == "timeout"
     assert record.status == "running"
 
@@ -339,7 +501,6 @@ async def test_wait_until_terminal_or_idle_returns_timeout(tmp_path: Path) -> No
 @pytest.mark.asyncio
 async def test_manual_delivery_skips_delivery(tmp_path: Path) -> None:
     from yuubot.actor import ActorConfig
-    from yuubot.domain import ModelCard
     from yuubot.llm import scripted_reply
 
     app = await Yuubot.create(tmp_path / "data")
@@ -348,36 +509,28 @@ async def test_manual_delivery_skips_delivery(tmp_path: Path) -> None:
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
-    conversation = await app.runtime.conversations.get_or_create(actor, "skip-c1")
-    record = register_shell_task(
-        app.runtime,
-        name="bg",
-        shell="true",
-        intro="no delivery",
-        owner="actor:amy:conv:skip-c1",
-        workspace=Path(actor.config.workspace),
-        delivery="manual",
-    )
-    await record.wait_terminal()
-    listener = TaskDeliveryListener(app.runtime)
-    await listener.on_event(
-        "task.finished",
-        {
-            "task_id": record.id,
-            "owner": record.owner,
-            "kind": "shell",
-            "status": record.status,
-            "error": record.error,
-            "exit_code": record.exit_code,
-        },
-    )
-    assert record.delivery_state == "skipped"
-    conversation._running = False
-    record.delivery = "conversation"
-    record.delivery_state = "pending"
-    await schedule_task_delivery(app.runtime, record)
-    assert str(record.delivery_state) == "delivered"
+    await app.runtime.conversations.get_or_create(actor, "skip-c1")
+    try:
+        record = register_shell_task(
+            app.runtime,
+            "bg",
+            "true",
+            "no delivery",
+            "actor:amy:conv:skip-c1",
+            Path(actor.config.workspace),
+            "manual",
+        )
+        await record.wait_terminal()
+        await wait_for_delivery_state(record, "skipped")
+        assert record.delivery_state == "skipped"
+        record.delivery = "conversation"
+        record.delivery_state = "pending"
+        assert app.runtime.scheduler.on_terminal is not None
+        app.runtime.scheduler.on_terminal(record)
+        await wait_for_delivery_state(record, "delivered")
+    finally:
+        await app.shutdown()

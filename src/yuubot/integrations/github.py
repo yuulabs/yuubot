@@ -2,7 +2,7 @@ import msgspec
 from attrs import frozen
 
 
-class GitHubConfig(msgspec.Struct, frozen=True, kw_only=True):
+class GitHubConfig(msgspec.Struct, frozen=True):
     access_token: str
     default_owner: str = ""
     default_repo: str = ""
@@ -29,4 +29,4 @@ class GitHubIntegration:
 
 def make_github(name: str, config: msgspec.Struct, runtime: object) -> GitHubIntegration:
     del runtime
-    return GitHubIntegration(name=name, config=msgspec.convert(config, GitHubConfig))
+    return GitHubIntegration(name, msgspec.convert(config, GitHubConfig))

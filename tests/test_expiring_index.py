@@ -18,7 +18,7 @@ class Clock:
 
 def test_expiring_index_does_not_count_or_evict_protected_items() -> None:
     clock = Clock()
-    index: ExpiringIndex[str] = ExpiringIndex(max_size_bytes=1, size_of=lambda item: len(item), now=clock)
+    index: ExpiringIndex[str] = ExpiringIndex(1, lambda item: len(item), clock)
 
     index.put("protected", "too-large", min_retain_until=10)
 
@@ -29,7 +29,7 @@ def test_expiring_index_does_not_count_or_evict_protected_items() -> None:
 
 def test_expiring_index_evicts_unprotected_items_to_budget_by_lru() -> None:
     clock = Clock()
-    index: ExpiringIndex[str] = ExpiringIndex(max_size_bytes=4, size_of=lambda item: len(item), now=clock)
+    index: ExpiringIndex[str] = ExpiringIndex(4, lambda item: len(item), clock)
 
     index.put("old", "aa")
     clock.advance(1)
@@ -44,7 +44,7 @@ def test_expiring_index_evicts_unprotected_items_to_budget_by_lru() -> None:
 
 def test_expiring_index_shared_instances_compete_for_budget() -> None:
     clock = Clock()
-    shared: ExpiringIndex[str] = ExpiringIndex(max_size_bytes=3, size_of=lambda item: len(item), now=clock)
+    shared: ExpiringIndex[str] = ExpiringIndex(3, lambda item: len(item), clock)
 
     shared.put("a:item", "aa")
     clock.advance(1)
@@ -53,8 +53,8 @@ def test_expiring_index_shared_instances_compete_for_budget() -> None:
     assert "a:item" not in shared
     assert "b:item" in shared
 
-    first: ExpiringIndex[str] = ExpiringIndex(max_size_bytes=3, size_of=lambda item: len(item), now=clock)
-    second: ExpiringIndex[str] = ExpiringIndex(max_size_bytes=3, size_of=lambda item: len(item), now=clock)
+    first: ExpiringIndex[str] = ExpiringIndex(3, lambda item: len(item), clock)
+    second: ExpiringIndex[str] = ExpiringIndex(3, lambda item: len(item), clock)
     first.put("a:item", "aa")
     second.put("b:item", "bb")
 
@@ -64,7 +64,7 @@ def test_expiring_index_shared_instances_compete_for_budget() -> None:
 
 def test_expiring_index_get_expires_items() -> None:
     clock = Clock()
-    index: ExpiringIndex[str] = ExpiringIndex(max_size_bytes=100, size_of=lambda item: len(item), now=clock)
+    index: ExpiringIndex[str] = ExpiringIndex(100, lambda item: len(item), clock)
     index.put("item", "value", min_retain_until=5, expires_at=5)
 
     assert index.get("item") == "value"

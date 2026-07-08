@@ -72,12 +72,12 @@ def test_build_apply_script_uses_install_deps(tmp_path: Path) -> None:
     root.mkdir()
     _write_install_assets(root)
     script = build_apply_script(
-        root=root,
-        config_path=tmp_path / "config.yaml",
-        host="127.0.0.1",
-        port=8765,
-        log_path=tmp_path / "update.log",
-        skip_web_build=True,
+        root,
+        tmp_path / "config.yaml",
+        "127.0.0.1",
+        8765,
+        tmp_path / "update.log",
+        True,
     )
     assert "git pull --ff-only" in script
     assert str(install_deps_script(root)) in script
@@ -91,10 +91,10 @@ def test_apply_update_rejects_unsupported_install(tmp_path: Path) -> None:
     root.mkdir()
     with pytest.raises(ValueError, match="git checkout"):
         apply_update(
-            config_path=tmp_path / "config.yaml",
-            data_dir=tmp_path / "data",
-            host="127.0.0.1",
-            port=8765,
+            tmp_path / "config.yaml",
+            tmp_path / "data",
+            "127.0.0.1",
+            8765,
             root=root,
         )
 
@@ -145,13 +145,13 @@ async def test_update_status_route(tmp_path: Path, monkeypatch: pytest.MonkeyPat
         from yuubot.upgrade.types import UpdateStatus
 
         return UpdateStatus(
-            supported=True,
-            install_kind="git_source",
-            current_version="0.1.0",
-            current_commit="abc",
-            remote_commit="def",
-            update_available=True,
-            message="update available",
+            True,
+            "git_source",
+            "0.1.0",
+            "abc",
+            "def",
+            True,
+            "update available",
         )
 
     monkeypatch.setattr("yuubot.web.routes.update.check_update", fake_check_update)
@@ -173,9 +173,9 @@ async def test_update_apply_route_schedules_shutdown(tmp_path: Path, monkeypatch
             shutdown_calls.append(True)
         from yuubot.upgrade.types import UpdateApplyResult
 
-        return UpdateApplyResult(status="scheduled", log_path=str(tmp_path / "update.log"))
+        return UpdateApplyResult("scheduled", str(tmp_path / "update.log"))
 
-    monkeypatch.setattr("yuubot.web.routes.update.apply_update", lambda **kwargs: fake_schedule_apply(**kwargs))
+    monkeypatch.setattr("yuubot.web.routes.update.apply_update", lambda *_, **kwargs: fake_schedule_apply(**kwargs))
     async with running_server(app) as server:
         payload = await http_json("POST", f"{base_url(server)}/api/admin/update/apply")
     assert payload["status"] == "scheduled"

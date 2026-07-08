@@ -13,7 +13,7 @@ async def test_http_read_tool_reads_requested_slice(test_context: SharedTestCont
     workspace.joinpath("big.txt").write_text("0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n", encoding="utf-8")
     actor_id = await test_context.setup_actor(
         PromptConditionedProvider(
-            rules=[
+            [
                 (messages_contain_tool_result("read"), reply_text("done")),
                 (
                     all_of(
@@ -29,10 +29,10 @@ async def test_http_read_tool_reads_requested_slice(test_context: SharedTestCont
     conversation_id = test_context.conversation_id("read-c1")
     await ws_conversation_send(
         test_context.server,
-        command_id="m1",
-        actor_id=actor_id,
-        conversation_id=conversation_id,
-        content="read slice",
+        "m1",
+        actor_id,
+        conversation_id,
+        "read slice",
     )
     history = await conversation_history(test_context.server, conversation_id)
     assert tool_result_text(history) == "1\n2\n[truncated: lines 1-3 of 10]"

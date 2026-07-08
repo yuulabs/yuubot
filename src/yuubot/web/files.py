@@ -4,10 +4,37 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote
 
+import msgspec
 from fastapi import UploadFile
 
 from ..app import Yuubot
 from ..util.paths import ensure_contained, safe_workspace_path
+
+
+class UploadFileMeta(msgspec.Struct, frozen=True):
+    name: str
+    size: int
+
+
+class UploadFileInfo(msgspec.Struct, frozen=True, kw_only=True):
+    kind: str = "file"
+    path: str
+    mime: str
+    meta: UploadFileMeta
+
+
+class DirectoryEntry(msgspec.Struct, frozen=True):
+    name: str
+    path: str
+    kind: str
+    size: int
+    mtime: str
+    mime: str = ""
+
+
+class DirectorySnapshot(msgspec.Struct, frozen=True):
+    path: str
+    entries: list[DirectoryEntry]
 
 
 def actor_workspace(app: Yuubot, actor_id: str) -> Path | None:
@@ -15,11 +42,11 @@ def actor_workspace(app: Yuubot, actor_id: str) -> Path | None:
 
 
 def workspace_path(workspace: Path, value: str) -> Path:
-    return safe_workspace_path(workspace, value, url_decode=True)
+    return safe_workspace_path(workspace, value, True)
 
 
-async def save_uploads(workspace: Path, uploads: list[UploadFile], destination: str | None = None) -> list[dict[str, object]]:
-    files: list[dict[str, object]] = []
+async def save_uploads(workspace: Path, uploads: list[UploadFile], destination: str | None = None) -> list[UploadFileInfo]:
+    files: list[UploadFileInfo] = []
     target_dir = workspace_path(workspace, destination) if destination is not None else None
     if target_dir is not None and not target_dir.is_dir():
         raise ValueError("upload destination is not a directory")
@@ -30,17 +57,16 @@ async def save_uploads(workspace: Path, uploads: list[UploadFile], destination: 
         safe_name = safe_filename(filename)
         data = await upload.read()
         mime = upload.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
-        relative = unique_upload_path(workspace, mime, safe_name, destination=destination)
+        relative = unique_upload_path(workspace, mime, safe_name, destination)
         target = workspace_path(workspace, relative)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         files.append(
-            {
-                "kind": "file",
-                "path": relative,
-                "mime": mime,
-                "meta": {"name": safe_name, "size": len(data)},
-            }
+            UploadFileInfo(
+                path=relative,
+                mime=mime,
+                meta=UploadFileMeta(safe_name, len(data)),
+            )
         )
     if not files:
         raise ValueError("multipart body contains no files")
@@ -77,28 +103,34 @@ def mime_dir(mime: str) -> str:
     return "".join(char if char.isalnum() else "-" for char in mime).strip("-") or "application-octet-stream"
 
 
-def directory_snapshot(workspace: Path, target: Path) -> dict[str, object]:
-    entries: list[dict[str, object]] = []
+def directory_snapshot(workspace: Path, target: Path) -> DirectorySnapshot:
+    entries: list[DirectoryEntry] = []
     for child in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.casefold(), item.name)):
         resolved = child.resolve()
         if resolved != workspace and workspace not in resolved.parents:
             continue
         stat = child.stat()
         relative = child.relative_to(workspace).as_posix()
-        entry: dict[str, object] = {
-            "name": child.name,
-            "path": relative,
-            "kind": "directory" if child.is_dir() else "file",
-            "size": stat.st_size,
-            "mtime": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
-        }
+        mime = ""
         if child.is_file():
-            entry["mime"] = mimetypes.guess_type(child.name)[0] or "application/octet-stream"
-        entries.append(entry)
-    return {"path": target.relative_to(workspace).as_posix() if target != workspace else "", "entries": entries}
+            mime = mimetypes.guess_type(child.name)[0] or "application/octet-stream"
+        entries.append(
+            DirectoryEntry(
+                child.name,
+                relative,
+                "directory" if child.is_dir() else "file",
+                stat.st_size,
+                datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                mime,
+            )
+        )
+    return DirectorySnapshot(
+        target.relative_to(workspace).as_posix() if target != workspace else "",
+        entries,
+    )
 
 
-def make_directory(workspace: Path, path: str) -> dict[str, object]:
+def make_directory(workspace: Path, path: str) -> DirectorySnapshot:
     target = workspace_path(workspace, path)
     if target == workspace:
         raise ValueError("directory path is required")
@@ -111,7 +143,7 @@ def make_directory(workspace: Path, path: str) -> dict[str, object]:
     return directory_snapshot(workspace, parent)
 
 
-def rename_entry(workspace: Path, path: str, name: str) -> dict[str, object]:
+def rename_entry(workspace: Path, path: str, name: str) -> DirectorySnapshot:
     source = workspace_path(workspace, path)
     if source == workspace:
         raise ValueError("cannot rename workspace root")
@@ -125,7 +157,7 @@ def rename_entry(workspace: Path, path: str, name: str) -> dict[str, object]:
     return directory_snapshot(workspace, target.parent)
 
 
-def delete_entries(workspace: Path, paths: list[str]) -> dict[str, object]:
+def delete_entries(workspace: Path, paths: list[str]) -> DirectorySnapshot:
     if not paths:
         raise ValueError("paths are required")
     targets = [workspace_path(workspace, path) for path in paths]
@@ -143,7 +175,7 @@ def delete_entries(workspace: Path, paths: list[str]) -> dict[str, object]:
     return directory_snapshot(workspace, parent if parent.exists() else workspace)
 
 
-def move_entries(workspace: Path, sources: list[str], destination: str) -> dict[str, object]:
+def move_entries(workspace: Path, sources: list[str], destination: str) -> DirectorySnapshot:
     if not sources:
         raise ValueError("sources are required")
     target_dir = workspace_path(workspace, destination)

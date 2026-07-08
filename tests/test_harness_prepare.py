@@ -18,7 +18,7 @@ def _noop_emit(*_args: object, **_kwargs: object) -> None:
     return None
 
 
-class Payload(msgspec.Struct, frozen=True, kw_only=True):
+class Payload(msgspec.Struct, frozen=True):
     pass
 
 
@@ -60,12 +60,12 @@ async def test_harness_starts_prepare_from_config(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(harness_module, "build_tools", fake_build_tools)
     harness = Harness.from_config(
-        HarnessConfig(tools={"slow": ToolConfig(type="slow")}),
+        HarnessConfig({"slow": ToolConfig("slow")}),
         ConversationContext(
-            model=ModelCard(selector="test"),
-            conversation_id="c1",
-            actor="a1",
-            workspace=tmp_path,
+            ModelCard("test"),
+            "c1",
+            "a1",
+            tmp_path,
         ),
         cast(Any, _Runtime()),
     )
@@ -79,10 +79,10 @@ async def test_harness_starts_prepare_from_config(monkeypatch: pytest.MonkeyPatc
 async def test_harness_prepare_wait_is_not_part_of_tool_timeout() -> None:
     tool = SlowPrepareTool()
     prepare_task = asyncio.create_task(tool.prepare())
-    harness = Harness(tools={"slow": tool}, emit=_noop_emit, conversation_id="c1", prepare_tasks={"slow": prepare_task})
+    harness = Harness({"slow": tool}, _noop_emit, "c1", {"slow": prepare_task})
     gather_task = asyncio.create_task(
         harness.gather(
-            [ToolCall(id="call-1", name="slow", arguments="{}")],
+            [ToolCall("call-1", "slow", "{}")],
             asyncio.Event(),
             timeout=0.01,
         )

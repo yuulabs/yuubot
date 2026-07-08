@@ -74,7 +74,6 @@ class KernelPool:
     async def acquire(
         self,
         workspace: Path,
-        *,
         lease_key: str,
         env: dict[str, str],
     ) -> KernelWorker:
@@ -94,7 +93,7 @@ class KernelPool:
             spawned: KernelWorker | None = None
             leased_to_caller = False
             try:
-                spawned = await self._spawn_worker(workspace, env=env)
+                spawned = await self._spawn_worker(workspace, env)
                 async with self._lock:
                     leased = self._leases.get(lease_key)
                     if leased is not None and leased.alive:
@@ -158,7 +157,7 @@ class KernelPool:
                 return worker
         return None
 
-    async def _spawn_worker(self, workspace: Path, *, env: dict[str, str]) -> KernelWorker:
+    async def _spawn_worker(self, workspace: Path, env: dict[str, str]) -> KernelWorker:
         worker = await KernelWorker.start(
             workspace=workspace,
             env=env,

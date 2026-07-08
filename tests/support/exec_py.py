@@ -47,7 +47,7 @@ class ExecPyModuleContext:
     def conversation_id(self, suffix: str) -> str:
         return self.name(suffix)
 
-    def set_provider(self, provider: Provider, *, model: str = "fake") -> None:
+    def set_provider(self, provider: Provider, model: str = "fake") -> None:
         app = getattr(self.server, "app", None)
         assert isinstance(app, Yuubot)
         app.provider_instances[self.provider_id] = provider
@@ -56,17 +56,17 @@ class ExecPyModuleContext:
         reset_workspace_files(self.workspace)
         await self.reset_integrations()
 
-    async def activate(self, provider: Provider, *, model: str = "fake") -> None:
-        self.set_provider(provider, model=model)
+    async def activate(self, provider: Provider, model: str = "fake") -> None:
+        self.set_provider(provider, model)
         await _try_http_json(
             "POST",
             f"{base_url(self.server)}/api/actors/{self.actor_id}/disable",
             {},
-            client=self._http,
+            self._http,
         )
         await enable_actor(self.server, self.actor_id, client=self._http)
 
-    async def put_integration(self, integration_type: str, *, name: str, config: dict[str, object]) -> None:
+    async def put_integration(self, integration_type: str, name: str, config: dict[str, object]) -> None:
         self._integrations.add(integration_type)
         await http_json(
             "PUT",
@@ -110,7 +110,7 @@ class ExecPyModuleContext:
 
     async def cleanup(self) -> None:
         url = base_url(self.server)
-        await _try_http_json("POST", f"{url}/api/actors/{self.actor_id}/disable", {}, client=self._http)
+        await _try_http_json("POST", f"{url}/api/actors/{self.actor_id}/disable", {}, self._http)
         await _try_http_json("DELETE", f"{url}/api/actors/{self.actor_id}", client=self._http)
         await _try_http_json("DELETE", f"{url}/api/providers/{self.provider_id}", client=self._http)
         app = getattr(self.server, "app", None)

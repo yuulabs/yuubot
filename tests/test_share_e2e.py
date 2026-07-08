@@ -130,13 +130,13 @@ def test_share_resolves_nested_file_when_data_dir_is_relative(tmp_path: Path, mo
     published = tmp_path / ".yuubot-data" / "published" / "sh-relative"
     published.mkdir(parents=True)
     published.joinpath("AGENTS.md").write_text("notes", encoding="utf-8")
-    registry = ShareRegistry(data_dir=Path(".yuubot-data"), state=State(), emit=emit)
+    registry = ShareRegistry(Path(".yuubot-data"), State(), emit)
     registry._grants["sh-relative"] = ShareGrant(
-        id="sh-relative",
-        actor_id="amy",
-        source_path="AGENTS.md",
-        created_at="2026-01-01T00:00:00+00:00",
-        expires_at=None,
+        "sh-relative",
+        "amy",
+        "AGENTS.md",
+        "2026-01-01T00:00:00+00:00",
+        None,
         kind="file",
         entry_path="AGENTS.md",
     )

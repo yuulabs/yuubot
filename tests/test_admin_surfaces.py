@@ -2,16 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import cast
 
+import msgspec
 import httpx
 import pytest
 
 from support.api import base_url
 from yuubot import Yuubot
-from yuubot.app.deployment import AdminAuthConfig, AdminAuthBuiltinConfig, AdminAuthProxyConfig, DeploymentConfig
+from yuubot.app.deployment import (
+    DEFAULT_HOST,
+    AdminAuthConfig,
+    AdminAuthBuiltinConfig,
+    AdminAuthProxyConfig,
+    DeploymentConfig,
+    deployment_listeners_for_serve,
+)
+from yuubot.domain.records import ActorInput, ActorModelInput, RouteRecord
+from yuubot.integrations.records import IntegrationRecord
+from yuubot.llm import ModelCardInput, ProviderInput, ScriptedProvider
+from yuubot.domain.stream import StreamEvent, StreamStopPayload
 from yuubot.web.auth import SessionStore
 from yuubot.web.server import UvicornServer, make_server
 
@@ -73,7 +87,7 @@ async def test_trusted_builtin_requires_login_even_from_loopback(tmp_path: Path)
     app = await Yuubot.create(tmp_path / "data")
     deployment = DeploymentConfig(
         surface="trusted_admin",
-        admin_auth=AdminAuthConfig(mode="builtin", builtin=AdminAuthBuiltinConfig(password="secret")),
+        admin_auth=AdminAuthConfig("builtin", AdminAuthBuiltinConfig(password="secret")),
     )
 
     async with surface_server(app, deployment) as server:
@@ -101,7 +115,7 @@ async def test_trusted_proxy_requires_proxy_user_header(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
     deployment = DeploymentConfig(
         surface="trusted_admin",
-        admin_auth=AdminAuthConfig(mode="proxy", proxy=AdminAuthProxyConfig(user_header="X-Forwarded-User")),
+        admin_auth=AdminAuthConfig("proxy", proxy=AdminAuthProxyConfig("X-Forwarded-User")),
     )
 
     async with surface_server(app, deployment) as server:
@@ -125,3 +139,108 @@ def test_builtin_session_expires_after_seven_idle_days() -> None:
     assert sessions.get(session_id) is not None
     now += (7 * 24 * 60 * 60) + 1
     assert sessions.get(session_id) is None
+
+
+def test_builtin_session_store_prunes_expired_sessions_without_lookup() -> None:
+    now = 1000.0
+    sessions = SessionStore(now=lambda: now)
+    old_session_id, _old_csrf = sessions.create(user_id="old", display_name=None)
+    now += (7 * 24 * 60 * 60) + 1
+    active_session_id, _active_csrf = sessions.create(user_id="active", display_name=None)
+
+    assert sessions.prune_expired() == 1
+    assert sessions.get(old_session_id) is None
+    assert sessions.get(active_session_id) is not None
+
+
+def test_local_admin_listener_host_is_code_enforced_loopback() -> None:
+    deployments = deployment_listeners_for_serve(
+        {
+            "local_admin_server": {
+                "enabled": True,
+                "host": "0.0.0.0",
+                "port": 9001,
+                "url_base": "https://admin.example.com",
+            },
+            "trusted_admin_server": {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": 9002,
+                "auth": {"mode": "proxy"},
+            },
+        },
+        "0.0.0.0",
+        8765,
+    )
+
+    local = next(deployment for deployment in deployments if deployment.surface == "local_admin")
+    trusted = next(deployment for deployment in deployments if deployment.surface == "trusted_admin")
+
+    assert local.server.host == DEFAULT_HOST
+    assert local.local_admin_server.host == DEFAULT_HOST
+    assert local.server.port == 9001
+    assert local.admin_url_base == "http://127.0.0.1:9001"
+    assert trusted.server.host == "127.0.0.1"
+    assert trusted.server.port == 9002
+
+
+def test_trusted_builtin_rejects_empty_password_config() -> None:
+    with pytest.raises(ValueError, match="trusted_admin_server.auth.builtin.password must be set"):
+        deployment_listeners_for_serve(
+            {
+                "local_admin_server": {"enabled": False},
+                "trusted_admin_server": {
+                    "enabled": True,
+                    "auth": {"mode": "builtin", "builtin": {"password": ""}},
+                },
+            },
+            "127.0.0.1",
+            8765,
+        )
+
+
+@pytest.mark.asyncio
+async def test_public_surface_webhook_requires_hmac_signature(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "webhook-secret"
+    monkeypatch.setenv("YUUBOT_GITHUB_WEBHOOK_SECRET", secret)
+    app = await Yuubot.create(tmp_path / "data")
+    app.provider_instances["fake"] = ScriptedProvider([[StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))]])
+    await app.put_provider(
+        "fake",
+        ProviderInput(
+            "Fake",
+            "openai-compatible",
+            {"endpoint": "", "api_key": "test-key", "options": {}},
+        ),
+    )
+    await app.put_model_card(
+        "fake",
+        "fake",
+        ModelCardInput(toolcall=True, input_price_per_million=1.0, output_price_per_million=1.0),
+    )
+    await app.put_actor(
+        "amy",
+        ActorInput(name="Amy", workspace=str(tmp_path / "workspace"), provider="fake", model=ActorModelInput("fake")),
+    )
+    await app.enable_actor("amy")
+    integration = IntegrationRecord("github", "github", "gh", {"access_token": "test-token"})
+    await app.configure_integration(integration)
+    await app.enable_integration(integration)
+    await app.put_route(RouteRecord(id="mailbox", integration_type="github", pattern="mailbox", actor_id="amy"))
+
+    deployment = DeploymentConfig(surface="public")
+    body = msgspec.json.encode({"route": "mailbox", "text": "hello"})
+    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+    async with surface_server(app, deployment) as server:
+        async with httpx.AsyncClient(base_url=base_url(server)) as client:
+            unsigned = await client.post("/webhooks/app/github", content=body, headers={"content-type": "application/json"})
+            signed = await client.post(
+                "/webhooks/app/github",
+                content=body,
+                headers={"content-type": "application/json", "x-yuubot-webhook-signature": f"sha256={signature}"},
+            )
+
+    assert unsigned.status_code == 401
+    assert signed.status_code == 200
+    assert signed.json()["delivered"] is True

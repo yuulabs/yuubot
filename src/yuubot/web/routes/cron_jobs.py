@@ -23,7 +23,7 @@ from .bodies import CreateCronJobBody
 def register_cron_routes(api: FastAPI, app: Yuubot) -> None:
     @api.get("/api/cron-jobs")
     async def api_cron_jobs(owner: str | None = None, status: str | None = None, name_glob: str = "") -> Response:
-        items = await list_cron_jobs(app.runtime, owner=owner, status=status, name_glob=name_glob)
+        items = await list_cron_jobs(app.runtime, owner, status, name_glob)
         return json_response({"items": items})
 
     @api.get("/api/cron-jobs/{job_id}")
@@ -39,22 +39,20 @@ def register_cron_routes(api: FastAPI, app: Yuubot) -> None:
             body = await read_json(request, CreateCronJobBody)
         except (msgspec.DecodeError, msgspec.ValidationError) as exc:
             return bad_request(exc)
-        from ...runtime.cron import CronSchedule, CronScheduleError, decode_cron_action
+        from ...runtime.cron import CronScheduleError
 
         try:
-            schedule = msgspec.convert(body.schedule, CronSchedule)
-            action = decode_cron_action(body.action)
             snapshot = await create_cron_job(
                 app.runtime,
-                owner=body.owner,
-                name=body.name,
-                schedule=schedule,
-                action=action,
-                once=body.once,
+                body.owner,
+                body.name,
+                body.schedule,
+                body.action,
+                body.once,
             )
         except (msgspec.ValidationError, TypeError, ValueError, CronScheduleError) as exc:
             return bad_request(exc)
-        return json_response(snapshot, status=201)
+        return json_response(snapshot, 201)
 
     @api.post("/api/cron-jobs/{job_id}/pause")
     async def api_pause_cron_job(job_id: str) -> Response:

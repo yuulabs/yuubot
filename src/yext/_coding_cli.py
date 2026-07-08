@@ -52,14 +52,14 @@ class Settings:
     path: str
 
 
-def settings(prefix: str, *, default_command: str, default_probe_args: tuple[str, ...], default_run_args: tuple[str, ...], default_login_command: str) -> Settings:
+def settings(prefix: str, default_command: str, default_probe_args: tuple[str, ...], default_run_args: tuple[str, ...], default_login_command: str) -> Settings:
     return Settings(
-        command=os.getenv(f"{prefix}_COMMAND", default_command),
-        probe_args=_json_tuple(os.getenv(f"{prefix}_PROBE_ARGS"), default_probe_args),
-        login_command=os.getenv(f"{prefix}_LOGIN_COMMAND", default_login_command),
-        run_args_prefix=_json_tuple(os.getenv(f"{prefix}_RUN_ARGS_PREFIX"), default_run_args),
-        timeout_s=float(os.getenv(f"{prefix}_TIMEOUT_S", "600")),
-        path=os.getenv(f"{prefix}_PATH", ""),
+        os.getenv(f"{prefix}_COMMAND", default_command),
+        _json_tuple(os.getenv(f"{prefix}_PROBE_ARGS"), default_probe_args),
+        os.getenv(f"{prefix}_LOGIN_COMMAND", default_login_command),
+        _json_tuple(os.getenv(f"{prefix}_RUN_ARGS_PREFIX"), default_run_args),
+        float(os.getenv(f"{prefix}_TIMEOUT_S", "600")),
+        os.getenv(f"{prefix}_PATH", ""),
     )
 
 
@@ -67,12 +67,12 @@ async def status(settings: Settings) -> Status:
     binary = resolve_command(settings)
     if binary is None:
         return Status(
-            status="error",
-            reason=f"{settings.command} binary was not found on PATH",
+            "error",
+            f"{settings.command} binary was not found on PATH",
             action_hint=_recovery_hint(settings),
         )
     if not settings.probe_args:
-        return Status(status="ready", binary_path=binary)
+        return Status("ready", binary_path=binary)
     process = await asyncio.create_subprocess_exec(
         binary,
         *settings.probe_args,
@@ -82,17 +82,17 @@ async def status(settings: Settings) -> Status:
     )
     stdout, stderr = await process.communicate()
     if process.returncode == 0:
-        return Status(status="ready", binary_path=binary)
+        return Status("ready", binary_path=binary)
     reason = _filter_text((stderr or stdout).decode("utf-8", errors="replace").strip())
     return Status(
-        status="needs_action",
-        reason=reason or f"{settings.command} is not ready",
-        binary_path=binary,
-        action_hint=_recovery_hint(settings),
+        "needs_action",
+        reason or f"{settings.command} is not ready",
+        binary,
+        _recovery_hint(settings),
     )
 
 
-async def cli(settings: Settings, args: tuple[str, ...], *, timeout_s: float | None = None) -> Result:
+async def cli(settings: Settings, args: tuple[str, ...], timeout_s: float | None = None) -> Result:
     binary = resolve_command(settings)
     if binary is None:
         raise RuntimeError(f"{settings.command} binary was not found on PATH")
@@ -112,10 +112,10 @@ async def cli(settings: Settings, args: tuple[str, ...], *, timeout_s: float | N
         raise RuntimeError(f"{settings.command} timed out after {timeout:g}s") from None
     return redact_result(
         Result(
-            command=command,
-            exit_code=int(process.returncode or 0),
-            stdout=stdout.decode("utf-8", errors="replace"),
-            stderr=stderr.decode("utf-8", errors="replace"),
+            command,
+            int(process.returncode or 0),
+            stdout.decode("utf-8", errors="replace"),
+            stderr.decode("utf-8", errors="replace"),
         )
     )
 
@@ -124,7 +124,7 @@ async def help(settings: Settings, *topics: str, timeout_s: float | None = None)
     return await cli(settings, ("help", *topics), timeout_s=timeout_s)
 
 
-async def run(settings: Settings, prompt: str, *, extra_args: tuple[str, ...] = (), timeout_s: float | None = None) -> Result:
+async def run(settings: Settings, prompt: str, extra_args: tuple[str, ...] = (), timeout_s: float | None = None) -> Result:
     checked = await status(settings)
     if checked.status != "ready":
         action = checked.action_hint or {}
@@ -137,10 +137,10 @@ async def run(settings: Settings, prompt: str, *, extra_args: tuple[str, ...] = 
 
 def redact_result(result: Result) -> Result:
     return Result(
-        command=result.command,
-        exit_code=result.exit_code,
-        stdout=_filter_text(result.stdout),
-        stderr=_filter_text(result.stderr),
+        result.command,
+        result.exit_code,
+        _filter_text(result.stdout),
+        _filter_text(result.stderr),
     )
 
 

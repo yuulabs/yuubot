@@ -31,7 +31,6 @@ class CronJobStore:
 
     async def list_jobs(
         self,
-        *,
         owner: str | None = None,
         status: CronJobStatus | None = None,
         name_glob: str = "",
@@ -94,7 +93,6 @@ class CronJobStore:
 
     async def build_new(
         self,
-        *,
         owner: str,
         name: str,
         schedule: CronSchedule,

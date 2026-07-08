@@ -18,18 +18,18 @@ from attrs import define, field
 from ..util.asyncio_ import BackgroundSweeper
 from ..util.paths import safe_workspace_path
 from ..util.time import utc_now_iso
+from .event_payloads import EmitFn, ShareCreatedPayload, ShareExpiredPayload, ShareRevokedPayload
 
 if TYPE_CHECKING:
     from .store import ApplicationStateStore
 
 _log = logging.getLogger(__name__)
 
-EmitFn = Callable[..., None]
 WorkspaceResolver = Callable[[str], Path | None]
 INDEX_CANDIDATES = ("index.html", "index.htm")
 
 
-class ShareGrant(msgspec.Struct, frozen=True, kw_only=True):
+class ShareGrant(msgspec.Struct, frozen=True):
     id: str
     actor_id: str
     source_path: str
@@ -83,14 +83,14 @@ def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def _is_expired(expires_at: str | None, *, now: datetime | None = None) -> bool:
+def _is_expired(expires_at: str | None, now: datetime | None = None) -> bool:
     if expires_at is None:
         return False
     current = now or datetime.now(UTC)
     return current >= _parse_timestamp(expires_at)
 
 
-def _normalize_rel_path(rel_path: str, *, escape_error: type[ShareError] = ShareNotFoundError) -> str:
+def _normalize_rel_path(rel_path: str, escape_error: type[ShareError] = ShareNotFoundError) -> str:
     raw = rel_path.strip().lstrip("/")
     if raw in {"", "."}:
         return ""
@@ -131,7 +131,7 @@ def _resolve_index_file(directory: Path, share_root: Path) -> Path:
     return _resolve_regular_file(index, share_root)
 
 
-def _copy_entry(source: Path, destination: Path, *, source_root: Path) -> None:
+def _copy_entry(source: Path, destination: Path, source_root: Path) -> None:
     if source.is_symlink():
         try:
             resolved = source.resolve()
@@ -146,7 +146,7 @@ def _copy_entry(source: Path, destination: Path, *, source_root: Path) -> None:
     if source.is_dir():
         destination.mkdir(parents=True, exist_ok=True)
         for child in sorted(source.iterdir(), key=lambda item: item.name):
-            _copy_entry(child, destination / child.name, source_root=source_root)
+            _copy_entry(child, destination / child.name, source_root)
         return
     if source.is_file():
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -159,7 +159,7 @@ def _copy_tree(source: Path, destination: Path) -> None:
         raise ShareBadRequestError("source_path is not a directory")
     destination.mkdir(parents=True, exist_ok=True)
     for child in sorted(source_root.iterdir(), key=lambda item: item.name):
-        _copy_entry(child, destination / child.name, source_root=source_root)
+        _copy_entry(child, destination / child.name, source_root)
 
 
 def _copy_source(source: Path, destination: Path) -> tuple[str, str]:
@@ -191,7 +191,7 @@ def _atomic_publish_source(source: Path, published_root: Path, share_id: str) ->
     return final_dir, kind, entry_path
 
 
-def _public_share_url(share_id: str, entry_path: str, *, public_url_base: str) -> str:
+def _public_share_url(share_id: str, entry_path: str, public_url_base: str) -> str:
     base = public_url_base.rstrip("/")
     if not entry_path:
         return f"{base}/s/{share_id}/"
@@ -199,9 +199,9 @@ def _public_share_url(share_id: str, entry_path: str, *, public_url_base: str) -
     return f"{base}/s/{share_id}/{encoded}"
 
 
-def share_grant_snapshot(grant: ShareGrant, *, public_url_base: str) -> dict[str, object]:
+def share_grant_snapshot(grant: ShareGrant, public_url_base: str) -> dict[str, object]:
     payload = cast(dict[str, object], msgspec.to_builtins(grant))
-    payload["url"] = _public_share_url(grant.id, grant.entry_path, public_url_base=public_url_base)
+    payload["url"] = _public_share_url(grant.id, grant.entry_path, public_url_base)
     return payload
 
 
@@ -239,7 +239,6 @@ class ShareRegistry:
 
     async def publish(
         self,
-        *,
         actor_id: str,
         source_path: str,
         expires_at: str | None,
@@ -249,7 +248,7 @@ class ShareRegistry:
         workspace = self._workspace_for_actor(actor_id)
         if workspace is None:
             raise ShareNotFoundError(f"actor not found: {actor_id}")
-        rel = _normalize_rel_path(source_path, escape_error=ShareBadRequestError)
+        rel = _normalize_rel_path(source_path, ShareBadRequestError)
         source = _contained_path(workspace, rel)
         if not source.exists():
             raise ShareNotFoundError(f"source path not found: {rel}")
@@ -259,20 +258,21 @@ class ShareRegistry:
         _, kind, entry_path = _atomic_publish_source(source, self.published_dir, share_id)
 
         grant = ShareGrant(
-            id=share_id,
-            actor_id=actor_id,
-            source_path=rel,
-            created_at=utc_now_iso(),
-            expires_at=expires_at,
+            share_id,
+            actor_id,
+            rel,
+            utc_now_iso(),
+            expires_at,
             kind=kind,
             entry_path=entry_path,
         )
         await self._persist(grant)
         self.emit(
-            "share.created",
-            share_id=grant.id,
-            actor_id=grant.actor_id,
-            source_path=grant.source_path,
+            ShareCreatedPayload(
+                grant.id,
+                grant.actor_id,
+                grant.source_path,
+            )
         )
         return grant
 
@@ -282,7 +282,7 @@ class ShareRegistry:
         self._grants.pop(share_id, None)
         await self.state.delete_share_grant(share_id)
         await self._delete_published_dir(share_id)
-        self.emit("share.revoked", share_id=share_id)
+        self.emit(ShareRevokedPayload(share_id))
         return updated
 
     def resolve_file(self, share_id: str, rel_path: str) -> Path:
@@ -310,12 +310,12 @@ class ShareRegistry:
     async def sweep_expired(self) -> None:
         now = datetime.now(UTC)
         for grant in list(self._grants.values()):
-            if grant.revoked or not _is_expired(grant.expires_at, now=now):
+            if grant.revoked or not _is_expired(grant.expires_at, now):
                 continue
             self._grants.pop(grant.id, None)
             await self.state.delete_share_grant(grant.id)
             await self._delete_published_dir(grant.id)
-            self.emit("share.expired", share_id=grant.id)
+            self.emit(ShareExpiredPayload(grant.id))
 
     async def start_background_cleanup(self, interval_s: float = 300) -> None:
         await self._sweeper.start(interval_s, self.sweep_expired)

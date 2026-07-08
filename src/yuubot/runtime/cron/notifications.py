@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 import msgspec
 from attrs import define, field
 
+from ..event_payloads import NotificationDeliveredPayload
 from .models import NotificationChannel, ReminderAction
 
 if TYPE_CHECKING:
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
-class PushSubscription(msgspec.Struct, frozen=True, kw_only=True):
+class PushSubscription(msgspec.Struct, frozen=True):
     id: str
     endpoint: str
     keys: dict[str, str]
@@ -27,7 +28,6 @@ class PushSubscription(msgspec.Struct, frozen=True, kw_only=True):
 class NotificationChannelHandler(Protocol):
     async def deliver(
         self,
-        *,
         job_id: str,
         title: str,
         body: str,
@@ -41,18 +41,13 @@ class BrowserNotificationHandler:
 
     async def deliver(
         self,
-        *,
         job_id: str,
         title: str,
         body: str,
         meta: dict[str, object],
     ) -> None:
         self._runtime.emit(
-            "notification.delivered",
-            job_id=job_id,
-            title=title,
-            body=body,
-            meta=meta,
+            NotificationDeliveredPayload(job_id, title, body, meta)
         )
 
 
@@ -62,7 +57,6 @@ class WebPushNotificationHandler:
 
     async def deliver(
         self,
-        *,
         job_id: str,
         title: str,
         body: str,
@@ -76,9 +70,9 @@ class WebPushNotificationHandler:
         payload = msgspec.json.encode({"title": title, "body": body, "job_id": job_id, "meta": meta}).decode()
         for subscription in subscriptions:
             await send_web_push(
-                data_dir=self._runtime.data_dir,
-                subscription=subscription,
-                payload=payload,
+                self._runtime.data_dir,
+                subscription,
+                payload,
             )
 
 
@@ -86,7 +80,6 @@ class WebPushNotificationHandler:
 class EmailNotificationHandler:
     async def deliver(
         self,
-        *,
         job_id: str,
         title: str,
         body: str,
@@ -109,8 +102,8 @@ class NotificationDispatcher:
             }
         )
 
-    async def deliver(self, *, job_id: str, action: ReminderAction, meta: dict[str, object]) -> None:
-        for channel in action.channels or (NotificationChannel(kind="browser"),):
+    async def deliver(self, job_id: str, action: ReminderAction, meta: dict[str, object]) -> None:
+        for channel in action.channels or (NotificationChannel("browser"),):
             handler = self.handlers.get(channel.kind)
             if handler is None:
                 _log.warning("unknown notification channel %s for cron job %s", channel.kind, job_id)

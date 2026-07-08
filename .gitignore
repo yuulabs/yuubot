@@ -33,7 +33,6 @@ env/
 .envrc
 config.yaml
 llm.yaml
-docker_config.yaml
 .pypirc
 *.db
 *.sqlite
@@ -72,4 +71,3 @@ Thumbs.db
 # Temp
 *.tmp
 *.temp
-

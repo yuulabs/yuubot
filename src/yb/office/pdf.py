@@ -9,7 +9,6 @@ import pymupdf4llm  # type: ignore[import-untyped]
 
 def to_markdown(
     path: str,
-    *,
     pages: Sequence[int] | None = None,
     write_images_to: str | None = None,
     dpi: int = 150,

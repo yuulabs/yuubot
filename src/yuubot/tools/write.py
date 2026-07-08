@@ -13,7 +13,7 @@ Parent directories are created automatically. Paths are relative to the workspac
 Use `artifacts/` for user-visible outputs, `notes/` for durable actor notes, and `projects/` for longer-lived project files. Use `edit` when you only need to change part of an existing file."""
 
 
-class WritePayload(msgspec.Struct, frozen=True, kw_only=True):
+class WritePayload(msgspec.Struct, frozen=True):
     path: str
     content: str
 
@@ -26,4 +26,4 @@ async def _execute_write(root: Path, payload: msgspec.Struct) -> str:
     return f"wrote {data.path}"
 
 
-WRITE_SPEC = workspace_tool(payload_type=WritePayload, description=DESCRIPTION, execute=_execute_write)
+WRITE_SPEC = workspace_tool(WritePayload, DESCRIPTION, _execute_write)

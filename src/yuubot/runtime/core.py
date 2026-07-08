@@ -13,6 +13,7 @@ from attrs import define, field
 from ..python import KernelLimiter, PythonKernelsConfig
 from ..db import Database
 from .events import EventBus, ListenerHub
+from .event_payloads import RuntimeEventPayload
 from ..chat.history import HistoryStore
 from ..integrations.registry import Integration, IntegrationRegistry, default_registry
 from ..integrations.records import IntegrationRecord
@@ -29,10 +30,11 @@ from .auth_attempts import AuthAttemptRegistry
 from .mcp import McpManager
 from .skills import SkillRecord, SkillSummary, skill_summary
 from .tasks import (
-    TaskDeliveryQueue,
+    RuntimeTaskRecord,
     TaskRegistry,
     TaskScheduler,
     drain_pending_task_deliveries,
+    schedule_task_delivery,
     suppress_conversation_task_deliveries,
     wait_until_terminal_or_timeout,
 )
@@ -124,7 +126,6 @@ class Runtime:
     mailboxes: ActorMailboxRegistry
     tasks: TaskRegistry
     scheduler: TaskScheduler
-    task_delivery_queue: TaskDeliveryQueue
     cron_jobs: CronJobStore
     push_subscriptions: PushSubscriptionStore
     shares: ShareRegistry
@@ -140,6 +141,7 @@ class Runtime:
     integrations: dict[str, Integration] = field(factory=dict)
     actors: dict[str, Actor] = field(factory=dict)
     _actor_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
+    _task_delivery_tasks: set[asyncio.Task[None]] = field(factory=set, init=False)
     _cron: CronJobScheduler | None = field(default=None, init=False)
     _cron_executor: CronExecutor | None = field(default=None, init=False)
     _notifications: NotificationDispatcher | None = field(default=None, init=False)
@@ -169,7 +171,6 @@ class Runtime:
         cls,
         data_dir: str | Path,
         db: Database,
-        *,
         kernels: PythonKernelsConfig | None = None,
         resources: ResourceConfig | None = None,
     ) -> Runtime:
@@ -182,22 +183,21 @@ class Runtime:
         eventbus = EventBus()
         state = ApplicationStateStore(db)
         task_registry = TaskRegistry()
-        scheduler = TaskScheduler(emit=eventbus.emit, registry=task_registry)
-        task_delivery_queue = TaskDeliveryQueue()
+        scheduler = TaskScheduler(eventbus.emit, task_registry)
         cron_jobs = CronJobStore(db)
         push_subscriptions = PushSubscriptionStore(db)
-        shares = ShareRegistry(data_dir=root, state=state, emit=eventbus.emit)
-        kv = KvStore(data_dir=root)
-        credentials = CredentialStore(db, data_dir=root)
+        shares = ShareRegistry(root, state, eventbus.emit)
+        kv = KvStore(root)
+        credentials = CredentialStore(db, root)
         mcps = McpManager(credentials)
         python_kernels = kernels or PythonKernelsConfig()
         resources_config = resources or ResourceConfig()
         resource_supervisor = ResourceSupervisor(
-            data_dir=root,
-            logs_dir=root / "logs",
-            db=db,
-            config=resources_config,
-            emit=eventbus.emit,
+            root,
+            root / "logs",
+            db,
+            resources_config,
+            eventbus.emit,
         )
         runtime = cls(
             data_dir=root,
@@ -215,7 +215,6 @@ class Runtime:
             mailboxes=mailboxes,
             tasks=task_registry,
             scheduler=scheduler,
-            task_delivery_queue=task_delivery_queue,
             cron_jobs=cron_jobs,
             push_subscriptions=push_subscriptions,
             shares=shares,
@@ -228,6 +227,7 @@ class Runtime:
             resource_supervisor=resource_supervisor,
         )
         runtime._notifications = NotificationDispatcher.create(runtime)
+        runtime.scheduler.on_terminal = runtime._schedule_task_delivery
 
         def scheduler_ref() -> CronJobScheduler:
             if runtime._cron is None:
@@ -267,8 +267,8 @@ class Runtime:
             return self.mailboxes.get(address.removeprefix("actor:"))
         return self.mailboxes.ensure(address)
 
-    def emit(self, event_kind: str, **payload: object) -> None:
-        self.eventbus.emit(event_kind, **payload)
+    def emit(self, payload: RuntimeEventPayload) -> None:
+        self.eventbus.emit(payload)
 
     def skill_summaries(self) -> list[SkillSummary]:
         return [skill_summary(record) for record in sorted(self.skills.values(), key=lambda item: item.id)]
@@ -323,13 +323,23 @@ class Runtime:
         await drain_pending_task_deliveries(self, conversation_id)
 
     def allow_task_deliveries(self, conversation_id: str) -> None:
-        self.task_delivery_queue.allow(conversation_id)
+        conversation = self.conversations.get_if_present(conversation_id)
+        if conversation is not None:
+            conversation.allow_task_deliveries()
 
     def suppress_task_deliveries(self, conversation_id: str) -> None:
         suppress_conversation_task_deliveries(self, conversation_id)
 
-    async def wait_until_terminal_or_timeout(self, task_id: str, *, timeout: float) -> None:
-        await wait_until_terminal_or_timeout(self.tasks, task_id, timeout=timeout)
+    def _schedule_task_delivery(self, record: RuntimeTaskRecord) -> None:
+        task = asyncio.create_task(self._deliver_terminal_task(record), name="task_delivery")
+        self._task_delivery_tasks.add(task)
+        task.add_done_callback(self._task_delivery_tasks.discard)
+
+    async def _deliver_terminal_task(self, record: RuntimeTaskRecord) -> None:
+        await schedule_task_delivery(self, record)
+
+    async def wait_until_terminal_or_timeout(self, task_id: str, timeout: float) -> None:
+        await wait_until_terminal_or_timeout(self.tasks, task_id, timeout)
 
     def _resolve_workspace(self, actor_id: str) -> Path | None:
         if self.resolve_actor_workspace is not None:
@@ -344,6 +354,9 @@ class Runtime:
         await self.shares.stop_background_cleanup()
         self.cron.shutdown()
         await self.scheduler.shutdown()
+        if self._task_delivery_tasks:
+            await asyncio.gather(*self._task_delivery_tasks, return_exceptions=True)
+            self._task_delivery_tasks.clear()
         await self.listeners.stop()
         await self.conversations.stop_background_cleanup()
         await self.conversations.close_all()
@@ -365,3 +378,6 @@ class Runtime:
             await coro_factory(stdin, stdout)
         except asyncio.CancelledError:
             raise
+        finally:
+            if self._actor_tasks.get(key) is asyncio.current_task():
+                self._actor_tasks.pop(key, None)

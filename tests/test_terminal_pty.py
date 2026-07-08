@@ -19,10 +19,10 @@ async def test_terminal_session_runs_command_with_real_pty(tmp_path: Path) -> No
         frames.append(frame)
 
     session = TerminalSession(
-        send=send,
-        auth_user="admin",
-        command="printf terminal-ok",
-        cwd=str(tmp_path),
+        send,
+        "admin",
+        "printf terminal-ok",
+        str(tmp_path),
     )
     await session.start()
     for _ in range(50):

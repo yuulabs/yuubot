@@ -43,11 +43,11 @@ class ProviderRegistry:
     def protocol_specs(self) -> list[ProviderProtocolSpec]:
         return [
             ProviderProtocolSpec(
-                protocol=protocol,
-                title=spec.title,
-                default_endpoint=spec.default_endpoint,
-                config_schema=msgspec.json.schema(spec.config_type),
-                secret_fields=spec.secret_fields,
+                protocol,
+                spec.title,
+                spec.default_endpoint,
+                msgspec.json.schema(spec.config_type),
+                spec.secret_fields,
             )
             for protocol, spec in sorted(self._items.items())
         ]
@@ -78,7 +78,7 @@ class ProviderRegistry:
         return merge_redacted_config(
             incoming,
             stored,
-            secret_fields=frozenset(self.secret_fields(protocol)),
+            frozenset(self.secret_fields(protocol)),
         )
 
 
@@ -89,11 +89,11 @@ def default_registry() -> ProviderRegistry:
     registry.register(
         "openai-compatible",
         ProviderSpec(
-            title="OpenAI-compatible",
-            config_type=OpenAIProviderConfig,
-            factory=cast(ProviderBuilder, make_openai_provider),
-            default_endpoint="https://api.openai.com/v1",
-            secret_fields=("api_key",),
+            "OpenAI-compatible",
+            OpenAIProviderConfig,
+            cast(ProviderBuilder, make_openai_provider),
+            "https://api.openai.com/v1",
+            ("api_key",),
         ),
     )
     return registry

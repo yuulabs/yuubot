@@ -9,39 +9,39 @@ import msgspec
 NonEmptyStr = Annotated[str, msgspec.Meta(min_length=1)]
 
 
-class TerminalOpenPayload(msgspec.Struct, frozen=True, kw_only=True):
+class TerminalOpenPayload(msgspec.Struct, frozen=True):
     command: str = ""
     cwd: str = "~"
     rows: int = 24
     cols: int = 80
 
 
-class TerminalOpenCommand(msgspec.Struct, frozen=True, kw_only=True, tag="terminal.open"):
+class TerminalOpenCommand(msgspec.Struct, frozen=True, tag="terminal.open"):
     payload: TerminalOpenPayload = msgspec.field(default_factory=TerminalOpenPayload)
 
 
-class TerminalInputPayload(msgspec.Struct, frozen=True, kw_only=True):
+class TerminalInputPayload(msgspec.Struct, frozen=True):
     data: NonEmptyStr
 
 
-class TerminalInputCommand(msgspec.Struct, frozen=True, kw_only=True, tag="terminal.input"):
+class TerminalInputCommand(msgspec.Struct, frozen=True, tag="terminal.input"):
     payload: TerminalInputPayload
 
 
-class TerminalResizePayload(msgspec.Struct, frozen=True, kw_only=True):
+class TerminalResizePayload(msgspec.Struct, frozen=True):
     rows: int = 24
     cols: int = 80
 
 
-class TerminalResizeCommand(msgspec.Struct, frozen=True, kw_only=True, tag="terminal.resize"):
+class TerminalResizeCommand(msgspec.Struct, frozen=True, tag="terminal.resize"):
     payload: TerminalResizePayload = msgspec.field(default_factory=TerminalResizePayload)
 
 
-class TerminalClosePayload(msgspec.Struct, frozen=True, kw_only=True):
+class TerminalClosePayload(msgspec.Struct, frozen=True):
     pass
 
 
-class TerminalCloseCommand(msgspec.Struct, frozen=True, kw_only=True, tag="terminal.close"):
+class TerminalCloseCommand(msgspec.Struct, frozen=True, tag="terminal.close"):
     payload: TerminalClosePayload = msgspec.field(default_factory=TerminalClosePayload)
 
 

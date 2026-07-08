@@ -15,7 +15,7 @@ DESCRIPTION = """Apply an exact string replacement in a workspace text file.
 Use this for precise, reviewable edits to existing files. Use `write` to create new files or replace an entire file at once."""
 
 
-class EditPayload(msgspec.Struct, frozen=True, kw_only=True):
+class EditPayload(msgspec.Struct, frozen=True):
     path: str
     old_string: str
     new_string: str
@@ -34,4 +34,4 @@ async def _execute_edit(root: Path, payload: msgspec.Struct) -> str:
     return f"edited {data.path}"
 
 
-EDIT_SPEC = workspace_tool(payload_type=EditPayload, description=DESCRIPTION, execute=_execute_edit)
+EDIT_SPEC = workspace_tool(EditPayload, DESCRIPTION, _execute_edit)

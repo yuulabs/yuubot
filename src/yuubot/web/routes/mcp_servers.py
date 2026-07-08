@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from html import escape as html_escape
-
 import msgspec
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import Response
 
 from ...app import Yuubot
 from ...app.deployment import DeploymentConfig
@@ -29,11 +27,11 @@ def register_mcp_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfig)
                 raise ValueError("endpoint_url is required")
             record = normalize_mcp_record(
                 McpServerRecord(
-                    id=server_id,
-                    name=body.name or server_id,
-                    endpoint_url=body.endpoint_url,
-                    transport=body.transport,
-                    auth_mode=body.auth_mode,
+                    server_id,
+                    body.name or server_id,
+                    body.endpoint_url,
+                    body.transport,
+                    body.auth_mode,
                     oauth_issuer=body.oauth_issuer,
                     oauth_authorization_endpoint=body.oauth_authorization_endpoint,
                     oauth_token_endpoint=body.oauth_token_endpoint,
@@ -72,7 +70,7 @@ def register_mcp_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfig)
             return error_response(404, "not_found", "MCP server not found")
         state = await app.refresh_mcp_server(server_id)
         status = 200 if state.status == "ready" else 503
-        return json_response({"id": server_id, "state": state}, status=status)
+        return json_response({"id": server_id, "state": state}, status)
 
     @api.post("/api/mcp-servers/{server_id}/auth/start")
     async def api_start_mcp_oauth(server_id: str) -> Response:
@@ -89,21 +87,7 @@ def register_mcp_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfig)
         )
         if current is not None:
             attempt = current
-        return json_response(attempt, status=202)
-
-    @api.get("/api/mcp-oauth/{attempt_id}/callback", response_class=HTMLResponse)
-    async def api_mcp_oauth_callback(attempt_id: str, code: str = "", state: str | None = None, error: str = "") -> Response:
-        if error:
-            if attempt_id in app.runtime.auth_attempts:
-                await app.update_auth_attempt(attempt_id, status="failed", error=error)
-            return HTMLResponse("<html><body><h1>Authorization failed</h1><p>You can close this tab.</p></body></html>", status_code=400)
-        try:
-            await app.complete_mcp_oauth_callback(attempt_id, code=code, state=state)
-        except KeyError:
-            return HTMLResponse("<html><body><h1>Authorization attempt not found</h1><p>You can close this tab.</p></body></html>", status_code=404)
-        except ValueError as exc:
-            return HTMLResponse(f"<html><body><h1>Authorization failed</h1><p>{html_escape(str(exc))}</p></body></html>", status_code=400)
-        return HTMLResponse("<html><body><h1>Authorization received</h1><p>You can close this tab and return to yuubot.</p></body></html>")
+        return json_response(attempt, 202)
 
     @api.delete("/api/mcp-servers/{server_id}")
     async def api_delete_mcp_server(server_id: str) -> Response:
@@ -113,7 +97,7 @@ def register_mcp_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfig)
 
     @api.get("/api/mcps/search")
     async def api_mcp_search(query: str = "", kind: str = "", server: str = "") -> Response:
-        return json_response({"items": app.runtime.mcps.search(query, kind=kind, server=server)})
+        return json_response({"items": app.runtime.mcps.search(query, kind, server)})
 
     @api.get("/api/mcps/{server_id}/spec/{name}")
     async def api_mcp_spec(server_id: str, name: str) -> Response:

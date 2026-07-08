@@ -10,7 +10,7 @@ from yuubot.runtime.host_stats import collect_host_stats
 
 
 def test_collect_host_stats_returns_expected_fields(tmp_path: Path) -> None:
-    stats = collect_host_stats(disk_path=tmp_path)
+    stats = collect_host_stats(tmp_path)
 
     assert stats.disk_path == str(tmp_path)
     assert stats.memory_total_bytes > 0

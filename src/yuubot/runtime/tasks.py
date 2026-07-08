@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Literal
 import msgspec
 from attrs import define, field
 
+from .event_payloads import EmitFn, TaskFinishedPayload, TaskStartedPayload
 from .expiring_index import DEFAULT_MAX_SIZE_BYTES, ExpiringIndex
 from .pty_runner import run_pty_process
 from .streams import TaskCoroFactory, TextStream
@@ -29,16 +30,16 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
-DeliveryState = Literal["pending", "delivered", "skipped"]
+DeliveryState = Literal["pending", "queued", "delivered", "skipped"]
 TaskDelivery = Literal["manual", "conversation", "actor"]
-EmitFn = Callable[..., None]
 MAX_MANUAL_TASK_TTL_S = 3600.0
 DEFAULT_MANUAL_TASK_TTL_S = MAX_MANUAL_TASK_TTL_S
 DELIVERED_TASK_MIN_RETENTION_S = 60.0
+PENDING_DELIVERY_TASK_RETENTION_S = 3600.0
 DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S = 3600.0
 
 
-def make_owner(*, actor_id: str, conversation_id: str) -> str:
+def make_owner(actor_id: str, conversation_id: str) -> str:
     return f"actor:{actor_id}:conv:{conversation_id}"
 
 
@@ -59,7 +60,7 @@ class TaskNotRunningError(RuntimeError):
     pass
 
 
-class TaskSnapshot(msgspec.Struct, frozen=True, kw_only=True):
+class TaskSnapshot(msgspec.Struct, frozen=True):
     id: str
     owner: str
     kind: str
@@ -115,7 +116,6 @@ class RuntimeTaskRecord:
 def normalize_task_ttl(
     delivery: TaskDelivery,
     ttl_s: float | None,
-    *,
     require_manual_ttl: bool,
 ) -> float | None:
     if ttl_s is not None:
@@ -180,50 +180,16 @@ def _terminal_retention(record: RuntimeTaskRecord, now: float) -> tuple[float, f
         ttl_s = record.ttl_s if record.ttl_s is not None else DEFAULT_MANUAL_TASK_TTL_S
         expires_at = now + ttl_s
         return expires_at, expires_at
-    if record.delivery_state == "pending":
-        return math.inf, None
+    if record.delivery_state in {"pending", "queued"}:
+        expires_at = now + PENDING_DELIVERY_TASK_RETENTION_S
+        return expires_at, expires_at
     return now + DELIVERED_TASK_MIN_RETENTION_S, None
-
-
-@define
-class TaskDeliveryQueue:
-    _pending: dict[str, list[str]] = field(factory=dict)
-    _suppressed: dict[str, float] = field(factory=dict)
-    now: Callable[[], float] = field(default=time.monotonic)
-
-    def _prune_suppressed(self) -> None:
-        now = self.now()
-        for conversation_id, expires_at in list(self._suppressed.items()):
-            if now >= expires_at:
-                self._suppressed.pop(conversation_id, None)
-
-    def enqueue(self, conversation_id: str, task_id: str) -> None:
-        items = self._pending.setdefault(conversation_id, [])
-        if task_id not in items:
-            items.append(task_id)
-
-    def pop_all(self, conversation_id: str) -> list[str]:
-        self._prune_suppressed()
-        return self._pending.pop(conversation_id, [])
-
-    def suppress(self, conversation_id: str) -> list[str]:
-        self._prune_suppressed()
-        self._suppressed[conversation_id] = self.now() + DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S
-        return self.pop_all(conversation_id)
-
-    def allow(self, conversation_id: str) -> None:
-        self._prune_suppressed()
-        self._suppressed.pop(conversation_id, None)
-
-    def is_suppressed(self, conversation_id: str) -> bool:
-        self._prune_suppressed()
-        return conversation_id in self._suppressed
 
 
 @define
 class TaskRegistry:
     terminal_records: ExpiringIndex[RuntimeTaskRecord] = field(
-        factory=lambda: ExpiringIndex(max_size_bytes=DEFAULT_MAX_SIZE_BYTES, size_of=task_record_size_bytes)
+        factory=lambda: ExpiringIndex(DEFAULT_MAX_SIZE_BYTES, task_record_size_bytes)
     )
     _records: dict[str, RuntimeTaskRecord] = field(factory=dict)
 
@@ -255,11 +221,10 @@ class TaskRegistry:
             return
         now = self.terminal_records.now()
         min_retain_until, expires_at = _terminal_retention(record, now)
-        self.terminal_records.update_retention(record.id, min_retain_until=min_retain_until, expires_at=expires_at)
+        self.terminal_records.update_retention(record.id, min_retain_until, expires_at)
 
     def list(
         self,
-        *,
         owner: str | None = None,
         name_glob: str = "",
     ) -> builtins.list[RuntimeTaskRecord]:
@@ -277,6 +242,7 @@ class TaskScheduler:
 
     emit: EmitFn
     registry: TaskRegistry
+    on_terminal: Callable[[RuntimeTaskRecord], None] | None = None
     _asyncio_tasks: dict[str, asyncio.Task[object]] = field(factory=dict)
 
     def schedule(self, record: RuntimeTaskRecord, coro_factory: TaskCoroFactory) -> None:
@@ -285,18 +251,19 @@ class TaskScheduler:
         record.status = "running"
         record.started_at = _iso_now()
         self.emit(
-            "task.started",
-            task_id=record.id,
-            owner=record.owner,
-            kind=record.kind,
-            name=record.name,
+            TaskStartedPayload(
+                record.id,
+                record.owner,
+                record.kind,
+                record.name,
+            )
         )
         asyncio_task = asyncio.create_task(self._run(record, coro_factory))
         self._asyncio_tasks[record.id] = asyncio_task
         asyncio_task.add_done_callback(lambda task: self._on_task_done(record, task))
 
-    def cancel(self, record: RuntimeTaskRecord, *, skip_delivery: bool = False) -> None:
-        if skip_delivery and record.delivery_state == "pending":
+    def cancel(self, record: RuntimeTaskRecord, skip_delivery: bool = False) -> None:
+        if skip_delivery and record.delivery_state in {"pending", "queued"}:
             record.delivery_state = "skipped"
         asyncio_task = self._asyncio_tasks.get(record.id)
         if asyncio_task is not None and not asyncio_task.done():
@@ -313,7 +280,6 @@ class TaskScheduler:
     def cancel_for_owner_prefix(
         self,
         owner_prefix: str,
-        *,
         skip_delivery: bool,
     ) -> None:
         for record in self.registry.list():
@@ -349,26 +315,29 @@ class TaskScheduler:
         record.mark_terminal()
         self.registry.mark_terminal(record)
         self.emit(
-            "task.finished",
-            task_id=record.id,
-            owner=record.owner,
-            kind=record.kind,
-            status=record.status,
-            error=record.error,
-            exit_code=record.exit_code,
+            TaskFinishedPayload(
+                record.id,
+                record.owner,
+                record.kind,
+                record.status,
+                record.error,
+                record.exit_code,
+            )
         )
+        if self.on_terminal is not None:
+            self.on_terminal(record)
 
 
-def shell_coro_factory(*, shell: str, workspace: Path, tmp_dir: Path) -> TaskCoroFactory:
+def shell_coro_factory(shell: str, workspace: Path, tmp_dir: Path) -> TaskCoroFactory:
     async def run(stdin: TextStream, stdout: TextStream) -> int:
         env = os.environ.copy()
         env["TMPDIR"] = str(tmp_dir)
         return await run_pty_process(
-            argv=["bash", "-lc", shell],
-            cwd=workspace,
-            env=env,
-            stdin_stream=stdin,
-            stdout_stream=stdout,
+            ["bash", "-lc", shell],
+            workspace,
+            env,
+            stdin,
+            stdout,
         )
 
     return run
@@ -382,7 +351,6 @@ def write_task_stdin(record: RuntimeTaskRecord, text: str) -> None:
 
 def register_shell_task(
     runtime: Runtime,
-    *,
     name: str,
     shell: str,
     intro: str,
@@ -391,14 +359,14 @@ def register_shell_task(
     delivery: TaskDelivery = "manual",
     ttl_s: float | None = None,
 ) -> RuntimeTaskRecord:
-    ttl_s = normalize_task_ttl(delivery, ttl_s, require_manual_ttl=False)
+    ttl_s = normalize_task_ttl(delivery, ttl_s, False)
     record = RuntimeTaskRecord(
-        id=new_task_id(),
-        owner=owner,
-        kind="shell",
-        name=name,
-        intro=intro,
-        shell=shell,
+        new_task_id(),
+        owner,
+        "shell",
+        name,
+        intro,
+        shell,
         interactive=True,
         delivery=delivery,
         ttl_s=ttl_s,
@@ -406,7 +374,7 @@ def register_shell_task(
     runtime.tasks.put(record)
     runtime.scheduler.schedule(
         record,
-        shell_coro_factory(shell=shell, workspace=workspace, tmp_dir=runtime.tmp_dir),
+        shell_coro_factory(shell, workspace, runtime.tmp_dir),
     )
     return record
 
@@ -414,7 +382,6 @@ def register_shell_task(
 async def wait_until_terminal_or_timeout(
     registry: TaskRegistry,
     task_id: str,
-    *,
     timeout: float,
 ) -> None:
     record = registry.get(task_id)
@@ -428,7 +395,6 @@ async def wait_until_terminal_or_timeout(
 
 async def wait_until_terminal_or_idle(
     record: RuntimeTaskRecord,
-    *,
     idle_s: float,
     hard_timeout_s: float,
 ) -> Literal["terminal", "idle", "timeout"]:
@@ -467,15 +433,15 @@ async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> No
     actor_id, conversation_id = parse_owner(record.owner)
     text = format_task_delivery(record)
     target = (
-        WakeupTarget(kind="actor_inbound", actor_id=actor_id, conversation_id=None)
+        WakeupTarget("actor_inbound", actor_id, None)
         if record.delivery == "actor"
-        else WakeupTarget(kind="task_delivery", actor_id=actor_id, conversation_id=conversation_id)
+        else WakeupTarget("task_delivery", actor_id, conversation_id)
     )
     await runtime.wakeup.deliver(
         target,
         WakeupPayload(
-            text=text,
-            source={"task_id": record.id, "task_name": record.name, "status": record.status, "task_delivery": record.delivery},
+            text,
+            {"task_id": record.id, "task_name": record.name, "status": record.status, "task_delivery": record.delivery},
         ),
     )
     record.delivery_state = "delivered"
@@ -483,28 +449,37 @@ async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> No
 
 
 async def schedule_task_delivery(runtime: Runtime, record: RuntimeTaskRecord) -> None:
+    if record.delivery_state != "pending":
+        return
     if record.delivery == "manual":
         record.delivery_state = "skipped"
         runtime.tasks.refresh_terminal_retention(record)
         return
     _, conversation_id = parse_owner(record.owner)
-    if record.delivery == "conversation" and runtime.task_delivery_queue.is_suppressed(conversation_id):
+    conversation = runtime.conversations.get_if_present(conversation_id)
+    if (
+        record.delivery == "conversation"
+        and conversation is not None
+        and conversation.task_deliveries_suppressed(now=time.monotonic())
+    ):
         record.delivery_state = "skipped"
         runtime.tasks.refresh_terminal_retention(record)
         return
-    conversation = runtime.conversations.get_if_present(conversation_id)
     if record.delivery == "conversation" and conversation is not None and conversation.running:
-        runtime.task_delivery_queue.enqueue(conversation_id, record.id)
+        conversation.queue_task_delivery(record.id)
+        record.delivery_state = "queued"
         return
     await deliver_task_result(runtime, record)
 
 
 async def drain_pending_task_deliveries(runtime: Runtime, conversation_id: str) -> None:
-    for task_id in runtime.task_delivery_queue.pop_all(conversation_id):
+    conversation = runtime.conversations.get_if_present(conversation_id)
+    task_ids = conversation.pop_task_deliveries() if conversation is not None else []
+    for task_id in task_ids:
         if task_id not in runtime.tasks:
             continue
         record = runtime.tasks.get(task_id)
-        if record.delivery_state != "pending":
+        if record.delivery_state not in {"pending", "queued"}:
             continue
         if record.status == "cancelled":
             record.delivery_state = "skipped"
@@ -519,68 +494,51 @@ async def drain_pending_task_deliveries(runtime: Runtime, conversation_id: str) 
 
 
 def suppress_conversation_task_deliveries(runtime: Runtime, conversation_id: str) -> None:
-    for task_id in runtime.task_delivery_queue.suppress(conversation_id):
+    conversation = runtime.conversations.get_if_present(conversation_id)
+    task_ids = (
+        conversation.suppress_task_deliveries(
+            now=time.monotonic(),
+            ttl_s=DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S,
+        )
+        if conversation is not None
+        else []
+    )
+    skip_conversation_task_deliveries(runtime, conversation_id, task_ids)
+
+
+def skip_conversation_task_deliveries(
+    runtime: Runtime,
+    conversation_id: str,
+    task_ids: list[str] | tuple[str, ...] = (),
+) -> None:
+    for task_id in task_ids:
         if task_id in runtime.tasks:
             record = runtime.tasks.get(task_id)
-            if record.delivery_state == "pending":
+            if record.delivery_state in {"pending", "queued"}:
                 record.delivery_state = "skipped"
                 runtime.tasks.refresh_terminal_retention(record)
     owner = f":conv:{conversation_id}"
     for record in runtime.tasks.list():
-        if record.delivery == "conversation" and owner in record.owner and record.delivery_state == "pending":
+        if record.delivery == "conversation" and owner in record.owner and record.delivery_state in {"pending", "queued"}:
             record.delivery_state = "skipped"
             runtime.tasks.refresh_terminal_retention(record)
 
 
-@define
-class TaskDeliveryListener:
-    _runtime: Runtime
-
-    async def on_event(self, kind: str, payload: dict[str, object]) -> None:
-        if kind != "task.finished":
-            return
-        if payload.get("kind") != "shell":
-            return
-        owner = payload.get("owner")
-        if not isinstance(owner, str) or ":conv:" not in owner:
-            return
-        task_id = payload.get("task_id")
-        if not isinstance(task_id, str) or task_id not in self._runtime.tasks:
-            return
-        record = self._runtime.tasks.get(task_id)
-        if record.delivery == "manual":
-            record.delivery_state = "skipped"
-            self._runtime.tasks.refresh_terminal_retention(record)
-            return
-        if record.delivery_state != "pending":
-            return
-        if record.status == "cancelled":
-            record.delivery_state = "skipped"
-            self._runtime.tasks.refresh_terminal_retention(record)
-            return
-        try:
-            await schedule_task_delivery(self._runtime, record)
-        except Exception:
-            _log.exception("task delivery failed for %s", record.id)
-            record.delivery_state = "skipped"
-            self._runtime.tasks.refresh_terminal_retention(record)
-
-
-def task_record_snapshot(record: RuntimeTaskRecord, *, include_stdout: bool = False) -> TaskSnapshot:
+def task_record_snapshot(record: RuntimeTaskRecord, include_stdout: bool = False) -> TaskSnapshot:
     return TaskSnapshot(
-        id=record.id,
-        owner=record.owner,
-        kind=record.kind,
-        name=record.name,
-        intro=record.intro,
-        status=record.status,
-        error=record.error,
-        exit_code=record.exit_code,
-        delivery=record.delivery,
-        delivery_state=record.delivery_state,
-        interactive=record.interactive,
-        stdout_tail=record.stdout.tail(max_bytes=65536) if include_stdout else "",
-        created_at=record.created_at,
-        started_at=record.started_at,
-        finished_at=record.finished_at,
+        record.id,
+        record.owner,
+        record.kind,
+        record.name,
+        record.intro,
+        record.status,
+        record.error,
+        record.exit_code,
+        record.delivery,
+        record.delivery_state,
+        record.interactive,
+        record.stdout.tail(max_bytes=65536) if include_stdout else "",
+        record.created_at,
+        record.started_at,
+        record.finished_at,
     )

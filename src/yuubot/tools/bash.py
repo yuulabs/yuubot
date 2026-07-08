@@ -37,7 +37,7 @@ Query detached tasks with `await yb.tasks.find(task_id)`, `await task.output()`,
 Use for shell-native work such as git, package installation, or blocking CLI tools. Prefer `execute_python` for orchestration and integration facade calls."""
 
 
-class BashPayload(msgspec.Struct, frozen=True, kw_only=True):
+class BashPayload(msgspec.Struct, frozen=True):
     command: str
     idle_timeout_s: float | None = None
 
@@ -106,17 +106,17 @@ class BashTool:
         idle_s = data.idle_timeout_s if data.idle_timeout_s is not None else DEFAULT_IDLE_TIMEOUT_S
         record = register_shell_task(
             self.runtime,
-            name="bash",
-            shell=data.command,
-            intro=f"bash: {data.command[:200]}",
-            owner=self.owner,
-            workspace=self.workspace,
-            delivery="manual",
-            ttl_s=3600,
+            "bash",
+            data.command,
+            f"bash: {data.command[:200]}",
+            self.owner,
+            self.workspace,
+            "manual",
+            3600,
         )
         self._forward_task = asyncio.create_task(self._forward_stdout(record))
         try:
-            outcome = await wait_until_terminal_or_idle(record, idle_s=idle_s, hard_timeout_s=HARD_TIMEOUT_S)
+            outcome = await wait_until_terminal_or_idle(record, idle_s, HARD_TIMEOUT_S)
         finally:
             if self._forward_task is not None:
                 self._forward_task.cancel()
@@ -149,8 +149,8 @@ def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime)
     return BashTool(
         runtime=runtime,
         workspace=context.workspace.resolve(),
-        owner=make_owner(actor_id=context.actor, conversation_id=context.conversation_id),
+        owner=make_owner(context.actor, context.conversation_id),
     )
 
 
-BASH_SPEC = ToolSpec(payload_type=BashPayload, description=DESCRIPTION, factory=_factory)
+BASH_SPEC = ToolSpec(BashPayload, DESCRIPTION, _factory)

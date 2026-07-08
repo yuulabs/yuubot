@@ -45,7 +45,6 @@ class KernelWorker:
     @classmethod
     async def start(
         cls,
-        *,
         workspace: Path,
         env: dict[str, str],
         max_rss_bytes: int,
@@ -137,10 +136,10 @@ class KernelWorker:
         self.state = "idle"
         self.idle_since = time.monotonic()
 
-    async def run_code(self, code: str, *, on_output: Callable[[str], None] | None = None) -> str:
+    async def run_code(self, code: str, on_output: Callable[[str], None] | None = None) -> str:
         if not self.alive:
             raise KernelWorkerError("kernel worker is not alive")
-        payload = await self._execute(code, on_output=on_output)
+        payload = await self._execute(code, on_output)
         return payload if payload else "ok"
 
     async def reset_or_recycle(self) -> None:
@@ -166,7 +165,7 @@ class KernelWorker:
     async def _bootstrap(self) -> None:
         await self._execute("import worker_runtime; worker_runtime.bootstrap()")
 
-    async def _execute(self, code: str, *, on_output: Callable[[str], None] | None = None) -> str:
+    async def _execute(self, code: str, on_output: Callable[[str], None] | None = None) -> str:
         msg_id = self.client.execute(code, store_history=False)
         chunks: list[str] = []
         truncated = False

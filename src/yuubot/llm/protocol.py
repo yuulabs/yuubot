@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 
 from ..domain.messages import ConversationContext, LLMInput, ModelCard
-from ..domain.stream import StreamEvent
+from ..domain.stream import StreamEvent, TextDeltaPayload
 from ..runtime.cache import CachePool
 from .types import AccountSnapshot, ValidationResult
 
@@ -24,13 +24,12 @@ class Provider(Protocol):
     async def stream(
         self,
         input: LLMInput,
-        *,
         model: ModelCard,
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
     ) -> AsyncIterator[StreamEvent]:
         if False:
-            yield StreamEvent(group_id="", kind="text_delta")
+            yield StreamEvent("", "text_delta", TextDeltaPayload())
 
     async def close(self) -> None: ...

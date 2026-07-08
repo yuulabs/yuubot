@@ -28,7 +28,7 @@ def developer_prompt(
     sections = [
         "# Persona\n" + (persona.strip() or "You are a yuubot actor."),
         "# System Instructions\n" + _system_instructions(has_python),
-        "# Workspace Instructions\n" + _workspace_instructions(workspace, actor_id=actor_id),
+        "# Workspace Instructions\n" + _workspace_instructions(workspace, actor_id),
     ]
     if has_python:
         sections.append("# Tool Suggestions\n" + _tool_suggestions())
@@ -52,7 +52,7 @@ def _system_instructions(has_python: bool) -> str:
     return "\n".join(lines)
 
 
-def _workspace_instructions(workspace: Path, *, actor_id: str = "") -> str:
+def _workspace_instructions(workspace: Path, actor_id: str = "") -> str:
     lines = [f"Workspace path: {workspace}"]
     if actor_id:
         lines.append(f"Actor id: {actor_id}")
@@ -150,7 +150,7 @@ def _real_time_data() -> str:
     )
 
 
-def real_time_turn_context(*, mode: SessionMode) -> str:
+def real_time_turn_context(mode: SessionMode) -> str:
     now = datetime.now().astimezone()
     return "\n".join(
         [
@@ -161,17 +161,17 @@ def real_time_turn_context(*, mode: SessionMode) -> str:
     )
 
 
-def augment_user_message(message: InputMessage, *, mode: SessionMode) -> InputMessage:
-    prefix = real_time_turn_context(mode=mode) + _REAL_TIME_CONTEXT_SEPARATOR
+def augment_user_message(message: InputMessage, mode: SessionMode) -> InputMessage:
+    prefix = real_time_turn_context(mode) + _REAL_TIME_CONTEXT_SEPARATOR
     content: list[ContentItem] = []
     for item in message.content:
         if item.kind == "text" and item.text and not content:
-            content.append(ContentItem(kind="text", text=prefix + item.text, meta=item.meta))
+            content.append(ContentItem("text", prefix + item.text, meta=item.meta))
             continue
         content.append(item)
     if not content:
-        content.append(ContentItem(kind="text", text=prefix.rstrip()))
-    return InputMessage(role=message.role, name=message.name, content=content)
+        content.append(ContentItem("text", prefix.rstrip()))
+    return InputMessage(message.role, message.name, content)
 
 
 def user_visible_text(message: InputMessage) -> str:

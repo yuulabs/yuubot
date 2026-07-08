@@ -48,6 +48,13 @@ PREFIX_KINDS: Final[frozenset[str]] = frozenset({"tool_specs", "system_prompt"})
 _INTERACTION_KIND_FILTER = "kind not in ('tool_specs', 'system_prompt')"
 
 
+class ConversationHistoryMeta(msgspec.Struct, frozen=True):
+    id: str
+    message_count: int
+    last_seq: int | None = None
+    last_active_at: str | None = None
+
+
 @define
 class HistoryStore:
     _db: Database
@@ -89,7 +96,7 @@ class HistoryStore:
         rows = await cursor.fetchall()
         return [msgspec.json.decode(payload, type=_TYPES[kind]) for kind, payload in rows]
 
-    async def conversation_meta(self, conversation_id: str) -> dict[str, object] | None:
+    async def conversation_meta(self, conversation_id: str) -> ConversationHistoryMeta | None:
         cursor = await self._db.execute(
             """
             select sum(case when kind in ('tool_specs', 'system_prompt') then 0 else 1 end),
@@ -104,14 +111,14 @@ class HistoryStore:
         if row is None or row[0] is None:
             return None
         message_count, last_seq, last_active_at = row
-        return {
-            "id": conversation_id,
-            "message_count": message_count,
-            "last_seq": last_seq,
-            "last_active_at": last_active_at or None,
-        }
+        return ConversationHistoryMeta(
+            conversation_id,
+            int(message_count),
+            int(last_seq) if last_seq is not None else None,
+            last_active_at or None,
+        )
 
-    async def list_conversations(self) -> list[dict[str, object]]:
+    async def list_conversations(self) -> list[ConversationHistoryMeta]:
         cursor = await self._db.execute(
             """
             select conversation_id,
@@ -125,12 +132,12 @@ class HistoryStore:
         )
         rows = await cursor.fetchall()
         return [
-            {
-                "id": conversation_id,
-                "message_count": message_count,
-                "last_seq": last_seq,
-                "last_active_at": last_active_at or None,
-            }
+            ConversationHistoryMeta(
+                conversation_id,
+                int(message_count),
+                int(last_seq) if last_seq is not None else None,
+                last_active_at or None,
+            )
             for conversation_id, message_count, last_seq, last_active_at in rows
         ]
 
@@ -145,7 +152,6 @@ class HistoryStore:
     async def load_interaction_wrapped(
         self,
         conversation_id: str,
-        *,
         after_seq: int | None = None,
         limit: int | None = None,
     ) -> tuple[list[dict[str, object]], bool]:
@@ -155,8 +161,8 @@ class HistoryStore:
         if after_seq is not None:
             rows = await self._load_interaction_rows(
                 conversation_id,
-                after_seq=after_seq,
-                limit=limit,
+                after_seq,
+                limit,
                 descending=False,
             )
             has_more = False
@@ -179,7 +185,6 @@ class HistoryStore:
     async def _load_interaction_rows(
         self,
         conversation_id: str,
-        *,
         after_seq: int | None = None,
         limit: int | None = None,
         descending: bool = False,
@@ -241,7 +246,6 @@ class HistoryHelper:
         cls,
         store: HistoryStore,
         conversation_id: str,
-        *,
         tool_specs: list[dict[str, object]],
         system_prompt: str,
     ) -> "HistoryHelper":
@@ -251,9 +255,9 @@ class HistoryHelper:
             return cls(items=_with_current_tool_specs(items, tool_specs))
         seeded: list[HistoryItem] = []
         if tool_specs:
-            seeded.append(HistoryToolSpecs(specs=tool_specs))
+            seeded.append(HistoryToolSpecs(tool_specs))
         if system_prompt:
-            seeded.append(SystemPrompt(text=system_prompt))
+            seeded.append(SystemPrompt(system_prompt))
         if seeded:
             await store.extend(conversation_id, seeded)
         return cls(items=seeded)
@@ -275,15 +279,15 @@ class HistoryHelper:
                 specs = item.specs
             elif isinstance(item, SystemPrompt):
                 messages.append(
-                    InputMessage(role="developer", name="yuubot", content=[ContentItem(kind="text", text=item.text)])
+                    InputMessage("developer", "yuubot", [ContentItem("text", item.text)])
                 )
             else:
                 messages.append(item)
-        return LLMInput(tool_specs=specs, messages=messages)
+        return LLMInput(specs, messages)
 
 
 def _with_current_tool_specs(items: list[HistoryItem], specs: list[dict[str, object]]) -> list[HistoryItem]:
-    current = HistoryToolSpecs(specs=specs)
+    current = HistoryToolSpecs(specs)
     replaced = False
     result: list[HistoryItem] = []
     for item in items:

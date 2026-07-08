@@ -20,7 +20,7 @@ class ServerConfig(msgspec.Struct, frozen=True):
     port: int = DEFAULT_PORT
 
 
-class ListenerConfig(msgspec.Struct, frozen=True, kw_only=True):
+class ListenerConfig(msgspec.Struct, frozen=True):
     enabled: bool = False
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -44,7 +44,7 @@ class AdminAuthConfig(msgspec.Struct, frozen=True):
     proxy: AdminAuthProxyConfig = msgspec.field(default_factory=AdminAuthProxyConfig)
 
 
-class TrustedAdminListenerConfig(msgspec.Struct, frozen=True, kw_only=True):
+class TrustedAdminListenerConfig(msgspec.Struct, frozen=True):
     enabled: bool = False
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -57,7 +57,7 @@ class DeploymentConfig(msgspec.Struct, frozen=True):
     surface: Literal["local_dev", "local_admin", "trusted_admin", "public"] = "local_dev"
     public_server: ListenerConfig = msgspec.field(default_factory=ListenerConfig)
     local_admin_server: ListenerConfig = msgspec.field(
-        default_factory=lambda: ListenerConfig(enabled=True, host=DEFAULT_HOST, port=DEFAULT_PORT)
+        default_factory=lambda: ListenerConfig(True, DEFAULT_HOST, DEFAULT_PORT)
     )
     trusted_admin_server: TrustedAdminListenerConfig = msgspec.field(default_factory=TrustedAdminListenerConfig)
     admin_url_base: str = ""
@@ -66,7 +66,7 @@ class DeploymentConfig(msgspec.Struct, frozen=True):
     admin_auth: AdminAuthConfig = msgspec.field(default_factory=AdminAuthConfig)
 
 
-class ProcessConfig(msgspec.Struct, frozen=True, kw_only=True):
+class ProcessConfig(msgspec.Struct, frozen=True):
     data_dir: str = ".yuubot-data"
     python_kernels: PythonKernelsConfig = msgspec.field(default_factory=PythonKernelsConfig)
     resources: ResourceConfig = msgspec.field(default_factory=ResourceConfig)
@@ -86,9 +86,9 @@ def process_config_from_raw(raw: dict[str, object]) -> ProcessConfig:
     if data_dir is None and isinstance(paths, dict):
         data_dir = cast(dict[str, object], paths).get("data_dir")
     return ProcessConfig(
-        data_dir=_expand_path_value(str(data_dir or ".yuubot-data")),
-        python_kernels=python_kernels_config_from_raw(raw.get("python_kernels")),
-        resources=resource_config_from_raw(raw.get("resources")),
+        _expand_path_value(str(data_dir or ".yuubot-data")),
+        python_kernels_config_from_raw(raw.get("python_kernels")),
+        resource_config_from_raw(raw.get("resources")),
     )
 
 
@@ -104,7 +104,6 @@ def origin_for(host: str, port: int) -> str:
 
 def deployment_for_serve(
     raw: object,
-    *,
     host: str,
     port: int,
 ) -> DeploymentConfig:
@@ -114,8 +113,8 @@ def deployment_for_serve(
     admin_url_base = base.admin_url_base or origin
     public_url_base = base.public_url_base or origin
     return DeploymentConfig(
-        server=ServerConfig(host=host, port=port),
-        surface="local_dev",
+        ServerConfig(host, port),
+        "local_dev",
         admin_url_base=admin_url_base,
         public_url_base=public_url_base,
         trusted_proxies=base.trusted_proxies,
@@ -123,35 +122,33 @@ def deployment_for_serve(
     )
 
 
-def load_deployment_config(path: str, *, host: str, port: int) -> DeploymentConfig:
-    return deployment_for_serve(load_yaml_mapping(path), host=host, port=port)
+def load_deployment_config(path: str, host: str, port: int) -> DeploymentConfig:
+    return deployment_for_serve(load_yaml_mapping(path), host, port)
 
 
 def deployment_listeners_for_serve(
     raw: object,
-    *,
     host: str,
     port: int,
 ) -> tuple[DeploymentConfig, ...]:
     data = raw if isinstance(raw, dict) else {}
-    trusted_proxies = _string_tuple(data.get("trusted_proxies"))
-    local = _listener_config(
+    trusted_proxies = _trusted_proxies(data.get("trusted_proxies"))
+    local = _local_admin_listener_config(
         data.get("local_admin_server"),
-        default_enabled=True,
-        default_host=host,
-        default_port=port,
+        True,
+        port,
     )
     public = _listener_config(
         data.get("public_server"),
-        default_enabled=False,
-        default_host=host,
-        default_port=port,
+        False,
+        host,
+        port,
     )
     trusted = _trusted_listener_config(
         data.get("trusted_admin_server"),
-        default_enabled=False,
-        default_host=host,
-        default_port=port,
+        False,
+        host,
+        port,
     )
     default_public_base = public.url_base or local.url_base
     deployments: list[DeploymentConfig] = []
@@ -159,47 +156,48 @@ def deployment_listeners_for_serve(
         origin = local.url_base or origin_for(local.host, local.port)
         deployments.append(
             DeploymentConfig(
-                server=ServerConfig(host=local.host, port=local.port),
-                surface="local_admin",
-                public_server=public,
-                local_admin_server=local,
-                trusted_admin_server=trusted,
-                admin_url_base=origin,
-                public_url_base=default_public_base or origin,
-                trusted_proxies=trusted_proxies,
-                admin_auth=AdminAuthConfig(mode="loopback_bypass"),
+                ServerConfig(local.host, local.port),
+                "local_admin",
+                public,
+                local,
+                trusted,
+                origin,
+                default_public_base or origin,
+                trusted_proxies,
+                AdminAuthConfig("loopback_bypass"),
             )
         )
     if public.enabled:
         origin = public.url_base or origin_for(public.host, public.port)
         deployments.append(
             DeploymentConfig(
-                server=ServerConfig(host=public.host, port=public.port),
-                surface="public",
-                public_server=public,
-                local_admin_server=local,
-                trusted_admin_server=trusted,
-                admin_url_base=local.url_base or "",
-                public_url_base=origin,
-                trusted_proxies=trusted_proxies,
-                admin_auth=AdminAuthConfig(mode="loopback_bypass"),
+                ServerConfig(public.host, public.port),
+                "public",
+                public,
+                local,
+                trusted,
+                local.url_base or "",
+                origin,
+                trusted_proxies,
+                AdminAuthConfig("loopback_bypass"),
             )
         )
     if trusted.enabled:
         if trusted.auth.mode == "loopback_bypass":
             raise ValueError("trusted_admin_server.auth.mode must be builtin or proxy")
+        _validate_trusted_admin_auth(trusted.auth)
         origin = trusted.url_base or origin_for(trusted.host, trusted.port)
         deployments.append(
             DeploymentConfig(
-                server=ServerConfig(host=trusted.host, port=trusted.port),
-                surface="trusted_admin",
-                public_server=public,
-                local_admin_server=local,
-                trusted_admin_server=trusted,
-                admin_url_base=origin,
-                public_url_base=default_public_base or origin,
-                trusted_proxies=trusted_proxies,
-                admin_auth=trusted.auth,
+                ServerConfig(trusted.host, trusted.port),
+                "trusted_admin",
+                public,
+                local,
+                trusted,
+                origin,
+                default_public_base or origin,
+                trusted_proxies,
+                trusted.auth,
             )
         )
     if not deployments:
@@ -207,8 +205,8 @@ def deployment_listeners_for_serve(
     return tuple(deployments)
 
 
-def load_listener_deployments(path: str, *, host: str, port: int) -> tuple[DeploymentConfig, ...]:
-    return deployment_listeners_for_serve(load_yaml_mapping(path), host=host, port=port)
+def load_listener_deployments(path: str, host: str, port: int) -> tuple[DeploymentConfig, ...]:
+    return deployment_listeners_for_serve(load_yaml_mapping(path), host, port)
 
 
 def host_from_url_base(url_base: str) -> str:
@@ -240,48 +238,76 @@ def _expand_path_value(value: str) -> str:
 
 def _listener_config(
     raw: object,
-    *,
     default_enabled: bool,
     default_host: str,
     default_port: int,
 ) -> ListenerConfig:
     if not isinstance(raw, dict):
-        return ListenerConfig(enabled=default_enabled, host=default_host, port=default_port)
-    data = cast(dict[str, object], raw)
+        return ListenerConfig(default_enabled, default_host, default_port)
+    return msgspec.convert(_listener_raw(raw, default_host, default_port), ListenerConfig)
+
+
+def _local_admin_listener_config(
+    raw: object,
+    default_enabled: bool,
+    default_port: int,
+) -> ListenerConfig:
+    base = _listener_config(
+        raw,
+        default_enabled,
+        DEFAULT_HOST,
+        default_port,
+    )
     return ListenerConfig(
-        enabled=bool(data.get("enabled", True)),
-        host=str(data.get("host") or default_host),
-        port=int(data.get("port") or default_port),
-        url_base=str(data.get("url_base") or ""),
+        base.enabled,
+        DEFAULT_HOST,
+        base.port,
+        "",
     )
 
 
 def _trusted_listener_config(
     raw: object,
-    *,
     default_enabled: bool,
     default_host: str,
     default_port: int,
 ) -> TrustedAdminListenerConfig:
     if not isinstance(raw, dict):
-        return TrustedAdminListenerConfig(enabled=default_enabled, host=default_host, port=default_port)
+        return TrustedAdminListenerConfig(default_enabled, default_host, default_port)
     data = cast(dict[str, object], raw)
     auth_raw = data.get("auth")
     auth = msgspec.convert(auth_raw if isinstance(auth_raw, dict) else {}, AdminAuthConfig)
+    base = msgspec.convert(_listener_raw(data, default_host, default_port), ListenerConfig)
     return TrustedAdminListenerConfig(
-        enabled=bool(data.get("enabled", True)),
-        host=str(data.get("host") or default_host),
-        port=int(data.get("port") or default_port),
-        url_base=str(data.get("url_base") or ""),
-        auth=auth,
+        base.enabled,
+        base.host,
+        base.port,
+        base.url_base,
+        auth,
     )
 
 
-def _string_tuple(raw: object) -> tuple[str, ...]:
+def _listener_raw(raw: dict[str, object], default_host: str, default_port: int) -> dict[str, object]:
+    merged = dict(raw)
+    merged.setdefault("enabled", True)
+    merged.setdefault("host", default_host)
+    port = merged.get("port")
+    if port is None or port == "":
+        merged["port"] = default_port
+    else:
+        merged["port"] = int(str(port))
+    merged.setdefault("url_base", "")
+    return merged
+
+
+def _trusted_proxies(raw: object) -> tuple[str, ...]:
     if raw is None:
         return ()
     if isinstance(raw, str):
         return (raw,)
-    if isinstance(raw, list | tuple):
-        return tuple(str(item) for item in raw)
-    return ()
+    return msgspec.convert(raw, tuple[str, ...])
+
+
+def _validate_trusted_admin_auth(auth: AdminAuthConfig) -> None:
+    if auth.mode == "builtin" and not auth.builtin.password.strip():
+        raise ValueError("trusted_admin_server.auth.builtin.password must be set")

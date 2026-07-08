@@ -11,7 +11,6 @@ from .streams import TextStream
 
 
 async def run_pty_process(
-    *,
     argv: list[str],
     cwd: Path,
     env: dict[str, str],
@@ -69,7 +68,7 @@ async def _read_loop(process: PtyProcessUnicode, stdout: TextStream) -> None:
 
 async def _stdin_loop(process: PtyProcessUnicode, stdin_stream: TextStream) -> None:
     try:
-        async for chunk in stdin_stream.subscribe():
+        async for chunk in stdin_stream.subscribe(replay=True):
             await asyncio.to_thread(process.write, chunk)
     except asyncio.CancelledError:
         raise

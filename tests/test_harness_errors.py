@@ -7,7 +7,8 @@ import msgspec
 
 from yuubot.chat.harness import Harness
 from yuubot.domain.messages import ContentItem
-from yuubot.domain.stream import StreamEvent, ToolCall
+from yuubot.domain.stream import StreamEvent, ToolCall, ToolResultEndPayload
+from yuubot.runtime.event_payloads import ConversationStreamPayload, RuntimeEventPayload
 from yuubot.tools.progress import current_progress
 from yuubot.util.secrets import REDACTED
 
@@ -50,70 +51,67 @@ class ProgressTool:
         return None
 
 
-def _noop_emit(*_args: object, **_kwargs: object) -> None:
+def _noop_emit(_payload: RuntimeEventPayload) -> None:
     return None
 
 
 async def test_harness_emits_tool_result_end_for_final_result() -> None:
-    emitted: list[tuple[str, dict[str, object]]] = []
+    emitted: list[RuntimeEventPayload] = []
 
-    def emit(kind: str, **payload: object) -> None:
-        emitted.append((kind, payload))
+    def emit(payload: RuntimeEventPayload) -> None:
+        emitted.append(payload)
 
-    harness = Harness(tools={}, emit=emit, conversation_id="c1")
+    harness = Harness({}, emit, "c1")
     results = await harness.gather(
-        [ToolCall(id="call-1", name="missing", arguments="{}")],
+        [ToolCall("call-1", "missing", "{}")],
         asyncio.Event(),
     )
 
     assert results[0].content[0].text == "unknown tool: missing"
-    assert emitted[0][0] == "conversation.stream"
-    assert emitted[0][1]["conversation_id"] == "c1"
-    event = emitted[0][1]["event"]
-    assert isinstance(event, StreamEvent)
+    assert isinstance(emitted[0], ConversationStreamPayload)
+    assert emitted[0].conversation_id == "c1"
+    event = emitted[0].event
     assert event.group_id == "call-1"
     assert event.kind == "tool_result_end"
-    assert event.payload == {
-        "tool_call_id": "call-1",
-        "tool_name": "missing",
-        "content": [
-            {
-                "kind": "text",
-                "text": "unknown tool: missing",
-                "path": "",
-                "url": "",
-                "mime": "text/plain",
-                "meta": {},
-            }
-        ],
-    }
+    assert isinstance(event.payload, ToolResultEndPayload)
+    assert event.payload.tool_call_id == "call-1"
+    assert event.payload.tool_name == "missing"
+    assert event.payload.content == [
+        {
+            "kind": "text",
+            "text": "unknown tool: missing",
+            "path": "",
+            "url": "",
+            "mime": "text/plain",
+            "meta": {},
+        }
+    ]
 
 
 async def test_harness_binds_progress_before_starting_tool_task() -> None:
-    emitted: list[tuple[str, dict[str, object]]] = []
+    emitted: list[RuntimeEventPayload] = []
 
-    def emit(kind: str, **payload: object) -> None:
-        emitted.append((kind, payload))
+    def emit(payload: RuntimeEventPayload) -> None:
+        emitted.append(payload)
 
-    harness = Harness(tools={"progress": ProgressTool()}, emit=emit, conversation_id="c1")
+    harness = Harness({"progress": ProgressTool()}, emit, "c1")
     results = await harness.gather(
-        [ToolCall(id="call-1", name="progress", arguments="{}")],
+        [ToolCall("call-1", "progress", "{}")],
         asyncio.Event(),
     )
 
     assert results[0].content[0].text == "done"
     stream_events: list[StreamEvent] = []
-    for kind, payload in emitted:
-        event = payload.get("event")
-        if kind == "conversation.stream" and isinstance(event, StreamEvent):
-            stream_events.append(event)
+    for payload in emitted:
+        if isinstance(payload, ConversationStreamPayload):
+            stream_events.append(payload.event)
     assert [event.kind for event in stream_events] == ["tool_result_delta", "tool_result_end"]
 
 
 async def test_harness_tool_errors_include_exception_type_and_cause() -> None:
-    harness = Harness(tools={"execute_python": BrokenTool()}, emit=_noop_emit, conversation_id="c1")
+    harness = Harness({"execute_python": BrokenTool()}, _noop_emit, "c1")
     results = await harness.gather(
-        [ToolCall(id="call-1", name="execute_python", arguments="{}")],
+        [ToolCall("call-1", "execute_python", "{}")],
         asyncio.Event(),
     )
 
@@ -144,7 +142,7 @@ class LeakyListTool:
 
     async def execute(self, payload: msgspec.Struct) -> list[ContentItem]:
         del payload
-        return [ContentItem(kind="text", text="token=sk-fake1234567890abcdef")]
+        return [ContentItem("text", "token=sk-fake1234567890abcdef")]
 
     async def close(self) -> None:
         return None
@@ -152,14 +150,14 @@ class LeakyListTool:
 
 async def test_harness_redacts_secret_patterns_in_tool_results() -> None:
     harness = Harness(
-        tools={"leaky": LeakyTool(), "leaky_list": LeakyListTool()},
-        emit=_noop_emit,
-        conversation_id="c1",
+        {"leaky": LeakyTool(), "leaky_list": LeakyListTool()},
+        _noop_emit,
+        "c1",
     )
     results = await harness.gather(
         [
-            ToolCall(id="call-1", name="leaky", arguments="{}"),
-            ToolCall(id="call-2", name="leaky_list", arguments="{}"),
+            ToolCall("call-1", "leaky", "{}"),
+            ToolCall("call-2", "leaky_list", "{}"),
         ],
         asyncio.Event(),
     )

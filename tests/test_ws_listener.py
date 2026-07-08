@@ -2,10 +2,13 @@ import pytest
 
 from yuubot import Yuubot
 from yuubot.chat.listener import WsListener
+from yuubot.domain.stream import StreamEvent, TextDeltaPayload
 from yuubot.runtime.tasks import RuntimeTaskRecord, TaskRegistry
 from yuubot.web.ws import _task_subscribe
 from yuubot.web.ws_commands import TaskSubscribePayload
 from typing import cast
+
+from support.runtime_events import conversation_stream
 
 
 class _Runtime:
@@ -30,11 +33,10 @@ async def test_track_send_replaces_existing_conversation_track() -> None:
     listener.track_send("cmd2", "conv-1")
 
     await listener.on_event(
-        "conversation.stream",
-        {
-            "conversation_id": "conv-1",
-            "event": {"kind": "text_delta", "group_id": "text-0", "payload": {"text": "hi"}},
-        },
+        conversation_stream(
+            "conv-1",
+            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
+        )
     )
 
     stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
@@ -52,7 +54,7 @@ async def test_task_subscribe_terminal_frame_includes_stdout_written_before_subs
         sent.append(payload)
 
     tasks = TaskRegistry()
-    record = RuntimeTaskRecord(id="task-1", owner="actor:amy:conv:c1", kind="shell", status="running")
+    record = RuntimeTaskRecord("task-1", "actor:amy:conv:c1", "shell", status="running")
     tasks.put(record)
     listener = WsListener(send)
 
@@ -70,7 +72,7 @@ async def test_task_subscribe_terminal_frame_includes_stdout_written_before_subs
 
     monkeypatch.setattr(WsListener, "start_task_stdout", complete_before_stdout_subscription)
 
-    await _task_subscribe(cast(Yuubot, _App(tasks)), send, listener, "cmd-1", TaskSubscribePayload(task_id=record.id))
+    await _task_subscribe(cast(Yuubot, _App(tasks)), send, listener, "cmd-1", TaskSubscribePayload(record.id))
 
     task_events = [frame for frame in sent if frame.get("type") == "task.event"]
     assert task_events[-1]["payload"] == {"task_id": record.id, "status": "done", "stdout": "ready\n"}
@@ -88,11 +90,10 @@ async def test_track_send_keeps_different_conversations() -> None:
     listener.track_send("cmd2", "conv-2")
 
     await listener.on_event(
-        "conversation.stream",
-        {
-            "conversation_id": "conv-1",
-            "event": {"kind": "text_delta", "group_id": "text-0", "payload": {"text": "a"}},
-        },
+        conversation_stream(
+            "conv-1",
+            StreamEvent("text-0", "text_delta", TextDeltaPayload("a")),
+        )
     )
 
     stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
@@ -111,11 +112,10 @@ async def test_history_subscriber_receives_stream_without_track_send() -> None:
     listener.track_history("conv-1")
 
     await listener.on_event(
-        "conversation.stream",
-        {
-            "conversation_id": "conv-1",
-            "event": {"kind": "text_delta", "group_id": "text-0", "payload": {"text": "hi"}},
-        },
+        conversation_stream(
+            "conv-1",
+            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
+        )
     )
 
     stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
@@ -135,11 +135,10 @@ async def test_track_send_prevents_duplicate_history_stream() -> None:
     listener.track_send("cmd1", "conv-1")
 
     await listener.on_event(
-        "conversation.stream",
-        {
-            "conversation_id": "conv-1",
-            "event": {"kind": "text_delta", "group_id": "text-0", "payload": {"text": "hi"}},
-        },
+        conversation_stream(
+            "conv-1",
+            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
+        )
     )
 
     stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]

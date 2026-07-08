@@ -31,6 +31,18 @@ _LEGACY_AUTH_MODES: dict[str, McpAuthMode] = {
 OAUTH_AUTH_MODES = frozenset({"oauth_auto", "oauth_manual"})
 
 
+class ApiKeySecret(msgspec.Struct, frozen=True):
+    api_key: str
+    header: str = "Authorization"
+    prefix: str = "Bearer "
+
+
+class OAuthCredentialSecret(msgspec.Struct, frozen=True):
+    tokens: dict[str, object] = msgspec.field(default_factory=dict)
+    client_info: dict[str, object] | None = None
+    manual_client_secret: str | None = None
+
+
 def normalize_auth_mode(mode: str) -> McpAuthMode:
     mapped = _LEGACY_AUTH_MODES.get(mode, mode)
     if mapped in {"none", "api_key", "oauth_auto", "oauth_manual"}:
@@ -53,7 +65,7 @@ def replace_mcp_record(record: McpServerRecord, **changes: object) -> McpServerR
 
     return replace(record, **changes)
 
-class McpServerRecord(msgspec.Struct, frozen=True, kw_only=True):
+class McpServerRecord(msgspec.Struct, frozen=True):
     id: str
     name: str
     endpoint_url: str
@@ -70,7 +82,7 @@ class McpServerRecord(msgspec.Struct, frozen=True, kw_only=True):
     updated_at: str = ""
 
 
-class McpCapabilitySummary(msgspec.Struct, frozen=True, kw_only=True):
+class McpCapabilitySummary(msgspec.Struct, frozen=True):
     server_id: str
     kind: McpCapabilityKind
     name: str
@@ -78,20 +90,20 @@ class McpCapabilitySummary(msgspec.Struct, frozen=True, kw_only=True):
     uri: str = ""
 
 
-class McpToolSpec(msgspec.Struct, frozen=True, kw_only=True):
+class McpToolSpec(msgspec.Struct, frozen=True):
     name: str
     description: str = ""
     input_schema: dict[str, object] = msgspec.field(default_factory=dict)
 
 
-class McpCapabilityIndex(msgspec.Struct, frozen=True, kw_only=True):
+class McpCapabilityIndex(msgspec.Struct, frozen=True):
     server_id: str
     tools: tuple[McpToolSpec, ...] = ()
     resources: tuple[McpCapabilitySummary, ...] = ()
     prompts: tuple[McpCapabilitySummary, ...] = ()
 
 
-class McpServerState(msgspec.Struct, frozen=True, kw_only=True):
+class McpServerState(msgspec.Struct, frozen=True):
     status: McpStateStatus
     capabilities_summary: str = ""
     last_error: str | None = None
@@ -99,7 +111,7 @@ class McpServerState(msgspec.Struct, frozen=True, kw_only=True):
     last_checked_at: str | None = None
 
 
-class McpResult(msgspec.Struct, frozen=True, kw_only=True):
+class McpResult(msgspec.Struct, frozen=True):
     server_id: str
     name: str = ""
     content: object = None
@@ -110,10 +122,10 @@ def capability_summaries(index: McpCapabilityIndex) -> list[McpCapabilitySummary
     return [
         *[
             McpCapabilitySummary(
-                server_id=index.server_id,
-                kind="tool",
-                name=tool.name,
-                description=tool.description,
+                index.server_id,
+                "tool",
+                tool.name,
+                tool.description,
             )
             for tool in index.tools
         ],
@@ -129,7 +141,6 @@ def summarize_capabilities(index: McpCapabilityIndex) -> str:
 def search_capabilities(
     indexes: Iterable[McpCapabilityIndex],
     query: str = "",
-    *,
     kind: str = "",
     server: str = "",
 ) -> list[McpCapabilitySummary]:
@@ -209,8 +220,8 @@ class McpManager:
         self.indexes = {index.server_id: index for index in indexes}
         self.states = {
             record.id: McpServerState(
-                status="ready" if record.enabled and record.id in self.indexes else "disabled" if not record.enabled else "checking",
-                capabilities_summary=summarize_capabilities(self.indexes[record.id]) if record.id in self.indexes else "",
+                "ready" if record.enabled and record.id in self.indexes else "disabled" if not record.enabled else "checking",
+                summarize_capabilities(self.indexes[record.id]) if record.id in self.indexes else "",
             )
             for record in self.records.values()
         }
@@ -218,13 +229,13 @@ class McpManager:
     def enabled_records(self) -> list[McpServerRecord]:
         return [record for record in self.records.values() if record.enabled]
 
-    def search(self, query: str = "", *, kind: str = "", server: str = "") -> list[McpCapabilitySummary]:
+    def search(self, query: str = "", kind: str = "", server: str = "") -> list[McpCapabilitySummary]:
         enabled = {record.id for record in self.enabled_records()}
         return search_capabilities(
             (index for server_id, index in self.indexes.items() if server_id in enabled),
             query,
-            kind=kind,
-            server=server,
+            kind,
+            server,
         )
 
     def get_spec(self, server_id: str, name: str) -> str:
@@ -243,7 +254,6 @@ class McpManager:
     async def discover_with_oauth(
         self,
         record: McpServerRecord,
-        *,
         redirect_uri: str,
         redirect_handler: Any,
         callback_handler: Any,
@@ -251,10 +261,10 @@ class McpManager:
     ) -> McpCapabilityIndex:
         auth = self._build_oauth_auth(
             record,
-            redirect_uri=redirect_uri,
-            redirect_handler=redirect_handler,
-            callback_handler=callback_handler,
-            timeout_s=timeout_s,
+            redirect_uri,
+            redirect_handler,
+            callback_handler,
+            timeout_s,
         )
         client = HttpMcpClient(record, {}, auth)
         return await client.discover()
@@ -263,13 +273,13 @@ class McpManager:
         record = self._enabled_record(server_id)
         client = HttpMcpClient(record, await self._auth_headers(record), await self._oauth_auth(record))
         payload = await client.call_tool(name, arguments)
-        return McpResult(server_id=server_id, name=name, content=payload.get("content"), raw=payload)
+        return McpResult(server_id, name, payload.get("content"), payload)
 
     async def read_resource(self, server_id: str, uri: str) -> McpResult:
         record = self._enabled_record(server_id)
         client = HttpMcpClient(record, await self._auth_headers(record), await self._oauth_auth(record))
         payload = await client.read_resource(uri)
-        return McpResult(server_id=server_id, name=uri, content=payload.get("contents"), raw=payload)
+        return McpResult(server_id, uri, payload.get("contents"), payload)
 
     def _enabled_record(self, server_id: str) -> McpServerRecord:
         record = self.records[server_id]
@@ -283,22 +293,19 @@ class McpManager:
         payload = await self.credentials.secret_payload(record.credential_id)
         if not payload:
             return {}
-        api_key = payload.get("api_key")
-        header = payload.get("header", "Authorization")
-        prefix = payload.get("prefix", "Bearer ")
-        if not isinstance(api_key, str) or not api_key:
+        secret = msgspec.convert(payload, ApiKeySecret)
+        if not secret.api_key:
             return {}
-        if not isinstance(header, str) or not header:
-            header = "Authorization"
-        if not isinstance(prefix, str):
-            prefix = ""
-        return {header: f"{prefix}{api_key}"}
+        return {secret.header: f"{secret.prefix}{secret.api_key}"}
 
     async def has_oauth_tokens(self, record: McpServerRecord) -> bool:
         if not is_oauth_auth_mode(record.auth_mode) or not record.credential_id:
             return False
         payload = await self.credentials.secret_payload(record.credential_id)
-        return isinstance(payload, dict) and isinstance(payload.get("tokens"), dict)
+        if not payload:
+            return False
+        secret = msgspec.convert(payload, OAuthCredentialSecret)
+        return bool(secret.tokens)
 
     async def _oauth_auth(self, record: McpServerRecord) -> httpx.Auth | None:
         if not is_oauth_auth_mode(record.auth_mode):
@@ -310,7 +317,6 @@ class McpManager:
     def _build_oauth_auth(
         self,
         record: McpServerRecord,
-        *,
         redirect_uri: str | None,
         redirect_handler: Any,
         callback_handler: Any,
@@ -329,7 +335,7 @@ class McpManager:
         provider = OAuthClientProvider(
             server_url=record.endpoint_url,
             client_metadata=metadata,
-            storage=McpOAuthTokenStorage(self.credentials, record, redirect_uri=redirect_uri),
+            storage=McpOAuthTokenStorage(self.credentials, record, redirect_uri),
             redirect_handler=redirect_handler,
             callback_handler=callback_handler,
             timeout=timeout_s,
@@ -359,9 +365,9 @@ class HttpMcpClient:
             tools_result = await session.list_tools()
             tools = [
                 McpToolSpec(
-                    name=tool.name,
-                    description=tool.description or "",
-                    input_schema=cast(dict[str, object], tool.inputSchema),
+                    tool.name,
+                    tool.description or "",
+                    cast(dict[str, object], tool.inputSchema),
                 )
                 for tool in tools_result.tools
             ]
@@ -377,24 +383,24 @@ class HttpMcpClient:
                 prompt_items = []
             resources = [
                 McpCapabilitySummary(
-                    server_id=self._record.id,
-                    kind="resource",
-                    name=resource.name or str(resource.uri),
-                    description=resource.description or "",
-                    uri=str(resource.uri),
+                    self._record.id,
+                    "resource",
+                    resource.name or str(resource.uri),
+                    resource.description or "",
+                    str(resource.uri),
                 )
                 for resource in resource_items
             ]
             prompts = [
                 McpCapabilitySummary(
-                    server_id=self._record.id,
-                    kind="prompt",
-                    name=prompt.name,
-                    description=prompt.description or "",
+                    self._record.id,
+                    "prompt",
+                    prompt.name,
+                    prompt.description or "",
                 )
                 for prompt in prompt_items
             ]
-        return McpCapabilityIndex(server_id=self._record.id, tools=tuple(tools), resources=tuple(resources), prompts=tuple(prompts))
+        return McpCapabilityIndex(self._record.id, tuple(tools), tuple(resources), tuple(prompts))
 
     async def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
         async with self._session() as session:
@@ -418,7 +424,7 @@ class HttpMcpClient:
 
 
 class McpOAuthTokenStorage(TokenStorage):
-    def __init__(self, credentials: CredentialStore, record: McpServerRecord, *, redirect_uri: str | None = None) -> None:
+    def __init__(self, credentials: CredentialStore, record: McpServerRecord, redirect_uri: str | None = None) -> None:
         if not record.credential_id:
             raise ValueError(f"MCP OAuth credential id is not configured for {record.id}")
         self._credentials = credentials
@@ -427,42 +433,46 @@ class McpOAuthTokenStorage(TokenStorage):
         self._redirect_uri = redirect_uri
 
     async def get_tokens(self) -> OAuthToken | None:
-        payload = await self._secret_payload()
-        tokens = payload.get("tokens")
-        if not isinstance(tokens, dict):
+        secret = msgspec.convert(await self._secret_payload(), OAuthCredentialSecret)
+        if not secret.tokens:
             return None
-        return OAuthToken.model_validate(tokens)
+        return OAuthToken.model_validate(secret.tokens)
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        payload = await self._secret_payload()
+        secret = msgspec.convert(await self._secret_payload(), OAuthCredentialSecret)
         token_payload = tokens.model_dump(mode="json", exclude_none=True)
-        payload["tokens"] = token_payload
-        await self._put(payload, token_payload=token_payload)
+        await self._put(
+            msgspec.structs.replace(secret, tokens=token_payload),
+            token_payload,
+        )
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        payload = await self._secret_payload()
-        client_info = payload.get("client_info")
-        if not isinstance(client_info, dict):
+        secret = msgspec.convert(await self._secret_payload(), OAuthCredentialSecret)
+        client_info = secret.client_info
+        if client_info is None:
             if not self._record.oauth_client_id:
                 return None
             client_info = {
                 "redirect_uris": [self._redirect_uri or "http://127.0.0.1/unused-oauth-callback"],
                 "client_id": self._record.oauth_client_id,
-                "client_secret": payload.get("manual_client_secret") if isinstance(payload.get("manual_client_secret"), str) else None,
+                "client_secret": secret.manual_client_secret,
             }
-            payload["client_info"] = client_info
-            await self._put(payload)
+            await self._put(msgspec.structs.replace(secret, client_info=client_info))
         return OAuthClientInformationFull.model_validate(client_info)
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        payload = await self._secret_payload()
-        payload["client_info"] = client_info.model_dump(mode="json", exclude_none=True)
-        await self._put(payload)
+        secret = msgspec.convert(await self._secret_payload(), OAuthCredentialSecret)
+        await self._put(
+            msgspec.structs.replace(
+                secret,
+                client_info=client_info.model_dump(mode="json", exclude_none=True),
+            )
+        )
 
     async def _secret_payload(self) -> dict[str, object]:
         return await self._credentials.secret_payload(self._credential_id) or {}
 
-    async def _put(self, payload: dict[str, object], *, token_payload: dict[str, object] | None = None) -> None:
+    async def _put(self, secret: OAuthCredentialSecret, token_payload: dict[str, object] | None = None) -> None:
         existing = await self._credentials.get(self._credential_id)
         scopes: tuple[str, ...] = ()
         expires_at = existing.expires_at if existing is not None else None
@@ -481,7 +491,7 @@ class McpOAuthTokenStorage(TokenStorage):
                 scopes=scopes,
                 created_at=existing.created_at if existing is not None else "",
             ),
-            secret_payload=payload,
+            secret_payload=msgspec.to_builtins(secret),
         )
 
 

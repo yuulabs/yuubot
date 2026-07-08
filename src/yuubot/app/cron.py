@@ -1,7 +1,5 @@
 """Cron job and push notification helpers for admin routes."""
 
-from collections.abc import Mapping
-
 import msgspec
 
 from ..runtime.cron import (
@@ -10,7 +8,6 @@ from ..runtime.cron import (
     CronSchedule,
     PushSubscription,
     cron_job_snapshot,
-    decode_cron_action,
     new_push_subscription_id,
 )
 from ..runtime.cron.vapid import vapid_public_key
@@ -19,21 +16,18 @@ from ..runtime.core import Runtime
 
 async def create_cron_job(
     runtime: Runtime,
-    *,
     owner: str,
     name: str,
-    schedule: CronSchedule | Mapping[str, object],
-    action: CronAction | Mapping[str, object],
+    schedule: CronSchedule,
+    action: CronAction,
     once: bool = False,
 ) -> dict[str, object]:
-    parsed_schedule = schedule if isinstance(schedule, CronSchedule) else msgspec.convert(schedule, CronSchedule)
-    parsed_action = action if isinstance(action, CronAction) else decode_cron_action(dict(action))
     job = await runtime.cron_jobs.build_new(
-        owner=owner,
-        name=name,
-        schedule=parsed_schedule,
-        action=parsed_action,
-        once=once,
+        owner,
+        name,
+        schedule,
+        action,
+        once,
     )
     stored = await runtime.cron.register(job)
     return cron_job_snapshot(stored)
@@ -41,14 +35,13 @@ async def create_cron_job(
 
 async def list_cron_jobs(
     runtime: Runtime,
-    *,
     owner: str | None = None,
     status: CronJobStatus | str | None = None,
     name_glob: str = "",
 ) -> list[dict[str, object]]:
     parsed_status = status if status in {"active", "paused", "completed", "cancelled"} else None
     jobs = await runtime.cron_jobs.list_jobs(
-        owner=owner,
+        owner,
         status=parsed_status,
         name_glob=name_glob,
     )
@@ -73,13 +66,13 @@ async def delete_cron_job(runtime: Runtime, job_id: str) -> bool:
     return await runtime.cron.delete(job_id)
 
 
-async def save_push_subscription(runtime: Runtime, *, endpoint: str, keys: dict[str, str]) -> dict[str, object]:
+async def save_push_subscription(runtime: Runtime, endpoint: str, keys: dict[str, str]) -> dict[str, object]:
     existing = await runtime.push_subscriptions.find_by_endpoint(endpoint)
     subscription = PushSubscription(
-        id=existing.id if existing is not None else new_push_subscription_id(),
-        endpoint=endpoint,
-        keys=keys,
-        created_at=existing.created_at if existing is not None else "",
+        existing.id if existing is not None else new_push_subscription_id(),
+        endpoint,
+        keys,
+        existing.created_at if existing is not None else "",
     )
     stored = await runtime.push_subscriptions.put(subscription)
     return msgspec.to_builtins(stored)

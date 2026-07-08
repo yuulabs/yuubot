@@ -33,20 +33,19 @@ class CredentialRecord(msgspec.Struct, frozen=True, kw_only=True):
     updated_at: str = ""
 
 
-class CredentialSecret(msgspec.Struct, frozen=True, kw_only=True):
+class CredentialSecret(msgspec.Struct, frozen=True):
     credential_id: str
     payload: dict[str, object]
 
 
 class CredentialStore:
-    def __init__(self, db: Database, *, data_dir: Path) -> None:
+    def __init__(self, db: Database, data_dir: Path) -> None:
         self._db = db
         self._codec = _SecretCodec(data_dir / "secrets" / "credential.key")
 
     async def put(
         self,
         record: CredentialRecord,
-        *,
         secret_payload: dict[str, object] | None = None,
     ) -> CredentialRecord:
         now = utc_now_iso()

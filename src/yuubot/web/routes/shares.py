@@ -38,17 +38,17 @@ def register_share_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfi
             return error_response(
                 500,
                 "internal_error",
-                internal_error_message(exc, development=app.development),
-                detail=internal_error_detail(exc, development=app.development),
+                internal_error_message(exc, app.development),
+                internal_error_detail(exc, app.development),
             )
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
-        return json_response(share_grant_snapshot(grant, public_url_base=deployment.public_url_base), status=201)
+        return json_response(share_grant_snapshot(grant, deployment.public_url_base), 201)
 
     @api.get("/api/shares")
     async def api_shares() -> Response:
         items = [
-            share_grant_snapshot(grant, public_url_base=deployment.public_url_base)
+            share_grant_snapshot(grant, deployment.public_url_base)
             for grant in app.list_share_grants()
         ]
         return json_response({"items": items})
@@ -59,7 +59,7 @@ def register_share_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfi
             grant = app.get_share_grant(share_id)
         except ShareNotFoundError:
             return error_response(404, "not_found", "share not found")
-        return json_response(share_grant_snapshot(grant, public_url_base=deployment.public_url_base))
+        return json_response(share_grant_snapshot(grant, deployment.public_url_base))
 
     @api.delete("/api/shares/{share_id}")
     async def api_revoke_share(share_id: str) -> Response:

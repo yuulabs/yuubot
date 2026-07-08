@@ -8,7 +8,8 @@ import pytest
 
 from support.integration_app import reset_actor_app_state
 from yuubot.actor import ActorConfig
-from yuubot.domain import ActorMessage, ConversationContext, LLMInput, ModelCard, StreamEvent
+from yuubot.domain import ActorMessage, ConversationContext, LLMInput, ModelCard, StreamEvent, StreamStopPayload, TextDeltaPayload
+from yuubot.runtime.event_payloads import ActorContextCompactedPayload, ActorContextCompactionStoppedPayload
 from yuubot.llm import merge_catalog, scripted_reply
 from yuubot.llm.types import AccountSnapshot, ValidationResult
 from yuubot.app import Yuubot
@@ -63,12 +64,11 @@ class BlockingProvider:
         return None
 
     async def validate(self) -> ValidationResult:
-        return ValidationResult(ok=True)
+        return ValidationResult(True)
 
     async def stream(
         self,
         input: LLMInput,
-        *,
         model: ModelCard,
         context: ConversationContext,
         cache: CachePool,
@@ -77,8 +77,8 @@ class BlockingProvider:
         del input, model, context, cache, stop_event
         self.started.set()
         await self.release.wait()
-        yield StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "ok"})
-        yield StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "stop"})
+        yield StreamEvent("text-1", "text_delta", TextDeltaPayload("ok"))
+        yield StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))
 
     async def close(self) -> None:
         return None
@@ -108,15 +108,15 @@ async def test_actor_inbound_without_conversation_reuses_default_conversation(ac
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
-    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
     first_conversation = actor._mailbox_conversation
     assert first_conversation is not None
 
-    await actor.handle_mailbox_message(ActorMessage(text="second", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(ActorMessage("second", source={"inbound_kind": "actor_inbound"}))
 
     assert actor._mailbox_conversation == first_conversation
     items, _has_more = await app.runtime.history.load_interaction_wrapped(first_conversation)
@@ -131,16 +131,16 @@ async def test_actor_inbound_without_conversation_creates_new_default_after_ttl(
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
-    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
     first_conversation = actor._mailbox_conversation
     assert first_conversation is not None
 
     app.runtime.conversations.ttl_s = -1
-    await actor.handle_mailbox_message(ActorMessage(text="second", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(ActorMessage("second", source={"inbound_kind": "actor_inbound"}))
 
     assert actor._mailbox_conversation is not None
     assert actor._mailbox_conversation != first_conversation
@@ -154,18 +154,18 @@ async def test_actor_explicit_conversation_and_callback_roles(actor_loop_app: tu
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         scripted_reply("ok"),
     )
     await actor.handle_mailbox_message(
-        ActorMessage(text="hello", conversation_id="explicit", source={"inbound_kind": "actor_inbound"})
+        ActorMessage("hello", "explicit", {"inbound_kind": "actor_inbound"})
     )
     await actor.handle_mailbox_message(
         ActorMessage(
-            text="task done",
-            conversation_id="explicit",
-            source={"inbound_kind": "conversation_callback"},
+            "task done",
+            "explicit",
+            {"inbound_kind": "conversation_callback"},
         )
     )
 
@@ -181,28 +181,29 @@ async def test_actor_mailbox_compacts_once_and_continues(actor_loop_app: tuple[Y
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
             context_compression_tokens=5,
         ),
         PromptConditionedProvider(
-            rules=[
-                (prompt_contains("Summarize the current work"), reply_text("summary text", usage={"input_tokens": 1})),
+            [
+                (prompt_contains("Summarize the current work"), reply_text("summary text", {"input_tokens": 1})),
                 (
                     user_message_contains("automatic context compression continuation"),
-                    reply_text("continued", usage={"input_tokens": 1}),
+                    reply_text("continued", {"input_tokens": 1}),
                 ),
-                (user_message_contains("first"), reply_text("old done", usage={"input_tokens": 5})),
+                (user_message_contains("first"), reply_text("old done", {"input_tokens": 5})),
             ]
         ),
     )
 
-    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
 
     new_conversation = actor._mailbox_conversation
     assert new_conversation is not None
     compacted_event = next(event for event in app.runtime.eventbus.events if event.kind == "actor.context_compacted")
-    old_conversation = str(compacted_event.payload["old_conversation_id"])
-    assert new_conversation == compacted_event.payload["new_conversation_id"]
+    assert isinstance(compacted_event.payload, ActorContextCompactedPayload)
+    old_conversation = compacted_event.payload.old_conversation_id
+    assert new_conversation == compacted_event.payload.new_conversation_id
 
     old_items, _ = await app.runtime.history.load_interaction_wrapped(old_conversation)
     new_items, _ = await app.runtime.history.load_interaction_wrapped(new_conversation)
@@ -222,25 +223,26 @@ async def test_actor_mailbox_second_compaction_trigger_discards_runtime_conversa
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
             context_compression_tokens=5,
         ),
         PromptConditionedProvider(
-            rules=[
-                (prompt_contains("Summarize the current work"), reply_text("summary text", usage={"input_tokens": 1})),
+            [
+                (prompt_contains("Summarize the current work"), reply_text("summary text", {"input_tokens": 1})),
                 (
                     user_message_contains("automatic context compression continuation"),
-                    reply_text("continued", usage={"input_tokens": 5}),
+                    reply_text("continued", {"input_tokens": 5}),
                 ),
-                (user_message_contains("first"), reply_text("old done", usage={"input_tokens": 5})),
+                (user_message_contains("first"), reply_text("old done", {"input_tokens": 5})),
             ]
         ),
     )
 
-    await actor.handle_mailbox_message(ActorMessage(text="first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
 
     stopped_event = next(event for event in app.runtime.eventbus.events if event.kind == "actor.context_compaction_stopped")
-    stopped_conversation = str(stopped_event.payload["conversation_id"])
+    assert isinstance(stopped_event.payload, ActorContextCompactionStoppedPayload)
+    stopped_conversation = stopped_event.payload.conversation_id
     assert actor._mailbox_conversation is None
     assert actor.status == "idle"
     assert not app.runtime.conversations.has(stopped_conversation)
@@ -256,14 +258,14 @@ async def test_actor_explicit_conversation_does_not_compact(actor_loop_app: tupl
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
             context_compression_tokens=5,
         ),
-        PromptConditionedProvider(rules=[(user_message_contains("first"), reply_text("ok", usage={"input_tokens": 5}))]),
+        PromptConditionedProvider([(user_message_contains("first"), reply_text("ok", {"input_tokens": 5}))]),
     )
 
     await actor.handle_mailbox_message(
-        ActorMessage(text="first", conversation_id="explicit", source={"inbound_kind": "actor_inbound"})
+        ActorMessage("first", "explicit", {"inbound_kind": "actor_inbound"})
     )
 
     assert actor._mailbox_conversation is None
@@ -279,7 +281,7 @@ async def test_task_delivery_busy_does_not_append_developer_notice(tmp_path) -> 
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard(selector="fake"),
+            model=ModelCard("fake"),
         ),
         provider,
     )
@@ -289,9 +291,9 @@ async def test_task_delivery_busy_does_not_append_developer_notice(tmp_path) -> 
 
         await actor.handle_mailbox_message(
             ActorMessage(
-                text="task done",
-                conversation_id="explicit",
-                source={"inbound_kind": "task_delivery"},
+                "task done",
+                "explicit",
+                {"inbound_kind": "task_delivery"},
             )
         )
 

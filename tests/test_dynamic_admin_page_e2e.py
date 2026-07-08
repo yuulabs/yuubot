@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 from yuubot.domain import GenToolCall, LLMInput, StreamEvent, ToolResult
+from yuubot.domain.stream import StreamStopPayload, ToolArgumentsDeltaPayload, ToolNamePayload
 
 from support.api import (
     JsonObject,
@@ -133,12 +134,12 @@ def _call_tools(calls: list[tuple[str, str, dict[str, object]]]) -> RuleBuilder:
         for call_id, name, args in calls:
             events.extend(
                 [
-                    StreamEvent(group_id=call_id, kind="tool_name", payload={"id": call_id, "name": name}),
-                    StreamEvent(group_id=call_id, kind="tool_arguments_delta", payload={"text": json.dumps(args)}),
-                    StreamEvent(group_id=call_id, kind="tool_arguments_end"),
+                    StreamEvent(call_id, "tool_name", ToolNamePayload(id=call_id, name=name)),
+                    StreamEvent(call_id, "tool_arguments_delta", ToolArgumentsDeltaPayload(json.dumps(args))),
+                    StreamEvent(call_id, "tool_arguments_end"),
                 ]
             )
-        events.append(StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "tool_calls"}))
+        events.append(StreamEvent("stop", "stream_stop", StreamStopPayload("tool_calls")))
         return events
 
     return build
@@ -157,7 +158,7 @@ def _dynamic_page_llm(approval_html: str) -> PromptConditionedProvider:
         prompt_contains(ADMIN_PAGES_SUBMIT_FLOW),
     )
     return PromptConditionedProvider(
-        rules=[
+        [
             (
                 all_of(
                     dynamic_page_guidance,
@@ -207,10 +208,10 @@ async def test_http_dynamic_html_form_kv_and_inbound_wakeup_flow(test_context: S
     await enable_actor(test_context.server, actor_id)
     await ws_conversation_send(
         test_context.server,
-        command_id="m1",
-        actor_id=actor_id,
-        conversation_id=conversation_id,
-        content="build approval form for ACME-42",
+        "m1",
+        actor_id,
+        conversation_id,
+        "build approval form for ACME-42",
     )
     history = await conversation_history(test_context.server, conversation_id)
     assert history[-1]["payload"] == {"text": f"FORM_READY {SOURCE_PAGE}"}

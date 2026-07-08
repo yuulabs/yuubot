@@ -15,12 +15,12 @@ from support.api import base_url, boot_app, running_server, bootstrap, enable_ac
 @pytest.mark.asyncio
 async def test_bootstrap_development_flag(tmp_path: Path) -> None:
     app = await boot_app(tmp_path / "prod")
-    async with running_server(app, development=False) as server:
+    async with running_server(app, False) as server:
         snapshot = await bootstrap(server)
         assert snapshot["development"] is False
 
     dev_app = await boot_app(tmp_path / "dev")
-    async with running_server(dev_app, development=True) as server:
+    async with running_server(dev_app, True) as server:
         snapshot = await bootstrap(server)
         assert snapshot["development"] is True
 
@@ -28,7 +28,7 @@ async def test_bootstrap_development_flag(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_configure_logging_creates_log_file(tmp_path: Path) -> None:
     logs_dir = tmp_path / "logs"
-    log_path = configure_logging(logs_dir, development=False, max_bytes=1024, backup_count=2)
+    log_path = configure_logging(logs_dir, False, 1024, 2)
     assert log_path == logs_dir / LOG_FILENAME
     assert log_path.is_file()
     assert any(isinstance(handler, logging.handlers.RotatingFileHandler) for handler in logging.getLogger().handlers)
@@ -43,7 +43,6 @@ async def test_internal_error_sanitized_outside_development(tmp_path: Path, monk
 
     async def broken_publish(
         self,
-        *,
         actor_id: str,
         source_path: str,
         expires_at: str | None,
@@ -53,7 +52,7 @@ async def test_internal_error_sanitized_outside_development(tmp_path: Path, monk
 
     monkeypatch.setattr(ShareRegistry, "publish", broken_publish)
 
-    async with running_server(app, development=False) as server:
+    async with running_server(app, False) as server:
         await put_provider(server)
         await put_actor(server, "actor-a", workspace=workspace)
         await enable_actor(server, "actor-a")
@@ -78,7 +77,6 @@ async def test_internal_error_passthrough_in_development(tmp_path: Path, monkeyp
 
     async def broken_publish(
         self,
-        *,
         actor_id: str,
         source_path: str,
         expires_at: str | None,
@@ -88,7 +86,7 @@ async def test_internal_error_passthrough_in_development(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(ShareRegistry, "publish", broken_publish)
 
-    async with running_server(app, development=True) as server:
+    async with running_server(app, True) as server:
         await put_provider(server)
         await put_actor(server, "actor-a", workspace=workspace)
         await enable_actor(server, "actor-a")

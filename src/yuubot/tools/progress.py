@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING
 
 from attrs import define, field
 
-from ..domain.stream import StreamEvent
+from ..domain.stream import StreamEvent, ToolResultDeltaPayload
+from ..runtime.event_payloads import ConversationStreamPayload, ConversationToolProgressPayload
 
 if TYPE_CHECKING:
-    from ..runtime.tasks import EmitFn
+    from ..runtime.event_payloads import EmitFn
 
 _current_progress: ContextVar[ToolProgress | None] = ContextVar("current_progress", default=None)
 
@@ -20,7 +21,6 @@ def current_progress() -> ToolProgress | None:
 
 
 def bind_progress(
-    *,
     emit: EmitFn,
     conversation_id: str,
     tool_call_id: str,
@@ -45,31 +45,34 @@ class ToolProgress:
         if not text:
             return
         self._emit(
-            "conversation.stream",
-            conversation_id=self._conversation_id,
-            event=StreamEvent(
-                group_id=self._tool_call_id,
-                kind="tool_result_delta",
-                payload={
-                    "tool_call_id": self._tool_call_id,
-                    "tool_name": self._tool_name,
-                    "text": text,
-                },
-            ),
+            ConversationStreamPayload(
+                self._conversation_id,
+                StreamEvent(
+                    self._tool_call_id,
+                    "tool_result_delta",
+                    ToolResultDeltaPayload(
+                        self._tool_call_id,
+                        self._tool_name,
+                        text,
+                    ),
+                ),
+            )
         )
         self._emit(
-            "conversation.tool_progress",
-            conversation_id=self._conversation_id,
-            tool_call_id=self._tool_call_id,
-            tool_name=self._tool_name,
-            text=text,
+            ConversationToolProgressPayload(
+                self._conversation_id,
+                self._tool_call_id,
+                self._tool_name,
+                text,
+            )
         )
 
     def set_task(self, label: str) -> None:
         self._emit(
-            "conversation.tool_progress",
-            conversation_id=self._conversation_id,
-            tool_call_id=self._tool_call_id,
-            tool_name=self._tool_name,
-            task=label,
+            ConversationToolProgressPayload(
+                self._conversation_id,
+                self._tool_call_id,
+                self._tool_name,
+                task=label,
+            )
         )

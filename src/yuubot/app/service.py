@@ -6,6 +6,7 @@ snapshot entry points consumed by the HTTP, WebSocket, and CLI facades.
 """
 
 import asyncio
+import secrets
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
@@ -80,7 +81,6 @@ from ..runtime.resource_config import ResourceConfig
 from ..runtime.streams import TextStream
 from ..runtime.tasks import (
     TaskDelivery,
-    TaskDeliveryListener,
     TaskSnapshot,
     register_shell_task,
     task_record_snapshot,
@@ -99,7 +99,7 @@ MCP_OAUTH_ATTEMPT_TTL_S = 600.0
 def _integration_health_error(health: IntegrationHealth | None) -> LifecycleError | None:
     if health is None or health.status == "ready":
         return None
-    return LifecycleError(type=health.status, message=health.reason or health.status)
+    return LifecycleError(health.status, health.reason or health.status)
 
 
 @define
@@ -128,7 +128,6 @@ class Yuubot:
     async def create(
         cls,
         data_dir: str | Path,
-        *,
         python_kernels: PythonKernelsConfig | None = None,
         resources: ResourceConfig | None = None,
     ) -> "Yuubot":
@@ -136,7 +135,7 @@ class Yuubot:
         db = await Database.open(root / "db")
         legacy_db = auto_legacy_db(root) if not (root / "db" / "yuubot.db").exists() else None
         if legacy_db is not None:
-            await migrate_legacy(db, data_dir=root, legacy_db=legacy_db)
+            await migrate_legacy(db, root, legacy_db)
         app = cls(Runtime.create(root, db, kernels=python_kernels, resources=resources))
         await app._load_application_state()
         return app
@@ -162,9 +161,9 @@ class Yuubot:
         actor = self.actors.get(actor_id)
         return resolve_actor_workspace_path(
             actor_id,
-            live_workspace=actor.config.workspace if actor is not None else None,
-            record=self.actor_records.get(actor_id),
-            default_workspace_dir=self.runtime.workspace_dir,
+            actor.config.workspace if actor is not None else None,
+            self.actor_records.get(actor_id),
+            self.runtime.workspace_dir,
         )
 
     async def _load_application_state(self) -> None:
@@ -186,20 +185,20 @@ class Yuubot:
         for mcp_record, mcp_enabled, last_error, index in await self.runtime.state.load_mcp_servers():
             record = normalize_mcp_record(
                 McpServerRecord(
-                    id=mcp_record.id,
-                    name=mcp_record.name,
-                    endpoint_url=mcp_record.endpoint_url,
-                    transport=mcp_record.transport,
-                    auth_mode=mcp_record.auth_mode,
-                    credential_id=mcp_record.credential_id,
-                    oauth_issuer=mcp_record.oauth_issuer,
-                    oauth_authorization_endpoint=mcp_record.oauth_authorization_endpoint,
-                    oauth_token_endpoint=mcp_record.oauth_token_endpoint,
-                    oauth_client_id=mcp_record.oauth_client_id,
-                    oauth_scope=mcp_record.oauth_scope,
-                    enabled=mcp_enabled,
-                    created_at=mcp_record.created_at,
-                    updated_at=mcp_record.updated_at,
+                    mcp_record.id,
+                    mcp_record.name,
+                    mcp_record.endpoint_url,
+                    mcp_record.transport,
+                    mcp_record.auth_mode,
+                    mcp_record.credential_id,
+                    mcp_record.oauth_issuer,
+                    mcp_record.oauth_authorization_endpoint,
+                    mcp_record.oauth_token_endpoint,
+                    mcp_record.oauth_client_id,
+                    mcp_record.oauth_scope,
+                    mcp_enabled,
+                    mcp_record.created_at,
+                    mcp_record.updated_at,
                 )
             )
             mcp_records.append(record)
@@ -209,7 +208,7 @@ class Yuubot:
                 mcp_errors[record.id] = last_error
         self.runtime.mcps.bind(mcp_records, mcp_indexes)
         for server_id, last_error in mcp_errors.items():
-            self.runtime.mcps.states[server_id] = McpServerState(status="error", last_error=last_error)
+            self.runtime.mcps.states[server_id] = McpServerState("error", last_error=last_error)
         for skill in await self.runtime.state.load_skills():
             self.runtime.skills[skill.id] = skill
         for attempt in await self.runtime.state.load_auth_attempts():
@@ -231,7 +230,6 @@ class Yuubot:
         await self.runtime.shares.load_grants()
 
     async def startup(self) -> None:
-        self.runtime.listeners.add(TaskDeliveryListener(self.runtime))
         await self.runtime.listeners.start()
         self.runtime.cron.start()
         await self.runtime.cron.sync_from_store()
@@ -266,15 +264,15 @@ class Yuubot:
         merged_config = merge_redacted_config(
             body.config,
             existing.config if existing is not None else None,
-            secret_fields=frozenset(self.runtime.provider_registry.secret_fields(body.protocol)),
+            frozenset(self.runtime.provider_registry.secret_fields(body.protocol)),
         )
         self.runtime.provider_registry.decode_config(body.protocol, merged_config)
         record = ProviderRecord(
-            id=provider_id,
-            name=body.name,
-            protocol=body.protocol,
-            config=merged_config,
-            last_error=existing.last_error if existing is not None else None,
+            provider_id,
+            body.name,
+            body.protocol,
+            merged_config,
+            existing.last_error if existing is not None else None,
         )
         self.provider_records[provider_id] = record
         await self._drop_provider_instance(provider_id)
@@ -299,11 +297,11 @@ class Yuubot:
         if not result.ok:
             record = self.provider_records[provider_id]
             updated = ProviderRecord(
-                id=record.id,
-                name=record.name,
-                protocol=record.protocol,
-                config=record.config,
-                last_error=result.message or "validation failed",
+                record.id,
+                record.name,
+                record.protocol,
+                record.config,
+                result.message or "validation failed",
             )
             self.provider_records[provider_id] = updated
             await self.runtime.state.put_provider(updated)
@@ -311,11 +309,11 @@ class Yuubot:
             await self.runtime.state.set_provider_last_error(provider_id, None)
             record = self.provider_records[provider_id]
             self.provider_records[provider_id] = ProviderRecord(
-                id=record.id,
-                name=record.name,
-                protocol=record.protocol,
-                config=record.config,
-                last_error=None,
+                record.id,
+                record.name,
+                record.protocol,
+                record.config,
+                None,
             )
         return result
 
@@ -335,9 +333,9 @@ class Yuubot:
         )
         return await refresh_catalog(
             provider_id,
-            store=self.runtime.state,
-            registry=self.runtime.provider_registry,
-            retain_selectors=retain,
+            self.runtime.state,
+            self.runtime.provider_registry,
+            retain,
         )
 
     async def put_model_card(self, provider_id: str, selector: str, body: ModelCardInput) -> ModelCard:
@@ -379,13 +377,13 @@ class Yuubot:
     def provider_snapshot(self, record: ProviderRecord, cards: list[ModelCard]) -> ProviderSnapshot:
         configured_cards = [card for card in cards if is_configured(card)]
         return ProviderSnapshot(
-            id=record.id,
-            name=record.name,
-            protocol=record.protocol,
-            configured=provider_configured(record),
-            last_error=record.last_error,
-            model_count=len(cards),
-            configured_model_count=len(configured_cards),
+            record.id,
+            record.name,
+            record.protocol,
+            provider_configured(record),
+            record.last_error,
+            len(cards),
+            len(configured_cards),
         )
 
     def redacted_provider_detail(self, record: ProviderRecord, cards: list[ModelCard]) -> dict[str, object]:
@@ -432,7 +430,7 @@ class Yuubot:
             config = self.runtime.integration_registry.default_config(integration_type)
             if config is None:
                 return None
-            record = IntegrationRecord(id=integration_type, type=integration_type, name=integration_type, config=config)
+            record = IntegrationRecord(integration_type, integration_type, integration_type, config)
         return await self.enable_integration(record)
 
     async def disable_integration(self, integration_type: str) -> bool:
@@ -453,7 +451,6 @@ class Yuubot:
     async def _persist_mcp_record(
         self,
         record: McpServerRecord,
-        *,
         last_error: str | None = None,
         capabilities: McpCapabilityIndex | None = None,
     ) -> McpServerRecord:
@@ -469,7 +466,6 @@ class Yuubot:
     async def configure_mcp_server(
         self,
         record: McpServerRecord,
-        *,
         api_key: str = "",
         api_key_header: str = "Authorization",
         api_key_prefix: str = "Bearer ",
@@ -542,7 +538,7 @@ class Yuubot:
             return False
         disabled = replace_mcp_record(record, enabled=False, updated_at=utc_now_iso())
         self._store_mcp_record(disabled)
-        self.runtime.mcps.states[server_id] = McpServerState(status="disabled")
+        self.runtime.mcps.states[server_id] = McpServerState("disabled")
         await self.runtime.state.set_mcp_server_enabled(server_id, enabled=False)
         return True
 
@@ -558,12 +554,12 @@ class Yuubot:
     async def refresh_mcp_server(self, server_id: str) -> McpServerState:
         record = self.runtime.mcps.records[server_id]
         if not record.enabled:
-            state = McpServerState(status="disabled")
+            state = McpServerState("disabled")
             self.runtime.mcps.states[server_id] = state
             return state
         if is_oauth_auth_mode(record.auth_mode) and not await self.runtime.mcps.has_oauth_tokens(record):
             state = McpServerState(
-                status="needs_auth",
+                "needs_auth",
                 action_hint={
                     "kind": "start_mcp_oauth",
                     "server_id": server_id,
@@ -574,13 +570,13 @@ class Yuubot:
             self.runtime.mcps.states[server_id] = state
             await self.runtime.state.put_mcp_server(record, enabled=True, last_error=None)
             return state
-        self.runtime.mcps.states[server_id] = McpServerState(status="checking", last_checked_at=utc_now_iso())
+        self.runtime.mcps.states[server_id] = McpServerState("checking", last_checked_at=utc_now_iso())
         try:
             index = await self.runtime.mcps.discover(record)
         except Exception as exc:
             if is_oauth_auth_mode(record.auth_mode):
                 state = McpServerState(
-                    status="needs_auth",
+                    "needs_auth",
                     last_error=str(exc),
                     action_hint={
                         "kind": "start_mcp_oauth",
@@ -592,61 +588,69 @@ class Yuubot:
                 self.runtime.mcps.states[server_id] = state
                 await self.runtime.state.put_mcp_server(record, enabled=True, last_error=str(exc))
                 return state
-            state = McpServerState(status="error", last_error=str(exc), last_checked_at=utc_now_iso())
+            state = McpServerState("error", last_error=str(exc), last_checked_at=utc_now_iso())
             self.runtime.mcps.states[server_id] = state
             await self.runtime.state.put_mcp_server(record, enabled=True, last_error=str(exc))
             return state
         self.runtime.mcps.indexes[server_id] = index
         state = McpServerState(
-            status="ready",
-            capabilities_summary=summarize_capabilities(index),
+            "ready",
+            summarize_capabilities(index),
             last_checked_at=utc_now_iso(),
         )
         self.runtime.mcps.states[server_id] = state
         await self.runtime.state.put_mcp_server(record, enabled=True, capabilities=index)
         return state
 
-    async def start_mcp_oauth(self, server_id: str, *, public_url_base: str) -> AuthAttempt:
+    async def start_mcp_oauth(self, server_id: str, public_url_base: str) -> AuthAttempt:
         record = self.runtime.mcps.records[server_id]
         if not is_oauth_auth_mode(record.auth_mode):
             raise ValueError(f"MCP server {server_id} is not configured for OAuth")
         record = ensure_oauth_credential_id(record)
         if record.credential_id != self.runtime.mcps.records[server_id].credential_id:
             await self._persist_mcp_record(record)
+        callback_token = secrets.token_urlsafe(32)
         attempt = await self.create_auth_attempt(
             AuthAttemptCreate(
-                connection_id=f"mcp:{server_id}",
-                method="oauth_pkce",
-                action={
+                f"mcp:{server_id}",
+                "oauth_pkce",
+                {
                     "kind": "preparing_oauth",
                     "server_id": server_id,
                     "title": f"Authorize {record.name}",
+                    "callback_token": callback_token,
                 },
-                expires_at=auth_attempt_expires_at(ttl_s=MCP_OAUTH_ATTEMPT_TTL_S),
+                auth_attempt_expires_at(MCP_OAUTH_ATTEMPT_TTL_S),
             )
         )
-        redirect_uri = f"{public_url_base.rstrip('/')}/api/mcp-oauth/{attempt.id}/callback"
+        redirect_uri = f"{public_url_base.rstrip('/')}/api/mcp-oauth/{attempt.id}/callback?token={callback_token}"
         future = self.mcp_oauth.begin(attempt.id)
         self.mcp_oauth.start_task(
             attempt.id,
             run_mcp_oauth_attempt(
-                record=record,
-                attempt_id=attempt.id,
-                redirect_uri=redirect_uri,
-                future=future,
-                manager=self.runtime.mcps,
-                state=self.runtime.state,
-                auth_attempts=self.runtime.auth_attempts,
-                update_auth_attempt=self.update_auth_attempt,
-                coordinator=self.mcp_oauth,
+                record,
+                attempt.id,
+                redirect_uri,
+                future,
+                self.runtime.mcps,
+                self.runtime.state,
+                self.runtime.auth_attempts,
+                self.update_auth_attempt,
+                self.mcp_oauth,
             ),
         )
         return attempt
 
-    async def complete_mcp_oauth_callback(self, attempt_id: str, *, code: str, state: str | None) -> AuthAttempt:
+    async def complete_mcp_oauth_callback(self, attempt_id: str, code: str, state: str | None, token: str) -> AuthAttempt:
         if not code:
             raise ValueError("OAuth callback code is required")
-        self.mcp_oauth.complete(attempt_id, code=code, state=state)
+        attempt = self.runtime.auth_attempts.get(attempt_id)
+        if attempt is None:
+            raise KeyError(attempt_id)
+        expected_token = attempt.action.get("callback_token")
+        if not isinstance(expected_token, str) or not secrets.compare_digest(token, expected_token):
+            raise ValueError("OAuth callback token is invalid")
+        self.mcp_oauth.complete(attempt_id, code, state)
         return await self.update_auth_attempt(attempt_id, status="exchanging")
 
     async def mcp_server_snapshots(self) -> list[dict[str, object]]:
@@ -691,7 +695,7 @@ class Yuubot:
             updated = replace_mcp_record(record, credential_id=None, updated_at=utc_now_iso())
             self._store_mcp_record(updated)
             self.runtime.mcps.states[record_id] = McpServerState(
-                status="needs_auth" if record.auth_mode in {"api_key", *OAUTH_AUTH_MODES} else "checking",
+                "needs_auth" if record.auth_mode in {"api_key", *OAUTH_AUTH_MODES} else "checking",
                 action_hint={"kind": "configure_credentials", "server_id": record.id, "title": f"Configure {record.name} credentials"},
                 last_checked_at=utc_now_iso(),
             )
@@ -715,7 +719,7 @@ class Yuubot:
 
     async def put_skill(self, record: SkillRecord) -> SkillRecord:
         existing = self.runtime.skills.get(record.id)
-        stored = stored_skill(record, existing=existing)
+        stored = stored_skill(record, existing)
         self.runtime.skills[stored.id] = stored
         await self.runtime.state.put_skill(stored)
         return stored
@@ -732,11 +736,10 @@ class Yuubot:
     async def wait_auth_attempt(
         self,
         attempt_id: str,
-        *,
         predicate: Callable[[AuthAttempt], bool],
         timeout: float,
     ) -> AuthAttempt | None:
-        return await self.runtime.auth_attempts.wait_for(attempt_id, predicate=predicate, timeout=timeout)
+        return await self.runtime.auth_attempts.wait_for(attempt_id, predicate, timeout)
 
     async def sweep_expired_auth_attempts(self) -> None:
         for attempt_id in self.runtime.auth_attempts.expired_ids():
@@ -751,13 +754,12 @@ class Yuubot:
     async def update_auth_attempt(
         self,
         attempt_id: str,
-        *,
         status: AuthAttemptStatus,
         error: str | None = None,
         action: dict[str, object] | None = None,
     ) -> AuthAttempt:
         attempt = self.runtime.auth_attempts[attempt_id]
-        updated = transition_auth_attempt(attempt, status=status, error=error, action=action)
+        updated = transition_auth_attempt(attempt, status, error, action)
         await self.runtime.state.put_auth_attempt(updated)
         await self.runtime.auth_attempts.put(updated)
         return updated
@@ -774,7 +776,7 @@ class Yuubot:
         self.runtime.actors[config.id] = actor
         return actor
 
-    async def put_actor_record(self, record: ActorRecord, *, enabled: bool = True) -> None:
+    async def put_actor_record(self, record: ActorRecord, enabled: bool = True) -> None:
         self.actor_records[record.id] = record
         await self.runtime.state.put_actor(record, enabled=enabled)
 
@@ -803,6 +805,7 @@ class Yuubot:
             )
             await self.runtime.cron.pause_for_owner_prefix(f"actor:{actor_id}:")
         await self.runtime.conversations.close_for_actor(actor_id)
+        self.runtime.mailboxes.pop(actor_id)
         await self.runtime.state.set_actor_status(actor_id, "disabled", enabled=False)
 
     async def update_actor(self, record: ActorRecord) -> None:
@@ -842,15 +845,15 @@ class Yuubot:
             workspace=body.workspace,
             persona=body.persona,
             model=ModelCard(
-                selector=card.selector,
-                reasoning_effort=body.model.reasoning_effort.strip(),
-                max_context_tokens=card.max_context_tokens,
-                vision=card.vision,
-                toolcall=card.toolcall,
-                json=card.json,
-                input_price_per_million=card.input_price_per_million,
-                cached_input_price_per_million=card.cached_input_price_per_million,
-                output_price_per_million=card.output_price_per_million,
+                card.selector,
+                body.model.reasoning_effort.strip(),
+                card.max_context_tokens,
+                card.vision,
+                card.toolcall,
+                card.json,
+                card.input_price_per_million,
+                card.cached_input_price_per_million,
+                card.output_price_per_million,
             ),
             provider=body.provider,
             context_compression_tokens=body.context_compression_tokens,
@@ -877,8 +880,8 @@ class Yuubot:
     def _actor_config(self, record: ActorRecord) -> ActorConfig:
         workspace = resolve_workspace_path(
             record.workspace,
-            workspace_dir=self.runtime.workspace_dir,
-            actor_id=record.id,
+            self.runtime.workspace_dir,
+            record.id,
         )
         return ActorConfig(
             id=record.id,
@@ -897,13 +900,12 @@ class Yuubot:
         actor_id: str,
         message: InputMessage,
         conversation_id: str | None = None,
-        *,
         on_event: StreamCallback | None = None,
         session_mode: SessionMode = "conversation",
     ) -> list[GenOutput]:
         actor = self.actors[actor_id]
         conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
-        return await conversation.run_loop(message, on_event=on_event, session_mode=session_mode)
+        return await conversation.run_loop(message, on_event, session_mode)
 
     async def chat(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> tuple[Conversation, list[GenOutput]]:
         message = self._input_message(actor_id, input)
@@ -958,7 +960,7 @@ class Yuubot:
 
     def _input_message(self, actor_id: str, input: ChatInput) -> InputMessage:
         content = text_content(input) if isinstance(input, str) else input
-        return InputMessage(role="user", name=actor_id, content=content)
+        return InputMessage("user", actor_id, content)
 
     # -- Inbound / gateway ----------------------------------------------------
 
@@ -1008,15 +1010,14 @@ class Yuubot:
 
     async def publish_share(
         self,
-        *,
         actor_id: str,
         source_path: str,
         expires_at: str | None,
     ) -> ShareGrant:
         return await self.runtime.shares.publish(
-            actor_id=actor_id,
-            source_path=source_path,
-            expires_at=expires_at,
+            actor_id,
+            source_path,
+            expires_at,
         )
 
     def list_share_grants(self) -> list[ShareGrant]:
@@ -1038,7 +1039,6 @@ class Yuubot:
         actor_id: str,
         key: str,
         value: object,
-        *,
         if_match: str | None = None,
     ) -> JsonDocument:
         return await self.runtime.kv.put(actor_id, key, value, if_match=if_match)
@@ -1053,10 +1053,10 @@ class Yuubot:
 
         return vapid_public_key_for(self.runtime)
 
-    async def save_push_subscription(self, *, endpoint: str, keys: dict[str, str]) -> dict[str, object]:
+    async def save_push_subscription(self, endpoint: str, keys: dict[str, str]) -> dict[str, object]:
         from .cron import save_push_subscription
 
-        return await save_push_subscription(self.runtime, endpoint=endpoint, keys=keys)
+        return await save_push_subscription(self.runtime, endpoint, keys)
 
     async def delete_push_subscription(self, subscription_id: str) -> bool:
         return await self.runtime.push_subscriptions.delete(subscription_id)
@@ -1078,14 +1078,13 @@ class Yuubot:
     async def conversation_history(
         self,
         conversation_id: str,
-        *,
         after_seq: int | None = None,
         limit: int | None = None,
     ) -> tuple[list[dict[str, object]], bool]:
         return await self.runtime.history.load_interaction_wrapped(
             conversation_id,
-            after_seq=after_seq,
-            limit=limit,
+            after_seq,
+            limit,
         )
 
     async def integration_snapshot(self, integration_type: str) -> IntegrationSnapshot | None:
@@ -1097,16 +1096,15 @@ class Yuubot:
     def runtime_snapshot(self) -> RuntimeSnapshot:
         return build_runtime_snapshot(self)
 
-    def task_snapshot(self, task_id: str, *, include_stdout: bool = False) -> TaskSnapshot:
-        return task_record_snapshot(self.runtime.tasks.get(task_id), include_stdout=include_stdout)
+    def task_snapshot(self, task_id: str, include_stdout: bool = False) -> TaskSnapshot:
+        return task_record_snapshot(self.runtime.tasks.get(task_id), include_stdout)
 
     def task_stdin_write(self, task_id: str, text: str) -> TaskSnapshot:
         self.runtime.write_runtime_task_stdin(task_id, text)
-        return task_record_snapshot(self.runtime.tasks.get(task_id), include_stdout=True)
+        return task_record_snapshot(self.runtime.tasks.get(task_id), True)
 
     async def submit_shell_task(
         self,
-        *,
         name: str,
         shell: str,
         intro: str,
@@ -1118,14 +1116,14 @@ class Yuubot:
     ) -> TaskSnapshot:
         record = register_shell_task(
             self.runtime,
-            name=name,
-            shell=shell,
-            intro=intro,
-            owner=owner,
-            workspace=workspace,
-            delivery=delivery,
-            ttl_s=ttl_s,
+            name,
+            shell,
+            intro,
+            owner,
+            workspace,
+            delivery,
+            ttl_s,
         )
         if wait_s > 0:
-            await wait_until_terminal_or_timeout(self.runtime.tasks, record.id, timeout=wait_s)
-        return task_record_snapshot(record, include_stdout=True)
+            await wait_until_terminal_or_timeout(self.runtime.tasks, record.id, wait_s)
+        return task_record_snapshot(record, True)

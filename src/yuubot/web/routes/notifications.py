@@ -24,7 +24,7 @@ def register_notification_routes(api: FastAPI, app: Yuubot) -> None:
         except (msgspec.DecodeError, msgspec.ValidationError) as exc:
             return bad_request(exc)
         snapshot = await app.save_push_subscription(endpoint=body.endpoint, keys=body.keys)
-        return json_response(snapshot, status=201)
+        return json_response(snapshot, 201)
 
     @api.delete("/api/notifications/subscriptions/{subscription_id}")
     async def api_delete_push_subscription(subscription_id: str) -> Response:

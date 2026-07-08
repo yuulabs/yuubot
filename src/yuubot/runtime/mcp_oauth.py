@@ -29,7 +29,7 @@ class McpOAuthCoordinator:
         self._callbacks[attempt_id] = future
         return future
 
-    def complete(self, attempt_id: str, *, code: str, state: str | None) -> asyncio.Future[tuple[str, str | None]]:
+    def complete(self, attempt_id: str, code: str, state: str | None) -> asyncio.Future[tuple[str, str | None]]:
         future = self._callbacks[attempt_id]
         if not future.done():
             future.set_result((code, state))
@@ -38,7 +38,11 @@ class McpOAuthCoordinator:
     def start_task(self, attempt_id: str, coro: Coroutine[object, object, None]) -> asyncio.Task[None]:
         task = asyncio.create_task(coro)
         self._tasks[attempt_id] = task
-        task.add_done_callback(lambda _task, attempt_id=attempt_id: self._tasks.pop(attempt_id, None))
+
+        def drop_task(_task: asyncio.Task[None], task_attempt_id: str = attempt_id) -> None:
+            self._tasks.pop(task_attempt_id, None)
+
+        task.add_done_callback(drop_task)
         return task
 
     def drop_callback(self, attempt_id: str) -> None:
@@ -72,7 +76,6 @@ class McpOAuthCoordinator:
 
 
 async def run_mcp_oauth_attempt(
-    *,
     record: McpServerRecord,
     attempt_id: str,
     redirect_uri: str,
@@ -83,29 +86,21 @@ async def run_mcp_oauth_attempt(
     update_auth_attempt: UpdateAuthAttempt,
     coordinator: McpOAuthCoordinator,
 ) -> None:
+    attempt = auth_attempts.get(attempt_id)
+    callback_token = attempt.action.get("callback_token") if attempt is not None else None
+
     async def redirect_handler(authorization_url: str) -> None:
-        await update_auth_attempt(
-            attempt_id,
-            status="waiting_for_user",
-            action={
-                "kind": "open_url",
-                "server_id": record.id,
-                "url": authorization_url,
-                "callback_url": redirect_uri,
-                "title": f"Authorize {record.name}",
-            },
-        )
-        manager.states[record.id] = McpServerState(
-            status="needs_auth",
-            action_hint={
-                "kind": "open_url",
-                "server_id": record.id,
-                "url": authorization_url,
-                "callback_url": redirect_uri,
-                "title": f"Authorize {record.name}",
-            },
-            last_checked_at=utc_now_iso(),
-        )
+        action: dict[str, object] = {
+            "kind": "open_url",
+            "server_id": record.id,
+            "url": authorization_url,
+            "callback_url": redirect_uri,
+            "title": f"Authorize {record.name}",
+        }
+        if isinstance(callback_token, str):
+            action["callback_token"] = callback_token
+        await update_auth_attempt(attempt_id, status="waiting_for_user", action=action)
+        manager.states[record.id] = McpServerState("needs_auth", action_hint=action, last_checked_at=utc_now_iso())
 
     async def callback_handler() -> tuple[str, str | None]:
         return await asyncio.wait_for(future, timeout=600)
@@ -113,16 +108,16 @@ async def run_mcp_oauth_attempt(
     try:
         index = await manager.discover_with_oauth(
             record,
-            redirect_uri=redirect_uri,
-            redirect_handler=redirect_handler,
-            callback_handler=callback_handler,
+            redirect_uri,
+            redirect_handler,
+            callback_handler,
             timeout_s=600,
         )
     except Exception as exc:
         if attempt_id in auth_attempts:
             await update_auth_attempt(attempt_id, status="failed", error=str(exc))
         manager.states[record.id] = McpServerState(
-            status="needs_auth",
+            "needs_auth",
             last_error=str(exc),
             action_hint={"kind": "start_mcp_oauth", "server_id": record.id, "title": f"Authorize {record.name}"},
             last_checked_at=utc_now_iso(),
@@ -133,8 +128,8 @@ async def run_mcp_oauth_attempt(
         coordinator.drop_callback(attempt_id)
     manager.indexes[record.id] = index
     manager.states[record.id] = McpServerState(
-        status="ready",
-        capabilities_summary=summarize_capabilities(index),
+        "ready",
+        summarize_capabilities(index),
         last_checked_at=utc_now_iso(),
     )
     await state.put_mcp_server(record, enabled=record.enabled, capabilities=index)

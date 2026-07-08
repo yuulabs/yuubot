@@ -1,10 +1,13 @@
 import json
 import sys
+import urllib.request
 
 import msgspec
 
+from ..app.snapshots import BootstrapSnapshot
 
-def emit(payload: dict[str, object], *, json_output: bool) -> None:
+
+def emit(payload: dict[str, object], json_output: bool) -> None:
     if json_output:
         print(msgspec.json.encode(payload).decode())
         return
@@ -27,9 +30,12 @@ def not_running_payload() -> dict[str, object]:
     return {"ok": False, "error": {"code": "service_not_running", "message": "yuubot is not running"}}
 
 
-def admin_post(host: str, port: int, path: str, body: dict[str, object]) -> dict[str, object]:
-    import urllib.request
+def admin_get(host: str, port: int, path: str, type_: type[msgspec.Struct]) -> msgspec.Struct:
+    with urllib.request.urlopen(f"http://{host}:{port}{path}", timeout=5) as resp:
+        return msgspec.json.decode(resp.read(), type=type_)
 
+
+def admin_post(host: str, port: int, path: str, body: dict[str, object]) -> dict[str, object]:
     req = urllib.request.Request(
         f"http://{host}:{port}{path}",
         data=msgspec.json.encode(body),
@@ -41,3 +47,9 @@ def admin_post(host: str, port: int, path: str, body: dict[str, object]) -> dict
     if not isinstance(payload, dict):
         raise TypeError("admin response must be a JSON object")
     return payload
+
+
+def bootstrap_snapshot(host: str, port: int) -> BootstrapSnapshot:
+    snapshot = admin_get(host, port, "/api/bootstrap", BootstrapSnapshot)
+    assert isinstance(snapshot, BootstrapSnapshot)
+    return snapshot

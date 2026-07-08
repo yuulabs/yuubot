@@ -17,7 +17,6 @@ async def test_http_execute_python_worker_start_error_reaches_llm(
 ) -> None:
     async def fail_start(
         cls: type[KernelWorker],
-        *,
         workspace: Path,
         env: dict[str, str],
         max_rss_bytes: int,
@@ -33,7 +32,7 @@ async def test_http_execute_python_worker_start_error_reaches_llm(
     monkeypatch.setattr(KernelWorker, "start", classmethod(fail_start))
     actor_id = await test_context.setup_actor(
         PromptConditionedProvider(
-            rules=[
+            [
                 (messages_contain_tool_result("execute_python"), reply_text("done")),
                 (
                     all_of(has_tool_spec("execute_python"), user_message_contains("run python")),
@@ -46,10 +45,10 @@ async def test_http_execute_python_worker_start_error_reaches_llm(
 
     await ws_conversation_send(
         test_context.server,
-        command_id="m1",
-        actor_id=actor_id,
-        conversation_id=conversation_id,
-        content="run python",
+        "m1",
+        actor_id,
+        conversation_id,
+        "run python",
     )
     history = await conversation_history(test_context.server, conversation_id)
     text = tool_result_text(history)

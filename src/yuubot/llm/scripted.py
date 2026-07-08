@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 from attrs import define, field
 
 from ..domain.messages import ConversationContext, LLMInput, ModelCard
-from ..domain.stream import StreamEvent, Usage
+from ..domain.stream import StreamEvent, TextDeltaPayload, Usage
 from ..runtime.cache import CachePool
 from ..util.stream import stream_stop_event
 from .catalog import merge_catalog
@@ -32,12 +32,11 @@ class ScriptedProvider:
         return None
 
     async def validate(self) -> ValidationResult:
-        return ValidationResult(ok=True)
+        return ValidationResult(True)
 
     async def stream(
         self,
         input: LLMInput,
-        *,
         model: ModelCard,
         context: ConversationContext,
         cache: CachePool,
@@ -45,7 +44,7 @@ class ScriptedProvider:
     ) -> AsyncIterator[StreamEvent]:
         del input, model, context, cache
         if stop_event.is_set():
-            yield stream_stop_event("interrupted", Usage(), {}, cost_estimated=False)
+            yield stream_stop_event("interrupted", Usage(), {}, False)
             return
         events = self.steps[min(self._index, len(self.steps) - 1)]
         self._index += 1
@@ -60,8 +59,8 @@ def scripted_reply(text: str) -> ScriptedProvider:
     return ScriptedProvider(
         [
             [
-                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": text}),
-                stream_stop_event("stop", Usage(), {}, cost_estimated=False),
+                StreamEvent("text-1", "text_delta", TextDeltaPayload(text)),
+                stream_stop_event("stop", Usage(), {}, False),
             ]
         ]
     )

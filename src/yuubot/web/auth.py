@@ -1,8 +1,8 @@
 """AdminAuth: proxy, builtin session, and loopback bypass."""
 
-import re
 import secrets
 import time
+from collections.abc import Callable
 from typing import Literal
 from urllib.parse import quote
 
@@ -11,7 +11,8 @@ from attrs import define, field
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from ..app.deployment import AdminAuthConfig, DeploymentConfig
-from .client_ip import header_value
+from ..util.asyncio_ import BackgroundSweeper
+from .client_ip import client_ip_from_scope, header_value, is_loopback
 from .responses import error_response
 
 AuthMethod = Literal["proxy", "builtin_session", "loopback_bypass"]
@@ -41,18 +42,39 @@ class BuiltinSession:
 class SessionStore:
     _sessions: dict[str, BuiltinSession] = field(factory=dict)
     ttl_seconds: int = 7 * 24 * 60 * 60
-    _now: object = time.time
+    _now: Callable[[], float] = field(default=time.time, alias="now")
+    _sweeper: BackgroundSweeper = field(factory=BackgroundSweeper, init=False)
 
-    def create(self, *, user_id: str, display_name: str | None) -> tuple[str, str]:
+    async def start_background_cleanup(self, interval_s: float = 300.0) -> None:
+        await self._sweeper.start(interval_s, self.sweep_expired)
+
+    async def stop_background_cleanup(self) -> None:
+        await self._sweeper.stop()
+
+    async def sweep_expired(self) -> None:
+        self.prune_expired()
+
+    def prune_expired(self) -> int:
+        now = self._time()
+        expired = [
+            session_id
+            for session_id, session in self._sessions.items()
+            if self._is_expired(session, now)
+        ]
+        for session_id in expired:
+            self.delete(session_id)
+        return len(expired)
+
+    def create(self, user_id: str, display_name: str | None) -> tuple[str, str]:
         session_id = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
         now = self._time()
         self._sessions[session_id] = BuiltinSession(
-            user_id=user_id,
-            display_name=display_name,
-            csrf_token=csrf_token,
-            created_at=now,
-            last_seen_at=now,
+            user_id,
+            display_name,
+            csrf_token,
+            now,
+            now,
         )
         return session_id, csrf_token
 
@@ -60,7 +82,7 @@ class SessionStore:
         session = self._sessions.get(session_id)
         if session is None:
             return None
-        if self._time() - session.last_seen_at > self.ttl_seconds:
+        if self._is_expired(session, self._time()):
             self.delete(session_id)
             return None
         return session
@@ -74,21 +96,10 @@ class SessionStore:
         self._sessions.pop(session_id, None)
 
     def _time(self) -> float:
-        now = self._now
-        if callable(now):
-            return float(now())
-        return time.time()
+        return float(self._now())
 
-
-ACTOR_INBOUND_PATH = re.compile(r"^/api/actors/[^/]+/inbound$")
-
-
-def is_actor_inbound(scope: Scope) -> bool:
-    if scope["type"] != "http":
-        return False
-    method = scope.get("method")
-    path = scope.get("path")
-    return method == "POST" and isinstance(path, str) and ACTOR_INBOUND_PATH.match(path) is not None
+    def _is_expired(self, session: BuiltinSession, now: float) -> bool:
+        return now - session.last_seen_at > self.ttl_seconds
 
 
 def is_auth_exempt(scope: Scope) -> bool:
@@ -114,13 +125,18 @@ def authenticate_scope(
     auth = deployment.admin_auth
 
     if auth.mode == "builtin" and is_auth_exempt(scope):
-        return AuthContext(user_id="login", auth_method="builtin_session")
+        return AuthContext("login", auth_method="builtin_session")
 
     if auth.mode == "proxy":
         return _proxy_auth(scope, auth)
 
     if auth.mode == "builtin":
         return _builtin_auth(scope, auth, sessions)
+
+    if auth.mode == "loopback_bypass":
+        trusted_proxies = frozenset(deployment.trusted_proxies)
+        if is_loopback(client_ip_from_scope(scope, trusted_proxies)):
+            return AuthContext("local-admin", auth_method="loopback_bypass")
 
     return None
 
@@ -145,7 +161,7 @@ def _proxy_auth(scope: Scope, auth: AdminAuthConfig) -> AuthContext | None:
         raw_groups = header_value(headers, groups_header.lower())
         if raw_groups is not None:
             groups = tuple(part.strip() for part in raw_groups.split(",") if part.strip())
-    return AuthContext(user_id=user_id, groups=groups, auth_method="proxy")
+    return AuthContext(user_id, groups=groups, auth_method="proxy")
 
 
 def _builtin_auth(scope: Scope, auth: AdminAuthConfig, sessions: SessionStore) -> AuthContext | None:
@@ -160,8 +176,8 @@ def _builtin_auth(scope: Scope, auth: AdminAuthConfig, sessions: SessionStore) -
     if session is None:
         return None
     return AuthContext(
-        user_id=session.user_id,
-        display_name=session.display_name,
+        session.user_id,
+        session.display_name,
         auth_method="builtin_session",
     )
 
@@ -218,7 +234,7 @@ def _session_id_from_scope(scope: Scope, cookie_name: str) -> str | None:
 async def _reject_unauthorized(scope: Scope, receive: Receive, send: Send) -> None:
     if _wants_login_redirect(scope):
         location = _login_redirect_location(scope)
-        await _send_response(scope, receive, send, 303, b"", None, extra_headers=[(b"location", location.encode("latin-1"))])
+        await _send_response(scope, receive, send, 303, b"", None, [(b"location", location.encode("latin-1"))])
         return
     response = error_response(401, "unauthorized", "authentication required")
     body = bytes(response.body)

@@ -33,7 +33,7 @@ class CodingCliSettings(Protocol):
     def timeout_s(self) -> float: ...
 
 
-class CodexConfig(msgspec.Struct, frozen=True, kw_only=True):
+class CodexConfig(msgspec.Struct, frozen=True):
     command: str = "codex"
     probe_args: tuple[str, ...] = ("login", "status")
     login_command: str = "codex login"
@@ -41,7 +41,7 @@ class CodexConfig(msgspec.Struct, frozen=True, kw_only=True):
     timeout_s: float = 600.0
 
 
-class OpenCodeConfig(msgspec.Struct, frozen=True, kw_only=True):
+class OpenCodeConfig(msgspec.Struct, frozen=True):
     command: str = "opencode"
     probe_args: tuple[str, ...] = ("providers", "list")
     login_command: str = "opencode providers login"
@@ -49,7 +49,7 @@ class OpenCodeConfig(msgspec.Struct, frozen=True, kw_only=True):
     timeout_s: float = 600.0
 
 
-class CodingCliState(msgspec.Struct, frozen=True, kw_only=True):
+class CodingCliState(msgspec.Struct, frozen=True):
     status: CodingCliStatus
     reason: str = ""
     binary_path: str = ""
@@ -57,7 +57,7 @@ class CodingCliState(msgspec.Struct, frozen=True, kw_only=True):
     last_checked_at: str | None = None
 
 
-class CodingCliRunResult(msgspec.Struct, frozen=True, kw_only=True):
+class CodingCliRunResult(msgspec.Struct, frozen=True):
     command: tuple[str, ...]
     exit_code: int
     stdout: str
@@ -94,9 +94,9 @@ class CodingCliIntegration:
 
     def prompt_doc(self) -> str:
         return _coding_cli_prompt_doc(
-            command=self.config.command,
-            package_path=self.package_path,
-            login_command=self.config.login_command,
+            self.config.command,
+            self.package_path,
+            self.config.login_command,
         )
 
 
@@ -118,27 +118,27 @@ class OpenCodeIntegration(CodingCliIntegration):
 
 def make_codex(name: str, config: msgspec.Struct, runtime: object) -> CodexIntegration:
     del runtime
-    return CodexIntegration(name=name, config=msgspec.convert(config, CodexConfig))
+    return CodexIntegration(name, msgspec.convert(config, CodexConfig))
 
 
 def make_opencode(name: str, config: msgspec.Struct, runtime: object) -> OpenCodeIntegration:
     del runtime
-    return OpenCodeIntegration(name=name, config=msgspec.convert(config, OpenCodeConfig))
+    return OpenCodeIntegration(name, msgspec.convert(config, OpenCodeConfig))
 
 
 async def probe_coding_cli(settings: CodingCliSettings) -> CodingCliState:
     now = utc_now_iso()
     env = coding_cli_env()
-    binary = resolve_coding_cli_command(settings.command, env=env)
+    binary = resolve_coding_cli_command(settings.command, env)
     if binary is None:
         return CodingCliState(
-            status="error",
-            reason=f"{settings.command} binary was not found on PATH",
+            "error",
+            f"{settings.command} binary was not found on PATH",
             action_hint=_recovery_hint(settings),
             last_checked_at=now,
         )
     if not settings.probe_args:
-        return CodingCliState(status="ready", binary_path=binary, last_checked_at=now)
+        return CodingCliState("ready", binary_path=binary, last_checked_at=now)
     process = await asyncio.create_subprocess_exec(
         binary,
         *settings.probe_args,
@@ -148,21 +148,21 @@ async def probe_coding_cli(settings: CodingCliSettings) -> CodingCliState:
     )
     stdout, stderr = await process.communicate()
     if process.returncode == 0:
-        return CodingCliState(status="ready", binary_path=binary, last_checked_at=now)
+        return CodingCliState("ready", binary_path=binary, last_checked_at=now)
     reason = (stderr or stdout).decode("utf-8", errors="replace").strip()
     return CodingCliState(
-        status="needs_action",
-        reason=reason or f"{settings.command} is not ready",
-        binary_path=binary,
-        action_hint=_recovery_hint(settings),
-        last_checked_at=now,
+        "needs_action",
+        reason or f"{settings.command} is not ready",
+        binary,
+        _recovery_hint(settings),
+        now,
     )
 
 
 def inspect_coding_cli(settings: CodingCliSettings) -> CodingCliState:
     binary = resolve_coding_cli_command(settings.command)
     return CodingCliState(
-        status="checking",
+        "checking",
         binary_path=binary or "",
         last_checked_at=utc_now_iso(),
     )
@@ -170,13 +170,12 @@ def inspect_coding_cli(settings: CodingCliSettings) -> CodingCliState:
 
 async def run_coding_cli(
     settings: CodingCliSettings,
-    *,
     prompt: str,
     extra_args: tuple[str, ...] = (),
     timeout_s: float | None = None,
 ) -> CodingCliRunResult:
     env = coding_cli_env()
-    binary = resolve_coding_cli_command(settings.command, env=env)
+    binary = resolve_coding_cli_command(settings.command, env)
     if binary is None:
         raise RuntimeError(f"{settings.command} binary was not found on PATH")
     command = (binary, *settings.run_args_prefix, *extra_args, prompt)
@@ -194,14 +193,14 @@ async def run_coding_cli(
         await process.wait()
         raise RuntimeError(f"{settings.command} timed out after {timeout:g}s") from None
     return CodingCliRunResult(
-        command=command,
-        exit_code=int(process.returncode or 0),
-        stdout=stdout.decode("utf-8", errors="replace"),
-        stderr=stderr.decode("utf-8", errors="replace"),
+        command,
+        int(process.returncode or 0),
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace"),
     )
 
 
-def resolve_coding_cli_command(command: str, *, env: dict[str, str] | None = None) -> str | None:
+def resolve_coding_cli_command(command: str, env: dict[str, str] | None = None) -> str | None:
     resolved_env = env or coding_cli_env()
     expanded = os.path.expanduser(command)
     return shutil.which(expanded, path=resolved_env.get("PATH"))
@@ -261,7 +260,7 @@ def _recovery_hint(settings: CodingCliSettings) -> dict[str, object] | None:
     }
 
 
-def _coding_cli_prompt_doc(*, command: str, package_path: str, login_command: str) -> str:
+def _coding_cli_prompt_doc(command: str, package_path: str, login_command: str) -> str:
     return "\n".join(
         [
             f"Thin wrapper over the official {command} CLI. Use through execute_python only.",

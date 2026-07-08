@@ -11,12 +11,12 @@ from .types import ModelCardInput
 
 
 def default_model_card(selector: str) -> ModelCard:
-    return ModelCard(selector=selector)
+    return ModelCard(selector)
 
 
 def model_card_from_input(selector: str, body: ModelCardInput) -> ModelCard:
     return ModelCard(
-        selector=selector,
+        selector,
         max_context_tokens=body.max_context_tokens,
         vision=body.vision,
         toolcall=body.toolcall,
@@ -54,7 +54,6 @@ def merge_catalog(presets: list[ModelCard], remote: list[str]) -> list[ModelCard
 
 async def refresh_catalog(
     provider_id: str,
-    *,
     store: ApplicationStateStore,
     registry: ProviderRegistry,
     retain_selectors: frozenset[str] = frozenset(),
@@ -80,7 +79,6 @@ async def refresh_catalog(
 
 async def build_actor_provider(
     provider_id: str,
-    *,
     store: ApplicationStateStore,
     registry: ProviderRegistry,
 ) -> Provider:

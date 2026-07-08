@@ -38,6 +38,15 @@ from ..domain.messages import (
     text_content,
 )
 from ..domain.stream import StreamEvent, StreamStop, estimate_cost, extract_tool_calls, merge
+from ..runtime.event_payloads import (
+    ConversationCostPayload,
+    ConversationHistoryAppendPayload,
+    ConversationInputPayload,
+    ConversationOutputPayload,
+    ConversationStreamPayload,
+    ConversationToolResultsPayload,
+)
+from ..runtime.tasks import skip_conversation_task_deliveries
 from ..util.asyncio_ import BackgroundSweeper
 from ..util.stream import stream_stop_from
 
@@ -73,6 +82,8 @@ class Conversation:
     runtime: "Runtime"
     stop_event: asyncio.Event = field(factory=asyncio.Event)
     _running: bool = field(default=False, init=False)
+    _pending_task_deliveries: list[str] = field(factory=list, init=False)
+    _task_delivery_suppressed_until: float | None = field(default=None, init=False)
     last_stop: StreamStop | None = field(default=None, init=False)
 
     @property
@@ -83,73 +94,55 @@ class Conversation:
         self,
         input: InputMessage,
         on_event: StreamCallback | None = None,
-        *,
         session_mode: SessionMode | None = None,
     ) -> list[GenOutput]:
-        if self._running:
-            raise ConversationBusy(self.id)
-        self._running = True
-        self.runtime.conversations.mark_running(self.id)
-        self.stop_event.clear()
+        self._enter_run()
         try:
             await self._mark_status("active")
             if input.role == "user":
                 self.runtime.allow_task_deliveries(self.id)
                 if session_mode is not None:
-                    input = augment_user_message(input, mode=session_mode)
+                    input = augment_user_message(input, session_mode)
                 await self.runtime.state.set_conversation_title_if_empty(
                     self.id,
                     title_from_user_message(input),
                 )
             if self._needs_python_reset_notice():
                 await self._append(
-                    InputMessage(role="developer", name="yuubot", content=[ContentItem(kind="text", text=PYTHON_RESET_NOTICE)])
+                    InputMessage("developer", "yuubot", [ContentItem("text", PYTHON_RESET_NOTICE)])
                 )
             await self._append(input)
-            self.runtime.emit("conversation.input", conversation_id=self.id, content=msgspec.to_builtins(input.content))
+            self.runtime.emit(
+                ConversationInputPayload(self.id, msgspec.to_builtins(input.content))
+            )
             return await self._run_loop(on_event)
         except asyncio.CancelledError:
             await self._mark_status("interrupted")
             raise
         finally:
-            self._running = False
-            self.runtime.conversations.mark_idle(self.id)
-            await self.runtime.drain_pending_task_deliveries(self.id)
+            await self._exit_run()
 
     async def run_continuation(self, on_event: StreamCallback | None = None) -> list[GenOutput]:
-        if self._running:
-            raise ConversationBusy(self.id)
-        self._running = True
-        self.runtime.conversations.mark_running(self.id)
-        self.stop_event.clear()
+        self._enter_run()
         try:
             await self._mark_status("active")
             return await self._run_loop(on_event)
         finally:
-            self._running = False
-            self.runtime.conversations.mark_idle(self.id)
-            await self.runtime.drain_pending_task_deliveries(self.id)
+            await self._exit_run()
 
     async def append_developer_notice(
         self,
         text: str,
-        *,
         name: str = "yuubot",
         on_event: StreamCallback | None = None,
     ) -> list[GenOutput]:
-        if self._running:
-            raise ConversationBusy(self.id)
-        self._running = True
-        self.runtime.conversations.mark_running(self.id)
-        self.stop_event.clear()
+        self._enter_run()
         try:
             await self._mark_status("active")
-            await self._append(InputMessage(role="developer", name=name, content=text_content(text)))
+            await self._append(InputMessage("developer", name, text_content(text)))
             return await self._run_loop(on_event)
         finally:
-            self._running = False
-            self.runtime.conversations.mark_idle(self.id)
-            await self.runtime.drain_pending_task_deliveries(self.id)
+            await self._exit_run()
 
     async def append_items(self, items: Sequence[HistoryItem]) -> None:
         if self._running:
@@ -163,8 +156,50 @@ class Conversation:
         self.stop_event.set()
         return True
 
+    def queue_task_delivery(self, task_id: str) -> None:
+        if task_id not in self._pending_task_deliveries:
+            self._pending_task_deliveries.append(task_id)
+
+    def pop_task_deliveries(self) -> list[str]:
+        items = self._pending_task_deliveries
+        self._pending_task_deliveries = []
+        return items
+
+    def pending_task_delivery_ids(self) -> list[str]:
+        return list(self._pending_task_deliveries)
+
+    def suppress_task_deliveries(self, now: float, ttl_s: float) -> list[str]:
+        self._task_delivery_suppressed_until = now + ttl_s
+        return self.pop_task_deliveries()
+
+    def allow_task_deliveries(self) -> None:
+        self._task_delivery_suppressed_until = None
+
+    def task_deliveries_suppressed(self, now: float) -> bool:
+        if self._task_delivery_suppressed_until is None:
+            return False
+        if now >= self._task_delivery_suppressed_until:
+            self._task_delivery_suppressed_until = None
+            return False
+        return True
+
     async def close(self) -> None:
+        skip_conversation_task_deliveries(self.runtime, self.id, self.pop_task_deliveries())
         self.stop_event.set()
+
+    def _enter_run(self) -> None:
+        if self._running:
+            raise ConversationBusy(self.id)
+        self._running = True
+        self.runtime.conversations.mark_running(self.id)
+        self.stop_event.clear()
+
+    async def _exit_run(self) -> None:
+        try:
+            await self.runtime.drain_pending_task_deliveries(self.id)
+        finally:
+            self._running = False
+            self.runtime.conversations.mark_idle(self.id)
 
     async def _run_loop(self, on_event: StreamCallback | None) -> list[GenOutput]:
         harness = Harness.from_config(self.harness_config, self.context, self.runtime)
@@ -195,15 +230,13 @@ class Conversation:
                         if on_event is not None:
                             await on_event(chunk)
                         self.runtime.emit(
-                            "conversation.stream",
-                            conversation_id=self.id,
-                            event=chunk,
+                            ConversationStreamPayload(self.id, chunk)
                         )
                 outputs, stop = merge(chunks)
                 self.last_stop = stop
                 await self._extend(outputs)
                 await self._record_cost(stop)
-                self.runtime.emit("conversation.output", conversation_id=self.id, reason=stop.reason)
+                self.runtime.emit(ConversationOutputPayload(self.id, stop.reason))
                 if stop.reason in {"stop", "interrupted"}:
                     await close_harness()
                     await self._mark_status("interrupted" if stop.reason == "interrupted" else "closed")
@@ -214,9 +247,7 @@ class Conversation:
                 if on_event is not None:
                     await on_event(stop_frame)
                 self.runtime.emit(
-                    "conversation.stream",
-                    conversation_id=self.id,
-                    event=stop_frame,
+                    ConversationStreamPayload(self.id, stop_frame)
                 )
 
                 if stop.reason in {"stop", "interrupted"}:
@@ -228,23 +259,22 @@ class Conversation:
                 results = await harness.gather(extract_tool_calls(outputs), self.stop_event)
                 await self._extend(results)
                 self.runtime.emit(
-                    "conversation.tool_results",
-                    conversation_id=self.id,
-                    count=len(results),
-                    results=msgspec.to_builtins(results),
+                    ConversationToolResultsPayload(
+                        self.id,
+                        len(results),
+                        msgspec.to_builtins(results),
+                    )
                 )
                 if self.stop_event.is_set():
-                    stop = StreamStop(reason="interrupted")
-                    self.runtime.emit("conversation.output", conversation_id=self.id, reason=stop.reason)
+                    stop = StreamStop("interrupted")
+                    self.runtime.emit(ConversationOutputPayload(self.id, stop.reason))
                     await close_harness()
                     await self._mark_status("interrupted")
                     stop_frame = stream_stop_from(stop)
                     if on_event is not None:
                         await on_event(stop_frame)
                     self.runtime.emit(
-                        "conversation.stream",
-                        conversation_id=self.id,
-                        event=msgspec.to_builtins(stop_frame),
+                        ConversationStreamPayload(self.id, stop_frame)
                     )
                     return outputs
         finally:
@@ -266,21 +296,24 @@ class Conversation:
         wrapped_items = await self.runtime.history.extend(self.id, items)
         for item in wrapped_items:
             if str(item["kind"]) not in PREFIX_KINDS:
-                self.runtime.emit("conversation.history.append", conversation_id=self.id, item=item)
+                self.runtime.emit(
+                    ConversationHistoryAppendPayload(self.id, item)
+                )
 
     async def _record_cost(self, stop: StreamStop) -> None:
         estimated = stop.cost_estimated or stop.usage.payg_cost is None
         payg_cost = stop.usage.payg_cost if stop.usage.payg_cost is not None else estimate_cost(self.context.model, stop.usage)
-        await self.runtime.state.append_cost(self.id, stop.usage, stop.account, estimated=estimated)
+        await self.runtime.state.append_cost(self.id, stop.usage, stop.account, estimated)
         self.runtime.emit(
-            "conversation.cost",
-            conversation_id=self.id,
-            input_tokens=stop.usage.input_tokens,
-            cached_input_tokens=stop.usage.cached_input_tokens,
-            output_tokens=stop.usage.output_tokens,
-            payg_cost=payg_cost,
-            estimated=estimated,
-            account=stop.account,
+            ConversationCostPayload(
+                self.id,
+                stop.usage.input_tokens,
+                stop.usage.cached_input_tokens,
+                stop.usage.output_tokens,
+                payg_cost,
+                estimated,
+                stop.account,
+            )
         )
 
     async def _mark_status(self, status: str, **last_error: object) -> None:

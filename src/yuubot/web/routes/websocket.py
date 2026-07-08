@@ -27,8 +27,6 @@ def register_websocket_routes(api: FastAPI, app: Yuubot) -> None:
         app.runtime.listeners.add(ws_listener)
 
         def track_task(task: asyncio.Task[None]) -> None:
-            if task.get_name() == "conversation_send":
-                return
             connection_tasks.add(task)
             task.add_done_callback(connection_tasks.discard)
 
@@ -43,7 +41,7 @@ def register_websocket_routes(api: FastAPI, app: Yuubot) -> None:
         finally:
             ws_listener.close()
             app.runtime.listeners.remove(ws_listener)
-            for task in connection_tasks:
+            for task in list(connection_tasks):
                 task.cancel()
             if connection_tasks:
                 await asyncio.gather(*connection_tasks, return_exceptions=True)

@@ -20,7 +20,7 @@ Call this after `uv add` or `uv remove` so the next `execute_python` runs in a f
 This does not run code or change workspace files. It only resets the in-process import cache."""
 
 
-class RestartKernelPayload(msgspec.Struct, frozen=True, kw_only=True):
+class RestartKernelPayload(msgspec.Struct, frozen=True):
     pass
 
 
@@ -49,7 +49,7 @@ def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime)
 
 
 RESTART_KERNEL_SPEC = ToolSpec(
-    payload_type=RestartKernelPayload,
-    description=DESCRIPTION,
-    factory=_factory,
+    RestartKernelPayload,
+    DESCRIPTION,
+    _factory,
 )

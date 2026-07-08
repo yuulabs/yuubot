@@ -23,7 +23,7 @@ class Database:
         return self._path
 
     @classmethod
-    async def open(cls, db_dir: str | Path, *, migrate_on_open: bool = True) -> Database:
+    async def open(cls, db_dir: str | Path, migrate_on_open: bool = True) -> Database:
         directory = Path(db_dir)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "yuubot.db"

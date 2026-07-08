@@ -24,10 +24,10 @@ def register_integration_routes(api: FastAPI, app: Yuubot) -> None:
             existing = app.integration_records.get(integration_type)
             await app.configure_integration(
                 IntegrationRecord(
-                    id=integration_type,
-                    type=integration_type,
-                    name=body.name or integration_type,
-                    config=merge_redacted_config(dict(body.config), existing.config if existing else None),
+                    integration_type,
+                    integration_type,
+                    body.name or integration_type,
+                    merge_redacted_config(dict(body.config), existing.config if existing else None),
                 )
             )
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:

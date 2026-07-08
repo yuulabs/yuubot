@@ -38,7 +38,7 @@ def load_or_create_vapid_keys(data_dir: Path) -> VapidKeys:
     path.parent.mkdir(parents=True, exist_ok=True)
     private_key = ec.generate_private_key(ec.SECP256R1())
     private_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
-    keys = VapidKeys(public_key=_public_key_b64url(private_key), private_key_pem=private_pem)
+    keys = VapidKeys(_public_key_b64url(private_key), private_pem)
     path.write_bytes(msgspec.json.encode(keys))
     return keys
 
@@ -47,7 +47,7 @@ def vapid_public_key(data_dir: Path) -> str:
     return load_or_create_vapid_keys(data_dir).public_key
 
 
-async def send_web_push(*, data_dir: Path, subscription: PushSubscription, payload: str) -> None:
+async def send_web_push(data_dir: Path, subscription: PushSubscription, payload: str) -> None:
     from pywebpush import WebPushException, webpush
 
     keys = load_or_create_vapid_keys(data_dir)

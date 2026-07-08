@@ -18,19 +18,19 @@ DEFAULT_DISK_CRITICAL_USED_PCT = 95.0
 DEFAULT_SPANS_RETENTION_DAYS = 30
 
 
-class LogsResourceConfig(msgspec.Struct, frozen=True, kw_only=True):
+class LogsResourceConfig(msgspec.Struct, frozen=True):
     max_bytes: int = DEFAULT_LOG_MAX_BYTES
     backup_count: int = DEFAULT_LOG_BACKUP_COUNT
     retention_days: int = DEFAULT_LOG_RETENTION_DAYS
 
 
-class DiskAlertConfig(msgspec.Struct, frozen=True, kw_only=True):
+class DiskAlertConfig(msgspec.Struct, frozen=True):
     interval_s: float = DEFAULT_DISK_ALERT_INTERVAL_S
     warn_used_pct: float = DEFAULT_DISK_WARN_USED_PCT
     critical_used_pct: float = DEFAULT_DISK_CRITICAL_USED_PCT
 
 
-class ResourceConfig(msgspec.Struct, frozen=True, kw_only=True):
+class ResourceConfig(msgspec.Struct, frozen=True):
     tmp_dir: str = ""
     tmp_cleanup_interval_s: float = DEFAULT_TMP_CLEANUP_INTERVAL_S
     tmp_max_age_s: float = DEFAULT_TMP_MAX_AGE_S

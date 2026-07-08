@@ -18,10 +18,10 @@ async def test_auth_attempts_persist_across_app_reload(tmp_path: Path) -> None:
     app = await Yuubot.create(data_dir)
     attempt = await app.create_auth_attempt(
         AuthAttemptCreate(
-            connection_id="mcp:linear",
-            method="oauth_pkce",
-            action={"kind": "open_url", "url": "https://auth.example/authorize"},
-            expires_at="2030-01-01T00:00:00Z",
+            "mcp:linear",
+            "oauth_pkce",
+            {"kind": "open_url", "url": "https://auth.example/authorize"},
+            "2030-01-01T00:00:00Z",
         )
     )
     await app.update_auth_attempt(attempt.id, status="polling")
@@ -41,10 +41,10 @@ async def test_auth_attempt_wait_notified_by_update(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
     attempt = await app.create_auth_attempt(
         AuthAttemptCreate(
-            connection_id="mcp:linear",
-            method="oauth_pkce",
-            action={"kind": "preparing_oauth"},
-            expires_at="2030-01-01T00:00:00Z",
+            "mcp:linear",
+            "oauth_pkce",
+            {"kind": "preparing_oauth"},
+            "2030-01-01T00:00:00Z",
         )
     )
 
@@ -75,10 +75,10 @@ async def test_expired_auth_attempts_are_pruned_on_reload(tmp_path: Path) -> Non
     expired_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     await app.create_auth_attempt(
         AuthAttemptCreate(
-            connection_id="mcp:linear",
-            method="oauth_pkce",
-            action={"kind": "open_url", "url": "https://auth.example/authorize"},
-            expires_at=expired_at,
+            "mcp:linear",
+            "oauth_pkce",
+            {"kind": "open_url", "url": "https://auth.example/authorize"},
+            expired_at,
         )
     )
     await app.shutdown()
@@ -95,10 +95,10 @@ async def test_expired_auth_attempt_sweep_deletes_record(tmp_path: Path) -> None
     expired_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
     attempt = await app.create_auth_attempt(
         AuthAttemptCreate(
-            connection_id="mcp:linear",
-            method="oauth_pkce",
-            action={"kind": "open_url", "url": "https://auth.example/authorize"},
-            expires_at=expired_at,
+            "mcp:linear",
+            "oauth_pkce",
+            {"kind": "open_url", "url": "https://auth.example/authorize"},
+            expired_at,
         )
     )
 

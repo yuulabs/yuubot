@@ -29,7 +29,7 @@ class CronJob:
     last_run_at: str | None
     once: bool
 
-    def __init__(self, payload: dict[str, object], *, base_url: str) -> None:
+    def __init__(self, payload: dict[str, object], base_url: str) -> None:
         self.id = str(payload["id"])
         self.name = str(payload.get("name", ""))
         self.owner = str(payload.get("owner", ""))
@@ -46,7 +46,7 @@ class CronJob:
         self._base_url = base_url.rstrip("/")
 
 
-async def list_jobs(*, name_glob: str = "", status: str = "") -> list[CronJob]:
+async def list_jobs(name_glob: str = "", status: str = "") -> list[CronJob]:
     base_url = daemon_url()
     owner = task_owner()
     params: dict[str, str] = {"owner": owner}
@@ -58,13 +58,13 @@ async def list_jobs(*, name_glob: str = "", status: str = "") -> list[CronJob]:
     items = payload.get("items", [])
     if not isinstance(items, list):
         return []
-    return [_job_from_payload(item, base_url=base_url) for item in items if isinstance(item, dict)]
+    return [_job_from_payload(item, base_url) for item in items if isinstance(item, dict)]
 
 
 async def find(job_id: str) -> CronJob:
     base_url = daemon_url()
     payload = await request_json("GET", f"{base_url}/api/cron-jobs/{job_id}")
-    return _job_from_payload(payload, base_url=base_url)
+    return _job_from_payload(payload, base_url)
 
 
 async def add(
@@ -91,19 +91,19 @@ async def add(
     owner = task_owner()
     body = {"name": name, "owner": owner, "schedule": schedule, "action": action, "once": once}
     payload = await request_json("POST", f"{base_url}/api/cron-jobs", json=body)
-    return _job_from_payload(payload, base_url=base_url)
+    return _job_from_payload(payload, base_url)
 
 
 async def pause(job_id: str) -> CronJob:
     base_url = daemon_url()
     payload = await request_json("POST", f"{base_url}/api/cron-jobs/{job_id}/pause")
-    return _job_from_payload(payload, base_url=base_url)
+    return _job_from_payload(payload, base_url)
 
 
 async def resume(job_id: str) -> CronJob:
     base_url = daemon_url()
     payload = await request_json("POST", f"{base_url}/api/cron-jobs/{job_id}/resume")
-    return _job_from_payload(payload, base_url=base_url)
+    return _job_from_payload(payload, base_url)
 
 
 async def delete(job_id: str) -> None:
@@ -111,7 +111,7 @@ async def delete(job_id: str) -> None:
     await request_json("DELETE", f"{base_url}/api/cron-jobs/{job_id}")
 
 
-def _job_from_payload(payload: dict[str, object], *, base_url: str) -> CronJob:
+def _job_from_payload(payload: dict[str, object], base_url: str) -> CronJob:
     return CronJob(payload, base_url=base_url)
 
 

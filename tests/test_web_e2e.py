@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import cast
 
@@ -11,8 +12,11 @@ import websockets
 from yuubot import Yuubot
 from yuubot.app import load_process_config
 from yuubot.db import Database
-from yuubot.domain.stream import StreamEvent, Usage
+from yuubot.domain import ConversationContext, LLMInput, ModelCard
+from yuubot.domain.stream import StreamEvent, StreamStopPayload, TextDeltaPayload, Usage
 from yuubot.llm import ScriptedProvider
+from yuubot.llm.types import AccountSnapshot, ValidationResult
+from yuubot.runtime.cache import CachePool
 from yuubot.util.stream import stream_stop_event
 
 from support.api import (
@@ -38,10 +42,53 @@ from support.api import (
 from support.llm_fakes import InterruptibleProvider, scripted_reply
 
 
+class CancellationAwareProvider:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def list_presets(self) -> list[ModelCard]:
+        return []
+
+    async def list_remote_models(self) -> list[str]:
+        return []
+
+    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
+        del remote
+        return presets
+
+    async def get_balance(self) -> AccountSnapshot | None:
+        return None
+
+    async def validate(self) -> ValidationResult:
+        return ValidationResult(True)
+
+    async def stream(
+        self,
+        input: LLMInput,
+        model: ModelCard,
+        context: ConversationContext,
+        cache: CachePool,
+        stop_event: asyncio.Event,
+    ) -> AsyncIterator[StreamEvent]:
+        del input, model, context, cache, stop_event
+        self.started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        yield StreamEvent("text-1", "text_delta", TextDeltaPayload("not expected"))
+        yield StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))
+
+    async def close(self) -> None:
+        return None
+
+
 async def test_http_bootstrap_history_and_delete(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(scripted_reply("hi"))
     conversation_id = test_context.conversation_id("api-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="hello")
+    await ws_conversation_send(test_context.server, "m1", actor_id, conversation_id, "hello")
 
     assert await http_json("GET", f"{base_url(test_context.server)}/healthz") == {"status": "ok"}
     snapshot = await bootstrap(test_context.server)
@@ -70,7 +117,7 @@ async def test_http_bootstrap_history_and_delete(test_context: SharedTestContext
 
 
 async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_path: Path) -> None:
-    app = await boot_app(tmp_path / "data", provider=scripted_reply("hi"))
+    app = await boot_app(tmp_path / "data", scripted_reply("hi"))
     async with running_server(app) as server:
         url = base_url(server)
         protocols = await http_json("GET", f"{url}/api/provider-protocols")
@@ -309,13 +356,13 @@ async def test_http_uploads_actor_workspace_files(test_context: SharedTestContex
         "POST",
         f"{url}/api/actors/{actor_id}/uploads",
         body,
-        content_type=f"multipart/form-data; boundary={boundary}",
+        f"multipart/form-data; boundary={boundary}",
     )
     second = await http_json(
         "POST",
         f"{url}/api/actors/{actor_id}/uploads",
         body,
-        content_type=f"multipart/form-data; boundary={boundary}",
+        f"multipart/form-data; boundary={boundary}",
     )
     assert first["files"] == [
         {
@@ -348,7 +395,7 @@ async def test_http_manages_actor_workspace_entries(test_context: SharedTestCont
         "POST",
         f"{url}/api/actors/{actor_id}/uploads?path=docs",
         body,
-        content_type=f"multipart/form-data; boundary={boundary}",
+        f"multipart/form-data; boundary={boundary}",
     )
     assert cast(list[JsonObject], uploaded["files"])[0]["path"] == "docs/report.txt"
 
@@ -412,10 +459,10 @@ async def test_ws_conversation_send(test_context: SharedTestContext) -> None:
     conversation_id = test_context.conversation_id("ws-c1")
     frames = await ws_conversation_send(
         test_context.server,
-        command_id="m1",
-        actor_id=actor_id,
-        conversation_id=conversation_id,
-        content=[{"kind": "text", "text": "hello", "mime": "text/plain"}],
+        "m1",
+        actor_id,
+        conversation_id,
+        [{"kind": "text", "text": "hello", "mime": "text/plain"}],
     )
     assert frames[0] == {"id": "m1", "type": "conversation.send.accepted", "payload": {"conversation_id": conversation_id}}
     assert frames[1]["type"] == "conversation.stream"
@@ -428,10 +475,10 @@ async def test_ws_preassigned_conversation_id_first_message(test_context: Shared
     conversation_id = test_context.conversation_id("draft-first")
     frames = await ws_conversation_send(
         test_context.server,
-        command_id="draft-m1",
-        actor_id=actor_id,
-        conversation_id=conversation_id,
-        content="hi",
+        "draft-m1",
+        actor_id,
+        conversation_id,
+        "hi",
     )
     assert frames[0] == {
         "id": "draft-m1",
@@ -442,9 +489,10 @@ async def test_ws_preassigned_conversation_id_first_message(test_context: Shared
     assert [item["kind"] for item in history][-2:] == ["input", "gen_text"]
 
 
-async def test_ws_conversation_send_completes_after_client_disconnect(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(scripted_reply("survives disconnect"))
-    conversation_id = test_context.conversation_id("ws-survive")
+async def test_ws_conversation_send_cancelled_after_client_disconnect(test_context: SharedTestContext) -> None:
+    provider = CancellationAwareProvider()
+    actor_id = await test_context.setup_actor(provider)
+    conversation_id = test_context.conversation_id("ws-cancel")
     async with websockets.connect(ws_url(test_context.server), open_timeout=5) as ws:
         await ws.send(
             json.dumps(
@@ -461,27 +509,23 @@ async def test_ws_conversation_send_completes_after_client_disconnect(test_conte
         )
         accepted = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))
         assert accepted["type"] == "conversation.send.accepted"
-    for _ in range(50):
-        history = await conversation_history(test_context.server, conversation_id)
-        kinds = [item["kind"] for item in history]
-        if "input" in kinds and "gen_text" in kinds:
-            break
-        await asyncio.sleep(0.1)
-    else:
-        raise AssertionError("conversation did not complete after websocket disconnect")
+        await provider.started.wait()
+    await asyncio.wait_for(provider.cancelled.wait(), timeout=5)
+    history = await conversation_history(test_context.server, conversation_id)
+    assert [item["kind"] for item in history] == ["input"]
 
 
 async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frames(test_context: SharedTestContext) -> None:
     provider = ScriptedProvider(
         [
             [
-                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "first"}),
-                stream_stop_event("stop", Usage(), {}, cost_estimated=False),
+                StreamEvent("text-1", "text_delta", TextDeltaPayload("first")),
+                stream_stop_event("stop", Usage(), {}, False),
             ],
             [
-                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "hel"}),
-                StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "lo"}),
-                stream_stop_event("stop", Usage(), {}, cost_estimated=False),
+                StreamEvent("text-1", "text_delta", TextDeltaPayload("hel")),
+                StreamEvent("text-1", "text_delta", TextDeltaPayload("lo")),
+                stream_stop_event("stop", Usage(), {}, False),
             ],
         ]
     )
@@ -540,10 +584,12 @@ async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frame
         and cast(JsonObject, cast(JsonObject, frame["payload"])["event"])["kind"] == "text_delta"
     ]
     assert len(text_delta_frames) == 2
-    texts = [
-        cast(str, cast(JsonObject, cast(JsonObject, frame["payload"])["event"])["payload"]["text"])
-        for frame in text_delta_frames
-    ]
+    texts: list[str] = []
+    for frame in text_delta_frames:
+        payload = cast(JsonObject, frame["payload"])
+        event = cast(JsonObject, payload["event"])
+        event_payload = cast(JsonObject, event["payload"])
+        texts.append(cast(str, event_payload["text"]))
     assert texts == ["hel", "lo"]
 
 
@@ -572,7 +618,7 @@ async def test_ws_rejects_busy_conversation(test_context: SharedTestContext) -> 
                 },
             },
         ],
-        stop_when=lambda frame, _: frame.get("type") == "error"
+        lambda frame, _: frame.get("type") == "error"
         and cast(JsonObject, frame["error"])["code"] == "conversation_busy",
     )
     assert frames[0]["type"] == "conversation.send.accepted"
@@ -612,10 +658,11 @@ async def test_ws_interrupts_running_conversation(test_context: SharedTestContex
                         }
                     )
                 )
-            payload = cast(JsonObject, frame["payload"])
-            event = cast(JsonObject, payload.get("event", {}))
-            if frame["type"] == "conversation.stream" and event.get("kind") == "stream_stop":
-                break
+            if frame["type"] == "conversation.stream":
+                payload = cast(JsonObject, frame["payload"])
+                event = cast(JsonObject, payload.get("event", {}))
+                if event.get("kind") == "stream_stop":
+                    break
 
     assert any(
         frame["type"] == "conversation.interrupt.result" and cast(JsonObject, frame["payload"])["interrupted"] is True
@@ -715,7 +762,7 @@ async def test_ws_subscribes_task_stdout_and_status(test_context: SharedTestCont
     frames = await recv_ws_frames(
         test_context.server,
         [{"id": "t1", "type": "task.subscribe", "payload": {"task_id": task["id"]}}],
-        stop_when=lambda frame, _: (
+        lambda frame, _: (
             frame.get("type") == "task.event"
             and cast(JsonObject, frame["payload"])["status"] == "done"
             and "ready" in str(cast(JsonObject, frame["payload"]).get("stdout", ""))
@@ -749,7 +796,7 @@ async def test_ws_subscribes_completed_task_with_stdout(test_context: SharedTest
     frames = await recv_ws_frames(
         test_context.server,
         [{"id": "t1", "type": "task.subscribe", "payload": {"task_id": task["id"]}}],
-        stop_when=lambda frame, _: frame.get("type") == "task.event"
+        lambda frame, _: frame.get("type") == "task.event"
         and cast(JsonObject, frame["payload"])["status"] == "done",
     )
 
@@ -808,17 +855,21 @@ async def test_http_expired_manual_task_returns_404(test_context: SharedTestCont
 async def test_http_disable_actor_closes_active_conversation(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(scripted_reply("hi"))
     conversation_id = test_context.conversation_id("disable-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="hello")
+    app = getattr(test_context.server, "app")
+    assert isinstance(app, Yuubot)
+    assert f"actor:{actor_id}" in app.runtime.mailboxes
+    await ws_conversation_send(test_context.server, "m1", actor_id, conversation_id, "hello")
     assert (await conversation_history(test_context.server, conversation_id))[-1]["kind"] == "gen_text"
     await disable_actor(test_context.server, actor_id)
     snapshot = await bootstrap(test_context.server)
     actor = next(item for item in cast(list[JsonObject], snapshot["actors"]) if item["id"] == actor_id)
     assert actor["enabled"] is False
     assert actor["status"] == "disabled"
+    assert f"actor:{actor_id}" not in app.runtime.mailboxes
 
 
 async def test_http_actor_startup_failure_visible_in_bootstrap(tmp_path: Path) -> None:
-    app = await boot_app(tmp_path / "data", provider=scripted_reply("hi"))
+    app = await boot_app(tmp_path / "data", scripted_reply("hi"))
     async with running_server(app) as server:
         await put_provider(server, model="fake-model")
         await put_actor(server, "amy", workspace=tmp_path / "workspace", model="fake-model")

@@ -148,11 +148,11 @@ class ApplicationStateStore:
         order_by="id",
         to_row=lambda r, _: (r.id, r.name, r.protocol, msgspec.json.encode(r.config), r.last_error),
         from_row=lambda row: ProviderRecord(
-            id=row[0],
-            name=row[1],
-            protocol=row[2],
-            config=msgspec.json.decode(row[3], type=dict[str, object]),
-            last_error=row[4],
+            row[0],
+            row[1],
+            row[2],
+            msgspec.json.decode(row[3], type=dict[str, object]),
+            row[4],
         ),
     )
 
@@ -227,10 +227,10 @@ class ApplicationStateStore:
     async def load_integrations(self) -> list[tuple[IntegrationRecord, bool, dict[str, object] | None]]:
         return await self._store_list(self._INTEGRATIONS)
 
-    async def put_integration(self, record: IntegrationRecord, *, enabled: bool, last_error: LifecycleError | None = None) -> None:
+    async def put_integration(self, record: IntegrationRecord, enabled: bool, last_error: LifecycleError | None = None) -> None:
         await self._store_put(self._INTEGRATIONS, record, enabled=enabled, last_error=last_error)
 
-    async def set_integration_enabled(self, integration_type: str, *, enabled: bool, last_error: LifecycleError | None = None) -> None:
+    async def set_integration_enabled(self, integration_type: str, enabled: bool, last_error: LifecycleError | None = None) -> None:
         await self._store_set_col(self._INTEGRATIONS, "enabled", int(enabled), integration_type)
         await self._store_set_col(self._INTEGRATIONS, "last_error", _error_payload(last_error), integration_type)
 
@@ -239,8 +239,8 @@ class ApplicationStateStore:
         rows = await cursor.fetchall()
         return {
             integration_type: IntegrationStatus(
-                enabled=bool(enabled),
-                last_error=decode_lifecycle_error(last_error),
+                bool(enabled),
+                decode_lifecycle_error(last_error),
             )
             for integration_type, enabled, last_error in rows
         }
@@ -278,14 +278,13 @@ class ApplicationStateStore:
     async def put_mcp_server(
         self,
         record: McpServerRecord,
-        *,
         enabled: bool,
         last_error: str | None = None,
         capabilities: McpCapabilityIndex | None = None,
     ) -> None:
         await self._store_put(self._MCP, record, enabled=enabled, last_error=last_error, capabilities=capabilities)
 
-    async def set_mcp_server_enabled(self, server_id: str, *, enabled: bool, last_error: str | None = None) -> None:
+    async def set_mcp_server_enabled(self, server_id: str, enabled: bool, last_error: str | None = None) -> None:
         await self._store_set_col(self._MCP, "enabled", int(enabled), server_id)
         await self._store_set_col(self._MCP, "last_error", last_error, server_id)
 
@@ -350,7 +349,7 @@ class ApplicationStateStore:
     async def load_actor_records(self) -> list[tuple[ActorRecord, bool]]:
         return await self._store_list(self._ACTORS)
 
-    async def put_actor(self, record: ActorRecord, *, enabled: bool = True, status: str = "idle", last_error: LifecycleError | None = None) -> None:
+    async def put_actor(self, record: ActorRecord, enabled: bool = True, status: str = "idle", last_error: LifecycleError | None = None) -> None:
         await self._store_put(self._ACTORS, record, enabled=enabled)
         await self._store_set_col(self._ACTORS, "status", status, record.id)
         await self._store_set_col(self._ACTORS, "last_error", _error_payload(last_error), record.id)
@@ -359,7 +358,7 @@ class ApplicationStateStore:
         await self._db.execute("delete from app_actors where id = ?", (actor_id,))
         await self._db.commit()
 
-    async def set_actor_status(self, actor_id: str, status: str, last_error: LifecycleError | None = None, *, enabled: bool | None = None) -> None:
+    async def set_actor_status(self, actor_id: str, status: str, last_error: LifecycleError | None = None, enabled: bool | None = None) -> None:
         if enabled is None:
             await self._store_set_col(self._ACTORS, "status", status, actor_id)
             await self._store_set_col(self._ACTORS, "last_error", _error_payload(last_error), actor_id)
@@ -375,9 +374,9 @@ class ApplicationStateStore:
         rows = await cursor.fetchall()
         return {
             actor_id: ActorStatus(
-                enabled=bool(enabled),
-                status=status,
-                last_error=decode_lifecycle_error(last_error),
+                bool(enabled),
+                status,
+                decode_lifecycle_error(last_error),
             )
             for actor_id, enabled, status, last_error in rows
         }
@@ -400,13 +399,13 @@ class ApplicationStateStore:
             r.title,
         ),
         from_row=lambda row: ConversationRow(
-            id=row[0],
-            actor_id=row[1],
-            status=row[2],
-            created_at=row[3],
-            last_active_at=row[4],
-            last_error=msgspec.json.decode(row[5], type=dict[str, object]) if row[5] is not None else None,
-            title=row[6],
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+            row[4],
+            msgspec.json.decode(row[5], type=dict[str, object]) if row[5] is not None else None,
+            row[6],
         ),
     )
 
@@ -453,7 +452,7 @@ class ApplicationStateStore:
 
     # --- costs -------------------------------------------------------------------
 
-    async def append_cost(self, conversation_id: str, usage: Usage, account: dict[str, object], *, estimated: bool) -> CostRow:
+    async def append_cost(self, conversation_id: str, usage: Usage, account: dict[str, object], estimated: bool) -> CostRow:
         created_at = utc_now_iso()
         usage_payload = msgspec.json.encode(usage)
         account_payload = msgspec.json.encode(account)
@@ -471,12 +470,12 @@ class ApplicationStateStore:
                 (conversation_id, seq, usage_payload, account_payload, int(estimated), created_at),
             )
         return CostRow(
-            conversation_id=conversation_id,
-            seq=seq,
-            usage=usage,
-            account=dict(account),
-            estimated=estimated,
-            created_at=created_at,
+            conversation_id,
+            seq,
+            usage,
+            dict(account),
+            estimated,
+            created_at,
         )
 
     async def load_costs(self, conversation_id: str) -> list[CostRow]:
@@ -487,12 +486,12 @@ class ApplicationStateStore:
         rows = await cursor.fetchall()
         return [
             CostRow(
-                conversation_id=conversation_id,
-                seq=seq,
-                usage=msgspec.json.decode(usage, type=Usage),
-                account=msgspec.json.decode(account, type=dict[str, object]) if account is not None else {},
-                estimated=bool(estimated),
-                created_at=created_at,
+                conversation_id,
+                seq,
+                msgspec.json.decode(usage, type=Usage),
+                msgspec.json.decode(account, type=dict[str, object]) if account is not None else {},
+                bool(estimated),
+                created_at,
             )
             for seq, usage, account, estimated, created_at in rows
         ]

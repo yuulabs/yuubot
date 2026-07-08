@@ -5,7 +5,6 @@ from ..domain.records import ActorRecord
 
 def resolve_workspace_path(
     raw: str,
-    *,
     workspace_dir: Path,
     actor_id: str,
 ) -> Path:
@@ -43,7 +42,6 @@ def prepare_workspace(path: Path) -> None:
 
 def resolve_actor_workspace_path(
     actor_id: str,
-    *,
     live_workspace: str | None,
     record: ActorRecord | None,
     default_workspace_dir: Path,
@@ -53,4 +51,4 @@ def resolve_actor_workspace_path(
         if record is None:
             return None
         raw = record.workspace
-    return resolve_workspace_path(raw or "", workspace_dir=default_workspace_dir, actor_id=actor_id)
+    return resolve_workspace_path(raw or "", default_workspace_dir, actor_id)

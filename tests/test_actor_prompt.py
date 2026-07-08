@@ -68,8 +68,8 @@ def test_developer_prompt_real_time_data_is_static(tmp_path: Path) -> None:
 
 
 def test_augment_user_message_round_trip() -> None:
-    message = InputMessage(role="user", name="amy", content=text_content("hello"))
-    augmented = augment_user_message(message, mode="actor")
+    message = InputMessage("user", "amy", text_content("hello"))
+    augmented = augment_user_message(message, "actor")
 
     assert augmented.content[0].text.startswith(REAL_TIME_CONTEXT_MARKER)
     assert "mode: actor" in augmented.content[0].text

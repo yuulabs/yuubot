@@ -45,6 +45,13 @@ data_dir: ~/.yuubot-data
 #   port: 8766
 #   url_base: https://public.example.com
 #
+# Public app webhooks require HMAC when public_server is enabled. Configure the
+# per-integration secret in the environment and send X-Yuubot-Webhook-Signature:
+#   YUUBOT_GITHUB_WEBHOOK_SECRET=...
+#   YUUBOT_CODEX_WEBHOOK_SECRET=...
+#   YUUBOT_OPENCODE_WEBHOOK_SECRET=...
+#   YUUBOT_TAVILY_WEB_WEBHOOK_SECRET=...
+#
 # trusted_admin_server:
 #   enabled: false
 #   host: 127.0.0.1

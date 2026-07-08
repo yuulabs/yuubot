@@ -25,8 +25,8 @@ from support.prompt_conditioned_llm import PromptConditionedProvider
 async def test_http_conversation_runs_tool_loop(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(
         PromptConditionedProvider(
-            rules=[
-                (messages_contain_tool_result("write"), reply_text("done", usage={"input_tokens": 1, "output_tokens": 1})),
+            [
+                (messages_contain_tool_result("write"), reply_text("done", {"input_tokens": 1, "output_tokens": 1})),
                 (
                     all_of(has_tool_spec("write"), user_message_contains("write note")),
                     call_tool("write", {"path": "note.txt", "content": "hello"}),
@@ -35,7 +35,7 @@ async def test_http_conversation_runs_tool_loop(test_context: SharedTestContext)
         )
     )
     conversation_id = test_context.conversation_id("tool-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="write note")
+    await ws_conversation_send(test_context.server, "m1", actor_id, conversation_id, "write note")
     history = await conversation_history(test_context.server, conversation_id)
     summary = await conversation_summary(test_context.server, conversation_id)
     assert (test_context.workspace / "note.txt").read_text() == "hello"
@@ -51,7 +51,7 @@ async def test_http_enabled_actor_receives_inbound_messages(test_context: Shared
     conversation_id = test_context.conversation_id("route-c1")
     await test_context.create_route(route_id=route, pattern=route, actor_id=actor_id)
     await enable_actor(test_context.server, actor_id)
-    inbound = await post_inbound(test_context.server, route, "hi", conversation_id=conversation_id)
+    inbound = await post_inbound(test_context.server, route, "hi", conversation_id)
     assert inbound["delivered"] is True
     history = await wait_for_history_kind(test_context.server, conversation_id, "gen_text")
     await disable_actor(test_context.server, actor_id)
@@ -61,15 +61,15 @@ async def test_http_enabled_actor_receives_inbound_messages(test_context: Shared
 
 
 async def test_http_actor_blocked_state_visible_in_bootstrap(test_context: SharedTestContext) -> None:
-    from yuubot.domain import StreamEvent
+    from yuubot.domain import StreamEvent, StreamStopPayload, TextDeltaPayload
     from yuubot.llm import ScriptedProvider
 
     actor_id = await test_context.setup_actor(
         ScriptedProvider(
             [
                 [
-                    StreamEvent(group_id="text-1", kind="text_delta", payload={"text": "partial"}),
-                    StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "length"}),
+                    StreamEvent("text-1", "text_delta", TextDeltaPayload("partial")),
+                    StreamEvent("stop", "stream_stop", StreamStopPayload("length")),
                 ]
             ]
         ),
@@ -79,7 +79,7 @@ async def test_http_actor_blocked_state_visible_in_bootstrap(test_context: Share
     conversation_id = test_context.conversation_id("blocked-c1")
     await test_context.create_route(route_id=route, pattern=route, actor_id=actor_id)
     await enable_actor(test_context.server, actor_id)
-    await post_inbound(test_context.server, route, "hi", conversation_id=conversation_id)
+    await post_inbound(test_context.server, route, "hi", conversation_id)
     actor: JsonObject = {}
     for _ in range(100):
         actor = next(item for item in cast(list[JsonObject], (await bootstrap(test_context.server))["actors"]) if item["id"] == actor_id)
@@ -95,7 +95,7 @@ async def test_http_actor_blocked_state_visible_in_bootstrap(test_context: Share
 async def test_http_two_actors_use_distinct_workspaces(test_context: SharedTestContext) -> None:
     actor_a = await test_context.setup_actor(
         PromptConditionedProvider(
-            rules=[
+            [
                 (messages_contain_tool_result("write"), reply_text("done-a")),
                 (
                     all_of(has_tool_spec("write"), user_message_contains("write note a")),
@@ -109,7 +109,7 @@ async def test_http_two_actors_use_distinct_workspaces(test_context: SharedTestC
     )
     actor_b = await test_context.setup_actor(
         PromptConditionedProvider(
-            rules=[
+            [
                 (messages_contain_tool_result("write"), reply_text("done-b")),
                 (
                     all_of(has_tool_spec("write"), user_message_contains("write note b")),
@@ -125,17 +125,17 @@ async def test_http_two_actors_use_distinct_workspaces(test_context: SharedTestC
     conversation_b = test_context.conversation_id("multi-b")
     await ws_conversation_send(
         test_context.server,
-        command_id="m1",
-        actor_id=actor_a,
-        conversation_id=conversation_a,
-        content="write note a",
+        "m1",
+        actor_a,
+        conversation_a,
+        "write note a",
     )
     await ws_conversation_send(
         test_context.server,
-        command_id="m2",
-        actor_id=actor_b,
-        conversation_id=conversation_b,
-        content="write note b",
+        "m2",
+        actor_b,
+        conversation_b,
+        "write note b",
     )
     assert (test_context.workspace / "note-a.txt").read_text(encoding="utf-8") == "alpha"
     assert (test_context.workspace_alt / "note-b.txt").read_text(encoding="utf-8") == "beta"
@@ -169,7 +169,7 @@ async def test_http_execute_python_receives_enabled_integration_context(exec_py_
     await exec_py_context.enable_integration("tavily_web")
     await exec_py_context.activate(
         PromptConditionedProvider(
-            rules=[
+            [
                 (messages_contain_tool_result("execute_python"), reply_text("done")),
                 (
                     all_of(has_tool_spec("execute_python"), user_message_contains("inspect github context")),
@@ -182,17 +182,17 @@ async def test_http_execute_python_receives_enabled_integration_context(exec_py_
     conversation_id = exec_py_context.conversation_id("py-c1")
     await ws_conversation_send(
         exec_py_context.server,
-        command_id="m1",
-        actor_id=exec_py_context.actor_id,
-        conversation_id=conversation_id,
-        content="inspect github context",
+        "m1",
+        exec_py_context.actor_id,
+        conversation_id,
+        "inspect github context",
     )
     await ws_conversation_send(
         exec_py_context.server,
-        command_id="m2",
-        actor_id=exec_py_context.actor_id,
-        conversation_id=conversation_id,
-        content="continue",
+        "m2",
+        exec_py_context.actor_id,
+        conversation_id,
+        "continue",
     )
     history = await conversation_history(exec_py_context.server, conversation_id)
     developer_messages = [item for item in history if item["kind"] == "input" and history_payload(item).get("role") == "developer"]
@@ -205,7 +205,7 @@ async def test_http_execute_python_returns_ipython_traceback(exec_py_context: Ex
     await exec_py_context.reset_state()
     await exec_py_context.activate(
         PromptConditionedProvider(
-            rules=[
+            [
                 (messages_contain_tool_result("execute_python"), reply_text("done")),
                 (
                     all_of(has_tool_spec("execute_python"), user_message_contains("show error")),
@@ -217,10 +217,10 @@ async def test_http_execute_python_returns_ipython_traceback(exec_py_context: Ex
     conversation_id = exec_py_context.conversation_id("py-error")
     await ws_conversation_send(
         exec_py_context.server,
-        command_id="m1",
-        actor_id=exec_py_context.actor_id,
-        conversation_id=conversation_id,
-        content="show error",
+        "m1",
+        exec_py_context.actor_id,
+        conversation_id,
+        "show error",
     )
     history = await conversation_history(exec_py_context.server, conversation_id)
     text = tool_result_text([item for item in history if item["kind"] == "tool_result"])

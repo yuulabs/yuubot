@@ -39,8 +39,8 @@ def register_conversation_routes(api: FastAPI, app: Yuubot) -> None:
             return bad_request(ValueError("limit must be positive"))
         items, has_more = await app.conversation_history(
             conversation_id,
-            after_seq=after_seq,
-            limit=limit,
+            after_seq,
+            limit,
         )
         if not items and not app.conversation_active(conversation_id):
             return error_response(404, "not_found", "conversation not found")

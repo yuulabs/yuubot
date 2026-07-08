@@ -22,13 +22,13 @@ Image files are handled differently: when the current model supports vision, the
 Use this tool to inspect workspace files, skill documents, AGENTS.md, and generated artifacts. Prefer `execute_python` for multi-step data processing."""
 
 
-class ReadPayload(msgspec.Struct, frozen=True, kw_only=True):
+class ReadPayload(msgspec.Struct, frozen=True):
     path: str
     start_lo: int = 0
     end_lo: int = -1
 
 
-async def _execute_read(root: Path, payload: msgspec.Struct, *, model: ModelCard) -> str | list[ContentItem]:
+async def _execute_read(root: Path, payload: msgspec.Struct, model: ModelCard) -> str | list[ContentItem]:
     data = cast(ReadPayload, payload)
     path = workspace_path(root, data.path)
     mime, _ = mimetypes.guess_type(path)
@@ -36,8 +36,8 @@ async def _execute_read(root: Path, payload: msgspec.Struct, *, model: ModelCard
         if not model.vision:
             return f"{data.path} is an image, but model {model.selector} does not support vision."
         return [
-            ContentItem(kind="text", text=f"image file: {data.path}"),
-            ContentItem(kind="image", path=str(path), mime=mime or "image/*"),
+            ContentItem("text", f"image file: {data.path}"),
+            ContentItem("image", path=str(path), mime=mime or "image/*"),
         ]
 
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -60,8 +60,8 @@ async def _execute_read(root: Path, payload: msgspec.Struct, *, model: ModelCard
 
 
 READ_SPEC = workspace_tool(
-    payload_type=ReadPayload,
-    description=DESCRIPTION,
-    execute=_execute_read,
-    bind=lambda context: {"model": context.model},
+    ReadPayload,
+    DESCRIPTION,
+    _execute_read,
+    lambda context: {"model": context.model},
 )

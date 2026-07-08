@@ -25,37 +25,36 @@ async def check_update(root: Path | None = None) -> UpdateStatus:
     version = current_version()
     if not supported:
         return UpdateStatus(
-            supported=False,
-            install_kind=install_kind,
-            current_version=version,
+            False,
+            install_kind,
+            version,
             message=message,
         )
 
     current_commit, remote_commit, update_available, git_message = await check_git_update(resolved_root)
     if git_message:
         return UpdateStatus(
-            supported=True,
-            install_kind=INSTALL_KIND_GIT,
-            current_version=version,
-            current_commit=current_commit,
-            remote_commit=remote_commit,
-            update_available=False,
-            message=git_message,
+            True,
+            INSTALL_KIND_GIT,
+            version,
+            current_commit,
+            remote_commit,
+            False,
+            git_message,
         )
 
     return UpdateStatus(
-        supported=True,
-        install_kind=INSTALL_KIND_GIT,
-        current_version=version,
-        current_commit=current_commit,
-        remote_commit=remote_commit,
-        update_available=update_available,
-        message="update available" if update_available else "up to date",
+        True,
+        INSTALL_KIND_GIT,
+        version,
+        current_commit,
+        remote_commit,
+        update_available,
+        "update available" if update_available else "up to date",
     )
 
 
 def apply_update(
-    *,
     config_path: Path,
     data_dir: Path,
     host: str,

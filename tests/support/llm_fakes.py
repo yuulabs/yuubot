@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent
+from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent, StreamStopPayload
 from yuubot.llm import Provider, ScriptedProvider, scripted_reply
 from yuubot.runtime.cache import CachePool
 
@@ -31,12 +31,11 @@ class InterruptibleProvider:
     async def validate(self):
         from yuubot.llm.types import ValidationResult
 
-        return ValidationResult(ok=True)
+        return ValidationResult(True)
 
     async def stream(
         self,
         input: LLMInput,
-        *,
         model: ModelCard,
         context: ConversationContext,
         cache: CachePool,
@@ -45,10 +44,10 @@ class InterruptibleProvider:
         del input, model, context, cache
         for _ in range(100):
             if stop_event.is_set():
-                yield StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "interrupted"})
+                yield StreamEvent("stop", "stream_stop", StreamStopPayload("interrupted"))
                 return
             await asyncio.sleep(0.01)
-        yield StreamEvent(group_id="stop", kind="stream_stop", payload={"reason": "stop"})
+        yield StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))
 
     async def close(self) -> None:
         return None

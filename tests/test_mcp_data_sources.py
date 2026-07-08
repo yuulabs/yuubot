@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -20,9 +21,9 @@ def test_normalize_auth_mode_maps_legacy_aliases() -> None:
 def test_mcp_tool_signature_compacts_json_schema() -> None:
     spec = tool_signature(
         McpToolSpec(
-            name="search_issues",
-            description="Search issues in Linear.",
-            input_schema={
+            "search_issues",
+            "Search issues in Linear.",
+            {
                 "type": "object",
                 "required": ["query"],
                 "properties": {
@@ -45,9 +46,9 @@ def test_mcp_tool_signature_compacts_json_schema() -> None:
 async def test_mcp_server_lifecycle_keeps_secret_out_of_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     app = await Yuubot.create(tmp_path / "data")
     record = McpServerRecord(
-        id="linear",
-        name="Linear",
-        endpoint_url="https://mcp.example.invalid",
+        "linear",
+        "Linear",
+        "https://mcp.example.invalid",
         auth_mode="api_key",
     )
 
@@ -56,8 +57,8 @@ async def test_mcp_server_lifecycle_keeps_secret_out_of_snapshots(tmp_path: Path
     async def fake_discover(_manager: object, server: McpServerRecord) -> McpCapabilityIndex:
         assert server.id == "linear"
         return McpCapabilityIndex(
-            server_id="linear",
-            tools=(McpToolSpec(name="search_issues", description="Search issues", input_schema={"type": "object"}),),
+            "linear",
+            (McpToolSpec("search_issues", "Search issues", {"type": "object"}),),
         )
 
     monkeypatch.setattr(type(app.runtime.mcps), "discover", fake_discover)
@@ -82,9 +83,9 @@ async def test_credentials_admin_api_lists_redacted_records_and_revokes(tmp_path
     app = await Yuubot.create(tmp_path / "data")
     await app.configure_mcp_server(
         McpServerRecord(
-            id="linear",
-            name="Linear",
-            endpoint_url="https://mcp.example.invalid",
+            "linear",
+            "Linear",
+            "https://mcp.example.invalid",
             auth_mode="api_key",
         ),
         api_key="secret-token",
@@ -111,18 +112,18 @@ async def test_yb_mcps_facade_uses_summary_search_and_spec(tmp_path: Path, monke
 
     app = await Yuubot.create(tmp_path / "data")
     record = McpServerRecord(
-        id="linear",
-        name="Linear",
-        endpoint_url="https://mcp.example.invalid",
+        "linear",
+        "Linear",
+        "https://mcp.example.invalid",
         enabled=True,
     )
     index = McpCapabilityIndex(
-        server_id="linear",
-        tools=(
+        "linear",
+        (
             McpToolSpec(
-                name="search_issues",
-                description="Search issues",
-                input_schema={
+                "search_issues",
+                "Search issues",
+                {
                     "type": "object",
                     "required": ["query"],
                     "properties": {"query": {"type": "string"}},
@@ -147,9 +148,9 @@ async def test_yb_mcps_facade_uses_summary_search_and_spec(tmp_path: Path, monke
 async def test_mcp_oauth_storage_persists_sdk_models_in_credential_store(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
     record = McpServerRecord(
-        id="oauth",
-        name="OAuth MCP",
-        endpoint_url="https://mcp.example.invalid",
+        "oauth",
+        "OAuth MCP",
+        "https://mcp.example.invalid",
         auth_mode="oauth_auto",
         credential_id="mcp:oauth:oauth",
     )
@@ -186,9 +187,9 @@ async def test_mcp_oauth_manual_config_keeps_client_secret_encrypted(tmp_path: P
     app = await Yuubot.create(tmp_path / "data")
     record = await app.configure_mcp_server(
         McpServerRecord(
-            id="manual",
-            name="Manual OAuth MCP",
-            endpoint_url="https://mcp.example.invalid",
+            "manual",
+            "Manual OAuth MCP",
+            "https://mcp.example.invalid",
             auth_mode="oauth_manual",
             oauth_issuer="https://auth.example",
             oauth_authorization_endpoint="https://auth.example/authorize",
@@ -198,7 +199,7 @@ async def test_mcp_oauth_manual_config_keeps_client_secret_encrypted(tmp_path: P
         ),
         oauth_client_secret="client-secret",
     )
-    storage = McpOAuthTokenStorage(app.runtime.credentials, record, redirect_uri="http://127.0.0.1/callback")
+    storage = McpOAuthTokenStorage(app.runtime.credentials, record, "http://127.0.0.1/callback")
     client_info = await storage.get_client_info()
     snapshots = await app.mcp_server_snapshots()
     secret = await app.runtime.credentials.secret_payload("mcp:manual:oauth")
@@ -219,9 +220,9 @@ async def test_mcp_oauth_admin_start_and_callback_complete_attempt(tmp_path: Pat
     app = await Yuubot.create(tmp_path / "data")
     await app.configure_mcp_server(
         McpServerRecord(
-            id="oauth",
-            name="OAuth MCP",
-            endpoint_url="https://mcp.example.invalid",
+            "oauth",
+            "OAuth MCP",
+            "https://mcp.example.invalid",
             auth_mode="oauth_auto",
         )
     )
@@ -229,21 +230,21 @@ async def test_mcp_oauth_admin_start_and_callback_complete_attempt(tmp_path: Pat
     async def fake_discover_with_oauth(
         _manager: object,
         record: McpServerRecord,
-        *,
         redirect_uri: str,
         redirect_handler: Callable[[str], Awaitable[None]],
         callback_handler: Callable[[], Awaitable[tuple[str, str | None]]],
         timeout_s: float,
     ) -> McpCapabilityIndex:
         assert record.credential_id == "mcp:oauth:oauth"
-        assert redirect_uri.endswith("/callback")
+        assert "/api/mcp-oauth/" in redirect_uri
+        assert "token=" in redirect_uri
         assert timeout_s == 600
         await redirect_handler("https://auth.example/authorize?state=state-1")
         code, state = await callback_handler()
         assert (code, state) == ("code-1", "state-1")
         return McpCapabilityIndex(
-            server_id="oauth",
-            tools=(McpToolSpec(name="search", description="Search", input_schema={"type": "object"}),),
+            "oauth",
+            (McpToolSpec("search", "Search", {"type": "object"}),),
         )
 
     monkeypatch.setattr(type(app.runtime.mcps), "discover_with_oauth", fake_discover_with_oauth)
@@ -252,7 +253,9 @@ async def test_mcp_oauth_admin_start_and_callback_complete_attempt(tmp_path: Pat
         async with httpx.AsyncClient(base_url=base_url(server)) as client:
             start = await client.post("/api/mcp-servers/oauth/auth/start")
             attempt = start.json()
-            callback = await client.get(f"/api/mcp-oauth/{attempt['id']}/callback?code=code-1&state=state-1")
+            callback_url = attempt["action"]["callback_url"]
+            parsed = urlparse(callback_url)
+            callback = await client.get(f"{parsed.path}?{parsed.query}&code=code-1&state=state-1")
             for _ in range(50):
                 attempts = (await client.get("/api/auth-attempts")).json()["items"]
                 current = next(item for item in attempts if item["id"] == attempt["id"])

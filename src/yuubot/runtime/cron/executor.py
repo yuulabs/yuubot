@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Callable
 
 from attrs import define
 
+from ..event_payloads import CronFailedPayload, CronFinishedPayload, CronStartedPayload
 from ..tasks import parse_owner, register_shell_task
 from ..wakeup import WakeupPayload, WakeupTarget
 from .models import (
@@ -18,6 +19,7 @@ from .models import (
     ReminderAction,
     ShellAction,
     WakeupAction,
+    cron_action_kind,
 )
 
 if TYPE_CHECKING:
@@ -75,25 +77,27 @@ class CronExecutor:
                 _log.warning("cron job %s skipped: actor not running", job_id)
                 return
 
-        self._runtime.emit("cron.started", job_id=job_id, owner=job.owner, action_kind=job.action.kind)
+        self._runtime.emit(
+            CronStartedPayload(job_id, job.owner, cron_action_kind(job.action))
+        )
         try:
             if isinstance(job.action, ShellAction):
                 assert workspace is not None
                 register_shell_task(
                     self._runtime,
-                    name=job.action.name,
-                    shell=job.action.shell,
-                    intro=job.action.intro,
-                    owner=job.owner,
-                    workspace=workspace,
-                    delivery="actor",
+                    job.action.name,
+                    job.action.shell,
+                    job.action.intro,
+                    job.owner,
+                    workspace,
+                    "actor",
                 )
             elif isinstance(job.action, WakeupAction):
                 await self._runtime.wakeup.deliver(
-                    WakeupTarget(kind="actor_inbound", actor_id=actor_id, conversation_id=None),
+                    WakeupTarget("actor_inbound", actor_id, None),
                     WakeupPayload(
-                        text=job.action.text,
-                        source={
+                        job.action.text,
+                        {
                             "cron_job_id": job_id,
                             "cron_job_name": job.name,
                             "cron_delivery": "actor_message",
@@ -103,10 +107,10 @@ class CronExecutor:
                 )
             elif isinstance(job.action, ActorMessageAction):
                 await self._runtime.wakeup.deliver(
-                    WakeupTarget(kind="actor_inbound", actor_id=actor_id, conversation_id=None),
+                    WakeupTarget("actor_inbound", actor_id, None),
                     WakeupPayload(
-                        text=job.action.text,
-                        source={
+                        job.action.text,
+                        {
                             "cron_job_id": job_id,
                             "cron_job_name": job.name,
                             "cron_delivery": "actor_message",
@@ -115,10 +119,10 @@ class CronExecutor:
                 )
             elif isinstance(job.action, ConversationCallbackAction):
                 await self._runtime.wakeup.deliver(
-                    WakeupTarget(kind="conversation_callback", actor_id=actor_id, conversation_id=conversation_id),
+                    WakeupTarget("conversation_callback", actor_id, conversation_id),
                     WakeupPayload(
-                        text=job.action.text,
-                        source={
+                        job.action.text,
+                        {
                             "cron_job_id": job_id,
                             "cron_job_name": job.name,
                             "cron_delivery": "conversation_callback",
@@ -133,7 +137,7 @@ class CronExecutor:
                 )
         except Exception:
             _log.exception("cron job %s execution failed", job_id)
-            self._runtime.emit("cron.failed", job_id=job_id, owner=job.owner)
+            self._runtime.emit(CronFailedPayload(job_id, job.owner))
             return
 
         last_run_at = utc_now_iso()
@@ -151,4 +155,6 @@ class CronExecutor:
                     updated_at=utc_now_iso(),
                 )
             )
-        self._runtime.emit("cron.finished", job_id=job_id, owner=job.owner, action_kind=job.action.kind)
+        self._runtime.emit(
+            CronFinishedPayload(job_id, job.owner, cron_action_kind(job.action))
+        )

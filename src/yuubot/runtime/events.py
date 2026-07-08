@@ -11,7 +11,14 @@ from typing import Protocol
 import msgspec
 from attrs import define, field
 
+from .event_payloads import (
+    ConversationStreamPayload,
+    RuntimeEventPayload,
+    event_kind,
+)
+
 EVENT_BUFFER_SIZE = 100
+EVENT_QUEUE_SIZE = 1000
 NOISY_STREAM_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_arguments_delta", "tool_result_delta"})
 
 _log = logging.getLogger(__name__)
@@ -19,7 +26,7 @@ _log = logging.getLogger(__name__)
 
 class RuntimeEvent(msgspec.Struct, frozen=True):
     kind: str
-    payload: dict[str, object]
+    payload: RuntimeEventPayload
     ts: str
 
 
@@ -32,13 +39,26 @@ class EventBus:
     """Single event outlet. Keeps a bounded buffer of recent events for snapshots."""
 
     _buffer: deque[RuntimeEvent] = field(factory=lambda: deque(maxlen=EVENT_BUFFER_SIZE))
-    _queue: asyncio.Queue[RuntimeEvent] = field(factory=asyncio.Queue)
+    _queue: asyncio.Queue[RuntimeEvent] = field(factory=lambda: asyncio.Queue(maxsize=EVENT_QUEUE_SIZE))
 
-    def emit(self, event_kind: str, **payload: object) -> None:
-        event = RuntimeEvent(kind=event_kind, payload=dict(payload), ts=_utc_now_iso())
+    def emit(self, payload: RuntimeEventPayload) -> None:
+        event = RuntimeEvent(event_kind(payload), payload, _utc_now_iso())
         if _should_buffer_event(event):
             self._buffer.append(event)
-        self._queue.put_nowait(event)
+        try:
+            self._queue.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            if _is_noisy_stream_event(event):
+                return
+        try:
+            self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            self._queue.put_nowait(event)
+        except asyncio.QueueFull:
+            _log.warning("runtime event queue remained full after dropping oldest event")
 
     @property
     def events(self) -> list[RuntimeEvent]:
@@ -59,15 +79,21 @@ def _should_buffer_event(event: RuntimeEvent) -> bool:
         return False
     if event.kind != "conversation.stream":
         return True
-    stream_event = event.payload.get("event")
-    stream_kind = getattr(stream_event, "kind", None)
-    if stream_kind is None and isinstance(stream_event, dict):
-        stream_kind = stream_event.get("kind")
-    return stream_kind not in NOISY_STREAM_KINDS
+    if not isinstance(event.payload, ConversationStreamPayload):
+        return True
+    return event.payload.event.kind not in NOISY_STREAM_KINDS
+
+
+def _is_noisy_stream_event(event: RuntimeEvent) -> bool:
+    return (
+        event.kind == "conversation.stream"
+        and isinstance(event.payload, ConversationStreamPayload)
+        and event.payload.event.kind in NOISY_STREAM_KINDS
+    )
 
 
 class Listener(Protocol):
-    async def on_event(self, kind: str, payload: dict[str, object]) -> None: ...
+    async def on_event(self, event: RuntimeEvent) -> None: ...
 
 
 @define
@@ -110,12 +136,25 @@ class ListenerHub:
 
     async def _run(self) -> None:
         while True:
-            event = await self._eventbus.pull()
-            await self._dispatch(event)
+            try:
+                event = await self._eventbus.pull()
+                await self._dispatch(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.exception("listener hub event loop failed")
+                await asyncio.sleep(0.1)
 
     async def _dispatch(self, event: RuntimeEvent) -> None:
-        for listener in list(self._listeners):
-            try:
-                await listener.on_event(event.kind, event.payload)
-            except Exception:
-                _log.exception("listener %r failed on event %s", listener, event.kind)
+        await asyncio.gather(
+            *(
+                self._dispatch_to_listener(listener, event)
+                for listener in list(self._listeners)
+            )
+        )
+
+    async def _dispatch_to_listener(self, listener: Listener, event: RuntimeEvent) -> None:
+        try:
+            await listener.on_event(event)
+        except Exception:
+            _log.exception("listener %r failed on event %s", listener, event.kind)

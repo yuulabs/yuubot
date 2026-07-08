@@ -36,7 +36,6 @@ from .streams import TaskCoroFactory, TextStream
 from .tasks import (
     RuntimeTaskRecord,
     TaskDelivery,
-    TaskDeliveryListener,
     TaskRegistry,
     TaskScheduler,
     TaskSnapshot,
@@ -80,7 +79,6 @@ __all__ = [
     "SkillSummary",
     "TaskCoroFactory",
     "TaskDelivery",
-    "TaskDeliveryListener",
     "TaskRegistry",
     "TaskScheduler",
     "TaskSnapshot",

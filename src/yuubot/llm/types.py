@@ -3,13 +3,13 @@
 import msgspec
 
 
-class ProviderInput(msgspec.Struct, frozen=True, kw_only=True):
+class ProviderInput(msgspec.Struct, frozen=True):
     name: str
     protocol: str
     config: dict[str, object]
 
 
-class ProviderSnapshot(msgspec.Struct, frozen=True, kw_only=True):
+class ProviderSnapshot(msgspec.Struct, frozen=True):
     id: str
     name: str
     protocol: str
@@ -19,7 +19,7 @@ class ProviderSnapshot(msgspec.Struct, frozen=True, kw_only=True):
     configured_model_count: int = 0
 
 
-class ProviderProtocolSpec(msgspec.Struct, frozen=True, kw_only=True):
+class ProviderProtocolSpec(msgspec.Struct, frozen=True):
     protocol: str
     title: str
     default_endpoint: str
@@ -27,7 +27,7 @@ class ProviderProtocolSpec(msgspec.Struct, frozen=True, kw_only=True):
     secret_fields: tuple[str, ...]
 
 
-class ModelCardInput(msgspec.Struct, frozen=True, kw_only=True):
+class ModelCardInput(msgspec.Struct, frozen=True):
     max_context_tokens: int | None = None
     vision: bool = False
     toolcall: bool = True
@@ -37,13 +37,13 @@ class ModelCardInput(msgspec.Struct, frozen=True, kw_only=True):
     output_price_per_million: float = 0
 
 
-class ValidationResult(msgspec.Struct, frozen=True, kw_only=True):
+class ValidationResult(msgspec.Struct, frozen=True):
     ok: bool
     message: str = ""
     detail: dict[str, object] = msgspec.field(default_factory=dict)
 
 
-class AccountSnapshot(msgspec.Struct, frozen=True, kw_only=True):
+class AccountSnapshot(msgspec.Struct, frozen=True):
     balance: float | None = None
     currency: str | None = None
     raw: dict[str, object] = msgspec.field(default_factory=dict)

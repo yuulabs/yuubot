@@ -38,7 +38,7 @@ class CachePool:
     def set(self, key: str, meta: dict[str, Any], data: Any) -> None:
         self._cache[key] = (meta, data)
 
-    def invalidate(self, *, prefix: str = "") -> None:
+    def invalidate(self, prefix: str = "") -> None:
         if not prefix:
             self.clear()
             return

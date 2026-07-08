@@ -30,7 +30,7 @@ class KvBadRequestError(KvError):
 
 
 class KvConflictError(KvError):
-    def __init__(self, message: str, *, reason: str) -> None:
+    def __init__(self, message: str, reason: str) -> None:
         super().__init__(message)
         self.reason = reason
 
@@ -97,12 +97,12 @@ def _assert_no_prefix_collision(actor_root: Path, key: str) -> None:
             if document_path(actor_root, ancestor).is_file():
                 raise KvConflictError(
                     "key collides with an existing document prefix",
-                    reason="key_collides_with_prefix",
+                    "key_collides_with_prefix",
                 )
     if len(parts) == 1 and (actor_root / parts[0]).is_dir():
         raise KvConflictError(
             "key collides with an existing document prefix",
-            reason="key_collides_with_prefix",
+            "key_collides_with_prefix",
         )
 
 
@@ -142,11 +142,11 @@ class KvStore:
             return None
         value, updated_at = _read_file(path)
         return JsonDocument(
-            actor_id=actor_id,
-            key=normalized,
-            value=value,
-            updated_at=updated_at,
-            etag=compute_etag(value),
+            actor_id,
+            normalized,
+            value,
+            updated_at,
+            compute_etag(value),
         )
 
     async def put(
@@ -154,7 +154,6 @@ class KvStore:
         actor_id: str,
         key: str,
         value: object,
-        *,
         if_match: str | None = None,
     ) -> JsonDocument:
         normalized = normalize_key(key)
@@ -165,18 +164,18 @@ class KvStore:
         _assert_no_prefix_collision(actor_root, normalized)
         if if_match is not None:
             if not path.is_file():
-                raise KvConflictError("etag does not match", reason="etag_mismatch")
+                raise KvConflictError("etag does not match", "etag_mismatch")
             current_value, _ = _read_file(path)
             if compute_etag(current_value) != if_match:
-                raise KvConflictError("etag does not match", reason="etag_mismatch")
-        updated_at = utc_now_iso(zulu=True)
+                raise KvConflictError("etag does not match", "etag_mismatch")
+        updated_at = utc_now_iso(True)
         _write_atomic(path, value, updated_at)
         return JsonDocument(
-            actor_id=actor_id,
-            key=normalized,
-            value=value,
-            updated_at=updated_at,
-            etag=compute_etag(value),
+            actor_id,
+            normalized,
+            value,
+            updated_at,
+            compute_etag(value),
         )
 
     async def delete(self, actor_id: str, key: str) -> bool:

@@ -18,6 +18,13 @@ from ..llm import Provider
 from ..domain.messages import ActorMessage, ConversationContext, GenReasoning, GenText, InputMessage, ModelCard, text_content
 from ..domain.records import DEFAULT_CONTEXT_COMPRESSION_TOKENS
 from ..python import KernelPool
+from ..runtime.event_payloads import (
+    ActorBlockedPayload,
+    ActorBusyPayload,
+    ActorContextCompactedPayload,
+    ActorContextCompactionStoppedPayload,
+    ActorOutputPayload,
+)
 from ..tools import all_tool_configs, tool_specs
 from .prompt import developer_prompt
 from .workspace import prepare_workspace
@@ -66,14 +73,13 @@ def _daemon_url(runtime: Runtime) -> str:
 
 
 async def build_conversation_context(
-    *,
     runtime: Runtime,
     actor_config: ActorConfig,
     conversation_id: str,
 ) -> ConversationContext:
     return ConversationContext(
-        model=actor_config.model,
-        conversation_id=conversation_id,
+        actor_config.model,
+        conversation_id,
         integrations={name: integration.session_context() for name, integration in runtime.integrations.items()},
         actor=actor_config.id,
         workspace=Path(actor_config.workspace).resolve(),
@@ -116,7 +122,7 @@ class Actor:
 
     async def spawn_conversation(self, conversation_id: str | None = None) -> Conversation:
         cid = conversation_id or uuid.uuid4().hex
-        context = await build_conversation_context(runtime=self.runtime, actor_config=self.config, conversation_id=cid)
+        context = await build_conversation_context(self.runtime, self.config, cid)
         tools = all_tool_configs()
         prompt = developer_prompt(
             self.config.persona,
@@ -133,12 +139,12 @@ class Actor:
             system_prompt=prompt,
         )
         return Conversation(
-            id=cid,
-            context=context,
-            history=history,
-            provider=self.provider,
-            harness_config=HarnessConfig(tools=tools),
-            runtime=self.runtime,
+            cid,
+            context,
+            history,
+            self.provider,
+            HarnessConfig(tools),
+            self.runtime,
         )
 
     async def run(self) -> None:
@@ -153,7 +159,13 @@ class Actor:
             await self.runtime.state.set_actor_status(
                 self.config.id, "blocked", {"type": type(exc).__name__, "message": str(exc)}
             )
-            self.runtime.emit("actor.blocked", actor_id=self.config.id, conversation_id=conversation_id, reason=str(exc))
+            self.runtime.emit(
+                ActorBlockedPayload(
+                    self.config.id,
+                    conversation_id,
+                    str(exc),
+                )
+            )
         except asyncio.CancelledError:
             self.status = "terminated"
             raise
@@ -167,19 +179,24 @@ class Actor:
             if inbound_kind in {"task_delivery", "conversation_callback"}:
                 outputs = await conversation.append_developer_notice(message.text)
             else:
-                input_message = InputMessage(role="user", name=self.config.id, content=text_content(message.text))
+                input_message = InputMessage("user", self.config.id, text_content(message.text))
                 outputs = await conversation.run_loop(input_message, session_mode="actor")
         except ConversationBusy:
             task_id = message.source.get("task_id")
             if inbound_kind == "task_delivery" and isinstance(task_id, str):
-                self.runtime.task_delivery_queue.enqueue(conversation.id, task_id)
-            self.runtime.emit("actor.busy", actor_id=self.config.id, conversation_id=conversation.id)
+                conversation.queue_task_delivery(task_id)
+                if task_id in self.runtime.tasks:
+                    record = self.runtime.tasks.get(task_id)
+                    if record.delivery_state == "pending":
+                        record.delivery_state = "queued"
+            self.runtime.emit(ActorBusyPayload(self.config.id, conversation.id))
         else:
             self.runtime.emit(
-                "actor.output",
-                actor_id=self.config.id,
-                conversation_id=conversation.id,
-                outputs=len(outputs),
+                ActorOutputPayload(
+                    self.config.id,
+                    conversation.id,
+                    len(outputs),
+                )
             )
             if can_compact:
                 await self._compact_or_continue_mailbox(conversation, message.text)
@@ -232,33 +249,35 @@ class Actor:
         compacted = await self.runtime.conversations.get_or_create(self)
         await compacted.append_items(
             [
-                InputMessage(role="developer", name="yuubot", content=text_content(summary)),
+                InputMessage("developer", "yuubot", text_content(summary)),
             ]
         )
         self._mailbox_conversation = compacted.id
         self._mailbox_conversation_touched_at = time.time()
         self._mailbox_context_compactions = 1
         self.runtime.emit(
-            "actor.context_compacted",
-            actor_id=self.config.id,
-            old_conversation_id=old_conversation_id,
-            new_conversation_id=compacted.id,
-            input_tokens=trigger_input_tokens,
-            threshold=self.config.context_compression_tokens,
+            ActorContextCompactedPayload(
+                self.config.id,
+                old_conversation_id,
+                compacted.id,
+                trigger_input_tokens,
+                self.config.context_compression_tokens,
+            )
         )
 
         self._active = compacted
         continuation = InputMessage(
-            role="user",
-            name=self.config.id,
-            content=text_content(_context_compaction_continue_message(original_user_text)),
+            "user",
+            self.config.id,
+            text_content(_context_compaction_continue_message(original_user_text)),
         )
         outputs = await compacted.run_loop(continuation, session_mode="actor")
         self.runtime.emit(
-            "actor.output",
-            actor_id=self.config.id,
-            conversation_id=compacted.id,
-            outputs=len(outputs),
+            ActorOutputPayload(
+                self.config.id,
+                compacted.id,
+                len(outputs),
+            )
         )
         await self._compact_or_continue_mailbox(compacted, original_user_text)
 
@@ -278,9 +297,10 @@ class Actor:
         self.status = "idle"
         await self.runtime.state.set_actor_status(self.config.id, "idle")
         self.runtime.emit(
-            "actor.context_compaction_stopped",
-            actor_id=self.config.id,
-            conversation_id=conversation.id,
-            input_tokens=conversation.last_stop.usage.input_tokens if conversation.last_stop is not None else 0,
-            threshold=self.config.context_compression_tokens,
+            ActorContextCompactionStoppedPayload(
+                self.config.id,
+                conversation.id,
+                conversation.last_stop.usage.input_tokens if conversation.last_stop is not None else 0,
+                self.config.context_compression_tokens,
+            )
         )

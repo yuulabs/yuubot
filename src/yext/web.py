@@ -17,13 +17,13 @@ import msgspec
 DEFAULT_BASE_URL: Final[str] = "https://api.tavily.com"
 
 
-class SearchResult(msgspec.Struct, frozen=True, kw_only=True):
+class SearchResult(msgspec.Struct, frozen=True):
     title: str
     url: str
     content: str = ""
 
 
-class DownloadResult(msgspec.Struct, frozen=True, kw_only=True):
+class DownloadResult(msgspec.Struct, frozen=True):
     path: str
     url: str
     content_type: str
@@ -31,7 +31,17 @@ class DownloadResult(msgspec.Struct, frozen=True, kw_only=True):
     sha256: str
 
 
-async def search(query: str, *, max_results: int = 5, integration_id: str = "") -> list[SearchResult]:
+class _TavilyResultWire(msgspec.Struct, frozen=True):
+    title: str = ""
+    url: str = ""
+    content: str = ""
+
+
+class _TavilySearchResponse(msgspec.Struct, frozen=True):
+    results: list[_TavilyResultWire] = msgspec.field(default_factory=list)
+
+
+async def search(query: str, max_results: int = 5, integration_id: str = "") -> list[SearchResult]:
     del integration_id
     api_key = os.getenv("TAVILY_API_KEY") or os.getenv("YEXT_WEB_API_KEY")
     if not api_key:
@@ -43,21 +53,17 @@ async def search(query: str, *, max_results: int = 5, integration_id: str = "") 
         )
         response.raise_for_status()
         body = response.json()
-    results = body.get("results", []) if isinstance(body, dict) else []
-    return [
-        SearchResult(title=str(item.get("title", "")), url=str(item.get("url", "")), content=str(item.get("content", "")))
-        for item in results
-        if isinstance(item, dict)
-    ]
+    parsed = msgspec.convert(body, _TavilySearchResponse)
+    return [SearchResult(item.title, item.url, item.content) for item in parsed.results]
 
 
-async def read(url: str, *, max_chars: int | None = None, integration_id: str = "") -> str:
+async def read(url: str, max_chars: int | None = None, integration_id: str = "") -> str:
     del integration_id
     data, _ = await _fetch(url, _max_read_bytes())
     return data.decode("utf-8", errors="replace")[: max_chars if max_chars is not None else _max_read_chars()]
 
 
-async def download(url: str, *, filename: str = "", max_bytes: int = 0, integration_id: str = "") -> DownloadResult:
+async def download(url: str, filename: str = "", max_bytes: int = 0, integration_id: str = "") -> DownloadResult:
     del integration_id
     data, content_type = await _fetch(url, max_bytes or _max_download_bytes())
     downloads = Path.cwd() / "downloads"
@@ -65,7 +71,7 @@ async def download(url: str, *, filename: str = "", max_bytes: int = 0, integrat
     name = Path(filename).name if filename else Path(urllib.parse.urlparse(url).path).name or "download.bin"
     path = downloads / name
     path.write_bytes(data)
-    return DownloadResult(path=str(path), url=url, content_type=content_type, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+    return DownloadResult(str(path), url, content_type, len(data), hashlib.sha256(data).hexdigest())
 
 
 async def _fetch(url: str, max_bytes: int) -> tuple[bytes, str]:

@@ -9,51 +9,40 @@ results omit parameter schemas. Before calling a tool, use
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal
+
+import msgspec
 
 from yb._daemon import daemon_url, request_json
 
 McpKind = Literal["tool", "resource", "prompt"]
 
 
-class McpSearchResult:
-    server_id: str
-    kind: McpKind
-    name: str
-    description: str
-    uri: str
-
-    def __init__(self, payload: dict[str, object]) -> None:
-        self.server_id = str(payload.get("server_id", ""))
-        kind = payload.get("kind", "tool")
-        if kind in {"tool", "resource", "prompt"}:
-            self.kind = cast(McpKind, kind)
-        else:
-            self.kind = "tool"
-        self.name = str(payload.get("name", ""))
-        self.description = str(payload.get("description", ""))
-        self.uri = str(payload.get("uri", ""))
-
-    def __repr__(self) -> str:
-        return f"McpSearchResult(server_id={self.server_id!r}, kind={self.kind!r}, name={self.name!r})"
+class McpSearchResult(msgspec.Struct, frozen=True):
+    server_id: str = ""
+    kind: McpKind = "tool"
+    name: str = ""
+    description: str = ""
+    uri: str = ""
 
 
-class McpResult:
-    server_id: str
-    name: str
-    content: object
-    raw: dict[str, object]
+class McpResult(msgspec.Struct, frozen=True):
+    server_id: str = ""
+    name: str = ""
+    content: object = None
+    raw: dict[str, object] = msgspec.field(default_factory=dict)
 
-    def __init__(self, payload: dict[str, object]) -> None:
-        self.server_id = str(payload.get("server_id", ""))
-        self.name = str(payload.get("name", ""))
-        self.content = payload.get("content")
-        raw = payload.get("raw")
-        self.raw = cast(dict[str, object], raw) if isinstance(raw, dict) else {}
+
+class _McpSearchResponse(msgspec.Struct, frozen=True):
+    items: list[McpSearchResult] = msgspec.field(default_factory=list)
+
+
+class _McpSpecResponse(msgspec.Struct, frozen=True):
+    spec: str = ""
 
 
 class McpClient:
-    def __init__(self, server_id: str, *, base_url: str | None = None) -> None:
+    def __init__(self, server_id: str, base_url: str | None = None) -> None:
         self.server_id = server_id
         self._base_url = (base_url or daemon_url()).rstrip("/")
 
@@ -68,12 +57,11 @@ class McpClient:
 
     async def get_spec(self, name: str) -> str:
         payload = await request_json("GET", f"{self._base_url}/api/mcps/{self.server_id}/spec/{name}")
-        spec = payload.get("spec")
-        return spec if isinstance(spec, str) else ""
+        return msgspec.convert(payload, _McpSpecResponse).spec
 
     async def invoke(self, name: str, **kwargs: object) -> McpResult:
         payload = await request_json("POST", f"{self._base_url}/api/mcps/{self.server_id}/invoke/{name}", json=kwargs)
-        return McpResult(payload)
+        return msgspec.convert(payload, McpResult)
 
     async def read_resource(self, uri: str) -> McpResult:
         payload = await request_json(
@@ -81,19 +69,16 @@ class McpClient:
             f"{self._base_url}/api/mcps/{self.server_id}/resources/read",
             json={"uri": uri},
         )
-        return McpResult(payload)
+        return msgspec.convert(payload, McpResult)
 
 
-async def search(query: str = "", *, kind: str = "", server: str = "") -> list[McpSearchResult]:
+async def search(query: str = "", kind: str = "", server: str = "") -> list[McpSearchResult]:
     payload = await request_json(
         "GET",
         f"{daemon_url()}/api/mcps/search",
         params={"query": query, "kind": kind, "server": server},
     )
-    items = payload.get("items", [])
-    if not isinstance(items, list):
-        return []
-    return [McpSearchResult(cast(dict[str, object], item)) for item in items if isinstance(item, dict)]
+    return msgspec.convert(payload, _McpSearchResponse).items
 
 
 def get_client(server_id: str) -> McpClient:
@@ -102,7 +87,4 @@ def get_client(server_id: str) -> McpClient:
 
 async def _list_capabilities(base_url: str, server_id: str, kind: str) -> list[McpSearchResult]:
     payload = await request_json("GET", f"{base_url}/api/mcps/search", params={"server": server_id, "kind": kind})
-    items = payload.get("items", [])
-    if not isinstance(items, list):
-        return []
-    return [McpSearchResult(cast(dict[str, object], item)) for item in items if isinstance(item, dict)]
+    return msgspec.convert(payload, _McpSearchResponse).items

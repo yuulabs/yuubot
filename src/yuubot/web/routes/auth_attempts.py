@@ -25,7 +25,7 @@ def register_auth_attempt_routes(api: FastAPI, app: Yuubot) -> None:
             attempt = await app.create_auth_attempt(body)
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
-        return json_response(attempt, status=201)
+        return json_response(attempt, 201)
 
     @api.put("/api/auth-attempts/{attempt_id}")
     async def api_update_auth_attempt(attempt_id: str, request: Request) -> Response:

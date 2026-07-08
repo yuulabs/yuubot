@@ -36,7 +36,7 @@ def resolve(tool_type: str) -> ToolSpec:
 
 
 def all_tool_configs() -> dict[str, ToolConfig]:
-    return {name: ToolConfig(type=name) for name in _REGISTRY}
+    return {name: ToolConfig(name) for name in _REGISTRY}
 
 
 def build_tools(configs: dict[str, ToolConfig], context: ConversationContext, runtime: Runtime) -> dict[str, Tool]:

@@ -2,7 +2,7 @@ import msgspec
 from attrs import frozen
 
 
-class TavilyWebConfig(msgspec.Struct, frozen=True, kw_only=True):
+class TavilyWebConfig(msgspec.Struct, frozen=True):
     api_key: str
     tavily_base_url: str = "https://api.tavily.com"
     timeout_s: float = 30
@@ -35,4 +35,4 @@ class TavilyWebIntegration:
 
 def make_tavily_web(name: str, config: msgspec.Struct, runtime: object) -> TavilyWebIntegration:
     del runtime
-    return TavilyWebIntegration(name=name, config=msgspec.convert(config, TavilyWebConfig))
+    return TavilyWebIntegration(name, msgspec.convert(config, TavilyWebConfig))

@@ -9,7 +9,7 @@ ContentKind = Literal["text", "image", "audio", "file"]
 InputRole = Literal["user", "developer"]
 
 
-class ModelCard(msgspec.Struct, frozen=True, kw_only=True):
+class ModelCard(msgspec.Struct, frozen=True):
     selector: str
     reasoning_effort: str = ""
     max_context_tokens: int | None = None
@@ -21,7 +21,7 @@ class ModelCard(msgspec.Struct, frozen=True, kw_only=True):
     output_price_per_million: float | None = None
 
 
-class ContentItem(msgspec.Struct, frozen=True, kw_only=True):
+class ContentItem(msgspec.Struct, frozen=True):
     kind: ContentKind
     text: str = ""
     path: str = ""
@@ -31,34 +31,34 @@ class ContentItem(msgspec.Struct, frozen=True, kw_only=True):
 
 
 def text_content(text: str) -> list[ContentItem]:
-    return [ContentItem(kind="text", text=text)]
+    return [ContentItem("text", text)]
 
 
-class InputMessage(msgspec.Struct, frozen=True, kw_only=True):
+class InputMessage(msgspec.Struct, frozen=True):
     role: InputRole
     name: str
     content: list[ContentItem]
 
 
-class GenText(msgspec.Struct, frozen=True, kw_only=True):
+class GenText(msgspec.Struct, frozen=True):
     text: str
 
 
-class GenReasoning(msgspec.Struct, frozen=True, kw_only=True):
+class GenReasoning(msgspec.Struct, frozen=True):
     text: str
 
 
-class GenToolCall(msgspec.Struct, frozen=True, kw_only=True):
+class GenToolCall(msgspec.Struct, frozen=True):
     id: str
     name: str
     arguments: str
 
 
-class GenImage(msgspec.Struct, frozen=True, kw_only=True):
+class GenImage(msgspec.Struct, frozen=True):
     content: list[ContentItem]
 
 
-class GenAudio(msgspec.Struct, frozen=True, kw_only=True):
+class GenAudio(msgspec.Struct, frozen=True):
     content: list[ContentItem]
 
 
@@ -68,11 +68,11 @@ class ToolResult(msgspec.Struct, frozen=True, kw_only=True):
     content: list[ContentItem]
 
 
-class HistoryToolSpecs(msgspec.Struct, frozen=True, kw_only=True):
+class HistoryToolSpecs(msgspec.Struct, frozen=True):
     specs: list[dict[str, object]]
 
 
-class SystemPrompt(msgspec.Struct, frozen=True, kw_only=True):
+class SystemPrompt(msgspec.Struct, frozen=True):
     text: str
 
 
@@ -80,7 +80,7 @@ GenOutput: TypeAlias = GenText | GenReasoning | GenToolCall | GenImage | GenAudi
 HistoryItem: TypeAlias = HistoryToolSpecs | SystemPrompt | InputMessage | GenOutput | ToolResult
 
 
-class ActorMessage(msgspec.Struct, frozen=True, kw_only=True):
+class ActorMessage(msgspec.Struct, frozen=True):
     """Message delivered to an actor mailbox by WakeupDelivery."""
 
     text: str
@@ -88,7 +88,7 @@ class ActorMessage(msgspec.Struct, frozen=True, kw_only=True):
     source: dict[str, object] = msgspec.field(default_factory=dict)
 
 
-class ConversationContext(msgspec.Struct, frozen=True, kw_only=True):
+class ConversationContext(msgspec.Struct, frozen=True):
     """Read-only context tree shared by every unit of one conversation."""
 
     model: ModelCard
@@ -100,6 +100,6 @@ class ConversationContext(msgspec.Struct, frozen=True, kw_only=True):
     rpc: dict[str, object] = msgspec.field(default_factory=dict)
 
 
-class LLMInput(msgspec.Struct, frozen=True, kw_only=True):
+class LLMInput(msgspec.Struct, frozen=True):
     tool_specs: list[dict[str, object]]
     messages: list[HistoryItem]

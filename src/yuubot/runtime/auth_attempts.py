@@ -17,7 +17,7 @@ AuthAttemptMethod = Literal["oauth_pkce", "device_code", "api_key", "manual"]
 AuthAttemptStatus = Literal["waiting_for_user", "polling", "exchanging", "succeeded", "failed", "expired"]
 
 
-class AuthAttempt(msgspec.Struct, frozen=True, kw_only=True):
+class AuthAttempt(msgspec.Struct, frozen=True):
     id: str
     connection_id: str
     method: AuthAttemptMethod
@@ -29,7 +29,7 @@ class AuthAttempt(msgspec.Struct, frozen=True, kw_only=True):
     updated_at: str = ""
 
 
-class AuthAttemptCreate(msgspec.Struct, frozen=True, kw_only=True):
+class AuthAttemptCreate(msgspec.Struct, frozen=True):
     connection_id: str
     method: AuthAttemptMethod
     action: dict[str, object] = msgspec.field(default_factory=dict)
@@ -45,11 +45,11 @@ def _parse_timestamp(value: str) -> datetime:
     return parsed
 
 
-def auth_attempt_expires_at(*, ttl_s: float) -> str:
+def auth_attempt_expires_at(ttl_s: float) -> str:
     return (datetime.now(UTC) + timedelta(seconds=ttl_s)).isoformat()
 
 
-def auth_attempt_is_expired(attempt: AuthAttempt, *, now: datetime | None = None) -> bool:
+def auth_attempt_is_expired(attempt: AuthAttempt, now: datetime | None = None) -> bool:
     if attempt.expires_at is None:
         return False
     current = now or datetime.now(UTC)
@@ -63,11 +63,11 @@ def new_auth_attempt(body: AuthAttemptCreate) -> AuthAttempt:
         _parse_timestamp(body.expires_at)
     now = utc_now_iso()
     return AuthAttempt(
-        id=uuid.uuid4().hex,
-        connection_id=body.connection_id,
-        method=body.method,
-        status="waiting_for_user" if body.method in {"oauth_pkce", "device_code", "api_key", "manual"} else "failed",
-        action=body.action,
+        uuid.uuid4().hex,
+        body.connection_id,
+        body.method,
+        "waiting_for_user" if body.method in {"oauth_pkce", "device_code", "api_key", "manual"} else "failed",
+        body.action,
         expires_at=body.expires_at,
         created_at=now,
         updated_at=now,
@@ -76,21 +76,20 @@ def new_auth_attempt(body: AuthAttemptCreate) -> AuthAttempt:
 
 def transition_auth_attempt(
     attempt: AuthAttempt,
-    *,
     status: AuthAttemptStatus,
     error: str | None = None,
     action: dict[str, object] | None = None,
 ) -> AuthAttempt:
     return AuthAttempt(
-        id=attempt.id,
-        connection_id=attempt.connection_id,
-        method=attempt.method,
-        status=status,
-        action=attempt.action if action is None else action,
-        error=error,
-        expires_at=attempt.expires_at,
-        created_at=attempt.created_at,
-        updated_at=utc_now_iso(),
+        attempt.id,
+        attempt.connection_id,
+        attempt.method,
+        status,
+        attempt.action if action is None else action,
+        error,
+        attempt.expires_at,
+        attempt.created_at,
+        utc_now_iso(),
     )
 
 
@@ -128,7 +127,6 @@ class AuthAttemptRegistry(MutableMapping[str, AuthAttempt]):
     async def wait_for(
         self,
         attempt_id: str,
-        *,
         predicate: Callable[[AuthAttempt], bool],
         timeout: float,
     ) -> AuthAttempt | None:
@@ -144,10 +142,10 @@ class AuthAttemptRegistry(MutableMapping[str, AuthAttempt]):
                     pass
             return self._attempts.get(attempt_id)
 
-    def expired_ids(self, *, now: datetime | None = None) -> list[str]:
+    def expired_ids(self, now: datetime | None = None) -> list[str]:
         current = now or datetime.now(UTC)
         return [
             attempt.id
             for attempt in list(self._attempts.values())
-            if auth_attempt_is_expired(attempt, now=current)
+            if auth_attempt_is_expired(attempt, current)
         ]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 from yuubot.web.files import directory_snapshot
 
@@ -13,9 +12,8 @@ def test_directory_snapshot_sorts_directories_before_files(tmp_path: Path) -> No
     (tmp_path / "alpha").mkdir()
 
     snapshot = directory_snapshot(tmp_path, tmp_path)
-    entries = cast(list[dict[str, object]], snapshot["entries"])
 
-    assert [(entry["kind"], entry["name"]) for entry in entries] == [
+    assert [(entry.kind, entry.name) for entry in snapshot.entries] == [
         ("directory", "alpha"),
         ("directory", "beta"),
         ("file", "alpha.txt"),

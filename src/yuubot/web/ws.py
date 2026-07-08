@@ -98,9 +98,9 @@ async def _start_conversation_send(
         return None
     await send({"id": command_id, "type": "conversation.send.accepted", "payload": {"conversation_id": conversation.id}})
     ws_listener.track_send(command_id, conversation.id)
-    message = InputMessage(role="user", name=actor_id, content=payload.content)
+    message = InputMessage("user", actor_id, payload.content)
     return asyncio.create_task(
-        _conversation_send(send, command_id, app, actor_id, conversation.id, message, development=app.runtime.development),
+        _conversation_send(send, command_id, app, actor_id, conversation.id, message, app.runtime.development),
         name="conversation_send",
     )
 
@@ -112,7 +112,6 @@ async def _conversation_send(
     actor_id: str,
     conversation_id: str,
     message: InputMessage,
-    *,
     development: bool,
 ) -> None:
     try:
@@ -120,14 +119,14 @@ async def _conversation_send(
     except ConversationBusy:
         await send_error(send, command_id, "conversation_busy", "conversation is already running")
     except ConversationBlocked as exc:
-        await send_error(send, command_id, "conversation_blocked", "conversation blocked", detail={"reason": str(exc)})
+        await send_error(send, command_id, "conversation_blocked", "conversation blocked", {"reason": str(exc)})
     except Exception as exc:
         await send_error(
             send,
             command_id,
             "internal_error",
-            internal_error_message(exc, development=development),
-            detail=internal_error_detail(exc, development=development),
+            internal_error_message(exc, development),
+            internal_error_detail(exc, development),
         )
 
 

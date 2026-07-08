@@ -34,7 +34,7 @@ After `uv add` or `uv remove`, call `restart_kernel` before expecting new import
 Runtime facades (`yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions."""
 
 
-class ExecutePythonPayload(msgspec.Struct, frozen=True, kw_only=True):
+class ExecutePythonPayload(msgspec.Struct, frozen=True):
     code: str
 
 
@@ -117,7 +117,7 @@ def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime)
     daemon_url = context.rpc.get("daemon_url")
     if isinstance(daemon_url, str) and daemon_url:
         env["YUUBOT_DAEMON_URL"] = daemon_url
-    env["YUUBOT_TASK_OWNER"] = make_owner(actor_id=context.actor, conversation_id=context.conversation_id)
+    env["YUUBOT_TASK_OWNER"] = make_owner(context.actor, context.conversation_id)
     db_path = runtime.db_dir / "yuubot.db"
     env["YUUBOT_DB_PATH"] = str(db_path)
     env["TMPDIR"] = str(runtime.tmp_dir)
@@ -135,8 +135,8 @@ async def _uninstall(config: ToolConfig, workspace: Path) -> None:
 
 
 EXECUTE_PYTHON_SPEC = ToolSpec(
-    payload_type=ExecutePythonPayload,
-    description=DESCRIPTION,
-    factory=_factory,
-    uninstall=_uninstall,
+    ExecutePythonPayload,
+    DESCRIPTION,
+    _factory,
+    _uninstall,
 )

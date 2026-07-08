@@ -13,9 +13,8 @@ import msgspec
 from attrs import define, field
 
 from ..domain.messages import ContentItem, ConversationContext, ToolResult
-from ..domain.stream import StreamEvent, ToolCall
-from ..runtime.core import Runtime
-from ..runtime.tasks import EmitFn
+from ..domain.stream import StreamEvent, ToolCall, ToolResultEndPayload
+from ..runtime.event_payloads import ConversationStreamPayload, EmitFn
 from ..tools import Tool, ToolConfig, build_tools
 from ..tools.progress import ToolProgress, bind_progress
 from ..util.secrets import redact_value
@@ -23,7 +22,7 @@ from ..util.secrets import redact_value
 TOOL_TIMEOUT_S = 240
 
 
-class HarnessConfig(msgspec.Struct, frozen=True, kw_only=True):
+class HarnessConfig(msgspec.Struct, frozen=True):
     tools: dict[str, ToolConfig] = msgspec.field(default_factory=dict)
 
 
@@ -114,10 +113,10 @@ class Harness:
             self._emit_tool_result_end(call, result)
             return result
         progress_token = _bind_tool_progress(
-            emit=self.emit,
-            conversation_id=self.conversation_id,
-            tool_call_id=call.id,
-            tool_name=call.name,
+            self.emit,
+            self.conversation_id,
+            call.id,
+            call.name,
         )
         task = asyncio.create_task(tool.execute(payload))
         try:
@@ -145,22 +144,22 @@ class Harness:
 
     def _emit_tool_result_end(self, call: ToolCall, result: ToolResult) -> None:
         self.emit(
-            "conversation.stream",
-            conversation_id=self.conversation_id,
-            event=StreamEvent(
-                group_id=call.id,
-                kind="tool_result_end",
-                payload={
-                    "tool_call_id": result.tool_call_id,
-                    "tool_name": call.name,
-                    "content": msgspec.to_builtins(result.content),
-                },
-            ),
+            ConversationStreamPayload(
+                self.conversation_id,
+                StreamEvent(
+                    call.id,
+                    "tool_result_end",
+                    ToolResultEndPayload(
+                        result.tool_call_id,
+                        call.name,
+                        msgspec.to_builtins(result.content),
+                    ),
+                ),
+            )
         )
 
 
 def _bind_tool_progress(
-    *,
     emit: EmitFn,
     conversation_id: str,
     tool_call_id: str,
@@ -170,10 +169,10 @@ def _bind_tool_progress(
 
     return progress_module._current_progress.set(
         bind_progress(
-            emit=emit,
-            conversation_id=conversation_id,
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
+            emit,
+            conversation_id,
+            tool_call_id,
+            tool_name,
         )
     )
 
@@ -199,12 +198,12 @@ def _tool_result(tool_call_id: str, value: object) -> ToolResult:
             meta_value = meta if isinstance(meta, dict) else item.meta
             content.append(
                 ContentItem(
-                    kind=item.kind,
-                    text=text if isinstance(text, str) else item.text,
-                    path=item.path,
-                    url=item.url,
-                    mime=item.mime,
-                    meta=cast(dict[str, object], meta_value),
+                    item.kind,
+                    text if isinstance(text, str) else item.text,
+                    item.path,
+                    item.url,
+                    item.mime,
+                    cast(dict[str, object], meta_value),
                 )
             )
         return ToolResult(
@@ -213,7 +212,7 @@ def _tool_result(tool_call_id: str, value: object) -> ToolResult:
         )
     redacted = redact_value(value)
     text = redacted if isinstance(redacted, str) else str(redacted)
-    return ToolResult(tool_call_id=tool_call_id, content=[ContentItem(kind="text", text=text)])
+    return ToolResult(tool_call_id=tool_call_id, content=[ContentItem("text", text)])
 
 
 def _with_partial(text: str, task: asyncio.Task[object]) -> str:

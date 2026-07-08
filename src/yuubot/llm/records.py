@@ -3,7 +3,7 @@
 import msgspec
 
 
-class ProviderRecord(msgspec.Struct, frozen=True, kw_only=True):
+class ProviderRecord(msgspec.Struct, frozen=True):
     id: str
     name: str
     protocol: str

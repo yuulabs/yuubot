@@ -10,4 +10,4 @@ def error_response(status: int, code: str, message: str, detail: dict[str, objec
     error: dict[str, object] = {"code": code, "message": message}
     if detail:
         error["detail"] = detail
-    return json_response({"error": error}, status=status)
+    return json_response({"error": error}, status)

@@ -17,7 +17,7 @@ def run_state_path(data_dir: Path) -> Path:
 def write(data_dir: Path, host: str, port: int) -> None:
     path = run_state_path(data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    state = ServerRunState(host=host, port=port, pid=os.getpid())
+    state = ServerRunState(host, port, os.getpid())
     path.write_text(msgspec.json.encode(state).decode("utf-8"), encoding="utf-8")
 
 

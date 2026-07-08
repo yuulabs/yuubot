@@ -23,7 +23,7 @@ from ..web.server import UvicornServer, make_server
 from ..web.run_state import ServerRunState
 from ..web.run_state import read as read_run_state
 from ..web.types import AppLoader
-from .io import admin_post, emit, error_payload, not_running_payload
+from .io import admin_post, bootstrap_snapshot, emit, error_payload, not_running_payload
 
 
 async def chat(app_loader: AppLoader, config: Path, actor: str, message: str, conversation_id: str | None) -> None:
@@ -35,7 +35,7 @@ async def chat(app_loader: AppLoader, config: Path, actor: str, message: str, co
         await app.shutdown()
 
 
-async def deploy(app_loader: AppLoader, config: Path, *, dry_run: bool, json_output: bool) -> int:
+async def deploy(app_loader: AppLoader, config: Path, dry_run: bool, json_output: bool) -> int:
     try:
         app = await app_loader(config)
     except Exception as exc:
@@ -53,7 +53,7 @@ async def deploy(app_loader: AppLoader, config: Path, *, dry_run: bool, json_out
     return 0
 
 
-async def check(app_loader: AppLoader, config: Path, *, json_output: bool) -> int:
+async def check(app_loader: AppLoader, config: Path, json_output: bool) -> int:
     try:
         app = await app_loader(config)
     except Exception as exc:
@@ -78,7 +78,6 @@ async def check(app_loader: AppLoader, config: Path, *, json_output: bool) -> in
 async def dev(
     app_loader: AppLoader,
     config: Path,
-    *,
     host: str,
     port: int,
     web_host: str,
@@ -109,7 +108,7 @@ async def dev(
     try:
         try:
             app = await app_loader(config)
-            server = make_server(app, host=host, port=port, development=True)
+            server = make_server(app, host, port, development=True)
         except OSError as exc:
             if exc.errno == errno.EADDRINUSE:
                 print(port_busy_hint(host, port, config), file=sys.stderr)
@@ -168,7 +167,7 @@ async def dev(
         if server is not None:
             server.shutdown()
         if frontend is not None:
-            await terminate_process(frontend, process_group=True)
+            await terminate_process(frontend, True)
         if frontend_wait is not None and not frontend_wait.done():
             frontend_wait.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -207,7 +206,7 @@ async def wait_for_backend_start(server: UvicornServer, backend_task: asyncio.Ta
     raise TimeoutError("backend did not start within 10 seconds")
 
 
-async def terminate_process(process: asyncio.subprocess.Process, *, process_group: bool = False) -> None:
+async def terminate_process(process: asyncio.subprocess.Process, process_group: bool = False) -> None:
     if process.returncode is not None:
         return
     if process_group and process.pid:
@@ -270,7 +269,6 @@ def legacy_db_from_old_config(info: dict[str, object]) -> Path | None:
 async def migrate_command(
     app_loader: AppLoader,
     config: Path,
-    *,
     legacy_db: Path | None,
     old_config: Path | None,
     force_import: bool,
@@ -292,11 +290,11 @@ async def migrate_command(
                 pending = await pending_versions(db)
                 legacy = await migrate_legacy(
                     db,
-                    data_dir=data_dir,
-                    legacy_db=legacy_db,
-                    old_config=old_config,
-                    dry_run=True,
-                    force_import=force_import,
+                    data_dir,
+                    legacy_db,
+                    old_config,
+                    True,
+                    force_import,
                 )
             finally:
                 await db.close()
@@ -306,9 +304,9 @@ async def migrate_command(
             old_config_info = old_config_data(old_config)
             legacy = await inspect_legacy(
                 None,
-                data_dir=data_dir,
-                legacy_db=legacy_db or legacy_db_from_old_config(old_config_info) or auto_legacy_db(data_dir),
-                old_config_info=old_config_info,
+                data_dir,
+                legacy_db or legacy_db_from_old_config(old_config_info) or auto_legacy_db(data_dir),
+                old_config_info,
             )
         payload = {
             "ok": True,
@@ -328,11 +326,11 @@ async def migrate_command(
             try:
                 legacy = await migrate_legacy(
                     db,
-                    data_dir=data_dir,
-                    legacy_db=legacy_db,
-                    old_config=old_config,
-                    dry_run=False,
-                    force_import=force_import,
+                    data_dir,
+                    legacy_db,
+                    old_config,
+                    False,
+                    force_import,
                 )
                 payload = {
                     "ok": True,
@@ -369,28 +367,27 @@ async def migrate_command(
     return 0
 
 
-def status(config: Path, *, json_output: bool) -> int:
+def status(config: Path, json_output: bool) -> int:
     run_state = run_state_for_config(config)
     if run_state is None:
         emit(not_running_payload(), json_output=json_output)
         return 3
     try:
-        with urllib.request.urlopen(f"http://{run_state.host}:{run_state.port}/api/bootstrap", timeout=5) as resp:
-            bootstrap = json.loads(resp.read())
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        snapshot = bootstrap_snapshot(run_state.host, run_state.port)
+    except (OSError, urllib.error.URLError, msgspec.DecodeError, TypeError) as exc:
         emit(error_payload(exc), json_output=json_output)
         return 3
     payload = {
         "ok": True,
         "config": str(config),
         "server": {"host": run_state.host, "port": run_state.port, "pid": run_state.pid},
-        "bootstrap": bootstrap,
+        "bootstrap": msgspec.to_builtins(snapshot),
     }
     emit(payload, json_output=json_output)
     return 0
 
 
-def interrupt(config: Path, *, conversation_id: str | None, interrupt_all: bool, json_output: bool) -> int:
+def interrupt(config: Path, conversation_id: str | None, interrupt_all: bool, json_output: bool) -> int:
     run_state = run_state_for_config(config)
     if run_state is None:
         emit(not_running_payload(), json_output=json_output)
@@ -405,7 +402,7 @@ def interrupt(config: Path, *, conversation_id: str | None, interrupt_all: bool,
     return 0
 
 
-def stop(config: Path, *, json_output: bool) -> int:
+def stop(config: Path, json_output: bool) -> int:
     run_state = run_state_for_config(config)
     if run_state is None:
         emit(not_running_payload(), json_output=json_output)
@@ -419,7 +416,7 @@ def stop(config: Path, *, json_output: bool) -> int:
     return 0
 
 
-async def db_info(config: Path, *, json_output: bool) -> int:
+async def db_info(config: Path, json_output: bool) -> int:
     try:
         data_dir = config_data_dir(config)
     except Exception as exc:
@@ -477,7 +474,7 @@ def version() -> str:
         return "0.1.0"
 
 
-async def upgrade_check(*, json_output: bool) -> int:
+async def upgrade_check(json_output: bool) -> int:
     status = await check_update(project_root())
     emit(msgspec.to_builtins(status), json_output=json_output)
     return 0
@@ -486,7 +483,6 @@ async def upgrade_check(*, json_output: bool) -> int:
 async def upgrade_apply(
     app_loader: AppLoader,
     config: Path,
-    *,
     host: str,
     port: int,
     json_output: bool,
@@ -505,11 +501,11 @@ async def upgrade_apply(
     root = project_root()
     try:
         apply_update(
-            config_path=config,
-            data_dir=config_data_dir(config),
-            host=host,
-            port=port,
-            skip_web_build=skip_web_build,
+            config,
+            config_data_dir(config),
+            host,
+            port,
+            skip_web_build,
             root=root,
         )
     except ValueError as exc:

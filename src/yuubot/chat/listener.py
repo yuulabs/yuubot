@@ -10,6 +10,14 @@ from attrs import define, field
 
 from .history import PREFIX_KINDS
 from ..domain.stream import StreamEvent
+from ..runtime.event_payloads import (
+    ConversationHistoryAppendPayload,
+    ConversationOutputPayload,
+    ConversationStreamPayload,
+    ConversationToolProgressPayload,
+    ConversationToolResultsPayload,
+)
+from ..runtime.events import RuntimeEvent
 
 WSCommandSend = Callable[[dict[str, object]], Awaitable[None]]
 
@@ -24,12 +32,15 @@ def _wire_value(value: object) -> object:
     return value
 
 
-def _wire_event_payload(payload: dict[str, object]) -> dict[str, object]:
-    if "event" not in payload:
-        return payload
-    wired = dict(payload)
-    wired["event"] = _wire_value(payload["event"])
-    return wired
+def _wire_event_payload(payload: object) -> dict[str, object]:
+    wired = msgspec.to_builtins(payload)
+    if not isinstance(wired, dict):
+        return {}
+    if "event" not in wired:
+        return wired
+    result = dict(wired)
+    result["event"] = _wire_value(wired["event"])
+    return result
 
 
 @define
@@ -75,31 +86,35 @@ class WsListener:
             self._task_stdout_task.cancel()
             self._task_stdout_task = None
 
-    async def on_event(self, kind: str, payload: dict[str, object]) -> None:
+    async def on_event(self, event: RuntimeEvent) -> None:
         if self._closed:
             return
+        kind = event.kind
+        payload = event.payload
         if self._track_all_events or (self._event_kinds and kind in self._event_kinds):
-            await self._send({"type": "runtime.event", "payload": {"kind": kind, "event": _wire_event_payload(payload)}})
-        if self._history_conversation_id is not None and kind == "conversation.history.append":
-            if payload.get("conversation_id") != self._history_conversation_id:
+            await self._send(
+                {"type": "runtime.event", "payload": {"kind": kind, "event": _wire_event_payload(payload)}}
+            )
+        if self._history_conversation_id is not None and isinstance(payload, ConversationHistoryAppendPayload):
+            if payload.conversation_id != self._history_conversation_id:
                 return
-            item = payload.get("item")
-            if isinstance(item, dict) and str(item.get("kind")) in PREFIX_KINDS:
+            item = payload.item
+            if str(item.get("kind")) in PREFIX_KINDS:
                 return
-            await self._send({"type": "conversation.history.append", "payload": payload})
+            await self._send({"type": "conversation.history.append", "payload": msgspec.to_builtins(payload)})
 
         if kind not in _STREAM_KINDS:
             return
 
-        conversation_id = payload.get("conversation_id")
-        if not isinstance(conversation_id, str) or not conversation_id:
+        conversation_id = _conversation_id(payload)
+        if conversation_id is None:
             return
 
         sent_via_track = False
         for command_id, tracked_conversation_id in self._send_tracks:
             if conversation_id != tracked_conversation_id:
                 continue
-            await self._send_conversation_frame(kind, command_id, conversation_id, payload)
+            await self._send_conversation_frame(kind, command_id, payload)
             sent_via_track = True
 
         if (
@@ -107,45 +122,44 @@ class WsListener:
             and self._history_conversation_id is not None
             and conversation_id == self._history_conversation_id
         ):
-            await self._send_conversation_frame(kind, None, conversation_id, payload)
+            await self._send_conversation_frame(kind, None, payload)
 
     async def _send_conversation_frame(
         self,
         kind: str,
         command_id: object | None,
-        conversation_id: str,
-        payload: dict[str, object],
+        payload: object,
     ) -> None:
         frame: dict[str, object] = {}
         if command_id is not None:
             frame["id"] = command_id
-        if kind == "conversation.stream":
+        if isinstance(payload, ConversationStreamPayload):
             frame["type"] = "conversation.stream"
             frame["payload"] = {
-                "conversation_id": conversation_id,
-                "event": _wire_value(payload.get("event")),
+                "conversation_id": payload.conversation_id,
+                "event": _wire_value(payload.event),
             }
-        elif kind == "conversation.output":
+        elif isinstance(payload, ConversationOutputPayload):
             frame["type"] = "conversation.output"
             frame["payload"] = {
-                "conversation_id": conversation_id,
-                "reason": payload.get("reason"),
+                "conversation_id": payload.conversation_id,
+                "reason": payload.reason,
             }
-        elif kind == "conversation.tool_results":
+        elif isinstance(payload, ConversationToolResultsPayload):
             frame["type"] = "conversation.tool_results"
             frame["payload"] = {
-                "conversation_id": conversation_id,
-                "count": payload.get("count"),
-                "results": payload.get("results", []),
+                "conversation_id": payload.conversation_id,
+                "count": payload.count,
+                "results": payload.results,
             }
-        elif kind == "conversation.tool_progress":
+        elif isinstance(payload, ConversationToolProgressPayload):
             frame["type"] = "conversation.tool_progress"
             frame["payload"] = {
-                "conversation_id": conversation_id,
-                "tool_call_id": payload.get("tool_call_id"),
-                "tool_name": payload.get("tool_name"),
-                "text": payload.get("text"),
-                "task": payload.get("task"),
+                "conversation_id": payload.conversation_id,
+                "tool_call_id": payload.tool_call_id,
+                "tool_name": payload.tool_name,
+                "text": payload.text or None,
+                "task": payload.task or None,
             }
         else:
             return
@@ -174,3 +188,8 @@ class WsListener:
         if self._closed:
             return
         await self._send({"type": "task.event", "payload": {"task_id": task_id, "status": status, "stdout": stdout}})
+
+
+def _conversation_id(payload: object) -> str | None:
+    conversation_id = getattr(payload, "conversation_id", None)
+    return conversation_id if isinstance(conversation_id, str) and conversation_id else None

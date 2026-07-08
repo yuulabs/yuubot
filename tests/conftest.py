@@ -54,7 +54,6 @@ async def track_created_apps(monkeypatch: pytest.MonkeyPatch) -> Any:
     async def create(
         cls: type[Yuubot],
         data_dir: str | Path,
-        *,
         python_kernels: Any = None,
         resources: Any = None,
     ) -> Yuubot:

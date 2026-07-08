@@ -19,7 +19,7 @@ async def reset_cron_app_state(app: Yuubot) -> None:
             app.runtime.eventbus.pull_nowait()
 
 
-async def reset_actor_app_state(app: Yuubot, *, actor_ids: tuple[str, ...] = ("amy",)) -> None:
+async def reset_actor_app_state(app: Yuubot, actor_ids: tuple[str, ...] = ("amy",)) -> None:
     for actor_id in actor_ids:
         with contextlib.suppress(Exception):
             await app.remove_actor(actor_id)

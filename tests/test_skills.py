@@ -15,10 +15,10 @@ async def test_global_skill_prompt_lists_summary_not_body(tmp_path: Path) -> Non
     app = await Yuubot.create(tmp_path / "data")
     record = await app.put_skill(
         SkillRecord(
-            id="research-plan",
-            name="Research Plan",
-            description="Plan research work.",
-            body="# Research Plan\nNever put this full private instruction in the prompt.",
+            "research-plan",
+            "Research Plan",
+            "Plan research work.",
+            "# Research Plan\nNever put this full private instruction in the prompt.",
         )
     )
 
@@ -43,10 +43,10 @@ async def test_yb_skills_facade_reads_full_body_on_demand(tmp_path: Path, monkey
     app = await Yuubot.create(tmp_path / "data")
     await app.put_skill(
         SkillRecord(
-            id="ops",
-            name="Ops",
-            description="Operational procedure.",
-            body="# Ops\nFollow the detailed steps.",
+            "ops",
+            "Ops",
+            "Operational procedure.",
+            "# Ops\nFollow the detailed steps.",
         )
     )
 
@@ -63,7 +63,7 @@ async def test_yb_skills_facade_reads_full_body_on_demand(tmp_path: Path, monkey
 async def test_skill_records_persist_across_app_reload(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     app = await Yuubot.create(data_dir)
-    await app.put_skill(SkillRecord(id="persisted", name="Persisted", body="Persist me."))
+    await app.put_skill(SkillRecord("persisted", "Persisted", body="Persist me."))
     await app.shutdown()
 
     reloaded = await Yuubot.create(data_dir)

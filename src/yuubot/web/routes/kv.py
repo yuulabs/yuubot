@@ -47,7 +47,7 @@ def register_kv_routes(api: FastAPI, app: Yuubot) -> None:
                 if_match=parse_if_match(request.headers.get("if-match")),
             )
         except KvConflictError as exc:
-            return error_response(409, "conflict", str(exc), detail={"reason": exc.reason})
+            return error_response(409, "conflict", str(exc), {"reason": exc.reason})
         except KvBadRequestError as exc:
             return bad_request(exc)
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:

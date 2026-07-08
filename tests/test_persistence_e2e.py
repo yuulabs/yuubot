@@ -32,8 +32,8 @@ from support.prompt_conditioned_llm import PromptConditionedProvider
 
 def _write_loop_llm() -> PromptConditionedProvider:
     return PromptConditionedProvider(
-        rules=[
-            (messages_contain_tool_result("write"), reply_text("done", usage={"input_tokens": 1, "output_tokens": 1})),
+        [
+            (messages_contain_tool_result("write"), reply_text("done", {"input_tokens": 1, "output_tokens": 1})),
             (
                 all_of(has_tool_spec("write"), user_message_contains("write note")),
                 call_tool("write", {"path": "note.txt", "content": "hello"}),
@@ -44,7 +44,7 @@ def _write_loop_llm() -> PromptConditionedProvider:
 
 def _python_reset_llm() -> PromptConditionedProvider:
     return PromptConditionedProvider(
-        rules=[
+        [
             (runtime_developer_notice("previous execute_python session has been reset"), reply_text("continued")),
             (messages_contain_tool_result("execute_python"), reply_text("python-ran")),
             (
@@ -57,10 +57,10 @@ def _python_reset_llm() -> PromptConditionedProvider:
 
 async def test_http_conversation_facade_history_hides_prefix(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(
-        PromptConditionedProvider(rules=[(user_message_contains("hello"), reply_text("hi"))])
+        PromptConditionedProvider([(user_message_contains("hello"), reply_text("hi"))])
     )
     conversation_id = test_context.conversation_id("prefix-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="hello")
+    await ws_conversation_send(test_context.server, "m1", actor_id, conversation_id, "hello")
     facade = await conversation_history(test_context.server, conversation_id)
     summary = await conversation_summary(test_context.server, conversation_id)
     assert "tool_specs" not in interaction_kinds(facade)
@@ -76,17 +76,17 @@ async def test_http_resume_keeps_conversation_usable(exec_py_context: ExecPyModu
     conversation_id = exec_py_context.conversation_id("resume-c1")
     await ws_conversation_send(
         exec_py_context.server,
-        command_id="m1",
-        actor_id=exec_py_context.actor_id,
-        conversation_id=conversation_id,
-        content="run python",
+        "m1",
+        exec_py_context.actor_id,
+        conversation_id,
+        "run python",
     )
     await ws_conversation_send(
         exec_py_context.server,
-        command_id="m2",
-        actor_id=exec_py_context.actor_id,
-        conversation_id=conversation_id,
-        content="continue",
+        "m2",
+        exec_py_context.actor_id,
+        conversation_id,
+        "continue",
     )
     history = await conversation_history(exec_py_context.server, conversation_id)
     assert history[-1]["payload"] == {"text": "continued"}
@@ -96,7 +96,7 @@ async def test_http_resume_keeps_conversation_usable(exec_py_context: ExecPyModu
 async def test_http_llm_rounds_append_cost_records(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(_write_loop_llm())
     conversation_id = test_context.conversation_id("cost-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="write note")
+    await ws_conversation_send(test_context.server, "m1", actor_id, conversation_id, "write note")
     costs = await conversation_costs(test_context.server, conversation_id)
     summary = await conversation_summary(test_context.server, conversation_id)
     assert len(costs) == 2
@@ -106,7 +106,7 @@ async def test_http_llm_rounds_append_cost_records(test_context: SharedTestConte
 async def test_http_blocked_conversation_persists_status_and_error(tmp_path: Path) -> None:
     app = await boot_app(
         tmp_path / "data",
-        provider=PromptConditionedProvider(rules=[(user_message_contains("hi"), reply_blocked("length"))]),
+        PromptConditionedProvider([(user_message_contains("hi"), reply_blocked("length"))]),
     )
     async with running_server(app) as server:
         await setup_amy(server, tmp_path)
@@ -123,7 +123,7 @@ async def test_http_blocked_conversation_persists_status_and_error(tmp_path: Pat
                     },
                 }
             ],
-            stop_when=lambda frame, _: frame.get("type") == "error",
+            lambda frame, _: frame.get("type") == "error",
         )
         error = frames[-1]
         assert cast(JsonObject, error["error"])["code"] == "conversation_blocked"
@@ -141,7 +141,7 @@ async def test_http_blocked_conversation_persists_status_and_error(tmp_path: Pat
 async def test_http_tool_side_effect_and_history_alignment(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(_write_loop_llm())
     conversation_id = test_context.conversation_id("align-c1")
-    await ws_conversation_send(test_context.server, command_id="m1", actor_id=actor_id, conversation_id=conversation_id, content="write note")
+    await ws_conversation_send(test_context.server, "m1", actor_id, conversation_id, "write note")
     history = await conversation_history(test_context.server, conversation_id)
     assert (test_context.workspace / "note.txt").read_text(encoding="utf-8") == "hello"
     assert interaction_kinds(history) == ["input", "gen_tool_call", "tool_result", "gen_text"]

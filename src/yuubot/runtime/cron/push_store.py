@@ -31,11 +31,11 @@ class PushSubscriptionStore:
     async def put(self, subscription: PushSubscription) -> PushSubscription:
         timestamp = utc_now_iso()
         stored = PushSubscription(
-            id=subscription.id,
-            endpoint=subscription.endpoint,
-            keys=subscription.keys,
-            created_at=subscription.created_at or timestamp,
-            updated_at=timestamp,
+            subscription.id,
+            subscription.endpoint,
+            subscription.keys,
+            subscription.created_at or timestamp,
+            timestamp,
         )
         await self._db.execute(
             """

@@ -15,7 +15,12 @@ from ..util.time import utc_now_iso
 _SKILL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$")
 
 
-class SkillRecord(msgspec.Struct, frozen=True, kw_only=True):
+class InstalledSkillRow(msgspec.Struct, frozen=True):
+    name: str
+    path: str
+
+
+class SkillRecord(msgspec.Struct, frozen=True):
     id: str
     name: str
     description: str = ""
@@ -25,7 +30,7 @@ class SkillRecord(msgspec.Struct, frozen=True, kw_only=True):
     updated_at: str = ""
 
 
-class SkillInput(msgspec.Struct, frozen=True, kw_only=True):
+class SkillInput(msgspec.Struct, frozen=True):
     name: str
     description: str = ""
     body: str = ""
@@ -33,11 +38,11 @@ class SkillInput(msgspec.Struct, frozen=True, kw_only=True):
 
     def to_record(self, skill_id: str) -> SkillRecord:
         return SkillRecord(
-            id=skill_id,
-            name=self.name,
-            description=self.description,
-            body=self.body,
-            scope=self.scope,
+            skill_id,
+            self.name,
+            self.description,
+            self.body,
+            self.scope,
         )
 
 
@@ -52,12 +57,12 @@ class SkillSummary(msgspec.Struct, frozen=True, kw_only=True):
 SkillCliAction = Literal["add", "remove", "update"]
 
 
-class SkillCliCommandBody(msgspec.Struct, frozen=True, kw_only=True):
+class SkillCliCommandBody(msgspec.Struct, frozen=True):
     action: SkillCliAction
     target: str = ""
 
 
-class SkillCliCommandResult(msgspec.Struct, frozen=True, kw_only=True):
+class SkillCliCommandResult(msgspec.Struct, frozen=True):
     action: SkillCliAction
     target: str
     command: tuple[str, ...]
@@ -85,17 +90,17 @@ def skill_summary(record: SkillRecord) -> SkillSummary:
     )
 
 
-def stored_skill(record: SkillRecord, *, existing: SkillRecord | None = None) -> SkillRecord:
+def stored_skill(record: SkillRecord, existing: SkillRecord | None = None) -> SkillRecord:
     validate_skill_record(record)
     now = utc_now_iso()
     return SkillRecord(
-        id=record.id,
-        name=record.name.strip(),
-        description=record.description.strip() or _description_from_body(record.body),
-        body=record.body,
-        scope=record.scope,
-        created_at=existing.created_at if existing is not None and existing.created_at else now,
-        updated_at=now,
+        record.id,
+        record.name.strip(),
+        record.description.strip() or _description_from_body(record.body),
+        record.body,
+        record.scope,
+        existing.created_at if existing is not None and existing.created_at else now,
+        now,
     )
 
 
@@ -128,18 +133,14 @@ async def installed_global_skill_summaries() -> list[SkillSummary]:
     if process.returncode != 0:
         return []
     try:
-        items = msgspec.json.decode(stdout, type=list[dict[str, object]])
+        items = msgspec.json.decode(stdout, type=list[InstalledSkillRow])
     except msgspec.DecodeError:
         return []
     summaries: dict[str, SkillSummary] = {}
     for item in items:
-        name = item.get("name")
-        path = item.get("path")
-        if not isinstance(name, str) or not name:
+        if not item.name or not item.path:
             continue
-        if not isinstance(path, str) or not path:
-            continue
-        summaries[name] = _installed_skill_summary(name, Path(path))
+        summaries[item.name] = _installed_skill_summary(item.name, Path(item.path))
     return [summaries[key] for key in sorted(summaries)]
 
 
@@ -160,12 +161,12 @@ async def run_skill_cli_command(body: SkillCliCommandBody) -> SkillCliCommandRes
         await process.wait()
         raise RuntimeError("skills command timed out after 120s") from None
     return SkillCliCommandResult(
-        action=body.action,
-        target=target,
-        command=command,
-        exit_code=int(process.returncode or 0),
-        stdout=stdout.decode("utf-8", errors="replace"),
-        stderr=stderr.decode("utf-8", errors="replace"),
+        body.action,
+        target,
+        command,
+        int(process.returncode or 0),
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace"),
     )
 
 

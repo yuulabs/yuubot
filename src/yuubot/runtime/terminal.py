@@ -51,7 +51,7 @@ class TerminalSession:
     async def write(self, data: str) -> None:
         await write_pty(self._require_process(), data)
 
-    async def resize(self, *, rows: int, cols: int) -> None:
+    async def resize(self, rows: int, cols: int) -> None:
         process = self._require_process()
         safe_rows = max(1, min(rows, 200))
         safe_cols = max(1, min(cols, 400))

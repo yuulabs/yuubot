@@ -231,19 +231,24 @@ prompt_caddy_config() {
     local domain username password password_confirm hash
 
     if [[ -f "$CADDY_SITE_FILE" ]]; then
-        local answer
-        read -r -p "Existing $CADDY_SITE_FILE found. Reconfigure Caddy? [y/N]: " answer
-        case "$answer" in
-            y|Y|yes|YES)
-                ;;
-            *)
-                info "Keeping existing Caddy yuubot site config"
-                sudo caddy validate --config "$CADDYFILE"
-                sudo systemctl enable --now caddy
-                sudo systemctl reload caddy
-                return
-                ;;
-        esac
+        local target_pattern answer
+        target_pattern="^[[:space:]]*reverse_proxy[[:space:]]+127\\.0\\.0\\.1:$YUUBOT_TRUSTED_ADMIN_PORT([[:space:]]|\\{|$)"
+        if sudo grep -Eq "$target_pattern" "$CADDY_SITE_FILE"; then
+            read -r -p "Existing $CADDY_SITE_FILE found. Reconfigure Caddy? [y/N]: " answer
+            case "$answer" in
+                y|Y|yes|YES)
+                    ;;
+                *)
+                    info "Keeping existing Caddy yuubot site config"
+                    sudo caddy validate --config "$CADDYFILE"
+                    sudo systemctl enable --now caddy
+                    sudo systemctl reload caddy
+                    return
+                    ;;
+            esac
+        else
+            info "Existing Caddy site does not proxy to 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT; regenerating it"
+        fi
     fi
 
     read -r -p "Admin domain, e.g. admin.example.com: " domain

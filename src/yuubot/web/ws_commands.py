@@ -22,16 +22,16 @@ class ConversationSendCommand(msgspec.Struct, frozen=True, kw_only=True, tag="co
     payload: ConversationSendPayload
 
 
-class RuntimeEventsSubscribePayload(msgspec.Struct, frozen=True, kw_only=True):
+class RuntimeEventsSubscribePayload(msgspec.Struct, frozen=True):
     kinds: list[str] = msgspec.field(default_factory=list)
 
 
-class RuntimeEventsSubscribeCommand(msgspec.Struct, frozen=True, kw_only=True, tag="runtime.events.subscribe"):
+class RuntimeEventsSubscribeCommand(msgspec.Struct, frozen=True, tag="runtime.events.subscribe"):
     id: str | None = None
     payload: RuntimeEventsSubscribePayload = msgspec.field(default_factory=RuntimeEventsSubscribePayload)
 
 
-class ConversationHistorySubscribePayload(msgspec.Struct, frozen=True, kw_only=True):
+class ConversationHistorySubscribePayload(msgspec.Struct, frozen=True):
     conversation_id: NonEmptyStr
 
 
@@ -42,7 +42,7 @@ class ConversationHistorySubscribeCommand(
     payload: ConversationHistorySubscribePayload
 
 
-class TaskSubscribePayload(msgspec.Struct, frozen=True, kw_only=True):
+class TaskSubscribePayload(msgspec.Struct, frozen=True):
     task_id: NonEmptyStr
 
 
@@ -51,7 +51,7 @@ class TaskSubscribeCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.
     payload: TaskSubscribePayload
 
 
-class TaskStdinPayload(msgspec.Struct, frozen=True, kw_only=True):
+class TaskStdinPayload(msgspec.Struct, frozen=True):
     task_id: NonEmptyStr
     text: NonEmptyStr
 
@@ -61,7 +61,7 @@ class TaskStdinCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.stdi
     payload: TaskStdinPayload
 
 
-class ConversationInterruptPayload(msgspec.Struct, frozen=True, kw_only=True):
+class ConversationInterruptPayload(msgspec.Struct, frozen=True):
     conversation_id: NonEmptyStr
 
 
@@ -70,7 +70,7 @@ class ConversationInterruptCommand(msgspec.Struct, frozen=True, kw_only=True, ta
     payload: ConversationInterruptPayload
 
 
-class TaskCancelPayload(msgspec.Struct, frozen=True, kw_only=True):
+class TaskCancelPayload(msgspec.Struct, frozen=True):
     task_id: NonEmptyStr
 
 

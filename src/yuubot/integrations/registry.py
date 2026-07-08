@@ -6,7 +6,7 @@ from typing import Protocol
 import msgspec
 from attrs import frozen
 
-from ..runtime.inbound import DEFAULT_INBOUND_ADAPTER, IntegrationInboundAdapter
+from ..runtime.inbound import DEFAULT_INBOUND_ADAPTER, IntegrationInboundAdapter, JsonInboundAdapter
 from .coding_cli import CodexConfig, OpenCodeConfig, make_codex, make_opencode
 from .github import GitHubConfig, make_github
 from .records import IntegrationRecord
@@ -31,7 +31,7 @@ class Integration(Protocol):
     async def close(self) -> None: ...
 
 
-class IntegrationHealth(msgspec.Struct, frozen=True, kw_only=True):
+class IntegrationHealth(msgspec.Struct, frozen=True):
     status: str
     reason: str = ""
     details: dict[str, object] = msgspec.field(default_factory=dict)
@@ -96,18 +96,38 @@ def default_registry() -> IntegrationRegistry:
     registry = IntegrationRegistry({})
     registry.register(
         "codex",
-        IntegrationSpec(package_path="yext.codex", config_type=CodexConfig, factory=make_codex),
+        IntegrationSpec(
+            "yext.codex",
+            CodexConfig,
+            make_codex,
+            JsonInboundAdapter("YUUBOT_CODEX_WEBHOOK_SECRET"),
+        ),
     )
     registry.register(
         "opencode",
-        IntegrationSpec(package_path="yext.opencode", config_type=OpenCodeConfig, factory=make_opencode),
+        IntegrationSpec(
+            "yext.opencode",
+            OpenCodeConfig,
+            make_opencode,
+            JsonInboundAdapter("YUUBOT_OPENCODE_WEBHOOK_SECRET"),
+        ),
     )
     registry.register(
         "tavily_web",
-        IntegrationSpec(package_path="yext.web", config_type=TavilyWebConfig, factory=make_tavily_web),
+        IntegrationSpec(
+            "yext.web",
+            TavilyWebConfig,
+            make_tavily_web,
+            JsonInboundAdapter("YUUBOT_TAVILY_WEB_WEBHOOK_SECRET"),
+        ),
     )
     registry.register(
         "github",
-        IntegrationSpec(package_path="yext.github", config_type=GitHubConfig, factory=make_github),
+        IntegrationSpec(
+            "yext.github",
+            GitHubConfig,
+            make_github,
+            JsonInboundAdapter("YUUBOT_GITHUB_WEBHOOK_SECRET"),
+        ),
     )
     return registry
