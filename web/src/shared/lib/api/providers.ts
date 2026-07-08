@@ -1,6 +1,5 @@
 import type {
   AccountSnapshot,
-  BootstrapSnapshot,
   ItemsResponse,
   ModelCard,
   ProviderDetail,
@@ -23,15 +22,15 @@ export function getProvider(providerId: string): Promise<ProviderDetail> {
   return request<ProviderDetail>(`${BASE}/providers/${encodeURIComponent(providerId)}`);
 }
 
-export function putProvider(providerId: string, input: ProviderInput): Promise<BootstrapSnapshot> {
-  return request<BootstrapSnapshot>(`${BASE}/providers/${encodeURIComponent(providerId)}`, {
+export function putProvider(providerId: string, input: ProviderInput): Promise<ProviderSnapshot> {
+  return request<ProviderSnapshot>(`${BASE}/providers/${encodeURIComponent(providerId)}`, {
     method: "PUT",
     body: JSON.stringify(input),
   });
 }
 
-export function deleteProvider(providerId: string): Promise<BootstrapSnapshot> {
-  return request<BootstrapSnapshot>(`${BASE}/providers/${encodeURIComponent(providerId)}`, { method: "DELETE" });
+export function deleteProvider(providerId: string): Promise<{ id: string; deleted: boolean }> {
+  return request<{ id: string; deleted: boolean }>(`${BASE}/providers/${encodeURIComponent(providerId)}`, { method: "DELETE" });
 }
 
 export function validateProvider(providerId: string): Promise<ValidationResult> {
@@ -57,8 +56,11 @@ export function putProviderModelCard(providerId: string, card: ModelCard): Promi
   });
 }
 
-export function deleteProviderModelCard(providerId: string, selector: string): Promise<BootstrapSnapshot> {
-  return request<BootstrapSnapshot>(
+export function deleteProviderModelCard(
+  providerId: string,
+  selector: string,
+): Promise<{ provider_id: string; selector: string; deleted: boolean }> {
+  return request<{ provider_id: string; selector: string; deleted: boolean }>(
     `${BASE}/providers/${encodeURIComponent(providerId)}/model-cards/${encodeURIComponent(selector)}`,
     { method: "DELETE" },
   );

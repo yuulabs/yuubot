@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from html import escape as html_escape
 
 import msgspec
@@ -83,12 +82,13 @@ def register_mcp_routes(api: FastAPI, app: Yuubot, deployment: DeploymentConfig)
             attempt = await app.start_mcp_oauth(server_id, public_url_base=deployment.public_url_base)
         except ValueError as exc:
             return bad_request(exc)
-        for _ in range(50):
-            current = app.runtime.auth_attempts.get(attempt.id, attempt)
-            if isinstance(current.action.get("url"), str) or current.status == "failed":
-                attempt = current
-                break
-            await asyncio.sleep(0.1)
+        current = await app.wait_auth_attempt(
+            attempt.id,
+            predicate=lambda item: isinstance(item.action.get("url"), str) or item.status == "failed",
+            timeout=5.0,
+        )
+        if current is not None:
+            attempt = current
         return json_response(attempt, status=202)
 
     @api.get("/api/mcp-oauth/{attempt_id}/callback", response_class=HTMLResponse)

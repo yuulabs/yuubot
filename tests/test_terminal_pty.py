@@ -71,3 +71,42 @@ async def test_terminal_websocket_rejects_invalid_command_payload(tmp_path: Path
             frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
             assert frame["type"] == "terminal.error"
             assert "rows" in frame["payload"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_terminal_websocket_rejects_empty_input(tmp_path: Path) -> None:
+    app = await boot_app(tmp_path / "data")
+    async with running_server(app) as server:
+        uri = f"{base_url(server).replace('http://', 'ws://')}/api/terminal/ws"
+        async with websockets.connect(uri, open_timeout=5) as ws:
+            await ws.send(json.dumps({
+                "type": "terminal.open",
+                "payload": {"command": "printf empty-input-test", "cwd": str(tmp_path)},
+            }))
+            opened = False
+            for _ in range(20):
+                frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+                if frame["type"] == "terminal.opened":
+                    opened = True
+                    break
+            assert opened
+            await ws.send(json.dumps({"type": "terminal.input", "payload": {"data": ""}}))
+            frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
+            assert frame["type"] == "terminal.error"
+            assert "data" in frame["payload"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_terminal_websocket_rejects_unauthenticated(tmp_path: Path) -> None:
+    from starlette.testclient import TestClient
+
+    from yuubot.app.deployment import DeploymentConfig
+    from yuubot.web.auth import SessionStore
+    from yuubot.web.routes.admin import create_admin_app
+
+    app = await boot_app(tmp_path / "data")
+    api = create_admin_app(app, DeploymentConfig(), SessionStore())
+    with TestClient(api) as client:
+        with pytest.raises(Exception):
+            with client.websocket_connect("/api/terminal/ws"):
+                pass

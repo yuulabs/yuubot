@@ -390,8 +390,20 @@ async def bootstrap(server: object) -> JsonObject:
     return await http_json("GET", f"{base_url(server)}/api/bootstrap")
 
 
-async def conversation_history(server: object, conversation_id: str) -> list[JsonObject]:
-    payload = await http_json("GET", f"{base_url(server)}/api/conversations/{conversation_id}/history")
+async def conversation_history(
+    server: object,
+    conversation_id: str,
+    *,
+    after_seq: int | None = None,
+    limit: int | None = None,
+) -> list[JsonObject]:
+    params: list[str] = []
+    if after_seq is not None:
+        params.append(f"after_seq={after_seq}")
+    if limit is not None:
+        params.append(f"limit={limit}")
+    suffix = f"?{'&'.join(params)}" if params else ""
+    payload = await http_json("GET", f"{base_url(server)}/api/conversations/{conversation_id}/history{suffix}")
     return cast(list[JsonObject], payload["items"])
 
 

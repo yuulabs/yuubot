@@ -68,7 +68,7 @@ async def test_actor_put_accepts_model_with_zero_pricing(tmp_path: Path) -> None
             ),
         )
         async with running_server(app) as server:
-            snapshot = await http_json(
+            actor = await http_json(
                 "PUT",
                 f"{base_url(server)}/api/actors/amy",
                 {
@@ -79,7 +79,7 @@ async def test_actor_put_accepts_model_with_zero_pricing(tmp_path: Path) -> None
                     "context_compression_tokens": 64000,
                 },
             )
-            actor = next(item for item in snapshot["actors"] if item["id"] == "amy")
+            assert actor["id"] == "amy"
             assert actor["context_compression_tokens"] == 64000
             assert actor["model"]["max_context_tokens"] == 128000
     finally:

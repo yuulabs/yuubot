@@ -3,12 +3,12 @@ import { useNavigate } from "@tanstack/react-router";
 import { putActor } from "@/shared/lib/api";
 import type { ActorRecord } from "@/shared/types/api";
 import { ErrorState, LoadingState, Page } from "@/shared/components";
-import { useBootstrap, useSetBootstrapSnapshot } from "@/shared/hooks";
+import { useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
 import { ActorForm } from "./actor-form";
 
 export function ActorNewPage() {
   const navigate = useNavigate();
-  const setBootstrapSnapshot = useSetBootstrapSnapshot();
+  const refreshBootstrap = useRefreshBootstrap();
   const { data, error, isLoading } = useBootstrap();
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState error={error} />;
@@ -30,8 +30,8 @@ export function ActorNewPage() {
         bootstrap={data}
         saveLabel="Create Actor"
         onSave={async (actor) => {
-          const snapshot = await putActor(actor);
-          setBootstrapSnapshot(snapshot);
+          await putActor(actor);
+          refreshBootstrap();
           await navigate({ to: "/actors/$id", params: { id: actor.id } });
         }}
       />}

@@ -25,7 +25,7 @@ from .streams import TaskCoroFactory, TextStream
 from .kv import KvStore
 from .shares import ShareRegistry
 from .credentials import CredentialStore
-from .auth_attempts import AuthAttempt
+from .auth_attempts import AuthAttemptRegistry
 from .mcp import McpManager
 from .skills import SkillRecord, SkillSummary, skill_summary
 from .tasks import (
@@ -136,7 +136,7 @@ class Runtime:
     resources_config: ResourceConfig
     resource_supervisor: ResourceSupervisor
     skills: dict[str, SkillRecord] = field(factory=dict)
-    auth_attempts: dict[str, AuthAttempt] = field(factory=dict)
+    auth_attempts: AuthAttemptRegistry = field(factory=AuthAttemptRegistry)
     integrations: dict[str, Integration] = field(factory=dict)
     actors: dict[str, Actor] = field(factory=dict)
     _actor_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)

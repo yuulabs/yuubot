@@ -39,7 +39,9 @@ def register_provider_routes(api: FastAPI, app: Yuubot) -> None:
             if isinstance(exc, ValueError) and "cannot change protocol" in str(exc):
                 return error_response(409, "conflict", str(exc))
             return bad_request(exc)
-        return json_response(await app.bootstrap_snapshot())
+        record = app.provider_records[provider_id]
+        cards = await app.list_model_cards(provider_id)
+        return json_response(msgspec.to_builtins(app.provider_snapshot(record, cards)))
 
     @api.delete("/api/providers/{provider_id}")
     async def api_delete_provider(provider_id: str) -> Response:
@@ -49,7 +51,7 @@ def register_provider_routes(api: FastAPI, app: Yuubot) -> None:
             await app.delete_provider(provider_id)
         except ValueError as exc:
             return error_response(409, "conflict", str(exc))
-        return json_response(await app.bootstrap_snapshot())
+        return json_response({"id": provider_id, "deleted": True})
 
     @api.post("/api/providers/{provider_id}/validate")
     async def api_validate_provider(provider_id: str) -> Response:
@@ -96,9 +98,7 @@ def register_provider_routes(api: FastAPI, app: Yuubot) -> None:
             return error_response(404, "not_found", "provider not found")
         try:
             body = await read_json(request, ModelCardInput)
-            if body.selector != selector:
-                raise ValueError("selector in path must match body.selector")
-            card = await app.put_model_card(provider_id, body)
+            card = await app.put_model_card(provider_id, selector, body)
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
         return json_response(model_card_wire(card))
@@ -111,4 +111,4 @@ def register_provider_routes(api: FastAPI, app: Yuubot) -> None:
             await app.delete_model_card(provider_id, selector)
         except ValueError as exc:
             return error_response(409, "conflict", str(exc))
-        return json_response(await app.bootstrap_snapshot())
+        return json_response({"provider_id": provider_id, "selector": selector, "deleted": True})

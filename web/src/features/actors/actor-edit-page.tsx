@@ -4,14 +4,14 @@ import { useNavigate } from "@tanstack/react-router";
 
 import { getActor, putActor } from "@/shared/lib/api";
 import { EmptyState, ErrorState, LoadingState, Page } from "@/shared/components";
-import { useBootstrap, useSetBootstrapSnapshot } from "@/shared/hooks";
+import { useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
 import type { ActorRecord } from "@/shared/types/api";
 import { ActorForm } from "./actor-form";
 
 export function ActorEditPage({ id }: { id: string }) {
   const navigate = useNavigate();
   const client = useQueryClient();
-  const setBootstrapSnapshot = useSetBootstrapSnapshot();
+  const refreshBootstrap = useRefreshBootstrap();
   const actor = useQuery({ queryKey: ["actor", id], queryFn: () => getActor(id) });
   const bootstrap = useBootstrap();
   const [draft, setDraft] = useState<ActorRecord | null>(null);
@@ -42,8 +42,8 @@ export function ActorEditPage({ id }: { id: string }) {
         bootstrap={bootstrap.data}
         saveLabel="Save Actor"
         onSave={async (record) => {
-          const snapshot = await putActor(record);
-          setBootstrapSnapshot(snapshot);
+          await putActor(record);
+          refreshBootstrap();
           client.setQueryData(["actor", record.id], record);
           if (record.id !== id) {
             client.removeQueries({ queryKey: ["actor", id] });

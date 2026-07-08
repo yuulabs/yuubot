@@ -35,6 +35,7 @@ EmitFn = Callable[..., None]
 MAX_MANUAL_TASK_TTL_S = 3600.0
 DEFAULT_MANUAL_TASK_TTL_S = MAX_MANUAL_TASK_TTL_S
 DELIVERED_TASK_MIN_RETENTION_S = 60.0
+DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S = 3600.0
 
 
 def make_owner(*, actor_id: str, conversation_id: str) -> str:
@@ -187,7 +188,14 @@ def _terminal_retention(record: RuntimeTaskRecord, now: float) -> tuple[float, f
 @define
 class TaskDeliveryQueue:
     _pending: dict[str, list[str]] = field(factory=dict)
-    _suppressed: set[str] = field(factory=set)
+    _suppressed: dict[str, float] = field(factory=dict)
+    now: Callable[[], float] = field(default=time.monotonic)
+
+    def _prune_suppressed(self) -> None:
+        now = self.now()
+        for conversation_id, expires_at in list(self._suppressed.items()):
+            if now >= expires_at:
+                self._suppressed.pop(conversation_id, None)
 
     def enqueue(self, conversation_id: str, task_id: str) -> None:
         items = self._pending.setdefault(conversation_id, [])
@@ -195,16 +203,20 @@ class TaskDeliveryQueue:
             items.append(task_id)
 
     def pop_all(self, conversation_id: str) -> list[str]:
+        self._prune_suppressed()
         return self._pending.pop(conversation_id, [])
 
     def suppress(self, conversation_id: str) -> list[str]:
-        self._suppressed.add(conversation_id)
+        self._prune_suppressed()
+        self._suppressed[conversation_id] = self.now() + DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S
         return self.pop_all(conversation_id)
 
     def allow(self, conversation_id: str) -> None:
-        self._suppressed.discard(conversation_id)
+        self._prune_suppressed()
+        self._suppressed.pop(conversation_id, None)
 
     def is_suppressed(self, conversation_id: str) -> bool:
+        self._prune_suppressed()
         return conversation_id in self._suppressed
 
 

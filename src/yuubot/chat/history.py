@@ -45,6 +45,7 @@ _TYPES: Final[dict[str, type[HistoryItem]]] = {
 _KINDS: Final[dict[type[HistoryItem], str]] = {type_: kind for kind, type_ in _TYPES.items()}
 
 PREFIX_KINDS: Final[frozenset[str]] = frozenset({"tool_specs", "system_prompt"})
+_INTERACTION_KIND_FILTER = "kind not in ('tool_specs', 'system_prompt')"
 
 
 @define
@@ -141,9 +142,87 @@ class HistoryStore:
         rows = await cursor.fetchall()
         return [_wrapped(seq, kind, payload, created_at) for seq, kind, payload, created_at in rows]
 
-    async def load_interaction_wrapped(self, conversation_id: str) -> list[dict[str, object]]:
-        items = await self.load_wrapped(conversation_id)
-        return [item for item in items if str(item["kind"]) not in PREFIX_KINDS]
+    async def load_interaction_wrapped(
+        self,
+        conversation_id: str,
+        *,
+        after_seq: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, object]], bool]:
+        if after_seq is None and limit is None:
+            items = await self._load_interaction_rows(conversation_id)
+            return items, False
+        if after_seq is not None:
+            rows = await self._load_interaction_rows(
+                conversation_id,
+                after_seq=after_seq,
+                limit=limit,
+                descending=False,
+            )
+            has_more = False
+            if limit is not None and len(rows) == limit:
+                last_seq = int(rows[-1]["seq"])
+                has_more = await self._has_interaction_after(conversation_id, last_seq)
+            return rows, has_more
+        rows = await self._load_interaction_rows(
+            conversation_id,
+            limit=limit,
+            descending=True,
+        )
+        rows.reverse()
+        has_more = False
+        if limit is not None and rows:
+            first_seq = int(rows[0]["seq"])
+            has_more = await self._has_interaction_before(conversation_id, first_seq)
+        return rows, has_more
+
+    async def _load_interaction_rows(
+        self,
+        conversation_id: str,
+        *,
+        after_seq: int | None = None,
+        limit: int | None = None,
+        descending: bool = False,
+    ) -> list[dict[str, object]]:
+        query = (
+            f"select seq, kind, payload, created_at from history "
+            f"where conversation_id = ? and {_INTERACTION_KIND_FILTER}"
+        )
+        params: list[object] = [conversation_id]
+        if after_seq is not None:
+            query += " and seq > ?"
+            params.append(after_seq)
+        query += " order by seq desc" if descending else " order by seq asc"
+        if limit is not None:
+            query += " limit ?"
+            params.append(limit)
+        cursor = await self._db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        return [_wrapped(seq, kind, payload, created_at) for seq, kind, payload, created_at in rows]
+
+    async def _has_interaction_before(self, conversation_id: str, seq: int) -> bool:
+        cursor = await self._db.execute(
+            f"""
+            select 1
+            from history
+            where conversation_id = ? and {_INTERACTION_KIND_FILTER} and seq < ?
+            limit 1
+            """,
+            (conversation_id, seq),
+        )
+        return await cursor.fetchone() is not None
+
+    async def _has_interaction_after(self, conversation_id: str, seq: int) -> bool:
+        cursor = await self._db.execute(
+            f"""
+            select 1
+            from history
+            where conversation_id = ? and {_INTERACTION_KIND_FILTER} and seq > ?
+            limit 1
+            """,
+            (conversation_id, seq),
+        )
+        return await cursor.fetchone() is not None
 
     async def delete(self, conversation_id: str) -> bool:
         cursor = await self._db.execute("delete from history where conversation_id = ?", (conversation_id,))

@@ -46,6 +46,10 @@ def test_developer_prompt_documents_actor_id_for_kv_urls(tmp_path: Path) -> None
     assert ADMIN_PAGES_SUBMIT_FLOW in prompt
     assert "`{actor_id}` is your Actor id" in prompt
     assert "/api/actors/{actor_id}/kv/{key}" in prompt
+    assert "PUT` body must be `JSON.stringify({ value: yourObjectOrArray })" in prompt
+    assert "sending the raw state object returns `400 bad_request`" in prompt
+    assert "(await res.json()).value" in prompt
+    assert "body: JSON.stringify({ value: state })" in prompt
 
 
 def test_developer_prompt_real_time_data_is_static(tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import msgspec
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from ..app import Yuubot
 from ..runtime.inbound import EnvSecretResolver, InboundBadRequestError, InboundUnauthorizedError
@@ -30,11 +30,11 @@ def create_public_app(app: Yuubot) -> FastAPI:
         if target.is_dir():
             index = _directory_index(target)
             if index is not None:
-                return Response(content=index.read_bytes(), media_type=share_content_type(index))
+                return FileResponse(index, media_type=share_content_type(index))
             return Response(content=_directory_listing(share_id, path, target, share_root), media_type="text/html; charset=utf-8")
         if not target.is_file():
             return error_response(404, "not_found", "share not found")
-        return Response(content=target.read_bytes(), media_type=share_content_type(target))
+        return FileResponse(target, media_type=share_content_type(target))
 
     @public.post("/webhooks/app/{integration_type}")
     async def app_webhook(integration_type: str, request: Request) -> object:

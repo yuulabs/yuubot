@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -32,6 +34,78 @@ async def test_auth_attempts_persist_across_app_reload(tmp_path: Path) -> None:
     assert snapshots[0].connection_id == "mcp:linear"
     assert snapshots[0].status == "polling"
     assert snapshots[0].action == {"kind": "open_url", "url": "https://auth.example/authorize"}
+
+
+@pytest.mark.asyncio
+async def test_auth_attempt_wait_notified_by_update(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    attempt = await app.create_auth_attempt(
+        AuthAttemptCreate(
+            connection_id="mcp:linear",
+            method="oauth_pkce",
+            action={"kind": "preparing_oauth"},
+            expires_at="2030-01-01T00:00:00Z",
+        )
+    )
+
+    waiter = asyncio.create_task(
+        app.wait_auth_attempt(
+            attempt.id,
+            predicate=lambda item: isinstance(item.action.get("url"), str),
+            timeout=1.0,
+        )
+    )
+    await asyncio.sleep(0)
+    await app.update_auth_attempt(
+        attempt.id,
+        status="waiting_for_user",
+        action={"kind": "open_url", "url": "https://auth.example/authorize"},
+    )
+    current = await waiter
+
+    assert current is not None
+    assert current.id == attempt.id
+    assert current.action["url"] == "https://auth.example/authorize"
+
+
+@pytest.mark.asyncio
+async def test_expired_auth_attempts_are_pruned_on_reload(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    app = await Yuubot.create(data_dir)
+    expired_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    await app.create_auth_attempt(
+        AuthAttemptCreate(
+            connection_id="mcp:linear",
+            method="oauth_pkce",
+            action={"kind": "open_url", "url": "https://auth.example/authorize"},
+            expires_at=expired_at,
+        )
+    )
+    await app.shutdown()
+
+    reloaded = await Yuubot.create(data_dir)
+
+    assert reloaded.auth_attempt_snapshots() == []
+
+
+@pytest.mark.asyncio
+async def test_expired_auth_attempt_sweep_deletes_record(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    app = await Yuubot.create(data_dir)
+    expired_at = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    attempt = await app.create_auth_attempt(
+        AuthAttemptCreate(
+            connection_id="mcp:linear",
+            method="oauth_pkce",
+            action={"kind": "open_url", "url": "https://auth.example/authorize"},
+            expires_at=expired_at,
+        )
+    )
+
+    await app.sweep_expired_auth_attempts()
+
+    assert [item.id for item in app.auth_attempt_snapshots()] == []
+    assert await app.runtime.state.delete_auth_attempt(attempt.id) is False
 
 
 @pytest.mark.asyncio

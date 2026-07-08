@@ -6,7 +6,7 @@ import mimetypes
 
 import msgspec
 from fastapi import FastAPI, File, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from ...app import Yuubot
 from ...domain.messages import ActorMessage
@@ -29,7 +29,10 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             return error_response(422, exc.code, str(exc), detail=exc.detail)
         except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
             return bad_request(exc)
-        return json_response(await app.bootstrap_snapshot())
+        snapshot = await app.actor_snapshot(actor_id)
+        if snapshot is None:
+            return error_response(404, "not_found", "actor not found")
+        return json_response(msgspec.to_builtins(snapshot))
 
     @api.get("/api/actors/{actor_id}")
     async def api_actor(actor_id: str) -> Response:
@@ -43,21 +46,25 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
         if actor_id not in app.actor_records:
             return error_response(404, "not_found", "actor not found")
         await app.enable_actor(actor_id)
-        return json_response(await app.bootstrap_snapshot())
+        snapshot = await app.actor_snapshot(actor_id)
+        assert snapshot is not None
+        return json_response(msgspec.to_builtins(snapshot))
 
     @api.post("/api/actors/{actor_id}/disable")
     async def api_disable_actor(actor_id: str) -> Response:
         if actor_id not in app.actor_records:
             return error_response(404, "not_found", "actor not found")
         await app.disable_actor(actor_id)
-        return json_response(await app.bootstrap_snapshot())
+        snapshot = await app.actor_snapshot(actor_id)
+        assert snapshot is not None
+        return json_response(msgspec.to_builtins(snapshot))
 
     @api.delete("/api/actors/{actor_id}")
     async def api_delete_actor(actor_id: str) -> Response:
         removed = await app.remove_actor(actor_id)
         if not removed:
             return error_response(404, "not_found", "actor not found")
-        return json_response(await app.bootstrap_snapshot())
+        return json_response({"id": actor_id, "deleted": True})
 
     @api.get("/api/actors/{actor_id}/browse")
     async def api_browse_actor(actor_id: str, path: str = "") -> Response:
@@ -83,7 +90,7 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             return bad_request(exc)
         if not target.is_file():
             return error_response(404, "not_found", "file not found")
-        return Response(content=target.read_bytes(), media_type=mimetypes.guess_type(target)[0] or "application/octet-stream")
+        return FileResponse(target, media_type=mimetypes.guess_type(target)[0] or "application/octet-stream")
 
     @api.post("/api/actors/{actor_id}/uploads")
     async def api_upload_actor(actor_id: str, file: list[UploadFile] = File(...), path: str | None = None) -> Response:

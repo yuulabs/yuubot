@@ -6,8 +6,10 @@ import msgspec
 
 from ..domain.messages import ModelCard
 from ..domain.stream import StreamEvent, Usage
-from ..domain.records import LifecycleError, RouteRecord
-from ..integrations import integration_health
+from ..domain.records import ActorRecord, ActorStatus, IntegrationStatus, LifecycleError, RouteRecord
+from ..integrations import IntegrationRecord, integration_health
+from ..integrations.registry import IntegrationSpec
+from ..actor.lifecycle import Actor
 from ..llm.records import ProviderRecord
 from ..llm.types import ProviderSnapshot
 from ..runtime.host_stats import HostStats, collect_host_stats
@@ -121,26 +123,32 @@ async def bootstrap_snapshot(app: "Yuubot") -> BootstrapSnapshot:
     )
 
 
+async def actor_snapshot(app: "Yuubot", actor_id: str) -> ActorSnapshot | None:
+    statuses = await app.runtime.state.actor_statuses()
+    record = app.actor_records.get(actor_id)
+    if record is not None:
+        return _actor_snapshot(record, app.actors.get(actor_id), statuses.get(actor_id))
+    live = app.actors.get(actor_id)
+    if live is None:
+        return None
+    return ActorSnapshot(
+        id=actor_id,
+        name=live.config.name,
+        description=live.config.description,
+        enabled=True,
+        status=live.status,
+        workspace=live.config.workspace,
+        provider="",
+        model=live.config.model,
+        context_compression_tokens=live.config.context_compression_tokens,
+    )
+
+
 async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
     statuses = await app.runtime.state.actor_statuses()
     snapshots: list[ActorSnapshot] = []
     for record in app.actor_records.values():
-        live = app.actors.get(record.id)
-        status = statuses.get(record.id)
-        snapshots.append(
-            ActorSnapshot(
-                id=record.id,
-                name=record.name,
-                description=record.description,
-                enabled=status.enabled if status is not None else live is not None,
-                status=live.status if live is not None else (status.status if status is not None else "disabled"),
-                last_error=status.last_error if status is not None else None,
-                workspace=record.workspace or record.id,
-                provider=record.provider,
-                model=record.model,
-                context_compression_tokens=record.context_compression_tokens,
-            )
-        )
+        snapshots.append(_actor_snapshot(record, app.actors.get(record.id), statuses.get(record.id)))
     for actor_id, actor in app.actors.items():
         if actor_id in app.actor_records:
             continue
@@ -158,6 +166,21 @@ async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
             )
         )
     return snapshots
+
+
+def _actor_snapshot(record: ActorRecord, live: Actor | None, status: ActorStatus | None) -> ActorSnapshot:
+    return ActorSnapshot(
+        id=record.id,
+        name=record.name,
+        description=record.description,
+        enabled=status.enabled if status is not None else live is not None,
+        status=live.status if live is not None else (status.status if status is not None else "disabled"),
+        last_error=status.last_error if status is not None else None,
+        workspace=record.workspace or record.id,
+        provider=record.provider,
+        model=record.model,
+        context_compression_tokens=record.context_compression_tokens,
+    )
 
 
 async def conversation_summary(app: "Yuubot", conversation_id: str) -> ConversationSummary | None:
@@ -238,35 +261,62 @@ async def _last_cost_usage(app: "Yuubot", conversation_id: str) -> Usage:
     return costs[-1].usage
 
 
+async def integration_snapshot(app: "Yuubot", integration_type: str) -> IntegrationSnapshot | None:
+    spec = app.runtime.integration_registry.specs().get(integration_type)
+    if spec is None:
+        return None
+    statuses = await app.runtime.state.integration_statuses()
+    return await _integration_snapshot(
+        app,
+        integration_type,
+        spec,
+        app.integration_records.get(integration_type),
+        statuses.get(integration_type),
+    )
+
+
 async def integration_snapshots(app: "Yuubot") -> list[IntegrationSnapshot]:
     statuses = await app.runtime.state.integration_statuses()
     snapshots: list[IntegrationSnapshot] = []
     for integration_type, spec in sorted(app.runtime.integration_registry.specs().items()):
-        record = app.integration_records.get(integration_type)
-        state = statuses.get(integration_type)
-        default_config = app.runtime.integration_registry.default_config(integration_type)
-        enabled = state.enabled if state is not None else (record is not None and record.name in app.runtime.integrations)
-        live = app.runtime.integrations.get(record.name if record is not None else integration_type)
-        health = await integration_health(live) if enabled and live is not None else None
-        health_status = health.status if health is not None else ("disabled" if not enabled else ("error" if state is not None and state.last_error is not None else "ready"))
-        health_reason = health.reason if health is not None else (state.last_error.message if state is not None and state.last_error is not None else "")
-        snapshots.append(
-            IntegrationSnapshot(
-                type=integration_type,
-                name=record.name if record is not None else integration_type,
-                package_path=spec.package_path,
-                enabled=enabled,
-                configured=record is not None or default_config is not None,
-                last_error=state.last_error if state is not None else None,
-                config_schema=msgspec.json.schema(spec.config_type),
-                config=redacted_integration_config(record.config if record is not None else default_config or {}),
-                health_status=health_status,
-                health_reason=health_reason,
-                health_details=health.details if health is not None else {},
-                action_hint=health.action_hint if health is not None else None,
-            )
+        snapshot = await _integration_snapshot(
+            app,
+            integration_type,
+            spec,
+            app.integration_records.get(integration_type),
+            statuses.get(integration_type),
         )
+        snapshots.append(snapshot)
     return snapshots
+
+
+async def _integration_snapshot(
+    app: "Yuubot",
+    integration_type: str,
+    spec: IntegrationSpec,
+    record: IntegrationRecord | None,
+    state: IntegrationStatus | None,
+) -> IntegrationSnapshot:
+    default_config = app.runtime.integration_registry.default_config(integration_type)
+    enabled = state.enabled if state is not None else (record is not None and record.name in app.runtime.integrations)
+    live = app.runtime.integrations.get(record.name if record is not None else integration_type)
+    health = await integration_health(live) if enabled and live is not None else None
+    health_status = health.status if health is not None else ("disabled" if not enabled else ("error" if state is not None and state.last_error is not None else "ready"))
+    health_reason = health.reason if health is not None else (state.last_error.message if state is not None and state.last_error is not None else "")
+    return IntegrationSnapshot(
+        type=integration_type,
+        name=record.name if record is not None else integration_type,
+        package_path=spec.package_path,
+        enabled=enabled,
+        configured=record is not None or default_config is not None,
+        last_error=state.last_error if state is not None else None,
+        config_schema=msgspec.json.schema(spec.config_type),
+        config=redacted_integration_config(record.config if record is not None else default_config or {}),
+        health_status=health_status,
+        health_reason=health_reason,
+        health_details=health.details if health is not None else {},
+        action_hint=health.action_hint if health is not None else None,
+    )
 
 
 def redacted_integration_config(config: dict[str, object]) -> dict[str, object]:

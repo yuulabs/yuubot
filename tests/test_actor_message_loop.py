@@ -119,7 +119,7 @@ async def test_actor_inbound_without_conversation_reuses_default_conversation(ac
     await actor.handle_mailbox_message(ActorMessage(text="second", source={"inbound_kind": "actor_inbound"}))
 
     assert actor._mailbox_conversation == first_conversation
-    items = await app.runtime.history.load_interaction_wrapped(first_conversation)
+    items, _has_more = await app.runtime.history.load_interaction_wrapped(first_conversation)
     assert _input_roles(items) == ["user", "user"]
 
 
@@ -169,7 +169,7 @@ async def test_actor_explicit_conversation_and_callback_roles(actor_loop_app: tu
         )
     )
 
-    items = await app.runtime.history.load_interaction_wrapped("explicit")
+    items, _has_more = await app.runtime.history.load_interaction_wrapped("explicit")
     assert _input_roles(items) == ["user", "developer"]
 
 
@@ -204,8 +204,8 @@ async def test_actor_mailbox_compacts_once_and_continues(actor_loop_app: tuple[Y
     old_conversation = str(compacted_event.payload["old_conversation_id"])
     assert new_conversation == compacted_event.payload["new_conversation_id"]
 
-    old_items = await app.runtime.history.load_interaction_wrapped(old_conversation)
-    new_items = await app.runtime.history.load_interaction_wrapped(new_conversation)
+    old_items, _ = await app.runtime.history.load_interaction_wrapped(old_conversation)
+    new_items, _ = await app.runtime.history.load_interaction_wrapped(new_conversation)
     assert _input_roles(old_items) == ["user", "developer"]
     assert _input_roles(new_items) == ["developer", "user"]
     assert _input_texts(new_items)[0] == "summary text"
@@ -295,12 +295,12 @@ async def test_task_delivery_busy_does_not_append_developer_notice(tmp_path) -> 
             )
         )
 
-        items = await app.runtime.history.load_interaction_wrapped("explicit")
+        items, _has_more = await app.runtime.history.load_interaction_wrapped("explicit")
         assert _input_roles(items) == ["user"]
 
         provider.release.set()
         await task
-        items = await app.runtime.history.load_interaction_wrapped("explicit")
+        items, _has_more = await app.runtime.history.load_interaction_wrapped("explicit")
         assert _input_roles(items) == ["user"]
         assert items[-1]["kind"] == "gen_text"
     finally:

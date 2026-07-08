@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import msgspec
 
 from ..domain.messages import ContentItem
 
+NonEmptyStr = Annotated[str, msgspec.Meta(min_length=1)]
+
 
 class ConversationSendPayload(msgspec.Struct, frozen=True, kw_only=True):
-    actor_id: str
+    actor_id: NonEmptyStr
     conversation_id: str | None = None
     content: list[ContentItem]
 
@@ -28,7 +32,7 @@ class RuntimeEventsSubscribeCommand(msgspec.Struct, frozen=True, kw_only=True, t
 
 
 class ConversationHistorySubscribePayload(msgspec.Struct, frozen=True, kw_only=True):
-    conversation_id: str
+    conversation_id: NonEmptyStr
 
 
 class ConversationHistorySubscribeCommand(
@@ -39,7 +43,7 @@ class ConversationHistorySubscribeCommand(
 
 
 class TaskSubscribePayload(msgspec.Struct, frozen=True, kw_only=True):
-    task_id: str
+    task_id: NonEmptyStr
 
 
 class TaskSubscribeCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.subscribe"):
@@ -48,8 +52,8 @@ class TaskSubscribeCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.
 
 
 class TaskStdinPayload(msgspec.Struct, frozen=True, kw_only=True):
-    task_id: str
-    text: str
+    task_id: NonEmptyStr
+    text: NonEmptyStr
 
 
 class TaskStdinCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.stdin"):
@@ -58,7 +62,7 @@ class TaskStdinCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.stdi
 
 
 class ConversationInterruptPayload(msgspec.Struct, frozen=True, kw_only=True):
-    conversation_id: str
+    conversation_id: NonEmptyStr
 
 
 class ConversationInterruptCommand(msgspec.Struct, frozen=True, kw_only=True, tag="conversation.interrupt"):
@@ -67,7 +71,7 @@ class ConversationInterruptCommand(msgspec.Struct, frozen=True, kw_only=True, ta
 
 
 class TaskCancelPayload(msgspec.Struct, frozen=True, kw_only=True):
-    task_id: str
+    task_id: NonEmptyStr
 
 
 class TaskCancelCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.cancel"):

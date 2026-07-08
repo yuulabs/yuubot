@@ -6,7 +6,7 @@ snapshot entry points consumed by the HTTP, WebSocket, and CLI facades.
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
 from attrs import define, field
@@ -31,7 +31,15 @@ from ..runtime import Runtime
 from ..runtime.credentials import CredentialRecord
 from ..runtime.kv import JsonDocument
 from ..runtime.shares import ShareGrant
-from ..runtime.auth_attempts import AuthAttempt, AuthAttemptCreate, AuthAttemptStatus, new_auth_attempt, transition_auth_attempt
+from ..runtime.auth_attempts import (
+    AuthAttempt,
+    AuthAttemptCreate,
+    AuthAttemptStatus,
+    auth_attempt_expires_at,
+    auth_attempt_is_expired,
+    new_auth_attempt,
+    transition_auth_attempt,
+)
 from ..runtime.mcp import (
     McpCapabilityIndex,
     McpServerRecord,
@@ -53,13 +61,16 @@ from ..runtime.skills import (
     stored_skill,
 )
 from .snapshots import (
+    ActorSnapshot,
     BootstrapSnapshot,
     ConversationSummary,
     IntegrationSnapshot,
     RuntimeSnapshot,
+    actor_snapshot as build_actor_snapshot,
     bootstrap_snapshot as build_bootstrap_snapshot,
     conversation_summaries as build_conversation_summaries,
     conversation_summary as build_conversation_summary,
+    integration_snapshot as build_integration_snapshot,
     integration_snapshots as build_integration_snapshots,
     runtime_snapshot as build_runtime_snapshot,
 )
@@ -79,8 +90,10 @@ from ..util.secrets import merge_redacted_config
 from ..util.time import utc_now_iso
 from ..domain.records import ActorConfigError, ActorInput, ActorRecord, CostRow, LifecycleError, RouteRecord, lifecycle_error
 from ..tools import all_tool_configs, uninstall_tools
+from ..util.asyncio_ import BackgroundSweeper
 
 ChatInput = str | list[ContentItem]
+MCP_OAUTH_ATTEMPT_TTL_S = 600.0
 
 
 def _integration_health_error(health: IntegrationHealth | None) -> LifecycleError | None:
@@ -100,6 +113,7 @@ class Yuubot:
     config_path: Path | None = None
     server_host: str = DEFAULT_HOST
     server_port: int = DEFAULT_PORT
+    _auth_attempt_sweeper: BackgroundSweeper = field(factory=BackgroundSweeper, init=False)
     _shutdown: bool = field(default=False, init=False)
 
     @property
@@ -199,6 +213,9 @@ class Yuubot:
         for skill in await self.runtime.state.load_skills():
             self.runtime.skills[skill.id] = skill
         for attempt in await self.runtime.state.load_auth_attempts():
+            if auth_attempt_is_expired(attempt):
+                await self.runtime.state.delete_auth_attempt(attempt.id)
+                continue
             self.runtime.auth_attempts[attempt.id] = attempt
         for actor_record, actor_enabled in await self.runtime.state.load_actor_records():
             self.actor_records[actor_record.id] = actor_record
@@ -220,12 +237,15 @@ class Yuubot:
         await self.runtime.cron.sync_from_store()
         await self.runtime.conversations.start_background_cleanup()
         await self.runtime.shares.start_background_cleanup()
+        await self.sweep_expired_auth_attempts()
+        await self._auth_attempt_sweeper.start(300, self.sweep_expired_auth_attempts)
         await self.runtime.resource_supervisor.start()
 
     async def shutdown(self) -> None:
         if self._shutdown:
             return
         self._shutdown = True
+        await self._auth_attempt_sweeper.stop()
         await self.mcp_oauth.shutdown()
         for actor_id in list(self.actors):
             actor = self.actors.pop(actor_id)
@@ -320,12 +340,12 @@ class Yuubot:
             retain_selectors=retain,
         )
 
-    async def put_model_card(self, provider_id: str, body: ModelCardInput) -> ModelCard:
+    async def put_model_card(self, provider_id: str, selector: str, body: ModelCardInput) -> ModelCard:
         if provider_id not in self.provider_records:
             raise KeyError(provider_id)
         if body.max_context_tokens is not None and body.max_context_tokens <= 0:
             raise ValueError("max context tokens must be greater than zero")
-        card = model_card_from_input(body)
+        card = model_card_from_input(selector, body)
         await self.runtime.state.upsert_model_card(provider_id, card)
         return card
 
@@ -602,6 +622,7 @@ class Yuubot:
                     "server_id": server_id,
                     "title": f"Authorize {record.name}",
                 },
+                expires_at=auth_attempt_expires_at(ttl_s=MCP_OAUTH_ATTEMPT_TTL_S),
             )
         )
         redirect_uri = f"{public_url_base.rstrip('/')}/api/mcp-oauth/{attempt.id}/callback"
@@ -708,10 +729,23 @@ class Yuubot:
     def auth_attempt_snapshots(self) -> list[AuthAttempt]:
         return sorted(self.runtime.auth_attempts.values(), key=lambda item: item.updated_at, reverse=True)
 
+    async def wait_auth_attempt(
+        self,
+        attempt_id: str,
+        *,
+        predicate: Callable[[AuthAttempt], bool],
+        timeout: float,
+    ) -> AuthAttempt | None:
+        return await self.runtime.auth_attempts.wait_for(attempt_id, predicate=predicate, timeout=timeout)
+
+    async def sweep_expired_auth_attempts(self) -> None:
+        for attempt_id in self.runtime.auth_attempts.expired_ids():
+            await self.delete_auth_attempt(attempt_id)
+
     async def create_auth_attempt(self, body: AuthAttemptCreate) -> AuthAttempt:
         attempt = new_auth_attempt(body)
-        self.runtime.auth_attempts[attempt.id] = attempt
         await self.runtime.state.put_auth_attempt(attempt)
+        await self.runtime.auth_attempts.put(attempt)
         return attempt
 
     async def update_auth_attempt(
@@ -724,12 +758,13 @@ class Yuubot:
     ) -> AuthAttempt:
         attempt = self.runtime.auth_attempts[attempt_id]
         updated = transition_auth_attempt(attempt, status=status, error=error, action=action)
-        self.runtime.auth_attempts[updated.id] = updated
         await self.runtime.state.put_auth_attempt(updated)
+        await self.runtime.auth_attempts.put(updated)
         return updated
 
     async def delete_auth_attempt(self, attempt_id: str) -> bool:
-        self.runtime.auth_attempts.pop(attempt_id, None)
+        self.mcp_oauth.cancel(attempt_id)
+        await self.runtime.auth_attempts.discard(attempt_id)
         return await self.runtime.state.delete_auth_attempt(attempt_id)
 
     # -- Actor lifecycle -----------------------------------------------------
@@ -1031,14 +1066,30 @@ class Yuubot:
     async def bootstrap_snapshot(self) -> BootstrapSnapshot:
         return await build_bootstrap_snapshot(self)
 
+    async def actor_snapshot(self, actor_id: str) -> ActorSnapshot | None:
+        return await build_actor_snapshot(self, actor_id)
+
     async def conversation_summaries(self) -> list[ConversationSummary]:
         return await build_conversation_summaries(self)
 
     async def conversation_summary(self, conversation_id: str) -> ConversationSummary | None:
         return await build_conversation_summary(self, conversation_id)
 
-    async def conversation_history(self, conversation_id: str) -> list[dict[str, object]]:
-        return await self.runtime.history.load_interaction_wrapped(conversation_id)
+    async def conversation_history(
+        self,
+        conversation_id: str,
+        *,
+        after_seq: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, object]], bool]:
+        return await self.runtime.history.load_interaction_wrapped(
+            conversation_id,
+            after_seq=after_seq,
+            limit=limit,
+        )
+
+    async def integration_snapshot(self, integration_type: str) -> IntegrationSnapshot | None:
+        return await build_integration_snapshot(self, integration_type)
 
     async def integration_snapshots(self) -> list[IntegrationSnapshot]:
         return await build_integration_snapshots(self)

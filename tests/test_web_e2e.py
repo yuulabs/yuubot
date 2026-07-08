@@ -69,7 +69,7 @@ async def test_http_bootstrap_history_and_delete(test_context: SharedTestContext
     )
 
 
-async def test_http_config_mutations_return_bootstrap_without_yaml(tmp_path: Path) -> None:
+async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_path: Path) -> None:
     app = await boot_app(tmp_path / "data", provider=scripted_reply("hi"))
     async with running_server(app) as server:
         url = base_url(server)
@@ -78,7 +78,7 @@ async def test_http_config_mutations_return_bootstrap_without_yaml(tmp_path: Pat
         assert protocol["protocol"] == "openai-compatible"
         assert "config_schema" in protocol
 
-        snapshot = await http_json(
+        provider = await http_json(
             "PUT",
             f"{url}/api/providers/fake",
             {
@@ -87,26 +87,24 @@ async def test_http_config_mutations_return_bootstrap_without_yaml(tmp_path: Pat
                 "config": {"endpoint": "", "api_key": "test-key", "options": {}},
             },
         )
-        assert snapshot["providers"] == [
-            {
-                "id": "fake",
-                "name": "Fake",
-                "protocol": "openai-compatible",
-                "configured": True,
-                "last_error": None,
-                "model_count": 0,
-                "configured_model_count": 0,
-            }
-        ]
-        assert "deployment" not in snapshot
-        assert "llms" not in snapshot
+        assert provider == {
+            "id": "fake",
+            "name": "Fake",
+            "protocol": "openai-compatible",
+            "configured": True,
+            "last_error": None,
+            "model_count": 0,
+            "configured_model_count": 0,
+        }
+        assert "schema_version" not in provider
+        assert "providers" not in provider
         await http_json(
             "PUT",
             f"{url}/api/providers/fake/model-cards/fake-model",
             {"selector": "fake-model", "toolcall": True, "input_price_per_million": 1.0},
         )
 
-        snapshot = await http_json(
+        actor = await http_json(
             "PUT",
             f"{url}/api/actors/amy",
             {
@@ -118,7 +116,6 @@ async def test_http_config_mutations_return_bootstrap_without_yaml(tmp_path: Pat
                 "tools": {"read": {"type": "read"}},
             },
         )
-        actor = cast(list[JsonObject], snapshot["actors"])[0]
         assert actor["id"] == "amy"
         assert "tools" not in actor
 
@@ -139,13 +136,13 @@ async def test_http_config_mutations_return_bootstrap_without_yaml(tmp_path: Pat
         }
         assert "tools" not in editable_actor
 
-        snapshot = await put_integration(
+        github = await put_integration(
             server,
             "github",
             name="gh",
             config={"access_token": "token", "default_owner": "yuulabs", "default_repo": "yuubot"},
         )
-        github = next(item for item in cast(list[JsonObject], snapshot["integrations"]) if item["type"] == "github")
+        assert github["type"] == "github"
         assert github["configured"] is True
         assert github["config"] == {
             "access_token": "***",
@@ -153,30 +150,30 @@ async def test_http_config_mutations_return_bootstrap_without_yaml(tmp_path: Pat
             "default_repo": "yuubot",
         }
 
-        snapshot = await put_integration(
+        github = await put_integration(
             server,
             "github",
             name="gh",
             config={"access_token": "***", "default_owner": "openai", "default_repo": "codex"},
         )
-        github = next(item for item in cast(list[JsonObject], snapshot["integrations"]) if item["type"] == "github")
         assert github["config"] == {
             "access_token": "***",
             "default_owner": "openai",
             "default_repo": "codex",
         }
 
-        snapshot = await http_json("POST", f"{url}/api/integrations/github/enable", {})
-        github = next(item for item in cast(list[JsonObject], snapshot["integrations"]) if item["type"] == "github")
+        github = await http_json("POST", f"{url}/api/integrations/github/enable", {})
+        assert github["type"] == "github"
         assert github["enabled"] is True
 
-        snapshot = await http_json("POST", f"{url}/api/integrations/github/disable", {})
-        github = next(item for item in cast(list[JsonObject], snapshot["integrations"]) if item["type"] == "github")
+        github = await http_json("POST", f"{url}/api/integrations/github/disable", {})
+        assert github["type"] == "github"
         assert github["enabled"] is False
         assert not (tmp_path / "data" / "config.yaml").exists()
 
-        snapshot = await http_json("DELETE", f"{url}/api/actors/amy")
-        assert snapshot["actors"] == []
+        deleted = await http_json("DELETE", f"{url}/api/actors/amy")
+        assert deleted == {"id": "amy", "deleted": True}
+        assert (await bootstrap(server))["actors"] == []
 
     restored = await boot_app(tmp_path / "data")
     async with running_server(restored) as server:
@@ -292,7 +289,10 @@ async def test_http_serves_actor_workspace_files_with_containment(test_context: 
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{url}/api/actors/{actor_id}/files/notes/memo.txt", timeout=10.0)
+        partial = await client.get(f"{url}/api/actors/{actor_id}/files/notes/memo.txt", headers={"Range": "bytes=1-3"}, timeout=10.0)
         assert response.text == "hello"
+        assert partial.status_code == 206
+        assert partial.text == "ell"
 
     for path in ("../outside.txt", "escape"):
         async with httpx.AsyncClient() as client:

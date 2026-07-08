@@ -310,6 +310,14 @@ export interface HistoryItem {
   created_at: string | null;
 }
 
+export interface ConversationHistoryResponse {
+  conversation_id: string;
+  items: HistoryItem[];
+  has_more: boolean;
+  first_seq: number | null;
+  last_seq: number | null;
+}
+
 export interface ConversationCostRecord {
   conversation_id: string;
   seq: number;

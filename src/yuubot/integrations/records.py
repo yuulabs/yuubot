@@ -6,3 +6,8 @@ class IntegrationRecord(msgspec.Struct, frozen=True, kw_only=True):
     type: str
     name: str
     config: dict[str, object] = msgspec.field(default_factory=dict)
+
+
+class IntegrationConfigInput(msgspec.Struct, frozen=True, kw_only=True):
+    name: str = ""
+    config: dict[str, object] = msgspec.field(default_factory=dict)

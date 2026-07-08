@@ -2,7 +2,7 @@ import type {
   ActorInboundBody,
   ActorInboundResponse,
   ActorRecord,
-  BootstrapSnapshot,
+  ActorSnapshot,
   EtagResponse,
   KvDocument,
   KvPutBody,
@@ -12,7 +12,7 @@ import type {
 import { authenticatedFetch, BASE, request } from "./client";
 import { getBootstrap } from "./bootstrap";
 
-export function listActors(): Promise<BootstrapSnapshot["actors"]> {
+export function listActors(): Promise<ActorSnapshot[]> {
   return getBootstrap().then((snapshot) => snapshot.actors);
 }
 
@@ -20,23 +20,23 @@ export function getActor(actorId: string): Promise<ActorRecord> {
   return request<ActorRecord>(`${BASE}/actors/${encodeURIComponent(actorId)}`);
 }
 
-export function putActor(actor: ActorRecord): Promise<BootstrapSnapshot> {
-  return request<BootstrapSnapshot>(`${BASE}/actors/${encodeURIComponent(actor.id)}`, {
+export function putActor(actor: ActorRecord): Promise<ActorSnapshot> {
+  return request<ActorSnapshot>(`${BASE}/actors/${encodeURIComponent(actor.id)}`, {
     method: "PUT",
     body: JSON.stringify(actor),
   });
 }
 
-export function enableActor(actorId: string): Promise<BootstrapSnapshot> {
-  return request<BootstrapSnapshot>(`${BASE}/actors/${encodeURIComponent(actorId)}/enable`, { method: "POST" });
+export function enableActor(actorId: string): Promise<ActorSnapshot> {
+  return request<ActorSnapshot>(`${BASE}/actors/${encodeURIComponent(actorId)}/enable`, { method: "POST" });
 }
 
-export function disableActor(actorId: string): Promise<BootstrapSnapshot> {
-  return request<BootstrapSnapshot>(`${BASE}/actors/${encodeURIComponent(actorId)}/disable`, { method: "POST" });
+export function disableActor(actorId: string): Promise<ActorSnapshot> {
+  return request<ActorSnapshot>(`${BASE}/actors/${encodeURIComponent(actorId)}/disable`, { method: "POST" });
 }
 
-export function deleteActor(actorId: string): Promise<BootstrapSnapshot> {
-  return request<BootstrapSnapshot>(`${BASE}/actors/${encodeURIComponent(actorId)}`, { method: "DELETE" });
+export function deleteActor(actorId: string): Promise<{ id: string; deleted: boolean }> {
+  return request<{ id: string; deleted: boolean }>(`${BASE}/actors/${encodeURIComponent(actorId)}`, { method: "DELETE" });
 }
 
 export function browseActor(actorId: string, path = ""): Promise<WorkspaceDirectorySnapshot> {

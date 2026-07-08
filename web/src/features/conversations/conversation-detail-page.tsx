@@ -4,17 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTopbarActions } from "@/features/shell/app-layout";
 import {
+  CONVERSATION_HISTORY_PAGE_SIZE,
   deleteConversation,
   getConversation,
   getConversationCosts,
   getConversationHistory,
+  mergeHistoryItems,
   uploadActorFile,
   type WsContentItem,
 } from "@/shared/lib/api";
 import { ErrorState, LoadingState } from "@/shared/components";
 import { useApiMutation, useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
 import { describeConversationError } from "@/shared/lib/api-errors";
-import type { HistoryItem } from "@/shared/types/api";
+import type { ConversationHistoryResponse, HistoryItem } from "@/shared/types/api";
 import { ChatComposer } from "./components/chat-composer";
 import { ChatDebugDrawer } from "./components/chat-debug-drawer";
 import { ChatLayout, ChatMain } from "./components/chat-layout";
@@ -47,13 +49,15 @@ export function ConversationDetailPage({
   useEffect(() => {
     pendingSendConsumedRef.current = false;
   }, [conversationId]);
-  const { data: history = [], error, isLoading } = useQuery({
+  const { data: historyPage, error, isLoading } = useQuery({
     queryKey: ["conversation-history", conversationId],
-    queryFn: () => getConversationHistory(conversationId),
+    queryFn: () => getConversationHistory(conversationId, { limit: CONVERSATION_HISTORY_PAGE_SIZE }),
     enabled: !isDraft && !awaitingFirstSend,
     staleTime: 0,
     refetchOnMount: "always",
   });
+  const history = historyPage?.items ?? [];
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [actorId, setActorId] = useState(draftActorId);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<WsContentItem[]>([]);
@@ -105,16 +109,50 @@ export function ConversationDetailPage({
   });
 
   const handleHistoryAppend = useCallback((targetId: string, item: HistoryItem) => {
-    const append = (current: HistoryItem[]) => (
-      current.some((entry) => entry.seq === item.seq)
-        ? current
-        : [...current, item].sort((left, right) => left.seq - right.seq)
-    );
-    queryClient.setQueryData<HistoryItem[]>(
+    queryClient.setQueryData<ConversationHistoryResponse>(
       ["conversation-history", targetId],
-      (current = []) => append(current),
+      (current) => {
+        if (!current) {
+          return {
+            conversation_id: targetId,
+            items: [item],
+            has_more: false,
+            first_seq: item.seq,
+            last_seq: item.seq,
+          };
+        }
+        if (current.items.some((entry) => entry.seq === item.seq)) {
+          return current;
+        }
+        const items = mergeHistoryItems(current.items, [item]);
+        return {
+          ...current,
+          items,
+          last_seq: item.seq,
+        };
+      },
     );
   }, [queryClient]);
+
+  const loadEarlierHistory = useCallback(async () => {
+    if (!historyPage?.has_more || loadingEarlier) {
+      return;
+    }
+    setLoadingEarlier(true);
+    try {
+      const nextLimit = history.length + CONVERSATION_HISTORY_PAGE_SIZE;
+      const page = await getConversationHistory(conversationId, { limit: nextLimit });
+      queryClient.setQueryData<ConversationHistoryResponse>(
+        ["conversation-history", conversationId],
+        (current) => ({
+          ...page,
+          items: mergeHistoryItems(current?.items ?? [], page.items),
+        }),
+      );
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [conversationId, history.length, historyPage?.has_more, loadingEarlier, queryClient]);
 
   const syncConversationState = useCallback(async () => {
     if (isDraft) {
@@ -190,7 +228,7 @@ export function ConversationDetailPage({
     });
     void queryClient.prefetchQuery({
       queryKey: ["conversation-history", conversationId],
-      queryFn: () => getConversationHistory(conversationId),
+      queryFn: () => getConversationHistory(conversationId, { limit: CONVERSATION_HISTORY_PAGE_SIZE }),
     });
     void queryClient.prefetchQuery({
       queryKey: ["conversation-costs", conversationId],
@@ -265,6 +303,20 @@ export function ConversationDetailPage({
               {persistedError}
               {durableSummary?.status ? ` (status: ${durableSummary.status})` : ""}
             </p>
+          )}
+          {historyPage?.has_more && (
+            <div className="px-4 pb-2">
+              <button
+                type="button"
+                className="text-sm text-muted-foreground underline"
+                disabled={loadingEarlier}
+                onClick={() => {
+                  void loadEarlierHistory();
+                }}
+              >
+                {loadingEarlier ? "Loading earlier messages..." : "Load earlier messages"}
+              </button>
+            </div>
           )}
           <ChatTranscript
             items={displayItems}

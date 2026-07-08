@@ -57,10 +57,7 @@ async def handle_ws_command(
         case TaskStdinCommand(id=command_id, payload=payload):
             return asyncio.create_task(_task_stdin(app, send, command_id, payload))
         case ConversationInterruptCommand(id=command_id, payload=payload):
-            conversation_id = _require_nonempty(payload.conversation_id)
-            if conversation_id is None:
-                await send_error(send, command_id, "bad_request", "conversation_id is required")
-                return None
+            conversation_id = payload.conversation_id
             await send(
                 {
                     "id": command_id,
@@ -70,10 +67,7 @@ async def handle_ws_command(
             )
             return None
         case TaskCancelCommand(id=command_id, payload=payload):
-            task_id = _require_nonempty(payload.task_id)
-            if task_id is None:
-                await send_error(send, command_id, "bad_request", "task_id is required")
-                return None
+            task_id = payload.task_id
             if task_id not in app.runtime.tasks:
                 await send_error(send, command_id, "not_found", "task not found")
                 return None
@@ -89,10 +83,7 @@ async def _start_conversation_send(
     command_id: str | None,
     payload: ConversationSendPayload,
 ) -> asyncio.Task[None] | None:
-    actor_id = _require_nonempty(payload.actor_id)
-    if actor_id is None:
-        await send_error(send, command_id, "bad_request", "actor_id is required")
-        return None
+    actor_id = payload.actor_id
     actor = app.actors.get(actor_id)
     if actor is None:
         await send_error(send, command_id, "not_found", "actor not found")
@@ -157,10 +148,7 @@ async def _history_subscribe(
     command_id: str | None,
     payload: ConversationHistorySubscribePayload,
 ) -> None:
-    conversation_id = _require_nonempty(payload.conversation_id)
-    if conversation_id is None:
-        await send_error(send, command_id, "bad_request", "conversation_id is required")
-        return
+    conversation_id = payload.conversation_id
     ws_listener.track_history(conversation_id)
     await send(
         {
@@ -178,10 +166,7 @@ async def _task_subscribe(
     command_id: str | None,
     payload: TaskSubscribePayload,
 ) -> None:
-    task_id = _require_nonempty(payload.task_id)
-    if task_id is None:
-        await send_error(send, command_id, "bad_request", "task_id is required")
-        return
+    task_id = payload.task_id
     if task_id not in app.runtime.tasks:
         await send_error(send, command_id, "not_found", "task not found")
         return
@@ -208,13 +193,7 @@ async def _task_stdin(
     command_id: str | None,
     payload: TaskStdinPayload,
 ) -> None:
-    task_id = _require_nonempty(payload.task_id)
-    if task_id is None:
-        await send_error(send, command_id, "bad_request", "task_id is required")
-        return
-    if not payload.text:
-        await send_error(send, command_id, "bad_request", "text is required")
-        return
+    task_id = payload.task_id
     if task_id not in app.runtime.tasks:
         await send_error(send, command_id, "not_found", "task not found")
         return
@@ -237,9 +216,3 @@ async def send_error(
     if detail:
         error["detail"] = detail
     await send({"id": command_id, "type": "error", "error": error})
-
-
-def _require_nonempty(value: str) -> str | None:
-    if value:
-        return value
-    return None

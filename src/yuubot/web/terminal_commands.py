@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import msgspec
+
+NonEmptyStr = Annotated[str, msgspec.Meta(min_length=1)]
 
 
 class TerminalOpenPayload(msgspec.Struct, frozen=True, kw_only=True):
@@ -17,7 +21,7 @@ class TerminalOpenCommand(msgspec.Struct, frozen=True, kw_only=True, tag="termin
 
 
 class TerminalInputPayload(msgspec.Struct, frozen=True, kw_only=True):
-    data: str
+    data: NonEmptyStr
 
 
 class TerminalInputCommand(msgspec.Struct, frozen=True, kw_only=True, tag="terminal.input"):

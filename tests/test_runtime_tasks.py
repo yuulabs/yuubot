@@ -7,8 +7,10 @@ import pytest
 
 from yuubot.app import Yuubot
 from yuubot.runtime.tasks import (
+    DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S,
     RuntimeTaskRecord,
     TaskDeliveryListener,
+    TaskDeliveryQueue,
     TaskNotRunningError,
     register_shell_task,
     schedule_task_delivery,
@@ -265,6 +267,19 @@ async def test_suppressed_conversation_delivery_skips_pending_and_future_tasks(t
     await future.wait_terminal()
     await schedule_task_delivery(app.runtime, future)
     assert future.delivery_state == "skipped"
+
+
+def test_task_delivery_suppression_expires() -> None:
+    clock = Clock()
+    queue = TaskDeliveryQueue(now=clock)
+
+    assert queue.suppress("stop-c1") == []
+    assert queue.is_suppressed("stop-c1") is True
+
+    clock.advance(DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S)
+
+    assert queue.is_suppressed("stop-c1") is False
+    assert queue._suppressed == {}
 
 
 @pytest.mark.asyncio

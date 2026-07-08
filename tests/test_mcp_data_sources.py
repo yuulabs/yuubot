@@ -262,6 +262,7 @@ async def test_mcp_oauth_admin_start_and_callback_complete_attempt(tmp_path: Pat
 
     assert start.status_code == 202
     assert attempt["status"] == "waiting_for_user"
+    assert isinstance(attempt["expires_at"], str)
     assert attempt["action"]["url"] == "https://auth.example/authorize?state=state-1"
     assert callback.status_code == 200
     assert current["status"] == "succeeded"

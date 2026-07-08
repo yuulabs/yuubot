@@ -28,7 +28,6 @@ class ProviderProtocolSpec(msgspec.Struct, frozen=True, kw_only=True):
 
 
 class ModelCardInput(msgspec.Struct, frozen=True, kw_only=True):
-    selector: str
     max_context_tokens: int | None = None
     vision: bool = False
     toolcall: bool = True

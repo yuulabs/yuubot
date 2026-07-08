@@ -35,8 +35,12 @@ async def test_http_share_publish_public_read_and_revoke(test_context: SharedTes
 
     async with httpx.AsyncClient() as client:
         response = await client.get(public_url, timeout=10.0)
+        partial = await client.get(public_url, headers={"Range": "bytes=0-1"}, timeout=10.0)
     assert response.status_code == 200
     assert response.text == "q3 summary"
+    assert partial.status_code == 206
+    assert partial.text == "q3"
+    assert partial.headers["content-range"].startswith("bytes 0-1/")
 
     await http_json("DELETE", f"{base_url(test_context.server)}/api/shares/{share_id}")
     async with httpx.AsyncClient() as client:

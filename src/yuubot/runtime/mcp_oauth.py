@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING
 
 from attrs import define, field
 
 from ..util.time import utc_now_iso
 from .auth_attempts import AuthAttempt
-from .mcp import McpCapabilityIndex, McpServerRecord, McpServerState, McpManager, replace_mcp_record, summarize_capabilities, is_oauth_auth_mode
+from .mcp import McpServerRecord, McpServerState, McpManager, replace_mcp_record, summarize_capabilities, is_oauth_auth_mode
 
 if TYPE_CHECKING:
     from .store import ApplicationStateStore
@@ -35,7 +35,7 @@ class McpOAuthCoordinator:
             future.set_result((code, state))
         return future
 
-    def start_task(self, attempt_id: str, coro: Awaitable[None]) -> asyncio.Task[None]:
+    def start_task(self, attempt_id: str, coro: Coroutine[object, object, None]) -> asyncio.Task[None]:
         task = asyncio.create_task(coro)
         self._tasks[attempt_id] = task
         task.add_done_callback(lambda _task, attempt_id=attempt_id: self._tasks.pop(attempt_id, None))
@@ -44,17 +44,20 @@ class McpOAuthCoordinator:
     def drop_callback(self, attempt_id: str) -> None:
         self._callbacks.pop(attempt_id, None)
 
-    def cancel_for_server(self, server_id: str, auth_attempts: dict[str, AuthAttempt]) -> None:
+    def cancel(self, attempt_id: str) -> None:
+        task = self._tasks.pop(attempt_id, None)
+        if task is not None:
+            task.cancel()
+        future = self._callbacks.pop(attempt_id, None)
+        if future is not None and not future.done():
+            future.cancel()
+
+    def cancel_for_server(self, server_id: str, auth_attempts: Mapping[str, AuthAttempt]) -> None:
         prefix = f"mcp:{server_id}"
         for attempt_id, attempt in list(auth_attempts.items()):
             if attempt.connection_id != prefix:
                 continue
-            task = self._tasks.pop(attempt_id, None)
-            if task is not None:
-                task.cancel()
-            future = self._callbacks.pop(attempt_id, None)
-            if future is not None and not future.done():
-                future.cancel()
+            self.cancel(attempt_id)
 
     async def shutdown(self) -> None:
         for task in list(self._tasks.values()):
