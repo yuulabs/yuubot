@@ -545,7 +545,10 @@ Context collection: Conversation loads actor → build_actor_provider(actor) →
 Core call: conversation_llm_step → provider.stream(...).
 Output protocol: WS frames type=conversation.stream with StreamEvent payloads;
   terminal frame kind=stream_stop carrying reason, usage, account,
-  cost_estimated; then history append.
+  cost_estimated. If the stop reason requests tool execution, Harness emits
+  conversation.stream tool_result_delta/tool_result_end events for process
+  output and final ToolResult content, followed by history append for durable
+  ToolResult rows and conversation.tool_results as the batch notification.
 Error protocol: WS error frame conversation_busy; provider failures become
   stream_stop with reason=stop and last_error on conversation record.
 Persistence: cost from StreamStop.usage/account; history items from merged

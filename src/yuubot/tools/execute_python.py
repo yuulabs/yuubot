@@ -17,6 +17,7 @@ from ..python.workspace import ensure_workspace_venv, prepare_kernel_workspace
 from ..runtime.core import Runtime
 from ..runtime.tasks import make_owner
 from .base import ToolConfig, ToolSpec
+from .progress import current_progress
 
 DESCRIPTION = """Run Python code in a persistent IPython session for the current user turn.
 
@@ -57,9 +58,10 @@ class ExecutePythonTool:
         data = cast(ExecutePythonPayload, payload)
         self._set_partial_result("execute_python is acquiring a Python kernel worker and preparing the workspace environment.")
         worker = await self._worker_or_acquire()
+        progress = current_progress()
         try:
             self._set_partial_result("execute_python acquired a Python kernel worker and is executing the submitted code.")
-            return await worker.run_code(data.code)
+            return await worker.run_code(data.code, on_output=progress.write if progress is not None else None)
         except KernelWorkerError as first_exc:
             if self._worker is not None:
                 await self.pool.drop_leased_worker(self.lease_key, self._worker)
@@ -67,9 +69,10 @@ class ExecutePythonTool:
                 self._leased = False
             self._set_partial_result("execute_python is retrying after the Python kernel worker failed.")
             worker = await self._worker_or_acquire()
+            progress = current_progress()
             try:
                 self._set_partial_result("execute_python acquired a replacement Python kernel worker and is executing the submitted code.")
-                return await worker.run_code(data.code)
+                return await worker.run_code(data.code, on_output=progress.write if progress is not None else None)
             except KernelWorkerError as retry_exc:
                 raise KernelWorkerError(
                     "kernel worker retry failed after initial error: "
@@ -103,6 +106,9 @@ class ExecutePythonTool:
         task = asyncio.current_task()
         if task is not None:
             setattr(task, "partial_result", text)
+        progress = current_progress()
+        if progress is not None:
+            progress.write(f"[system] {text}\n")
 
 
 def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime) -> ExecutePythonTool:

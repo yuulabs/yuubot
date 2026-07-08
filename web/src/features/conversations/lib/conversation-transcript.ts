@@ -162,6 +162,29 @@ export function renderBlocksFromStreamEvent(
   if (event.kind === "tool_arguments_end") {
     return [];
   }
+  if (event.kind === "tool_result_delta") {
+    const id = String(payload.tool_call_id ?? event.group_id);
+    return [{
+      key: `${keyPrefix}:tool-result-stream:${id}`,
+      type: "tool_result",
+      content: String(payload.text ?? ""),
+      toolCallId: id,
+      toolName: typeof payload.tool_name === "string" ? payload.tool_name : undefined,
+      toolStatus: "running",
+    }];
+  }
+  if (event.kind === "tool_result_end") {
+    const id = String(payload.tool_call_id ?? event.group_id);
+    const fallback = [{ kind: "text", text: String(payload.text ?? "") }];
+    return [{
+      key: `${keyPrefix}:tool-result:${id}`,
+      type: "tool_result",
+      content: contentText(payload.content ?? fallback),
+      toolCallId: id,
+      toolName: typeof payload.tool_name === "string" ? payload.tool_name : undefined,
+      toolStatus: "completed",
+    }];
+  }
   return [];
 }
 
@@ -212,9 +235,10 @@ function makeToolGroup(call: RenderBlock, result?: RenderBlock): RenderBlock {
 }
 
 function appendToolResultToGroup(group: RenderBlock, result: RenderBlock): RenderBlock {
+  const replaceRunningResult = group.toolStatus !== "completed" && result.toolStatus === "completed";
   return {
     ...group,
-    toolResult: mergeToolResultContent(group.toolResult, result.content),
+    toolResult: replaceRunningResult ? result.content : mergeToolResultContent(group.toolResult, result.content),
     toolStatus: result.toolStatus ?? group.toolStatus,
   };
 }
@@ -271,21 +295,21 @@ function mergeToolArgs(existing?: string, incoming?: string): string | undefined
 }
 
 function samePendingToolCall(left: RenderBlock, right: RenderBlock): boolean {
-  if (left.toolStreamId && right.toolStreamId) {
-    return left.toolStreamId === right.toolStreamId;
-  }
   if (left.toolCallId && right.toolCallId) {
     return left.toolCallId === right.toolCallId;
+  }
+  if (left.toolStreamId && right.toolStreamId) {
+    return left.toolStreamId === right.toolStreamId;
   }
   return Boolean(left.toolName && right.toolName && left.toolName === right.toolName);
 }
 
 function sameToolCall(left: RenderBlock, right: RenderBlock): boolean {
-  if (left.toolStreamId && right.toolStreamId) {
-    return left.toolStreamId === right.toolStreamId;
-  }
   if (left.toolCallId && right.toolCallId) {
     return left.toolCallId === right.toolCallId;
+  }
+  if (left.toolStreamId && right.toolStreamId) {
+    return left.toolStreamId === right.toolStreamId;
   }
   return Boolean(left.toolName && right.toolName && left.toolName === right.toolName);
 }
@@ -424,9 +448,10 @@ function groupToolBlocks(blocks: RenderBlock[]): RenderBlock[] {
         const resultIndex = findMatchingToolResultIndex(next, block);
         if (resultIndex >= 0) {
           const match = next[resultIndex];
+          const replaceRunningResult = match.toolStatus !== "completed" && block.toolStatus === "completed";
           next[resultIndex] = {
             ...match,
-            content: mergeToolResultContent(match.content, block.content),
+            content: replaceRunningResult ? block.content : mergeToolResultContent(match.content, block.content),
             toolStatus: block.toolStatus ?? match.toolStatus,
           };
         } else {
@@ -492,9 +517,8 @@ function historyItemToBlocks(item: HistoryItem): RenderBlock[] {
       content: `Tool: ${name}`,
       toolArgs: args,
       toolCallId: id,
-      toolStreamId: id,
       toolName: name,
-      toolStatus: "completed",
+      toolStatus: "running",
     }];
   }
 
@@ -616,6 +640,12 @@ function hasDurableActorForTurn(items: DisplayItem[], turnKey: string): boolean 
   return items.some((item) => item.role === "actor" && item.turnKey === turnKey);
 }
 
+function liveToolOverlayBlocks(liveBlocks: RenderBlock[]): RenderBlock[] {
+  return liveBlocks.filter((block) => (
+    block.type === "tool_group" || block.type === "tool_call" || block.type === "tool_result"
+  ));
+}
+
 function mergeLiveAssistantTurn({
   items,
   liveBlocks,
@@ -638,11 +668,18 @@ function mergeLiveAssistantTurn({
   const stableTurnKey = lastUserTurnKey(items) ?? turnKey ?? "live";
   const liveKey = `${stableTurnKey}:actor`;
   if (hasDurableActorForTurn(items, stableTurnKey)) {
-    return items.map((item) => (
-      item.key === liveKey
-        ? { ...item, streaming, turnKey: stableTurnKey }
-        : item
-    ));
+    const overlay = liveToolOverlayBlocks(liveBlocks);
+    return items.map((item) => {
+      if (item.key !== liveKey) {
+        return item;
+      }
+      return {
+        ...item,
+        blocks: overlay.length > 0 ? appendRenderBlocks(item.blocks, overlay) : item.blocks,
+        streaming,
+        turnKey: stableTurnKey,
+      };
+    });
   }
 
   const existingIndex = items.findIndex((item) => item.key === liveKey);

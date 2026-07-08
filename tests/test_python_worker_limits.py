@@ -149,3 +149,35 @@ async def test_execute_filters_terminal_control_sequences(monkeypatch: pytest.Mo
     assert output == "red\nvalueTraceback\nboom"
     assert "\x1b" not in output
     assert "\x07" not in output
+
+
+@pytest.mark.asyncio
+async def test_execute_streams_filtered_output_to_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeKernelClient(
+        [
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "stream"},
+                "content": {"text": "\x1b[31mhello\x1b[0m\n"},
+            },
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "execute_result"},
+                "content": {"data": {"text/plain": "42"}},
+            },
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "status"},
+                "content": {"execution_state": "idle"},
+            },
+        ]
+    )
+    worker = _worker(client, max_output_bytes=128)
+    worker._started = True
+    monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
+    streamed: list[str] = []
+
+    output = await worker.run_code("print('hello')", on_output=streamed.append)
+
+    assert streamed == ["hello\n", "42"]
+    assert output == "hello\n42"

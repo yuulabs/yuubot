@@ -249,13 +249,35 @@ WsListener 典型 filter
 | `conversation.input` | `conversation_id`, `content` |
 | `conversation.stream` | `conversation_id`, `event` |
 | `conversation.output` | `conversation_id`, `reason` |
-| `conversation.tool_results` | `conversation_id`, `count` |
+| `conversation.tool_results` | `conversation_id`, `count`, `results` |
 | `conversation.cost` | `conversation_id`, token fields, `payg_cost`, `estimated` |
 | `conversation.history.append` | `conversation_id`, `item` |
 | `wakeup.delivered` | `actor_id`, `inbound_kind` |
 | `share.created` | `share_id`, `actor_id` |
 
 `task.*` 由 [04-tasks.md](04-tasks.md) 定义；`gateway.*` 由 Integration 层定义。
+
+### Tool result stream
+
+长阻塞工具必须通过 `conversation.stream` 暴露过程输出，使用与 LLM token stream 相同的
+`StreamEvent` 外形：
+
+| stream kind | payload 要点 |
+| --- | --- |
+| `tool_result_delta` | `tool_call_id`, `tool_name`, `text` |
+| `tool_result_end` | `tool_call_id`, `tool_name`, `content` |
+
+约束：
+
+1. `tool_result_delta.group_id` 和 `tool_result_end.group_id` 都是实际 `tool_call_id`。
+2. `tool_result_delta` 是实时 UI 事件，不写 History；bash 的 PTY stdout 与
+   execute_python 的 kernel stdout/stderr 都走这里。
+3. 每个产生 `ToolResult` 的调用都必须发 `tool_result_end`，包括正常完成、参数校验失败、
+   tool 异常、超时和中断。`tool_result_end.payload.content` 必须等于最终
+   `ToolResult.content` 的 wire 形态。
+4. `conversation.tool_results` 在所有当前 tool calls 收束后继续发送，payload 带完整
+   `results[]`。它是批量通知与兼容出口；前端渲染同一 `tool_call_id` 时必须将 completed
+   内容替换 running delta 内容或去重。
 
 ## Context Access
 

@@ -242,6 +242,8 @@ Gen***End(group_id)  # 除 ToolCall 以外
 GenToolCallName(group_id)
 GenToolCallArgumentsDelta(group_id)
 GenToolCallArgumentsEnd(group_id)
+ToolResultDelta(group_id)
+ToolResultEnd(group_id)
 StreamStop(reason, usage, account)
 ```
 
@@ -251,6 +253,21 @@ StreamStop(reason, usage, account)
 
 `GenToolCallName` 需要 adapter 完整等到名称，或从过量 stream events 中提取名称。
 `GenToolCallArgumentsEnd` 是 `GenToolCall` 的结束事件。
+
+Tool 执行也使用同一套 `StreamEvent` 外形向前端暴露过程输出：
+
+- `tool_result_delta`：`group_id` 为真实 `tool_call_id`。payload 包含
+  `tool_call_id`、`tool_name`、`text`。用于 bash stdout、execute_python stdout/stderr
+  等长阻塞工具的过程输出。该事件不写入 History，只用于实时 UI。
+- `tool_result_end`：`group_id` 同样为 `tool_call_id`。payload 包含
+  `tool_call_id`、`tool_name`、`content`，其中 `content` 是最终 `ToolResult.content`
+  的 wire 形态。Tool 正常完成、校验失败、执行异常、超时、中断时都必须发出该事件。
+
+`tool_result_delta` 与 `tool_result_end` 属于 Conversation/Harness 层事件，不由
+Provider 产生。`tool_result_end` 是流式视图的权威收束；随后仍可发
+`conversation.tool_results` 批量事件，供持久化通知、旧观察者和运行时摘要使用。前端
+收到同一 `tool_call_id` 的 completed result 时，必须用 completed 内容替换 running
+delta 内容或去重，不能把过程输出和最终结果无条件拼接。
 
 `reason` 透传 OpenAI `finish_reason`：`stop`、`length`、`tool_calls`、
 `content_filter`、`function_call`；另加 yuubot 自己的 `interrupted`。

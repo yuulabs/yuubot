@@ -13,7 +13,7 @@ import msgspec
 from attrs import define, field
 
 from ..domain.messages import ContentItem, ConversationContext, ToolResult
-from ..domain.stream import ToolCall
+from ..domain.stream import StreamEvent, ToolCall
 from ..runtime.core import Runtime
 from ..runtime.tasks import EmitFn
 from ..tools import Tool, ToolConfig, build_tools
@@ -69,7 +69,10 @@ class Harness:
                         task.cancel()
                     await asyncio.gather(*interrupted, return_exceptions=True)
                     for task in interrupted:
-                        results[tasks[task].id] = _result(tasks[task].id, _with_partial("[system] tool call interrupted.", task))
+                        call = tasks[task]
+                        result = _result(call.id, _with_partial("[system] tool call interrupted.", task))
+                        results[call.id] = result
+                        self._emit_tool_result_end(call, result)
                     break
         finally:
             stop_task.cancel()
@@ -90,45 +93,70 @@ class Harness:
     async def _run_one(self, call: ToolCall, timeout: float) -> ToolResult:
         tool = self.tools.get(call.name)
         if tool is None:
-            return _result(call.id, f"unknown tool: {call.name}")
+            result = _result(call.id, f"unknown tool: {call.name}")
+            self._emit_tool_result_end(call, result)
+            return result
         try:
             raw = msgspec.json.decode((call.arguments or "{}").encode(), type=dict[str, object])
             payload = msgspec.convert(raw, tool.payload_type)
         except msgspec.DecodeError as exc:
-            return _result(call.id, f"invalid JSON for {call.name}: {exc}")
+            result = _result(call.id, f"invalid JSON for {call.name}: {exc}")
+            self._emit_tool_result_end(call, result)
+            return result
         except msgspec.ValidationError as exc:
-            return _result(call.id, f"invalid payload for {call.name}: {exc}")
+            result = _result(call.id, f"invalid payload for {call.name}: {exc}")
+            self._emit_tool_result_end(call, result)
+            return result
         try:
             await self._wait_prepared(call.name)
         except Exception as exc:
-            return _result(call.id, f"{call.name} prepare failed: {_exception_detail(exc)}")
-        task = asyncio.create_task(tool.execute(payload))
+            result = _result(call.id, f"{call.name} prepare failed: {_exception_detail(exc)}")
+            self._emit_tool_result_end(call, result)
+            return result
         progress_token = _bind_tool_progress(
             emit=self.emit,
             conversation_id=self.conversation_id,
             tool_call_id=call.id,
             tool_name=call.name,
         )
+        task = asyncio.create_task(tool.execute(payload))
         try:
             value = await asyncio.wait_for(task, timeout=timeout)
-            return _tool_result(call.id, value)
+            result = _tool_result(call.id, value)
         except TimeoutError:
-            return _result(call.id, _with_partial(f"[system] {call.name}工具调用已超过{int(timeout)}s, 被强制中断.", task))
+            result = _result(call.id, _with_partial(f"[system] {call.name}工具调用已超过{int(timeout)}s, 被强制中断.", task))
         except asyncio.CancelledError:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             _copy_partial(task, asyncio.current_task())
             raise
         except Exception as exc:
-            return _result(call.id, f"{call.name} failed: {_exception_detail(exc)}")
+            result = _result(call.id, f"{call.name} failed: {_exception_detail(exc)}")
         finally:
             _reset_tool_progress(progress_token)
+        self._emit_tool_result_end(call, result)
+        return result
 
     async def _wait_prepared(self, name: str) -> None:
         task = self.prepare_tasks.get(name)
         if task is None:
             return
         await asyncio.shield(task)
+
+    def _emit_tool_result_end(self, call: ToolCall, result: ToolResult) -> None:
+        self.emit(
+            "conversation.stream",
+            conversation_id=self.conversation_id,
+            event=StreamEvent(
+                group_id=call.id,
+                kind="tool_result_end",
+                payload={
+                    "tool_call_id": result.tool_call_id,
+                    "tool_name": call.name,
+                    "content": msgspec.to_builtins(result.content),
+                },
+            ),
+        )
 
 
 def _bind_tool_progress(
@@ -162,20 +190,26 @@ def _result(tool_call_id: str, text: str) -> ToolResult:
 
 def _tool_result(tool_call_id: str, value: object) -> ToolResult:
     if isinstance(value, list):
-        return ToolResult(
-            tool_call_id=tool_call_id,
-            content=[
+        content: list[ContentItem] = []
+        for item in value:
+            if not isinstance(item, ContentItem):
+                continue
+            text = redact_value(item.text)
+            meta = redact_value(item.meta)
+            meta_value = meta if isinstance(meta, dict) else item.meta
+            content.append(
                 ContentItem(
                     kind=item.kind,
-                    text=redact_value(item.text) if isinstance(item.text, str) else item.text,
+                    text=text if isinstance(text, str) else item.text,
                     path=item.path,
                     url=item.url,
                     mime=item.mime,
-                    meta=redact_value(item.meta) if isinstance(item.meta, dict) else item.meta,
+                    meta=cast(dict[str, object], meta_value),
                 )
-                for item in value
-                if isinstance(item, ContentItem)
-            ],
+            )
+        return ToolResult(
+            tool_call_id=tool_call_id,
+            content=content,
         )
     redacted = redact_value(value)
     text = redacted if isinstance(redacted, str) else str(redacted)

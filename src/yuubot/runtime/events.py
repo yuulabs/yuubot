@@ -12,7 +12,7 @@ import msgspec
 from attrs import define, field
 
 EVENT_BUFFER_SIZE = 100
-NOISY_STREAM_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_arguments_delta"})
+NOISY_STREAM_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_arguments_delta", "tool_result_delta"})
 
 _log = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ from typing import Literal, cast
 
 import msgspec
 
-from .messages import GenAudio, GenImage, GenOutput, GenReasoning, GenText, GenToolCall, ModelCard
+from .messages import GenOutput, GenReasoning, GenText, GenToolCall, ModelCard
 
 StopReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call", "interrupted"]
 StreamKind = Literal[
@@ -13,6 +13,8 @@ StreamKind = Literal[
     "tool_name",
     "tool_arguments_delta",
     "tool_arguments_end",
+    "tool_result_delta",
+    "tool_result_end",
     "stream_stop",
 ]
 

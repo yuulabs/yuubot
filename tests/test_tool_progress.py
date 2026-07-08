@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from yuubot.chat.listener import WsListener
+from yuubot.domain.stream import StreamEvent
 from yuubot.runtime.events import EventBus
 from yuubot.tools.progress import bind_progress
 
@@ -22,6 +23,19 @@ def test_eventbus_does_not_buffer_tool_progress() -> None:
     assert eventbus.events == []
 
 
+def test_eventbus_does_not_buffer_tool_result_delta() -> None:
+    eventbus = EventBus()
+    eventbus.emit(
+        "conversation.stream",
+        conversation_id="c1",
+        event=StreamEvent(group_id="call-1", kind="tool_result_delta", payload={"text": "chunk"}),
+    )
+    queued = eventbus.pull_nowait()
+
+    assert queued.kind == "conversation.stream"
+    assert eventbus.events == []
+
+
 def test_bind_progress_emits_tool_progress_events() -> None:
     emitted: list[tuple[str, dict[str, object]]] = []
 
@@ -37,7 +51,14 @@ def test_bind_progress_emits_tool_progress_events() -> None:
     progress.write("chunk")
     progress.set_task("install")
 
-    assert emitted == [
+    assert emitted[0][0] == "conversation.stream"
+    assert emitted[0][1]["conversation_id"] == "c1"
+    event = emitted[0][1]["event"]
+    assert isinstance(event, StreamEvent)
+    assert event.group_id == "call-1"
+    assert event.kind == "tool_result_delta"
+    assert event.payload == {"tool_call_id": "call-1", "tool_name": "bash", "text": "chunk"}
+    assert emitted[1:] == [
         (
             "conversation.tool_progress",
             {

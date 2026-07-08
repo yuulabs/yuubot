@@ -349,7 +349,15 @@ export function useConversationSession({
         const streamPayload = frame.payload;
         const streamEvent = streamPayload?.event as Record<string, unknown> | undefined;
         const kind = streamEvent?.kind;
-        if (kind === "text_delta" || kind === "reasoning_delta" || kind === "tool_name" || kind === "tool_arguments_delta" || kind === "tool_arguments_end") {
+        if (
+          kind === "text_delta" ||
+          kind === "reasoning_delta" ||
+          kind === "tool_name" ||
+          kind === "tool_arguments_delta" ||
+          kind === "tool_arguments_end" ||
+          kind === "tool_result_delta" ||
+          kind === "tool_result_end"
+        ) {
           appendStreamEvent(streamEvent ?? {});
           return;
         }

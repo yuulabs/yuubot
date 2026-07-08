@@ -197,6 +197,68 @@ test("stream tool arguments keep merging after tool result arrives", () => {
   assert.equal(blocks[0]?.toolResult, "ok\n");
 });
 
+test("stream tool result deltas are replaced by completed result", () => {
+  let blockIndex = 0;
+  const next = () => blockIndex++;
+  const nameBlock = renderBlocksFromStreamEvent(
+    {
+      group_id: "tool-0",
+      kind: "tool_name",
+      payload: { id: "call-1", name: "bash" },
+    },
+    "item",
+    next,
+  );
+  const argsBlock = renderBlocksFromStreamEvent(
+    {
+      group_id: "tool-0",
+      kind: "tool_arguments_delta",
+      payload: { text: JSON.stringify({ command: "printf hi" }) },
+    },
+    "item",
+    next,
+  );
+  const deltaBlock = renderBlocksFromStreamEvent(
+    {
+      group_id: "call-1",
+      kind: "tool_result_delta",
+      payload: { tool_call_id: "call-1", tool_name: "bash", text: "hi" },
+    },
+    "item",
+    next,
+  );
+  const endBlock = renderBlocksFromStreamEvent(
+    {
+      group_id: "call-1",
+      kind: "tool_result_end",
+      payload: {
+        tool_call_id: "call-1",
+        tool_name: "bash",
+        content: [{ kind: "text", text: "exit_code: 0\nstdout:\nhi" }],
+      },
+    },
+    "item",
+    next,
+  );
+  const finalResultBlock: RenderBlock = {
+    key: "item:tool-result:call-1",
+    type: "tool_result",
+    content: "exit_code: 0\nstdout:\nhi",
+    toolCallId: "call-1",
+    toolStatus: "completed",
+  };
+
+  const blocks = appendRenderBlocks([], [...nameBlock, ...argsBlock, ...deltaBlock]);
+  assert.equal(blocks[0]?.toolStatus, "running");
+  assert.equal(blocks[0]?.toolResult, "hi");
+
+  const completed = appendRenderBlocks(blocks, [...endBlock, finalResultBlock]);
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0]?.type, "tool_group");
+  assert.equal(completed[0]?.toolStatus, "completed");
+  assert.equal(completed[0]?.toolResult, "exit_code: 0\nstdout:\nhi");
+});
+
 test("appendRenderBlocks merges duplicate live and persisted tool groups", () => {
   const persisted: RenderBlock = {
     key: "history-tool",
@@ -625,7 +687,54 @@ test("buildDisplayItems keeps durable partial history instead of replacing it wi
   assert.equal(items[3]?.blocks.length, 1);
   assert.equal(items[3]?.blocks[0]?.toolName, "execute_python");
   assert.equal(toolDisplay(items[3]!.blocks[0]!).code, "print(1)");
-  assert.equal(items[3]?.blocks[0]?.toolStatus, "completed");
+  assert.equal(items[3]?.blocks[0]?.toolStatus, "running");
+});
+
+test("live tool result deltas overlay durable gen_tool_call while tool is running", () => {
+  const history: HistoryItem[] = [
+    {
+      seq: 0,
+      kind: "input",
+      payload: { role: "user", name: "user", content: [{ kind: "text", text: "stream bash" }] },
+      created_at: null,
+    },
+    {
+      seq: 1,
+      kind: "gen_text",
+      payload: { text: "running command" },
+      created_at: null,
+    },
+    {
+      seq: 2,
+      kind: "gen_tool_call",
+      payload: { id: "call-1", name: "bash", arguments: JSON.stringify({ command: "loop" }) },
+      created_at: null,
+    },
+  ];
+  const liveToolBlock: RenderBlock = {
+    key: "live:tool:call-1:group",
+    type: "tool_group",
+    content: "bash",
+    toolArgs: JSON.stringify({ command: "loop" }),
+    toolCallId: "call-1",
+    toolStreamId: "tool-0",
+    toolName: "bash",
+    toolResult: "[1/10]\n[2/10]\n",
+    toolStatus: "running",
+  };
+
+  const items = buildDisplayItems({
+    history,
+    liveBlocks: [liveToolBlock],
+    phase: "streaming",
+    turnKey: "turn-live",
+  });
+
+  assert.equal(items[1]?.role, "actor");
+  assert.equal(items[1]?.blocks[0]?.content, "running command");
+  assert.equal(items[1]?.blocks[1]?.toolName, "bash");
+  assert.equal(items[1]?.blocks[1]?.toolStatus, "running");
+  assert.equal(items[1]?.blocks[1]?.toolResult, "[1/10]\n[2/10]\n");
 });
 
 test("transcript reducer replaces live preview with durable history without changing turn key", () => {

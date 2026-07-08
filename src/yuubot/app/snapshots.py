@@ -23,7 +23,9 @@ if TYPE_CHECKING:
 RUNTIME_EVENT_SNAPSHOT_LIMIT = 100
 RUNTIME_EVENT_CONTEXT_LIMIT = 8
 SKIPPED_RUNTIME_EVENT_KINDS = frozenset({"conversation.history.append"})
-SKIPPED_STREAM_KINDS = frozenset({"text_delta", "reasoning_delta", "tool_arguments_delta", "tool_arguments_end", "stream_stop"})
+SKIPPED_STREAM_KINDS = frozenset(
+    {"text_delta", "reasoning_delta", "tool_arguments_delta", "tool_arguments_end", "tool_result_delta", "stream_stop"}
+)
 
 
 class ActorSnapshot(msgspec.Struct, frozen=True, kw_only=True):

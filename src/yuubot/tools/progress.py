@@ -5,7 +5,9 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
-from attrs import define
+from attrs import define, field
+
+from ..domain.stream import StreamEvent
 
 if TYPE_CHECKING:
     from ..runtime.tasks import EmitFn
@@ -34,14 +36,27 @@ def bind_progress(
 
 @define
 class ToolProgress:
-    _emit: EmitFn
-    _conversation_id: str
-    _tool_call_id: str
-    _tool_name: str
+    _emit: EmitFn = field(alias="emit")
+    _conversation_id: str = field(alias="conversation_id")
+    _tool_call_id: str = field(alias="tool_call_id")
+    _tool_name: str = field(alias="tool_name")
 
     def write(self, text: str) -> None:
         if not text:
             return
+        self._emit(
+            "conversation.stream",
+            conversation_id=self._conversation_id,
+            event=StreamEvent(
+                group_id=self._tool_call_id,
+                kind="tool_result_delta",
+                payload={
+                    "tool_call_id": self._tool_call_id,
+                    "tool_name": self._tool_name,
+                    "text": text,
+                },
+            ),
+        )
         self._emit(
             "conversation.tool_progress",
             conversation_id=self._conversation_id,

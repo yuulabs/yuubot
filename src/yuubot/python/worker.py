@@ -8,7 +8,7 @@ import queue
 import re
 import time
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Callable, Literal, cast
 
 from attrs import define, field
 from jupyter_client.asynchronous.client import AsyncKernelClient
@@ -137,10 +137,10 @@ class KernelWorker:
         self.state = "idle"
         self.idle_since = time.monotonic()
 
-    async def run_code(self, code: str) -> str:
+    async def run_code(self, code: str, *, on_output: Callable[[str], None] | None = None) -> str:
         if not self.alive:
             raise KernelWorkerError("kernel worker is not alive")
-        payload = await self._execute(code)
+        payload = await self._execute(code, on_output=on_output)
         return payload if payload else "ok"
 
     async def reset_or_recycle(self) -> None:
@@ -166,7 +166,7 @@ class KernelWorker:
     async def _bootstrap(self) -> None:
         await self._execute("import worker_runtime; worker_runtime.bootstrap()")
 
-    async def _execute(self, code: str) -> str:
+    async def _execute(self, code: str, *, on_output: Callable[[str], None] | None = None) -> str:
         msg_id = self.client.execute(code, store_history=False)
         chunks: list[str] = []
         truncated = False
@@ -195,9 +195,14 @@ class KernelWorker:
                         truncated = True
                         allowed = self.max_output_bytes - sum(len(part.encode()) for part in chunks)
                         if allowed > 0:
-                            chunks.append(text.encode()[:allowed].decode("utf-8", errors="replace"))
+                            text = text.encode()[:allowed].decode("utf-8", errors="replace")
+                            chunks.append(text)
+                            if on_output is not None:
+                                on_output(text)
                         break
                     chunks.append(text)
+                    if on_output is not None:
+                        on_output(text)
             elif msg_type == "execute_result":
                 data = content.get("data", {})
                 if isinstance(data, dict) and "text/plain" in data:
@@ -207,14 +212,21 @@ class KernelWorker:
                         truncated = True
                         break
                     chunks.append(text)
+                    if on_output is not None:
+                        on_output(text)
             elif msg_type == "error":
-                chunks.append(_filter_tool_text("\n".join(str(line) for line in content.get("traceback", []))))
+                text = _filter_tool_text("\n".join(str(line) for line in content.get("traceback", [])))
+                chunks.append(text)
+                if text and on_output is not None:
+                    on_output(text)
             elif msg_type == "status" and content.get("execution_state") == "idle":
                 break
         output = "".join(chunks)
         if truncated:
             suffix = f"\n[system] output truncated at {self.max_output_bytes} bytes"
             output = f"{output}{suffix}"
+            if on_output is not None:
+                on_output(suffix)
         return output
 
 

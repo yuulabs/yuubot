@@ -119,6 +119,12 @@ function PendingToolShell({ toolName }: { toolName: string | undefined }) {
   );
 }
 
+function isToolRunning(block: RenderBlock): boolean {
+  if (block.toolStatus === "running") return true;
+  if (block.toolStatus === "completed") return false;
+  return !block.toolResult;
+}
+
 function ThinkingBlock({ content, isStreaming }: { content: string; isStreaming: boolean }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -159,10 +165,10 @@ function diffLinePrefix(kind: DiffLine["kind"]): string {
 
 function BashRenderer(block: RenderBlock): ReactElement {
   const display = toolDisplay(block);
-  const isRunning = !block.toolResult;
+  const isRunning = isToolRunning(block);
   const streamedCommand = extractToolStringArg(block.toolArgs ?? "", "command");
   const command = streamedCommand ?? (block.toolArgs ? extractBashCommand(block.toolArgs) : "");
-  const result = isRunning ? null : stripAnsi(block.toolResult ?? "");
+  const result = block.toolResult ? stripAnsi(block.toolResult) : null;
   return (
     <div className="msg__tool">
       <div className="msg__tool-head">
@@ -186,7 +192,7 @@ function BashRenderer(block: RenderBlock): ReactElement {
             <SquareTerminal size={14} />
             <span>result</span>
           </div>
-          {isRunning
+          {result === null
             ? <PendingToolBanner toolName={display.name} />
             : <pre className="msg__tool-pre">{result}</pre>}
         </div>
@@ -198,7 +204,7 @@ function BashRenderer(block: RenderBlock): ReactElement {
 function EditRenderer(block: RenderBlock): ReactElement {
   const args = parseEditArgsPartial(block.toolArgs ?? "");
   const diff = renderSimpleDiff(args.old_string, args.new_string);
-  const isRunning = !block.toolResult;
+  const isRunning = isToolRunning(block);
   return (
     <div className="msg__tool">
       <div className="msg__tool-head">
@@ -227,7 +233,7 @@ function EditRenderer(block: RenderBlock): ReactElement {
 
 function ReadRenderer(block: RenderBlock): ReactElement {
   const path = extractToolPath(block.toolArgs ?? "") ?? "";
-  const isRunning = !block.toolResult;
+  const isRunning = isToolRunning(block);
   const result = isRunning ? null : stripAnsi(block.toolResult ?? "");
   return (
     <div className="msg__tool">
@@ -250,7 +256,7 @@ function ReadRenderer(block: RenderBlock): ReactElement {
 function WriteRenderer(block: RenderBlock): ReactElement {
   const path = extractToolPath(block.toolArgs ?? "") ?? "";
   const content = extractToolStringArg(block.toolArgs ?? "", "content") ?? "";
-  const isRunning = !block.toolResult;
+  const isRunning = isToolRunning(block);
   const result = isRunning ? null : stripAnsi(block.toolResult ?? "");
   return (
     <div className="msg__tool">
@@ -286,7 +292,7 @@ export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; i
   if (block.type === "tool_group") {
     const display = toolDisplay(block);
     const isExecutePython = display.name === "execute_python" || display.name.endsWith(".execute_python");
-    const isRunning = !block.toolResult;
+    const isRunning = isToolRunning(block);
 
     if (isExecutePython) {
       const streamedCode = extractToolStringArg(block.toolArgs ?? "", "code");
@@ -305,7 +311,7 @@ export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; i
             <div className="msg__tool-code">
               <PythonCodeBlock code={code ?? ""} />
             </div>
-            {isRunning ? (
+            {isRunning && !block.toolResult ? (
               <div className="msg__tool-panel msg__tool-panel--result msg__tool-panel--pending">
                 <PendingToolBanner toolName={display.name} />
               </div>
