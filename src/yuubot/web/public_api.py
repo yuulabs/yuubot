@@ -4,13 +4,13 @@ import time
 import logging
 from collections import defaultdict, deque
 from collections.abc import Callable
-from html import escape, escape as html_escape
+from html import escape
 from pathlib import Path
 from urllib.parse import quote
 
 import msgspec
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, Response
 
 from ..app import Yuubot
 from ..app.deployment import DeploymentConfig
@@ -19,6 +19,7 @@ from ..runtime.shares import INDEX_CANDIDATES, ShareNotFoundError, share_content
 from .client_ip import client_ip_from_scope
 from .responses import error_response, json_response
 from .errors import internal_error_detail, internal_error_message, log_internal_error, unhandled_exception_response
+from .routes.mcp_oauth_callback import register_mcp_oauth_callback_route
 
 _log = logging.getLogger(__name__)
 
@@ -107,25 +108,7 @@ def create_public_app(app: Yuubot, deployment: DeploymentConfig | None = None) -
             )
         return json_response(result)
 
-    @public.get("/api/mcp-oauth/{attempt_id}/callback", response_class=HTMLResponse)
-    async def api_mcp_oauth_callback(
-        attempt_id: str,
-        code: str = "",
-        state: str | None = None,
-        error: str = "",
-        token: str = "",
-    ) -> Response:
-        if error:
-            if attempt_id in app.runtime.auth_attempts:
-                await app.update_auth_attempt(attempt_id, status="failed", error=error)
-            return HTMLResponse("<html><body><h1>Authorization failed</h1><p>You can close this tab.</p></body></html>", status_code=400)
-        try:
-            await app.complete_mcp_oauth_callback(attempt_id, code, state, token)
-        except KeyError:
-            return HTMLResponse("<html><body><h1>Authorization attempt not found</h1><p>You can close this tab.</p></body></html>", status_code=404)
-        except ValueError as exc:
-            return HTMLResponse(f"<html><body><h1>Authorization failed</h1><p>{html_escape(str(exc))}</p></body></html>", status_code=400)
-        return HTMLResponse("<html><body><h1>Authorization received</h1><p>You can close this tab and return to yuubot.</p></body></html>")
+    register_mcp_oauth_callback_route(public, app)
 
     @public.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
     async def public_not_found(path: str) -> object:

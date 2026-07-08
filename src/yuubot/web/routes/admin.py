@@ -24,6 +24,7 @@ from .credentials import register_credential_routes
 from .cron_jobs import register_cron_routes
 from .integrations import register_integration_routes
 from .kv import register_kv_routes
+from .mcp_oauth_callback import register_mcp_oauth_callback_route
 from .mcp_servers import register_mcp_routes
 from .notifications import register_notification_routes
 from .providers import register_provider_routes
@@ -74,6 +75,7 @@ def create_admin_app(
         return json_response({"status": "ok"})
 
     register_auth_routes(api, deployment, sessions)
+    register_mcp_oauth_callback_route(api, app)
     register_admin_ops_routes(api, app, client_is_loopback, on_shutdown)
     register_bootstrap_routes(api, app, deployment)
     register_mcp_routes(api, app, deployment)

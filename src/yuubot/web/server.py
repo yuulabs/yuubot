@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import socket
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from .auth import SessionStore
 from .run_state import clear as clear_run_state
 from .run_state import write as write_run_state
 from .types import AppLoader
+
+_log = logging.getLogger(__name__)
 
 
 @define
@@ -108,14 +111,42 @@ class UvicornServer:
                     self.app.runtime.resources_config.logs.backup_count,
                 )
                 print(f"Logs: {log_path}", flush=True)
+                _log.info(
+                    "server logging configured surface=%s host=%s port=%s data_dir=%s log_path=%s development=%s",
+                    self.deployment.surface,
+                    self.host,
+                    self.server_port,
+                    self.app.runtime.data_dir,
+                    log_path,
+                    self.development,
+                )
                 await self._sessions.start_background_cleanup()
                 await self.app.startup()
             if self._write_run_state:
                 write_run_state(self.app.runtime.data_dir, self.host, self.server_port)
+                _log.info(
+                    "server run state written host=%s port=%s data_dir=%s",
+                    self.host,
+                    self.server_port,
+                    self.app.runtime.data_dir,
+                )
+            _log.info(
+                "server starting surface=%s host=%s port=%s",
+                self.deployment.surface,
+                self.host,
+                self.server_port,
+            )
             await self._server.serve(sockets=[self._socket])
         finally:
+            _log.info(
+                "server stopping surface=%s host=%s port=%s",
+                self.deployment.surface,
+                self.host,
+                self.server_port,
+            )
             if self._write_run_state:
                 clear_run_state(self.app.runtime.data_dir)
+                _log.info("server run state cleared data_dir=%s", self.app.runtime.data_dir)
             if self._manage_lifecycle:
                 try:
                     await self.app.shutdown()
@@ -167,8 +198,23 @@ class MultiUvicornServer:
             self.app.runtime.resources_config.logs.backup_count,
         )
         print(f"Logs: {log_path}", flush=True)
+        _log.info(
+            "multi-server logging configured data_dir=%s log_path=%s development=%s servers=%s",
+            self.app.runtime.data_dir,
+            log_path,
+            self.development,
+            len(self.servers),
+        )
         for server in self.servers:
             print(f"{server.deployment.surface}: http://{server.host}:{server.server_port}", flush=True)
+            _log.info(
+                "multi-server listener bound surface=%s host=%s port=%s public_url_base=%s admin_url_base=%s",
+                server.deployment.surface,
+                server.host,
+                server.server_port,
+                server.deployment.public_url_base,
+                server.deployment.admin_url_base,
+            )
         sessions = self.servers[0]._sessions if self.servers else None
         if sessions is not None:
             await sessions.start_background_cleanup()
@@ -176,14 +222,17 @@ class MultiUvicornServer:
         try:
             await self.app.startup()
             tasks = [asyncio.create_task(server.serve()) for server in self.servers]
+            _log.info("multi-server serving tasks started count=%s", len(tasks))
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 await task
+            _log.info("multi-server listener completed pending=%s", len(pending))
             for server in self.servers:
                 server.shutdown()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
         finally:
+            _log.info("multi-server stopping")
             for task in tasks:
                 if not task.done():
                     task.cancel()

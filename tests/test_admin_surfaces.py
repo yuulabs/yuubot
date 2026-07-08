@@ -4,9 +4,10 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlparse
 
 import msgspec
 import httpx
@@ -26,6 +27,7 @@ from yuubot.domain.records import ActorInput, ActorModelInput, RouteRecord
 from yuubot.integrations.records import IntegrationRecord
 from yuubot.llm import ModelCardInput, ProviderInput, ScriptedProvider
 from yuubot.domain.stream import StreamEvent, StreamStopPayload
+from yuubot.runtime.mcp import McpCapabilityIndex, McpServerRecord, McpToolSpec
 from yuubot.web.auth import SessionStore
 from yuubot.web.server import UvicornServer, make_server
 
@@ -108,6 +110,66 @@ async def test_trusted_builtin_requires_login_even_from_loopback(tmp_path: Path)
     assert authenticated.json()["auth"]["mode"] == "builtin"
     assert missing_csrf.status_code == 403
     assert logged_out.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_trusted_admin_exposes_mcp_oauth_callback_without_admin_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    await app.configure_mcp_server(
+        McpServerRecord(
+            "oauth",
+            "OAuth MCP",
+            "https://mcp.example.invalid",
+            auth_mode="oauth_auto",
+        )
+    )
+
+    async def fake_discover_with_oauth(
+        _manager: object,
+        record: McpServerRecord,
+        redirect_uri: str,
+        redirect_handler: Callable[[str], Awaitable[None]],
+        callback_handler: Callable[[], Awaitable[tuple[str, str | None]]],
+        timeout_s: float,
+    ) -> McpCapabilityIndex:
+        assert record.credential_id == "mcp:oauth:oauth"
+        assert "/api/mcp-oauth/" in redirect_uri
+        assert "token=" in redirect_uri
+        assert timeout_s == 600
+        await redirect_handler("https://auth.example/authorize?state=state-1")
+        code, state = await callback_handler()
+        assert (code, state) == ("code-1", "state-1")
+        return McpCapabilityIndex(
+            "oauth",
+            (McpToolSpec("search", "Search", {"type": "object"}),),
+        )
+
+    monkeypatch.setattr(type(app.runtime.mcps), "discover_with_oauth", fake_discover_with_oauth)
+    deployment = DeploymentConfig(
+        surface="trusted_admin",
+        admin_auth=AdminAuthConfig("builtin", AdminAuthBuiltinConfig(password="secret")),
+    )
+
+    async with surface_server(app, deployment) as server:
+        async with httpx.AsyncClient(base_url=base_url(server)) as admin_client:
+            login = await admin_client.post("/api/auth/login", json={"password": "secret"})
+            csrf_token = cast(str, login.json()["csrf_token"])
+            start = await admin_client.post("/api/mcp-servers/oauth/auth/start", headers={"X-CSRF-Token": csrf_token})
+            attempt = start.json()
+            parsed = urlparse(cast(str, attempt["action"]["callback_url"]))
+
+            async with httpx.AsyncClient(base_url=base_url(server)) as callback_client:
+                callback = await callback_client.get(f"{parsed.path}?{parsed.query}&code=code-1&state=state-1")
+
+            for _ in range(50):
+                attempts = (await admin_client.get("/api/auth-attempts")).json()["items"]
+                current = next(item for item in attempts if item["id"] == attempt["id"])
+                if current["status"] == "succeeded":
+                    break
+
+    assert start.status_code == 202
+    assert callback.status_code == 200
+    assert current["status"] == "succeeded"
 
 
 @pytest.mark.asyncio

@@ -250,6 +250,14 @@ class TaskScheduler:
             raise ValueError(f"task already scheduled: {record.id}")
         record.status = "running"
         record.started_at = _iso_now()
+        _log.info(
+            "task scheduled task_id=%s owner=%s kind=%s name=%s delivery=%s",
+            record.id,
+            record.owner,
+            record.kind,
+            record.name,
+            record.delivery,
+        )
         self.emit(
             TaskStartedPayload(
                 record.id,
@@ -267,9 +275,20 @@ class TaskScheduler:
             record.delivery_state = "skipped"
         asyncio_task = self._asyncio_tasks.get(record.id)
         if asyncio_task is not None and not asyncio_task.done():
+            _log.info(
+                "task cancelling task_id=%s owner=%s kind=%s name=%s skip_delivery=%s",
+                record.id,
+                record.owner,
+                record.kind,
+                record.name,
+                skip_delivery,
+            )
             asyncio_task.cancel()
 
     async def shutdown(self) -> None:
+        running = [record for record in self.registry.list() if record.status in {"pending", "running"}]
+        if running:
+            _log.info("task scheduler shutdown cancelling count=%s", len(running))
         for record in self.registry.list():
             if record.status in {"pending", "running"}:
                 self.cancel(record, skip_delivery=True)
@@ -302,6 +321,13 @@ class TaskScheduler:
         except Exception as exc:
             record.error = str(exc)
             record.status = "failed"
+            _log.exception(
+                "task failed task_id=%s owner=%s kind=%s name=%s",
+                record.id,
+                record.owner,
+                record.kind,
+                record.name,
+            )
             return None
 
     def _on_task_done(self, record: RuntimeTaskRecord, asyncio_task: asyncio.Task[object]) -> None:
@@ -314,6 +340,18 @@ class TaskScheduler:
         record.finished_at = _iso_now()
         record.mark_terminal()
         self.registry.mark_terminal(record)
+        _log.info(
+            "task finished task_id=%s owner=%s kind=%s name=%s status=%s exit_code=%s delivery=%s delivery_state=%s error=%s",
+            record.id,
+            record.owner,
+            record.kind,
+            record.name,
+            record.status,
+            record.exit_code,
+            record.delivery,
+            record.delivery_state,
+            record.error,
+        )
         self.emit(
             TaskFinishedPayload(
                 record.id,
@@ -360,6 +398,14 @@ def register_shell_task(
     ttl_s: float | None = None,
 ) -> RuntimeTaskRecord:
     ttl_s = normalize_task_ttl(delivery, ttl_s, False)
+    _log.info(
+        "shell task registering owner=%s name=%s workspace=%s delivery=%s ttl_s=%s",
+        owner,
+        name,
+        workspace,
+        delivery,
+        ttl_s,
+    )
     record = RuntimeTaskRecord(
         new_task_id(),
         owner,
@@ -432,6 +478,15 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
 async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> None:
     actor_id, conversation_id = parse_owner(record.owner)
     text = format_task_delivery(record)
+    _log.info(
+        "task delivery sending task_id=%s owner=%s actor_id=%s conversation_id=%s delivery=%s status=%s",
+        record.id,
+        record.owner,
+        actor_id,
+        conversation_id,
+        record.delivery,
+        record.status,
+    )
     target = (
         WakeupTarget("actor_inbound", actor_id, None)
         if record.delivery == "actor"
@@ -446,6 +501,12 @@ async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> No
     )
     record.delivery_state = "delivered"
     runtime.tasks.refresh_terminal_retention(record)
+    _log.info(
+        "task delivery delivered task_id=%s owner=%s delivery_state=%s",
+        record.id,
+        record.owner,
+        record.delivery_state,
+    )
 
 
 async def schedule_task_delivery(runtime: Runtime, record: RuntimeTaskRecord) -> None:
@@ -454,6 +515,7 @@ async def schedule_task_delivery(runtime: Runtime, record: RuntimeTaskRecord) ->
     if record.delivery == "manual":
         record.delivery_state = "skipped"
         runtime.tasks.refresh_terminal_retention(record)
+        _log.info("task delivery skipped manual task_id=%s owner=%s", record.id, record.owner)
         return
     _, conversation_id = parse_owner(record.owner)
     conversation = runtime.conversations.get_if_present(conversation_id)
@@ -464,10 +526,22 @@ async def schedule_task_delivery(runtime: Runtime, record: RuntimeTaskRecord) ->
     ):
         record.delivery_state = "skipped"
         runtime.tasks.refresh_terminal_retention(record)
+        _log.info(
+            "task delivery skipped suppressed task_id=%s owner=%s conversation_id=%s",
+            record.id,
+            record.owner,
+            conversation_id,
+        )
         return
     if record.delivery == "conversation" and conversation is not None and conversation.running:
         conversation.queue_task_delivery(record.id)
         record.delivery_state = "queued"
+        _log.info(
+            "task delivery queued task_id=%s owner=%s conversation_id=%s",
+            record.id,
+            record.owner,
+            conversation_id,
+        )
         return
     await deliver_task_result(runtime, record)
 
@@ -484,6 +558,7 @@ async def drain_pending_task_deliveries(runtime: Runtime, conversation_id: str) 
         if record.status == "cancelled":
             record.delivery_state = "skipped"
             runtime.tasks.refresh_terminal_retention(record)
+            _log.info("queued task delivery skipped cancelled task_id=%s", record.id)
             continue
         try:
             await deliver_task_result(runtime, record)
@@ -503,6 +578,11 @@ def suppress_conversation_task_deliveries(runtime: Runtime, conversation_id: str
         if conversation is not None
         else []
     )
+    _log.info(
+        "conversation task deliveries suppressed conversation_id=%s queued_count=%s",
+        conversation_id,
+        len(task_ids),
+    )
     skip_conversation_task_deliveries(runtime, conversation_id, task_ids)
 
 
@@ -517,6 +597,11 @@ def skip_conversation_task_deliveries(
             if record.delivery_state in {"pending", "queued"}:
                 record.delivery_state = "skipped"
                 runtime.tasks.refresh_terminal_retention(record)
+                _log.info(
+                    "conversation task delivery skipped task_id=%s conversation_id=%s",
+                    record.id,
+                    conversation_id,
+                )
     owner = f":conv:{conversation_id}"
     for record in runtime.tasks.list():
         if record.delivery == "conversation" and owner in record.owner and record.delivery_state in {"pending", "queued"}:

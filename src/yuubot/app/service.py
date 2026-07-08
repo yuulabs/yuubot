@@ -6,10 +6,12 @@ snapshot entry points consumed by the HTTP, WebSocket, and CLI facades.
 """
 
 import asyncio
+import logging
 import secrets
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 
+import msgspec
 from attrs import define, field
 
 from ..actor import Actor, ActorConfig
@@ -94,6 +96,7 @@ from ..util.asyncio_ import BackgroundSweeper
 
 ChatInput = str | list[ContentItem]
 MCP_OAUTH_ATTEMPT_TTL_S = 600.0
+_log = logging.getLogger(__name__)
 
 
 def _integration_health_error(health: IntegrationHealth | None) -> LifecycleError | None:
@@ -167,6 +170,10 @@ class Yuubot:
         )
 
     async def _load_application_state(self) -> None:
+        enabled_integrations = 0
+        failed_integrations = 0
+        enabled_actors = 0
+        failed_actors = 0
         for record in await self.runtime.state.list_providers():
             self.provider_records[record.id] = record
         for integration_record, integration_enabled, _last_error in await self.runtime.state.load_integrations():
@@ -175,7 +182,14 @@ class Yuubot:
                 continue
             try:
                 self.runtime.enable_integration(integration_record)
+                enabled_integrations += 1
             except Exception as exc:
+                failed_integrations += 1
+                _log.exception(
+                    "integration load failed integration_type=%s name=%s",
+                    integration_record.type,
+                    integration_record.name,
+                )
                 await self.runtime.state.set_integration_enabled(
                     integration_record.type, enabled=False, last_error=lifecycle_error(exc)
                 )
@@ -222,14 +236,44 @@ class Yuubot:
                 continue
             try:
                 await self.enable_actor(actor_record.id)
+                enabled_actors += 1
             except Exception as exc:
+                failed_actors += 1
+                _log.exception("actor load failed actor_id=%s", actor_record.id)
                 await self.runtime.state.set_actor_status(actor_record.id, "blocked", lifecycle_error(exc))
         self.runtime.gateway.rebind(await self.runtime.state.load_routes())
         self.runtime.shares.bind_workspace_resolver(self.actor_workspace_path)
         self.runtime.resolve_actor_workspace = self.actor_workspace_path
         await self.runtime.shares.load_grants()
+        _log.info(
+            "application state loaded providers=%s integrations=%s integrations_enabled=%s integrations_failed=%s "
+            "actors=%s actors_enabled=%s actors_failed=%s mcp_servers=%s skills=%s routes=%s shares=%s",
+            len(self.provider_records),
+            len(self.integration_records),
+            enabled_integrations,
+            failed_integrations,
+            len(self.actor_records),
+            enabled_actors,
+            failed_actors,
+            len(self.runtime.mcps.records),
+            len(self.runtime.skills),
+            len(self.runtime.gateway.routes),
+            len(self.runtime.shares.list_grants()),
+        )
 
     async def startup(self) -> None:
+        _log.info(
+            "application startup starting data_dir=%s db=%s providers=%s actors=%s running_actors=%s "
+            "integrations=%s routes=%s mcp_servers=%s",
+            self.runtime.data_dir,
+            self.runtime.db.path,
+            len(self.provider_records),
+            len(self.actor_records),
+            len(self.actors),
+            len(self.runtime.integrations),
+            len(self.runtime.gateway.routes),
+            len(self.runtime.mcps.records),
+        )
         await self.runtime.listeners.start()
         self.runtime.cron.start()
         await self.runtime.cron.sync_from_store()
@@ -238,11 +282,18 @@ class Yuubot:
         await self.sweep_expired_auth_attempts()
         await self._auth_attempt_sweeper.start(300, self.sweep_expired_auth_attempts)
         await self.runtime.resource_supervisor.start()
+        _log.info("application startup complete data_dir=%s", self.runtime.data_dir)
 
     async def shutdown(self) -> None:
         if self._shutdown:
             return
         self._shutdown = True
+        _log.info(
+            "application shutdown starting actors=%s providers=%s integrations=%s",
+            len(self.actors),
+            len(self.provider_instances),
+            len(self.runtime.integrations),
+        )
         await self._auth_attempt_sweeper.stop()
         await self.mcp_oauth.shutdown()
         for actor_id in list(self.actors):
@@ -252,6 +303,7 @@ class Yuubot:
         for client in self.provider_instances.values():
             await client.close()
         await self.runtime.shutdown()
+        _log.info("application shutdown complete data_dir=%s", self.runtime.data_dir)
 
     # -- Provider configuration ----------------------------------------------
 
@@ -400,6 +452,12 @@ class Yuubot:
     # -- Integration lifecycle -----------------------------------------------
 
     async def configure_integration(self, record: IntegrationRecord) -> None:
+        record = self._normalized_integration_record(record)
+        _log.info(
+            "integration configuring integration_type=%s name=%s",
+            record.type,
+            record.name,
+        )
         self.integration_records[record.type] = record
         enabled = record.name in self.runtime.integrations
         last_error: LifecycleError | None = None
@@ -409,18 +467,41 @@ class Yuubot:
             integration = self.runtime.enable_integration(record)
             last_error = _integration_health_error(await integration_health(integration))
         await self.runtime.state.put_integration(record, enabled=enabled, last_error=last_error)
+        _log.info(
+            "integration configured integration_type=%s name=%s enabled=%s last_error=%s",
+            record.type,
+            record.name,
+            enabled,
+            last_error.message if last_error is not None else None,
+        )
 
     async def enable_integration(self, record: IntegrationRecord) -> Integration:
+        record = self._normalized_integration_record(record)
+        _log.info(
+            "integration enable requested integration_type=%s name=%s",
+            record.type,
+            record.name,
+        )
         self.integration_records[record.type] = record
         try:
             integration = self.runtime.enable_integration(record)
         except Exception as exc:
+            _log.exception(
+                "integration enable failed integration_type=%s name=%s",
+                record.type,
+                record.name,
+            )
             await self.runtime.state.put_integration(record, enabled=False, last_error=lifecycle_error(exc))
             raise
         await self.runtime.state.put_integration(
             record,
             enabled=True,
             last_error=_integration_health_error(await integration_health(integration)),
+        )
+        _log.info(
+            "integration enable complete integration_type=%s name=%s",
+            record.type,
+            record.name,
         )
         return integration
 
@@ -436,10 +517,28 @@ class Yuubot:
     async def disable_integration(self, integration_type: str) -> bool:
         record = self.integration_records.get(integration_type)
         if record is None:
+            _log.info("integration disable skipped missing integration_type=%s", integration_type)
             return False
+        _log.info(
+            "integration disable requested integration_type=%s name=%s",
+            record.type,
+            record.name,
+        )
         await self.runtime.disable_integration(record.name)
         await self.runtime.state.set_integration_enabled(record.type, enabled=False)
+        _log.info(
+            "integration disable complete integration_type=%s name=%s",
+            record.type,
+            record.name,
+        )
         return True
+
+    def _normalized_integration_record(self, record: IntegrationRecord) -> IntegrationRecord:
+        spec = self.runtime.integration_registry.specs()[record.type]
+        config = msgspec.to_builtins(msgspec.convert(record.config, spec.config_type))
+        if not isinstance(config, dict):
+            raise TypeError("integration config must be an object")
+        return IntegrationRecord(record.id, record.type, record.name, config)
 
     # -- MCP data source lifecycle -------------------------------------------
 
@@ -772,15 +871,30 @@ class Yuubot:
     # -- Actor lifecycle -----------------------------------------------------
 
     def create_actor(self, config: ActorConfig, provider: Provider) -> Actor:
+        _log.info(
+            "actor creating actor_id=%s provider_model=%s workspace=%s",
+            config.id,
+            config.model.selector,
+            config.workspace,
+        )
         actor = Actor.from_config(config, self.runtime, provider)
         self.runtime.actors[config.id] = actor
+        _log.info("actor created actor_id=%s", config.id)
         return actor
 
     async def put_actor_record(self, record: ActorRecord, enabled: bool = True) -> None:
         self.actor_records[record.id] = record
         await self.runtime.state.put_actor(record, enabled=enabled)
+        _log.info(
+            "actor record stored actor_id=%s provider=%s model=%s enabled=%s",
+            record.id,
+            record.provider,
+            record.model.selector,
+            enabled,
+        )
 
     async def enable_actor(self, actor_id: str) -> Actor:
+        _log.info("actor enable requested actor_id=%s", actor_id)
         actor = self.actors.get(actor_id)
         if actor is None:
             record = self.actor_records[actor_id]
@@ -792,9 +906,11 @@ class Yuubot:
         if f"actor:{actor_id}" not in self.runtime._actor_tasks:
             self.runtime.start_actor_task(actor_id, run)
         await self.runtime.state.set_actor_status(actor_id, "running", enabled=True)
+        _log.info("actor enable complete actor_id=%s", actor_id)
         return actor
 
     async def disable_actor(self, actor_id: str) -> None:
+        _log.info("actor disable requested actor_id=%s", actor_id)
         actor = self.actors.pop(actor_id, None)
         if actor is not None:
             await actor.close()
@@ -807,14 +923,17 @@ class Yuubot:
         await self.runtime.conversations.close_for_actor(actor_id)
         self.runtime.mailboxes.pop(actor_id)
         await self.runtime.state.set_actor_status(actor_id, "disabled", enabled=False)
+        _log.info("actor disable complete actor_id=%s existed=%s", actor_id, actor is not None)
 
     async def update_actor(self, record: ActorRecord) -> None:
         """Upsert the record and restart the actor without uninstalling tool assets."""
         was_enabled = record.id in self.actors
+        _log.info("actor update requested actor_id=%s was_enabled=%s", record.id, was_enabled)
         if was_enabled:
             await self.disable_actor(record.id)
         await self.put_actor_record(record)
         await self.enable_actor(record.id)
+        _log.info("actor update complete actor_id=%s", record.id)
 
     async def put_actor(self, actor_id: str, body: ActorInput) -> ActorRecord:
         if body.provider not in self.provider_records:
@@ -864,17 +983,21 @@ class Yuubot:
     async def remove_actor(self, actor_id: str) -> bool:
         record = self.actor_records.get(actor_id)
         if record is None:
+            _log.info("actor remove skipped missing actor_id=%s", actor_id)
             return False
+        _log.info("actor remove requested actor_id=%s", actor_id)
         await self.disable_actor(actor_id)
         config = self._actor_config(record)
         try:
             await uninstall_tools(all_tool_configs(), Path(config.workspace).resolve())
         except Exception as exc:
+            _log.exception("actor tool uninstall failed actor_id=%s workspace=%s", actor_id, config.workspace)
             await self.runtime.state.set_actor_status(actor_id, "disabled", lifecycle_error(exc), enabled=False)
             raise
         self.actor_records.pop(actor_id)
         self.runtime.mailboxes.pop(actor_id)
         await self.runtime.state.delete_actor(actor_id)
+        _log.info("actor remove complete actor_id=%s", actor_id)
         return True
 
     def _actor_config(self, record: ActorRecord) -> ActorConfig:
@@ -903,18 +1026,26 @@ class Yuubot:
         on_event: StreamCallback | None = None,
         session_mode: SessionMode = "conversation",
     ) -> list[GenOutput]:
+        _log.info(
+            "user message run requested actor_id=%s conversation_id=%s session_mode=%s",
+            actor_id,
+            conversation_id,
+            session_mode,
+        )
         actor = self.actors[actor_id]
         conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
         return await conversation.run_loop(message, on_event, session_mode)
 
     async def chat(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> tuple[Conversation, list[GenOutput]]:
         message = self._input_message(actor_id, input)
+        _log.info("chat requested actor_id=%s conversation_id=%s", actor_id, conversation_id)
         actor = self.actors[actor_id]
         conversation = await self.runtime.conversations.get_or_create(actor, conversation_id)
         return conversation, await conversation.run_loop(message, session_mode="conversation")
 
     async def chat_stream(self, actor_id: str, input: ChatInput, conversation_id: str | None = None) -> AsyncIterator[StreamEvent]:
         message = self._input_message(actor_id, input)
+        _log.info("chat stream requested actor_id=%s conversation_id=%s", actor_id, conversation_id)
         queue: asyncio.Queue[StreamEvent | BaseException | None] = asyncio.Queue()
 
         async def push(event: StreamEvent) -> None:
@@ -942,10 +1073,14 @@ class Yuubot:
                 task.cancel()
 
     def interrupt(self, conversation_id: str) -> bool:
-        return self.runtime.conversations.interrupt(conversation_id)
+        interrupted = self.runtime.conversations.interrupt(conversation_id)
+        _log.info("conversation interrupt requested conversation_id=%s interrupted=%s", conversation_id, interrupted)
+        return interrupted
 
     def interrupt_all(self) -> list[str]:
-        return self.runtime.conversations.interrupt_all()
+        interrupted = self.runtime.conversations.interrupt_all()
+        _log.info("conversation interrupt all requested count=%s", len(interrupted))
+        return interrupted
 
     def conversation_active(self, conversation_id: str) -> bool:
         return self.runtime.conversations.has(conversation_id)
@@ -988,6 +1123,12 @@ class Yuubot:
         return record is not None and record.name in self.runtime.integrations
 
     async def deliver_app_webhook(self, integration_type: str, envelope: InboundEnvelope) -> dict[str, object]:
+        _log.info(
+            "app webhook delivery requested integration_type=%s route=%s conversation_id=%s",
+            integration_type,
+            envelope.route,
+            envelope.conversation_id,
+        )
         return await deliver_app_webhook(
             integration_type=integration_type,
             envelope=envelope,
@@ -999,6 +1140,12 @@ class Yuubot:
     async def deliver_actor_inbound(self, actor_id: str, body: ActorMessage) -> dict[str, object]:
         if actor_id not in self.actor_records:
             raise KeyError(actor_id)
+        _log.info(
+            "actor inbound delivery requested actor_id=%s conversation_id=%s source_keys=%s",
+            actor_id,
+            body.conversation_id,
+            sorted(body.source),
+        )
         return await deliver_actor_inbound(
             actor_id=actor_id,
             body=body,

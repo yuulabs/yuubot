@@ -19,7 +19,6 @@ export function IntegrationDetailPage({ id }: { id: string }) {
   const fields = useMemo(() => schemaFields(existing?.config_schema), [existing?.config_schema]);
   const [name, setName] = useState(id);
   const [config, setConfig] = useState<Record<string, unknown>>({});
-  const [advancedText, setAdvancedText] = useState("{}");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -27,7 +26,6 @@ export function IntegrationDetailPage({ id }: { id: string }) {
     const existingConfig = existing?.config ?? {};
     const initial = Object.fromEntries(fields.map((field) => [field.name, existingConfig[field.name] ?? ""]));
     setConfig(initial);
-    setAdvancedText(JSON.stringify(initial, null, 2));
   }, [existing?.config, existing?.name, fields, id]);
 
   if (isLoading) return <LoadingState />;
@@ -70,23 +68,16 @@ export function IntegrationDetailPage({ id }: { id: string }) {
                 <input
                   className="input"
                   name={field.name}
-                  type={field.secret ? "password" : "text"}
+                  type={field.secret ? "password" : field.type === "integer" || field.type === "number" ? "number" : "text"}
                   value={String(config[field.name] ?? "")}
                   onChange={(event) => {
                     const next = { ...config, [field.name]: coerceValue(event.target.value, field.type) };
                     setConfig(next);
-                    setAdvancedText(JSON.stringify(next, null, 2));
                   }}
                 />
               </label>
             ))}
           </div>
-        </DenseSection>
-        <DenseSection title="Advanced JSON" description="Raw config payload saved to the backend.">
-          <label className="grid gap-1">
-            <span className="text-sm font-medium">Advanced config JSON</span>
-            <textarea name="advanced-config-json" className="textarea font-mono" rows={7} value={advancedText} onChange={(event) => setAdvancedText(event.target.value)} />
-          </label>
         </DenseSection>
         <div className="dense-actions-bar">
           <div className="dense-actions-bar__status">
@@ -97,8 +88,7 @@ export function IntegrationDetailPage({ id }: { id: string }) {
               disabled={save.isPending}
               onClick={async () => {
                 try {
-                  const parsed = parseObject(advancedText);
-                  await save.mutateAsync({ name, config: parsed });
+                  await save.mutateAsync({ name, config: compactConfig(config) });
                   await navigate({ to: "/integrations" });
                 } catch (err) {
                   setMessage(err instanceof Error ? err.message : String(err));
@@ -155,8 +145,11 @@ function schemaFields(schema: Record<string, unknown> | undefined): SchemaField[
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
     return [];
   }
-  return Object.entries(properties).map(([name, raw]) => {
+  return Object.entries(properties).flatMap(([name, raw]) => {
     const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    if (!required.has(name)) {
+      return [];
+    }
     return {
       name,
       type: typeof item.type === "string" ? item.type : "string",
@@ -180,15 +173,19 @@ function resolveSchema(schema: Record<string, unknown> | undefined): Record<stri
 }
 
 function coerceValue(value: string, type: string): unknown {
+  if (value === "") return "";
   if (type === "boolean") return value === "true";
-  if (type === "integer" || type === "number") return value ? Number(value) : 0;
+  if (type === "integer" || type === "number") return Number(value);
   return value;
 }
 
-function parseObject(text: string): Record<string, unknown> {
-  const parsed = JSON.parse(text || "{}") as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("config must be a JSON object");
+function compactConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const compact: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (value === "") {
+      continue;
+    }
+    compact[key] = value;
   }
-  return parsed as Record<string, unknown>;
+  return compact;
 }

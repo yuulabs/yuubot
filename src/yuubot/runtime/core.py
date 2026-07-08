@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path
@@ -52,6 +53,8 @@ from .cron import (
 if TYPE_CHECKING:
     from ..actor import Actor
     from ..chat.loop import ConversationManager
+
+_log = logging.getLogger(__name__)
 
 
 @define
@@ -274,15 +277,27 @@ class Runtime:
         return [skill_summary(record) for record in sorted(self.skills.values(), key=lambda item: item.id)]
 
     def enable_integration(self, record: IntegrationRecord) -> Integration:
+        _log.info(
+            "integration enabling integration_type=%s name=%s",
+            record.type,
+            record.name,
+        )
         integration = self.integration_registry.create(record, self)
         self.integrations[integration.name] = integration
+        _log.info(
+            "integration enabled integration_type=%s name=%s",
+            record.type,
+            record.name,
+        )
         return integration
 
     async def disable_integration(self, name: str) -> Integration | None:
         integration = self.integrations.pop(name, None)
         if integration is not None:
+            _log.info("integration disabling name=%s", name)
             await integration.close()
             self.cache.invalidate(prefix=f"integration:{name}:")
+            _log.info("integration disabled name=%s", name)
         return integration
 
     async def delete_conversation_data(self, conversation_id: str) -> bool:
@@ -295,23 +310,29 @@ class Runtime:
     def start_actor_task(self, actor_id: str, coro_factory: TaskCoroFactory) -> None:
         key = f"actor:{actor_id}"
         if key in self._actor_tasks:
+            _log.info("actor task already running actor_id=%s", actor_id)
             return
+        _log.info("actor task starting actor_id=%s", actor_id)
         self._actor_tasks[key] = asyncio.create_task(self._run_actor_task(key, coro_factory))
 
     async def stop_actor_task(self, actor_id: str) -> None:
         key = f"actor:{actor_id}"
         task = self._actor_tasks.pop(key, None)
         if task is None:
+            _log.info("actor task stop skipped not_running actor_id=%s", actor_id)
             return
         if not task.done():
+            _log.info("actor task cancelling actor_id=%s", actor_id)
             task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
+        _log.info("actor task stopped actor_id=%s", actor_id)
 
     def cancel_runtime_task(self, task_id: str) -> None:
         record = self.tasks.get(task_id)
+        _log.info("runtime task cancel requested task_id=%s owner=%s status=%s", task_id, record.owner, record.status)
         self.scheduler.cancel(record)
 
     def write_runtime_task_stdin(self, task_id: str, text: str) -> None:
@@ -331,12 +352,27 @@ class Runtime:
         suppress_conversation_task_deliveries(self, conversation_id)
 
     def _schedule_task_delivery(self, record: RuntimeTaskRecord) -> None:
+        _log.info(
+            "terminal task delivery scheduled task_id=%s owner=%s status=%s delivery=%s",
+            record.id,
+            record.owner,
+            record.status,
+            record.delivery,
+        )
         task = asyncio.create_task(self._deliver_terminal_task(record), name="task_delivery")
         self._task_delivery_tasks.add(task)
         task.add_done_callback(self._task_delivery_tasks.discard)
 
     async def _deliver_terminal_task(self, record: RuntimeTaskRecord) -> None:
-        await schedule_task_delivery(self, record)
+        try:
+            await schedule_task_delivery(self, record)
+        except Exception:
+            _log.exception(
+                "terminal task delivery failed task_id=%s owner=%s",
+                record.id,
+                record.owner,
+            )
+            raise
 
     async def wait_until_terminal_or_timeout(self, task_id: str, timeout: float) -> None:
         await wait_until_terminal_or_timeout(self.tasks, task_id, timeout)
@@ -350,6 +386,13 @@ class Runtime:
         return None
 
     async def shutdown(self) -> None:
+        _log.info(
+            "runtime shutdown starting actors=%s integrations=%s tasks=%s delivery_tasks=%s",
+            len(self.actors),
+            len(self.integrations),
+            len(self.tasks.list()),
+            len(self._task_delivery_tasks),
+        )
         await self.resource_supervisor.stop()
         await self.shares.stop_background_cleanup()
         self.cron.shutdown()
@@ -370,6 +413,7 @@ class Runtime:
         self.actors.clear()
         self.cache.clear()
         await self.db.close()
+        _log.info("runtime shutdown complete data_dir=%s", self.data_dir)
 
     async def _run_actor_task(self, key: str, coro_factory: TaskCoroFactory) -> None:
         stdin = TextStream()
@@ -378,6 +422,10 @@ class Runtime:
             await coro_factory(stdin, stdout)
         except asyncio.CancelledError:
             raise
+        except Exception:
+            _log.exception("actor task failed key=%s", key)
+            raise
         finally:
             if self._actor_tasks.get(key) is asyncio.current_task():
                 self._actor_tasks.pop(key, None)
+                _log.info("actor task removed key=%s", key)

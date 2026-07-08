@@ -2,6 +2,7 @@
 
 import secrets
 import time
+import re
 from collections.abc import Callable
 from typing import Literal
 from urllib.parse import quote
@@ -16,6 +17,7 @@ from .client_ip import client_ip_from_scope, header_value, is_loopback
 from .responses import error_response
 
 AuthMethod = Literal["proxy", "builtin_session", "loopback_bypass"]
+MCP_OAUTH_CALLBACK_PATH_RE = re.compile(r"^/api/mcp-oauth/[^/]+/callback$")
 
 
 class AuthContext(msgspec.Struct, frozen=True):
@@ -110,6 +112,14 @@ def is_auth_exempt(scope: Scope) -> bool:
     return (method == "POST" and path == "/api/auth/login") or (method == "GET" and path == "/login")
 
 
+def is_public_oauth_callback(scope: Scope) -> bool:
+    if scope["type"] != "http":
+        return False
+    method = scope.get("method")
+    path = scope.get("path")
+    return method == "GET" and isinstance(path, str) and MCP_OAUTH_CALLBACK_PATH_RE.match(path) is not None
+
+
 def scope_headers(scope: Scope) -> dict[bytes, bytes]:
     headers = scope.get("headers")
     if not isinstance(headers, list):
@@ -199,6 +209,9 @@ class AdminAuthMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in {"http", "websocket"}:
+            await self.app(scope, receive, send)
+            return
+        if is_public_oauth_callback(scope):
             await self.app(scope, receive, send)
             return
 
