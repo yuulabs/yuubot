@@ -28,7 +28,7 @@ from yuubot.integrations.records import IntegrationRecord
 from yuubot.llm import ModelCardInput, ProviderInput, ScriptedProvider
 from yuubot.domain.stream import StreamEvent, StreamStopPayload
 from yuubot.runtime.mcp import McpCapabilityIndex, McpServerRecord, McpToolSpec
-from yuubot.web.auth import SessionStore
+from yuubot.web.auth import SessionStore, is_auth_exempt
 from yuubot.web.server import UvicornServer, make_server
 
 
@@ -113,6 +113,21 @@ async def test_trusted_builtin_requires_login_even_from_loopback(tmp_path: Path)
     assert authenticated.json()["auth"]["mode"] == "builtin"
     assert missing_csrf.status_code == 403
     assert logged_out.status_code == 200
+
+
+def test_builtin_auth_exempts_login_shell_assets_only() -> None:
+    assert is_auth_exempt({"type": "http", "method": "GET", "path": "/login"})
+    assert is_auth_exempt({"type": "http", "method": "HEAD", "path": "/login"})
+    assert is_auth_exempt({"type": "http", "method": "GET", "path": "/assets/index.js"})
+    assert is_auth_exempt({"type": "http", "method": "HEAD", "path": "/assets/index.css"})
+    assert is_auth_exempt({"type": "http", "method": "GET", "path": "/sw.js"})
+    assert is_auth_exempt({"type": "http", "method": "POST", "path": "/api/auth/login"})
+
+    assert not is_auth_exempt({"type": "http", "method": "GET", "path": "/"})
+    assert not is_auth_exempt({"type": "http", "method": "GET", "path": "/admin/conversations"})
+    assert not is_auth_exempt({"type": "http", "method": "GET", "path": "/api/bootstrap"})
+    assert not is_auth_exempt({"type": "http", "method": "POST", "path": "/api/auth/logout"})
+    assert not is_auth_exempt({"type": "websocket", "path": "/ws"})
 
 
 @pytest.mark.asyncio

@@ -8,9 +8,9 @@ access.
 ```text
 Internet / Cloudflare DNS
   -> HTTPS
-  -> Caddy (TLS + basic_auth on admin domain)
+  -> Caddy (TLS reverse proxy on admin domain)
   -> trusted_admin_server on 127.0.0.1:8767
-       auth.mode: proxy (trusts X-Forwarded-User from Caddy)
+       auth.mode: builtin (Yuubot login page + session cookie)
 
 Loopback (SSH, cron, ybot CLI, Settings apply-update):
   -> local_admin_server on 127.0.0.1:8765
@@ -45,7 +45,7 @@ The script:
    `scripts/install-deps.sh`.
 4. Installs a single `yuubot.service` systemd unit, removes legacy
    `yuubot-daemon.service` / `yuubot-admin.service` units if present.
-5. Prompts for admin HTTPS (Caddy + Basic Auth), optionally enables
+5. Prompts for admin HTTPS and the Yuubot admin password, optionally enables
    `public_server` from a public URL, updates listener config, and writes
    `/etc/caddy/conf.d/yuubot.caddy`.
 6. Installs systemd, runs migrations, validates, and starts `yuubot.service`.
@@ -84,7 +84,9 @@ trusted_admin_server:
   port: 8767
   url_base: http://127.0.0.1:8767
   auth:
-    mode: proxy
+    mode: builtin
+    builtin:
+      password: <generated during install, replaced by the prompt>
 trusted_proxies: [127.0.0.1]
 ```
 
@@ -99,7 +101,7 @@ YUU_DATA_DIR=/var/lib/yuubot
 | Listener | Default | Auth | Purpose |
 | --- | --- | --- | --- |
 | `local_admin_server` | enabled on `127.0.0.1:8765` | `loopback_bypass` | Local admin UI, `ybot status`, Settings apply-update |
-| `trusted_admin_server` | enabled on `127.0.0.1:8767` | `proxy` | Remote admin UI via Caddy |
+| `trusted_admin_server` | enabled on `127.0.0.1:8767` | `builtin` | Remote admin UI via Caddy |
 | `public_server` | disabled | none | Public Share pages and app webhooks |
 
 `ybot serve --host` / `--port` only override the **local admin** listener port.
@@ -109,8 +111,9 @@ After the interactive setup, `trusted_admin_server.url_base` and
 `public_server.url_base` (when enabled) are written into config automatically.
 
 `trusted_admin_server.auth.mode` must be `proxy` or `builtin` (not
-`loopback_bypass`). With the default deploy, Caddy terminates TLS and Basic
-Auth, then forwards `X-Forwarded-User` to yuubot.
+`loopback_bypass`). With the default deploy, Caddy terminates TLS and forwards
+traffic to yuubot; yuubot owns the login page, session cookie, and CSRF checks
+through builtin auth.
 
 When `public_server` is enabled, the deploy script also writes a second Caddy
 vhost that proxies Share pages, app webhooks, and MCP OAuth browser callbacks to
@@ -149,9 +152,11 @@ For a server git checkout, use the deploy script's upgrade mode:
 ./scripts/deploy-server.sh --upgrade-only
 ```
 
-Upgrade mode pulls git updates with `--ff-only`, keeps existing config and Caddy
-credentials, refreshes dependencies and the web build, stops `yuubot.service`,
-applies database migrations, validates the deployment, and restarts the service.
+Upgrade mode pulls git updates with `--ff-only`, keeps existing config, refreshes
+dependencies and the web build, updates generated Caddy routing when needed,
+stops `yuubot.service`, applies database migrations, validates the deployment,
+and restarts the service. If an existing config already uses builtin auth, the
+upgrade path also removes Basic Auth from the generated Caddy admin vhost.
 
 The Admin UI Settings page can check for git updates on any admin listener.
 **Apply** only works from loopback (`local_admin_server`), because the update
@@ -175,7 +180,8 @@ uv run ybot check /etc/yuubot/config.yaml --json
 uv run ybot db info /etc/yuubot/config.yaml --json
 ```
 
-`trusted_admin_server` requires proxy auth, so health checks against port 8767
-need `X-Forwarded-User` or should go through Caddy on the public admin domain.
+`trusted_admin_server` uses builtin auth by default. API health checks against
+port 8767 should use `/healthz`; browser access goes through Caddy and signs in
+on the Yuubot `/login` page.
 
 After Caddy setup, open the admin UI at `https://<admin-domain>/`.

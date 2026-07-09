@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   extractToolStringArg,
   parseEditArgsPartial,
+  renderTerminalOutput,
 } from "./tool-renderers.ts";
 
 test("extractToolStringArg reads complete JSON string args", () => {
@@ -55,4 +56,13 @@ test("parseEditArgsPartial reads complete edit arguments", () => {
       new_string: "bar",
     },
   );
+});
+
+test("renderTerminalOutput overwrites carriage-return progress lines", () => {
+  const raw = "\r 10%|#         |\r 50%|#####     |\r 80%|########  |\nDone\n";
+  assert.equal(renderTerminalOutput(raw), " 80%|########  |\nDone\n");
+});
+
+test("renderTerminalOutput keeps plain multiline output", () => {
+  assert.equal(renderTerminalOutput("hello\nworld\n"), "hello\nworld\n");
 });

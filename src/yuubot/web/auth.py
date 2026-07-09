@@ -109,7 +109,11 @@ def is_auth_exempt(scope: Scope) -> bool:
         return False
     method = scope.get("method")
     path = scope.get("path")
-    return (method == "POST" and path == "/api/auth/login") or (method == "GET" and path == "/login")
+    if method == "POST":
+        return path == "/api/auth/login"
+    if method not in {"GET", "HEAD"} or not isinstance(path, str):
+        return False
+    return path == "/login" or path == "/sw.js" or path.startswith("/assets/")
 
 
 def is_public_oauth_callback(scope: Scope) -> bool:

@@ -259,6 +259,53 @@ test("stream tool result deltas are replaced by completed result", () => {
   assert.equal(completed[0]?.toolResult, "exit_code: 0\nstdout:\nhi");
 });
 
+test("running tool result snapshots replace instead of append", () => {
+  let blockIndex = 0;
+  const next = () => blockIndex++;
+  const nameBlock = renderBlocksFromStreamEvent(
+    {
+      group_id: "tool-0",
+      kind: "tool_name",
+      payload: { id: "call-1", name: "bash" },
+    },
+    "item",
+    next,
+  );
+  const argsBlock = renderBlocksFromStreamEvent(
+    {
+      group_id: "tool-0",
+      kind: "tool_arguments_delta",
+      payload: { text: JSON.stringify({ command: "progress" }) },
+    },
+    "item",
+    next,
+  );
+  const firstDelta = renderBlocksFromStreamEvent(
+    {
+      group_id: "call-1",
+      kind: "tool_result_delta",
+      payload: { tool_call_id: "call-1", tool_name: "bash", text: " 10%|#         |" },
+    },
+    "item",
+    next,
+  );
+  const secondDelta = renderBlocksFromStreamEvent(
+    {
+      group_id: "call-1",
+      kind: "tool_result_delta",
+      payload: { tool_call_id: "call-1", tool_name: "bash", text: " 80%|########  |" },
+    },
+    "item",
+    next,
+  );
+
+  const once = appendRenderBlocks([], [...nameBlock, ...argsBlock, ...firstDelta]);
+  assert.equal(once[0]?.toolResult, " 10%|#         |");
+
+  const twice = appendRenderBlocks(once, [...secondDelta]);
+  assert.equal(twice[0]?.toolResult, " 80%|########  |");
+});
+
 test("appendRenderBlocks merges duplicate live and persisted tool groups", () => {
   const persisted: RenderBlock = {
     key: "history-tool",

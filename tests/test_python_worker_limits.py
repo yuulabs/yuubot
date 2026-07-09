@@ -152,6 +152,38 @@ async def test_execute_filters_terminal_control_sequences(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_execute_streams_carriage_return_overwrites_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeKernelClient(
+        [
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "stream"},
+                "content": {"text": "\r10%"},
+            },
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "stream"},
+                "content": {"text": "\r80%\n"},
+            },
+            {
+                "parent_header": {"msg_id": "m1"},
+                "header": {"msg_type": "status"},
+                "content": {"execution_state": "idle"},
+            },
+        ]
+    )
+    worker = _worker(client, 128)
+    worker._started = True
+    monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
+    streamed: list[str] = []
+
+    output = await worker.run_code("for i in range(2): print(i)", on_output=streamed.append)
+
+    assert streamed == ["10%", "80%\n"]
+    assert output == "80%\n"
+
+
+@pytest.mark.asyncio
 async def test_execute_streams_filtered_output_to_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeKernelClient(
         [
@@ -179,5 +211,5 @@ async def test_execute_streams_filtered_output_to_callback(monkeypatch: pytest.M
 
     output = await worker.run_code("print('hello')", on_output=streamed.append)
 
-    assert streamed == ["hello\n", "42"]
+    assert streamed == ["hello\n", "hello\n42"]
     assert output == "hello\n42"

@@ -10,7 +10,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from strip_ansi import strip_ansi
+from yuubot.runtime.pty_display import filter_tool_output
 
 _MIN_ENV_KEYS = ("HOME", "USER", "LANG", "LC_ALL", "TERM")
 REDACTED = "***"
@@ -22,8 +22,6 @@ _SECRET_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),
     re.compile(r"Bearer\s+[A-Za-z0-9._-]+"),
 )
-_OSC_CONTROL_RE = re.compile(r"\x1B\][^\x1B\x07]*(?:\x07|\x1B\\)")
-_C0_CONTROL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,8 +143,7 @@ def redact_result(result: Result) -> Result:
 
 
 def _filter_text(text: str) -> str:
-    filtered = strip_ansi(_OSC_CONTROL_RE.sub("", text))
-    filtered = _C0_CONTROL_RE.sub("", filtered)
+    filtered = filter_tool_output(text)
     for pattern in _SECRET_VALUE_PATTERNS:
         filtered = pattern.sub(REDACTED, filtered)
     return filtered

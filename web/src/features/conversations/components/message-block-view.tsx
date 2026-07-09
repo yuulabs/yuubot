@@ -16,6 +16,7 @@ import {
   extractBashCommand,
   extractToolPath,
   extractToolStringArg,
+  formatToolOutput,
   parseEditArgsPartial,
   renderSimpleDiff,
   stripAnsi,
@@ -168,7 +169,7 @@ function BashRenderer(block: RenderBlock): ReactElement {
   const isRunning = isToolRunning(block);
   const streamedCommand = extractToolStringArg(block.toolArgs ?? "", "command");
   const command = streamedCommand ?? (block.toolArgs ? extractBashCommand(block.toolArgs) : "");
-  const result = block.toolResult ? stripAnsi(block.toolResult) : null;
+  const result = block.toolResult ? formatToolOutput(block.toolResult) : null;
   return (
     <div className="msg__tool">
       <div className="msg__tool-head">
@@ -316,7 +317,7 @@ export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; i
                 <PendingToolBanner toolName={display.name} />
               </div>
             ) : (
-              <pre className="msg__tool-output">{block.toolResult ?? ""}</pre>
+              <pre className="msg__tool-output">{formatToolOutput(block.toolResult ?? "")}</pre>
             )}
           </div>
         </div>

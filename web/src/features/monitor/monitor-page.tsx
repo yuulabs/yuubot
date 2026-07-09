@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { ComponentType, FormEvent } from "react";
 import { Activity, CircleDot, Cpu, DollarSign, FileText, HardDrive, MemoryStick } from "lucide-react";
 
+import { formatToolOutput } from "@/shared/lib/tool-renderers";
 import { cancelTask, getRuntime, getTask, listTasks, sendTaskStdin } from "@/shared/lib/api";
 import type { RuntimeEvent, TaskRecord } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
@@ -203,8 +204,8 @@ function displayStatus(task: TaskRecord, liveStatus?: string): string {
 }
 
 function displayStdout(task: TaskRecord, liveStdout: string): string {
-  if (liveStdout) return liveStdout;
-  return task.stdout_tail ?? "";
+  if (liveStdout) return formatToolOutput(liveStdout);
+  return formatToolOutput(task.stdout_tail ?? "");
 }
 
 function RuntimeEventRow({ event }: { event: RuntimeEvent }) {

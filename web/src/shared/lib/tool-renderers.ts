@@ -159,6 +159,235 @@ export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
 }
 
+const TAB_WIDTH = 8;
+const OSC_CONTROL_RE = /\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)/g;
+const C0_CONTROL_RE = /[\x00-\x08\x0b-\x0d\x0e-\x1f\x7f]/g;
+
+class PtyDisplayBuffer {
+  private lines: string[] = [""];
+  private row = 0;
+  private col = 0;
+  private pending = "";
+
+  feed(chunk: string): void {
+    if (!chunk) return;
+    const data = `${this.pending}${chunk}`;
+    this.pending = "";
+    let index = 0;
+    while (index < data.length) {
+      const char = data[index];
+      if (char === "\x1b") {
+        const consumed = this.consumeEscape(data, index);
+        if (consumed === 0) {
+          this.pending = data.slice(index);
+          return;
+        }
+        index += consumed;
+        continue;
+      }
+      if (char === "\r") {
+        this.col = 0;
+        index += 1;
+        continue;
+      }
+      if (char === "\n") {
+        this.newline();
+        index += 1;
+        continue;
+      }
+      if (char === "\b") {
+        this.col = Math.max(0, this.col - 1);
+        index += 1;
+        continue;
+      }
+      if (char === "\t") {
+        this.col = this.col + TAB_WIDTH - (this.col % TAB_WIDTH);
+        index += 1;
+        continue;
+      }
+      if (char < " " || char === "\x7f") {
+        index += 1;
+        continue;
+      }
+      this.writeChar(char);
+      index += 1;
+    }
+  }
+
+  snapshot(): string {
+    if (this.lines.length === 0) return "";
+    let end = this.row;
+    while (end + 1 < this.lines.length && this.lines[end + 1]) {
+      end += 1;
+    }
+    return this.lines.slice(0, end + 1).join("\n");
+  }
+
+  private consumeEscape(data: string, start: number): number {
+    if (data[start] !== "\x1b") return 0;
+    if (start + 1 >= data.length) return 0;
+    const nextChar = data[start + 1];
+    if (nextChar === "]") {
+      const end = this.findOscEnd(data, start + 2);
+      if (end === null) return 0;
+      return end - start;
+    }
+    if (nextChar === "[") {
+      const end = this.findCsiEnd(data, start + 2);
+      if (end === null) return 0;
+      const body = data.slice(start + 2, end);
+      const final = data[end];
+      this.dispatchCsi(body, final);
+      return end - start + 1;
+    }
+    return 2;
+  }
+
+  private findOscEnd(data: string, start: number): number | null {
+    let index = start;
+    while (index < data.length) {
+      if (data[index] === "\x07") return index + 1;
+      if (data[index] === "\x1b" && index + 1 < data.length && data[index + 1] === "\\") {
+        return index + 2;
+      }
+      index += 1;
+    }
+    return null;
+  }
+
+  private findCsiEnd(data: string, start: number): number | null {
+    let index = start;
+    while (index < data.length) {
+      const char = data[index];
+      if (/[A-Za-z@`~]/.test(char)) return index;
+      index += 1;
+    }
+    return null;
+  }
+
+  private parseParams(body: string): number[] {
+    if (!body) return [];
+    return body.split(";").map((part) => {
+      if (!part || !/^\d+$/.test(part)) return 0;
+      return Number.parseInt(part, 10);
+    });
+  }
+
+  private dispatchCsi(body: string, final: string): void {
+    const params = this.parseParams(body);
+    if (final === "A") {
+      const step = params[0] || 1;
+      this.row = Math.max(0, this.row - step);
+      this.clampCol();
+      return;
+    }
+    if (final === "B") {
+      const step = params[0] || 1;
+      this.ensureRow(this.row + step);
+      this.row += step;
+      this.clampCol();
+      return;
+    }
+    if (final === "C") {
+      this.col += params[0] || 1;
+      return;
+    }
+    if (final === "D") {
+      this.col = Math.max(0, this.col - (params[0] || 1));
+      return;
+    }
+    if (final === "G") {
+      const column = params[0] || 1;
+      this.col = Math.max(0, column - 1);
+      return;
+    }
+    if (final === "H" || final === "f") {
+      const row = (params[0] || 1) - 1;
+      const col = ((params.length > 1 ? params[1] : 1) || 1) - 1;
+      this.ensureRow(Math.max(0, row));
+      this.row = Math.max(0, row);
+      this.col = Math.max(0, col);
+      return;
+    }
+    if (final === "K") {
+      const mode = params[0] || 0;
+      const line = this.lineAt(this.row);
+      if (mode === 0) {
+        this.lines[this.row] = line.slice(0, this.col);
+      } else if (mode === 1) {
+        this.lines[this.row] = `${" ".repeat(this.col)}${line.slice(this.col)}`;
+      } else if (mode === 2) {
+        this.lines[this.row] = "";
+        this.col = 0;
+      }
+      return;
+    }
+    if (final === "J") {
+      const mode = params[0] || 0;
+      if (mode === 0) {
+        this.lines[this.row] = this.lineAt(this.row).slice(0, this.col);
+        for (let row = this.row + 1; row < this.lines.length; row += 1) {
+          this.lines[row] = "";
+        }
+      } else if (mode === 2) {
+        this.lines = [""];
+        this.row = 0;
+        this.col = 0;
+      }
+      return;
+    }
+    if (final === "m") {
+      return;
+    }
+  }
+
+  private newline(): void {
+    this.row += 1;
+    this.ensureRow(this.row);
+    this.col = 0;
+  }
+
+  private writeChar(char: string): void {
+    this.ensureRow(this.row);
+    let line = this.lineAt(this.row);
+    if (this.col >= line.length) {
+      line = `${line}${" ".repeat(this.col - line.length)}${char}`;
+    } else {
+      line = `${line.slice(0, this.col)}${char}${line.slice(this.col + 1)}`;
+    }
+    this.lines[this.row] = line;
+    this.col += 1;
+  }
+
+  private ensureRow(row: number): void {
+    while (this.lines.length <= row) {
+      this.lines.push("");
+    }
+  }
+
+  private lineAt(row: number): string {
+    this.ensureRow(row);
+    return this.lines[row];
+  }
+
+  private clampCol(): void {
+    this.col = Math.min(this.col, this.lineAt(this.row).length);
+  }
+}
+
+/** Render PTY output with terminal overwrite semantics, then strip remaining controls. */
+export function renderTerminalOutput(raw: string): string {
+  const buffer = new PtyDisplayBuffer();
+  buffer.feed(raw);
+  const rendered = buffer.snapshot();
+  return stripAnsi(rendered.replace(OSC_CONTROL_RE, "")).replace(C0_CONTROL_RE, "");
+}
+
+/** Format tool stdout/stderr for display in conversation and monitor views. */
+export function formatToolOutput(raw: string): string {
+  return renderTerminalOutput(raw);
+}
+
 export interface EditArgs {
   path: string;
   old_string: string;

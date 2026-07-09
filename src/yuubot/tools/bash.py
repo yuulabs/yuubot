@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from pathlib import Path
 from typing import ClassVar, Final, Literal, cast
 
 import msgspec
 from attrs import define, field
-from strip_ansi import strip_ansi
 
 from ..domain.messages import ConversationContext
 from ..runtime.core import Runtime
+from ..runtime.pty_display import filter_tool_output, forward_pty_snapshots
 from ..runtime.tasks import (
     register_shell_task,
     wait_until_terminal_or_idle,
@@ -24,9 +23,6 @@ from .progress import current_progress
 TAIL_LINES: Final[int] = 50
 DEFAULT_IDLE_TIMEOUT_S: Final[float] = 10.0
 HARD_TIMEOUT_S: Final[float] = 235.0
-
-_OSC_CONTROL_RE = re.compile(r"\x1B\][^\x1B\x07]*(?:\x07|\x1B\\)")
-_C0_CONTROL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 DESCRIPTION = """Run a bash command with the actor workspace as the working directory.
 
@@ -42,11 +38,6 @@ class BashPayload(msgspec.Struct, frozen=True):
     idle_timeout_s: float | None = None
 
 
-def _filter_model_text(text: str) -> str:
-    filtered = strip_ansi(_OSC_CONTROL_RE.sub("", text))
-    return _C0_CONTROL_RE.sub("", filtered)
-
-
 def _tail(text: str) -> str:
     lines = text.splitlines()
     if len(lines) <= TAIL_LINES:
@@ -58,7 +49,7 @@ def _format_sync_result(record: object) -> str:
     from ..runtime.tasks import RuntimeTaskRecord
 
     task = cast(RuntimeTaskRecord, record)
-    output = _tail(_filter_model_text(task.stdout.tail(max_bytes=65536)))
+    output = _tail(filter_tool_output(task.stdout.tail(max_bytes=65536)))
     lines = [f"exit_code: {task.exit_code if task.exit_code is not None else 0}"]
     if output:
         lines.extend(["stdout:", output])
@@ -69,7 +60,7 @@ def _format_detach_result(record: object, reason: Literal["idle", "timeout"]) ->
     from ..runtime.tasks import RuntimeTaskRecord
 
     task = cast(RuntimeTaskRecord, record)
-    output = _tail(_filter_model_text(task.stdout.tail(max_bytes=65536)))
+    output = _tail(filter_tool_output(task.stdout.tail(max_bytes=65536)))
     reason_label = "stdout idle" if reason == "idle" else "hard timeout"
     lines = [
         "detached: true",
@@ -140,8 +131,7 @@ class BashTool:
         progress = current_progress()
         if progress is None:
             return
-        async for chunk in task.stdout.subscribe():
-            progress.write(chunk)
+        await forward_pty_snapshots(task.stdout, progress.write)
 
 
 def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime) -> BashTool:

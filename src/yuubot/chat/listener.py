@@ -166,16 +166,24 @@ class WsListener:
         await self._send(frame)
 
     async def _stdout_loop(self, task_id: str, stdout: object, status: str) -> None:
+        from ..runtime.pty_display import PtyDisplayBuffer
         from ..runtime.streams import TextStream
 
         if not isinstance(stdout, TextStream):
             return
+        buffer = PtyDisplayBuffer()
+        last = ""
         try:
-            async for text in stdout.subscribe():
+            async for chunk in stdout.subscribe():
                 if self._closed:
                     break
+                buffer.feed(chunk)
+                snapshot = buffer.snapshot()
+                if snapshot == last:
+                    continue
+                last = snapshot
                 await self._send(
-                    {"type": "task.event", "payload": {"task_id": task_id, "status": status, "stdout": text}}
+                    {"type": "task.event", "payload": {"task_id": task_id, "status": status, "stdout": snapshot}}
                 )
         except asyncio.CancelledError:
             raise

@@ -271,7 +271,8 @@ WsListener 典型 filter
 
 1. `tool_result_delta.group_id` 和 `tool_result_end.group_id` 都是实际 `tool_call_id`。
 2. `tool_result_delta` 是实时 UI 事件，不写 History；bash 的 PTY stdout 与
-   execute_python 的 kernel stdout/stderr 都走这里。
+   execute_python 的 kernel stdout/stderr 都走这里。`tool_result_delta.payload.text`
+   为终端渲染后的全量 snapshot，而非 raw PTY chunk。
 3. 每个产生 `ToolResult` 的调用都必须发 `tool_result_end`，包括正常完成、参数校验失败、
    tool 异常、超时和中断。`tool_result_end.payload.content` 必须等于最终
    `ToolResult.content` 的 wire 形态。

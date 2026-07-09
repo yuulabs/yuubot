@@ -98,6 +98,19 @@ def test_deploy_caddy_public_vhost_allows_mcp_oauth_callback() -> None:
     assert "reverse_proxy @mcp_oauth_callback 127.0.0.1:$YUUBOT_PUBLIC_PORT" in content
 
 
+def test_deploy_uses_builtin_admin_auth_not_caddy_basic_auth() -> None:
+    content = Path("scripts/deploy-server.sh").read_text(encoding="utf-8")
+    caddy_template = content[
+        content.index("write_caddy_site() {") : content.index("install_app_dependencies() {")
+    ]
+    assert "mode: builtin" in content
+    assert 'auth["mode"] = "builtin"' in content
+    assert "caddy hash-password" not in content
+    assert "header_up X-Forwarded-User {http.auth.user.id}" not in caddy_template
+    assert "basic_auth {" not in caddy_template
+    assert "write_caddy_site \"$domain\" \"$public_domain\"" in content
+
+
 def test_apply_update_rejects_unsupported_install(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()

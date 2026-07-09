@@ -32,7 +32,7 @@ export function useTaskStream(taskId: string | undefined) {
       const payload = frame.payload;
       if (!payload || payload.task_id !== taskId) return;
       if (payload.stdout) {
-        setLiveStdout((current) => current + payload.stdout);
+        setLiveStdout(payload.stdout);
       }
       if (payload.status) {
         setLiveStatus(payload.status);

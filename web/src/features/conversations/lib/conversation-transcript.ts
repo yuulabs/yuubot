@@ -236,9 +236,12 @@ function makeToolGroup(call: RenderBlock, result?: RenderBlock): RenderBlock {
 
 function appendToolResultToGroup(group: RenderBlock, result: RenderBlock): RenderBlock {
   const replaceRunningResult = group.toolStatus !== "completed" && result.toolStatus === "completed";
+  const replaceStreamingSnapshot = result.toolStatus === "running";
   return {
     ...group,
-    toolResult: replaceRunningResult ? result.content : mergeToolResultContent(group.toolResult, result.content),
+    toolResult: (replaceRunningResult || replaceStreamingSnapshot)
+      ? result.content
+      : mergeToolResultContent(group.toolResult, result.content),
     toolStatus: result.toolStatus ?? group.toolStatus,
   };
 }

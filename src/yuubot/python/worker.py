@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import queue
-import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
@@ -14,15 +13,14 @@ from attrs import define, field
 from jupyter_client.asynchronous.client import AsyncKernelClient
 from jupyter_client.kernelspec import KernelSpec
 from jupyter_client.manager import AsyncKernelManager
-from strip_ansi import strip_ansi
+
+from yuubot.runtime.pty_display import PtyDisplayBuffer, filter_tool_output
 
 from .config import RECYCLE_EXIT_CODE
 from .workspace import ensure_workspace_venv, prepare_kernel_workspace
 
 WorkerState = Literal["idle", "leased"]
 KERNEL_START_TIMEOUT_S = 30.0
-_OSC_CONTROL_RE = re.compile(r"\x1B\][^\x1B\x07]*(?:\x07|\x1B\\)")
-_C0_CONTROL_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 
 
 class KernelWorkerError(RuntimeError):
@@ -167,9 +165,31 @@ class KernelWorker:
 
     async def _execute(self, code: str, on_output: Callable[[str], None] | None = None) -> str:
         msg_id = self.client.execute(code, store_history=False)
-        chunks: list[str] = []
+        raw_parts: list[str] = []
+        display = PtyDisplayBuffer()
+        last_snapshot = ""
         truncated = False
         deadline = time.monotonic() + self.execution_timeout_s
+
+        def publish_output(raw: str) -> bool:
+            nonlocal last_snapshot, truncated
+            if not raw:
+                return True
+            raw_parts.append(raw)
+            display.feed(raw)
+            output = filter_tool_output("".join(raw_parts))
+            encoded = output.encode()
+            if len(encoded) > self.max_output_bytes:
+                truncated = True
+                output = encoded[: self.max_output_bytes].decode("utf-8", errors="replace")
+                if on_output is not None and output != last_snapshot:
+                    on_output(output)
+                return False
+            if on_output is not None and output != last_snapshot:
+                on_output(output)
+            last_snapshot = output
+            return True
+
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -187,48 +207,24 @@ class KernelWorker:
             msg_type = msg["header"]["msg_type"]
             content = msg["content"]
             if msg_type == "stream":
-                text = _filter_tool_text(str(content.get("text", "")))
-                if text:
-                    total = sum(len(part.encode()) for part in chunks) + len(text.encode())
-                    if total > self.max_output_bytes:
-                        truncated = True
-                        allowed = self.max_output_bytes - sum(len(part.encode()) for part in chunks)
-                        if allowed > 0:
-                            text = text.encode()[:allowed].decode("utf-8", errors="replace")
-                            chunks.append(text)
-                            if on_output is not None:
-                                on_output(text)
-                        break
-                    chunks.append(text)
-                    if on_output is not None:
-                        on_output(text)
+                if not publish_output(str(content.get("text", ""))):
+                    break
             elif msg_type == "execute_result":
                 data = content.get("data", {})
                 if isinstance(data, dict) and "text/plain" in data:
-                    text = _filter_tool_text(str(data["text/plain"]))
-                    total = sum(len(part.encode()) for part in chunks) + len(text.encode())
-                    if total > self.max_output_bytes:
-                        truncated = True
+                    if not publish_output(str(data["text/plain"])):
                         break
-                    chunks.append(text)
-                    if on_output is not None:
-                        on_output(text)
             elif msg_type == "error":
-                text = _filter_tool_text("\n".join(str(line) for line in content.get("traceback", [])))
-                chunks.append(text)
-                if text and on_output is not None:
-                    on_output(text)
+                if not publish_output("\n".join(str(line) for line in content.get("traceback", []))):
+                    break
             elif msg_type == "status" and content.get("execution_state") == "idle":
                 break
-        output = "".join(chunks)
+        output = filter_tool_output("".join(raw_parts))
         if truncated:
+            output = output.encode()[: self.max_output_bytes].decode("utf-8", errors="replace")
             suffix = f"\n[system] output truncated at {self.max_output_bytes} bytes"
             output = f"{output}{suffix}"
             if on_output is not None:
                 on_output(suffix)
         return output
 
-
-def _filter_tool_text(text: str) -> str:
-    filtered = strip_ansi(_OSC_CONTROL_RE.sub("", text))
-    return _C0_CONTROL_RE.sub("", filtered)

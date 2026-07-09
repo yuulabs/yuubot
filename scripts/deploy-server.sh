@@ -185,6 +185,8 @@ install_caddy() {
 
 ensure_config() {
     info "Writing yuubot config and environment"
+    local bootstrap_admin_password
+    bootstrap_admin_password="$(rand_token)"
     sudo install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$CONFIG_DIR"
     sudo install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$DATA_DIR"
 
@@ -204,7 +206,9 @@ trusted_admin_server:
   port: $YUUBOT_TRUSTED_ADMIN_PORT
   url_base: http://127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT
   auth:
-    mode: proxy
+    mode: builtin
+    builtin:
+      password: $bootstrap_admin_password
 trusted_proxies: [127.0.0.1]
 EOF
         sudo chown "root:$SERVICE_GROUP" "$CONFIG_FILE"
@@ -253,12 +257,13 @@ update_listener_config() {
     local admin_url_base="$1"
     local public_enabled="$2"
     local public_url_base="$3"
+    local admin_password="$4"
     local tmp
     tmp="$(mktemp)"
     sudo cat "$CONFIG_FILE" >"$tmp"
     (
         cd "$REPO_ROOT"
-        uv run python - "$tmp" "$admin_url_base" "$public_enabled" "$public_url_base" "$YUUBOT_PUBLIC_PORT" "$YUUBOT_TRUSTED_ADMIN_PORT" <<'PY'
+        uv run python - "$tmp" "$admin_url_base" "$public_enabled" "$public_url_base" "$YUUBOT_PUBLIC_PORT" "$YUUBOT_TRUSTED_ADMIN_PORT" "$admin_password" <<'PY'
 import sys
 from pathlib import Path
 
@@ -270,6 +275,7 @@ public_enabled = sys.argv[3] == "true"
 public_url_base = sys.argv[4]
 public_port = int(sys.argv[5])
 trusted_port = int(sys.argv[6])
+admin_password = sys.argv[7]
 
 with config_path.open(encoding="utf-8") as handle:
     data = yaml.safe_load(handle) or {}
@@ -283,7 +289,17 @@ trusted["enabled"] = True
 trusted.setdefault("host", "127.0.0.1")
 trusted["port"] = trusted_port
 trusted["url_base"] = admin_url_base
-trusted.setdefault("auth", {"mode": "proxy"})
+auth = trusted.get("auth")
+if not isinstance(auth, dict):
+    auth = {}
+builtin = auth.get("builtin")
+if not isinstance(builtin, dict):
+    builtin = {}
+builtin["password"] = admin_password
+auth["mode"] = "builtin"
+auth["builtin"] = builtin
+auth.pop("proxy", None)
+trusted["auth"] = auth
 data["trusted_admin_server"] = trusted
 
 data["public_server"] = {
@@ -325,21 +341,13 @@ prompt_public_server() {
 
 write_caddy_site() {
     local admin_domain="$1"
-    local username="$2"
-    local hash="$3"
-    local public_domain="${4:-}"
+    local public_domain="${2:-}"
 
     sudo install -d -m 0755 "$CADDY_CONF_DIR"
     if [[ -n "$public_domain" ]]; then
         sudo_write "$CADDY_SITE_FILE" 0644 <<EOF
 $admin_domain {
-    basic_auth {
-        $username $hash
-    }
-
-    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT {
-        header_up X-Forwarded-User {http.auth.user.id}
-    }
+    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT
 }
 
 $public_domain {
@@ -355,13 +363,7 @@ EOF
     else
         sudo_write "$CADDY_SITE_FILE" 0644 <<EOF
 $admin_domain {
-    basic_auth {
-        $username $hash
-    }
-
-    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT {
-        header_up X-Forwarded-User {http.auth.user.id}
-    }
+    reverse_proxy 127.0.0.1:$YUUBOT_TRUSTED_ADMIN_PORT
 }
 EOF
     fi
@@ -490,6 +492,77 @@ PY
     fi
 }
 
+migrate_caddy_builtin_admin_auth() {
+    [[ -f "$CADDY_SITE_FILE" ]] || return 0
+    [[ -f "$CONFIG_FILE" ]] || return 0
+
+    local tmp result
+    tmp="$(mktemp)"
+    run_sudo cat "$CADDY_SITE_FILE" >"$tmp"
+    result="$(
+        cd "$REPO_ROOT"
+        uv run python - "$tmp" "$CONFIG_FILE" "$YUUBOT_TRUSTED_ADMIN_PORT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+site_path = Path(sys.argv[1])
+config_path = Path(sys.argv[2])
+trusted_port = re.escape(sys.argv[3])
+
+with config_path.open(encoding="utf-8") as handle:
+    config = yaml.safe_load(handle) or {}
+if not isinstance(config, dict):
+    raise SystemExit("config must be a mapping")
+trusted = config.get("trusted_admin_server")
+if not isinstance(trusted, dict):
+    print("unchanged")
+    raise SystemExit
+auth = trusted.get("auth")
+if not isinstance(auth, dict) or auth.get("mode") != "builtin":
+    print("unchanged")
+    raise SystemExit
+
+content = site_path.read_text(encoding="utf-8")
+updated = re.sub(r"(?ms)^    basic_auth \{\n.*?^    \}\n\n", "", content, count=1)
+proxy_block = re.compile(
+    rf"(?ms)^    reverse_proxy 127\.0\.0\.1:{trusted_port} \{{\n"
+    r"(?P<body>.*?)"
+    r"^    \}\n"
+)
+
+
+def replace_proxy_block(match: re.Match[str]) -> str:
+    body = match.group("body")
+    if "header_up X-Forwarded-User {http.auth.user.id}" not in body:
+        return match.group(0)
+    return f"    reverse_proxy 127.0.0.1:{sys.argv[3]}\n"
+
+
+updated = proxy_block.sub(replace_proxy_block, updated, count=1)
+if updated == content:
+    print("unchanged")
+else:
+    site_path.write_text(updated, encoding="utf-8")
+    print("changed")
+PY
+    )"
+    if [[ "$result" != "changed" ]]; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    info "Removing generated Caddy Basic Auth for builtin admin auth"
+    run_sudo install -m 0644 "$tmp" "$CADDY_SITE_FILE"
+    rm -f "$tmp"
+    if [[ -f "$CADDYFILE" ]] && need_cmd caddy; then
+        run_sudo caddy validate --config "$CADDYFILE"
+        run_sudo systemctl reload caddy
+    fi
+}
+
 install_systemd_units() {
     info "Installing systemd units"
     local uv_path uv_dir service_path
@@ -547,6 +620,7 @@ upgrade_existing_deployment() {
     pull_git_update
     install_app_dependencies
     migrate_caddy_public_oauth_callback
+    migrate_caddy_builtin_admin_auth
     log_step "Stopping yuubot.service before migrations"
     run_sudo systemctl stop yuubot.service >/dev/null 2>&1 || true
     run_database_migrations
@@ -558,7 +632,7 @@ upgrade_existing_deployment() {
 
 prompt_caddy_config() {
     info "Configuring listeners, yuubot config, and Caddy HTTPS"
-    local domain username password password_confirm hash admin_url_base public_domain
+    local domain password password_confirm admin_url_base public_domain
 
     if [[ -f "$CADDY_SITE_FILE" ]]; then
         local target_pattern answer
@@ -571,6 +645,7 @@ prompt_caddy_config() {
                 *)
                     info "Keeping existing Caddy yuubot site config"
                     reject_legacy_config
+                    migrate_caddy_builtin_admin_auth
                     if [[ -f "$CADDYFILE" ]]; then
                         sudo caddy validate --config "$CADDYFILE"
                         sudo systemctl enable --now caddy
@@ -600,11 +675,8 @@ prompt_caddy_config() {
         public_domain=""
     fi
 
-    read -r -p "Admin username [admin]: " username
-    username="${username:-admin}"
-
     while true; do
-        read -r -s -p "Admin passphrase/password: " password
+        read -r -s -p "Yuubot admin password: " password
         printf '\n'
         [[ -n "$password" ]] || {
             printf 'password cannot be empty\n' >&2
@@ -616,11 +688,9 @@ prompt_caddy_config() {
         printf 'passwords did not match\n' >&2
     done
 
-    hash="$(caddy hash-password --plaintext "$password")"
+    update_listener_config "$admin_url_base" "$([[ -n "$PUBLIC_URL" ]] && printf true || printf false)" "${PUBLIC_URL:-}" "$password"
     unset password password_confirm
-
-    update_listener_config "$admin_url_base" "$([[ -n "$PUBLIC_URL" ]] && printf true || printf false)" "${PUBLIC_URL:-}"
-    write_caddy_site "$domain" "$username" "$hash" "$public_domain"
+    write_caddy_site "$domain" "$public_domain"
 
     cat <<EOF
 

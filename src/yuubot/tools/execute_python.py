@@ -50,17 +50,20 @@ class ExecutePythonTool:
     _leased: bool = field(default=False, init=False)
 
     async def prepare(self) -> None:
+        self._set_partial_result("execute_python is preparing the workspace environment.")
         root = self.workspace.resolve()
         prepare_kernel_workspace(root)
         await ensure_workspace_venv(root)
 
     async def execute(self, payload: msgspec.Struct) -> str:
         data = cast(ExecutePythonPayload, payload)
-        self._set_partial_result("execute_python is acquiring a Python kernel worker and preparing the workspace environment.")
-        worker = await self._worker_or_acquire()
+        worker, newly_acquired = await self._worker_or_acquire()
         progress = current_progress()
-        try:
+        if newly_acquired:
             self._set_partial_result("execute_python acquired a Python kernel worker and is executing the submitted code.")
+        else:
+            self._set_partial_result("execute_python is executing in the existing Python kernel session.")
+        try:
             return await worker.run_code(data.code, on_output=progress.write if progress is not None else None)
         except KernelWorkerError as first_exc:
             if self._worker is not None:
@@ -68,7 +71,7 @@ class ExecutePythonTool:
                 self._worker = None
                 self._leased = False
             self._set_partial_result("execute_python is retrying after the Python kernel worker failed.")
-            worker = await self._worker_or_acquire()
+            worker, _ = await self._worker_or_acquire()
             progress = current_progress()
             try:
                 self._set_partial_result("execute_python acquired a replacement Python kernel worker and is executing the submitted code.")
@@ -86,13 +89,14 @@ class ExecutePythonTool:
         self._worker = None
         self._leased = False
 
-    async def _worker_or_acquire(self) -> KernelWorker:
+    async def _worker_or_acquire(self) -> tuple[KernelWorker, bool]:
         if self._worker is not None and not self._worker.alive:
             await self.pool.drop_leased_worker(self.lease_key, self._worker)
             self._worker = None
             self._leased = False
         if self._worker is not None and self._worker.alive:
-            return self._worker
+            return self._worker, False
+        self._set_partial_result("execute_python is acquiring a Python kernel worker.")
         try:
             self._worker = await self.pool.acquire(self.workspace, lease_key=self.lease_key, env=self.env)
         except KernelPoolBusy as exc:
@@ -100,7 +104,7 @@ class ExecutePythonTool:
                 "no python kernel worker available; all workers are busy, try again later"
             ) from exc
         self._leased = True
-        return self._worker
+        return self._worker, True
 
     def _set_partial_result(self, text: str) -> None:
         task = asyncio.current_task()

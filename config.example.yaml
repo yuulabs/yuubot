@@ -58,13 +58,10 @@ data_dir: ~/.yuubot-data
 #   port: 8767
 #   url_base: https://admin.example.com
 #   auth:
-#     mode: builtin  # builtin | proxy
+#     mode: builtin
 #     builtin:
 #       session_cookie_name: yuubot_session
 #       csrf_header: X-CSRF-Token
 #       password: change-me
-#     proxy:
-#       user_header: X-Forwarded-User
-#       groups_header: X-Forwarded-Groups
 #
 # trusted_proxies: [127.0.0.1]

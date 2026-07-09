@@ -82,6 +82,41 @@ async def test_bash_detaches_on_stdout_idle(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_bash_progress_output_filters_carriage_returns(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = ConversationContext(
+        ModelCard("test"),
+        "bash-progress",
+        "amy",
+        workspace,
+    )
+    harness = Harness.from_config(
+        HarnessConfig({"bash": ToolConfig("bash")}),
+        context,
+        app.runtime,
+    )
+    results = await harness.gather(
+        [
+            ToolCall(
+                "call-1",
+                "bash",
+                '{"command":"printf \\"\\\\r10%%\\\\r80%%\\\\nDone\\\\n\\""}',
+            )
+        ],
+        asyncio.Event(),
+    )
+    await harness.close()
+
+    text = results[0].content[0].text
+    assert "exit_code: 0" in text
+    assert "10%80%" not in text
+    assert "80%" in text
+    assert "Done" in text
+
+
+@pytest.mark.asyncio
 async def test_bash_detaches_for_stdin_waiting_command(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
     workspace = tmp_path / "workspace"

@@ -21,6 +21,7 @@ from attrs import define, field
 from .event_payloads import EmitFn, TaskFinishedPayload, TaskStartedPayload
 from .expiring_index import DEFAULT_MAX_SIZE_BYTES, ExpiringIndex
 from .pty_runner import run_pty_process
+from .pty_display import filter_tool_output
 from .streams import TaskCoroFactory, TextStream
 from .wakeup import WakeupPayload, WakeupTarget
 
@@ -466,7 +467,7 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
         lines.append(record.intro)
     if record.error:
         lines.append(f"Error: {record.error}")
-    output = record.stdout.tail(max_bytes=65536)
+    output = filter_tool_output(record.stdout.tail(max_bytes=65536))
     if output:
         lines.append("Output:")
         lines.append(output)
@@ -622,7 +623,7 @@ def task_record_snapshot(record: RuntimeTaskRecord, include_stdout: bool = False
         record.delivery,
         record.delivery_state,
         record.interactive,
-        record.stdout.tail(max_bytes=65536) if include_stdout else "",
+        filter_tool_output(record.stdout.tail(max_bytes=65536)) if include_stdout else "",
         record.created_at,
         record.started_at,
         record.finished_at,
