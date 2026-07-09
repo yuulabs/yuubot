@@ -65,6 +65,21 @@ async def test_configure_web_uses_backend_defaults(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_configure_web_saves_jina_api_key(tmp_path: Path) -> None:
+    app = await boot_app(tmp_path / "data")
+    async with running_server(app) as server:
+        snapshot = await put_integration(
+            server,
+            "web",
+            name="web",
+            config={"tavily_api_key": "tvly-secret", "jina_api_key": "jina-secret"},
+        )
+
+    assert snapshot["config"]["tavily_api_key"] == "***"
+    assert snapshot["config"]["jina_api_key"] == "***"
+
+
+@pytest.mark.asyncio
 async def test_configure_web_rejects_string_integer(tmp_path: Path) -> None:
     app = await boot_app(tmp_path / "data")
     async with running_server(app) as server:

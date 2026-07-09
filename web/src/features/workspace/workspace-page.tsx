@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { Page, EmptyState, ErrorState, LoadingState, ResourceMeta } from "@/shared/components";
+import { Page, EmptyState, ErrorState, LoadingState } from "@/shared/components";
 import { useBootstrap } from "@/shared/hooks";
 import { WorkspaceBrowser } from "./workspace-browser";
 
@@ -46,16 +46,7 @@ export function WorkspacePage() {
       {!selectedActor ? (
         <EmptyState>No actors have been configured.</EmptyState>
       ) : (
-        <div className="grid gap-3">
-          <ResourceMeta
-            items={[
-              { label: "Actor", value: selectedActor.name || selectedActor.id },
-              { label: "Workspace", value: selectedActor.workspace },
-              { label: "Status", value: selectedActor.status, tone: selectedActor.enabled ? "ok" : "muted" },
-            ]}
-          />
-          <WorkspaceBrowser actorId={selectedActor.id} />
-        </div>
+        <WorkspaceBrowser actorId={selectedActor.id} />
       )}
     </Page>
   );

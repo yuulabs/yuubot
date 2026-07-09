@@ -128,6 +128,7 @@ export interface BootstrapSnapshot {
     csrf_header: string;
   };
   development?: boolean;
+  public_url_base?: string;
   schema_version: number;
   workspace_dir: string;
   providers: ProviderSnapshot[];

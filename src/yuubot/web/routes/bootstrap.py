@@ -25,6 +25,7 @@ def register_bootstrap_routes(api: FastAPI, app: Yuubot, deployment: DeploymentC
                 "method": auth.auth_method if isinstance(auth, AuthContext) else None,
                 "csrf_header": deployment.admin_auth.builtin.csrf_header,
             }
+            payload["public_url_base"] = deployment.public_url_base
         return json_response(payload)
 
     @api.get("/api/integrations")

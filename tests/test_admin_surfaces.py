@@ -77,7 +77,7 @@ async def test_public_surface_exposes_public_routes_only(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_local_admin_surface_does_not_require_login(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
-    deployment = DeploymentConfig(surface="local_admin")
+    deployment = DeploymentConfig(surface="local_admin", public_url_base="https://public.example.com")
 
     async with surface_server(app, deployment) as server:
         async with httpx.AsyncClient(base_url=base_url(server)) as client:
@@ -85,6 +85,7 @@ async def test_local_admin_surface_does_not_require_login(tmp_path: Path) -> Non
 
     assert response.status_code == 200
     assert response.json()["auth"]["mode"] == "none"
+    assert response.json()["public_url_base"] == "https://public.example.com"
 
 
 @pytest.mark.asyncio

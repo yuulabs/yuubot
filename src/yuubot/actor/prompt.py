@@ -42,10 +42,14 @@ def developer_prompt(
     return "\n\n".join(sections)
 
 
+_YUUBOT_FRAMEWORK_PROMPT = """"
+You are running inside an AI agent framework called Yuubot. You have access to a workspace served in a cloud server.
+The user is chatting with you through a web interface. You may also receive messages from other sources (if so, relevant context will be provided in the message).
+"""
+
 def _system_instructions(has_python: bool) -> str:
     lines = [
-        "Session mode semantics are documented in Real-Time Data. Context may be lost between turns; rely on persisted conversation history and workspace files when you need durable memory.",
-        "Do not expose secrets, raw integration credentials, or daemon implementation details to users.",
+        _YUUBOT_FRAMEWORK_PROMPT,
     ]
     if has_python:
         lines.append("execute_python resets after each user turn; a developer notice appears when a prior session is gone.")
@@ -67,6 +71,7 @@ def _workspace_instructions(workspace: Path, actor_id: str = "") -> str:
             "- User and assistant messages may reference workspace files as `[[ relative/path ]]`; use the read tool to inspect referenced files before relying on their contents.",
             "- Show images with Markdown: `![short alt](relative/path)` or `![short alt](https://...)`. Prefer an external URL when the image is already online.",
             "- Reference non-image workspace files as `[[ relative/path ]]`. Do not nest `[[...]]` inside Markdown image or link URLs.",
+            "- Use `uv` to manage python dependencies and run shell commmands(uv run) instead of raw python."
         ]
     )
     lines.append("- `AGENTS.md`: durable instructions that will be automatically loaded everytime you wake up. This file acts as a map of your workspace and helps you memorize. Offload details to each specific folders. Carefully maintain this file to anchor your workspace knowledge and avoid losing context. Don't write everything in this file, but use it as a map to your workspace.")

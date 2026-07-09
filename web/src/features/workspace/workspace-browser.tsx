@@ -45,8 +45,13 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
   const [busy, setBusy] = useState(false);
   const [pendingShare, setPendingShare] = useState<WorkspaceEntry | null>(null);
   const [shareTtl, setShareTtl] = useState<ShareTtlPreset>(DEFAULT_SHARE_TTL);
+  const [showHidden, setShowHidden] = useState(false);
   const query = useQuery({ queryKey: ["actor-workspace", actorId, path], queryFn: () => browseActor(actorId, path) });
   const entries = query.data?.entries ?? [];
+  const visibleEntries = useMemo(
+    () => (showHidden ? entries : entries.filter((entry) => !entry.name.startsWith("."))),
+    [entries, showHidden],
+  );
   const selectedPaths = useMemo(() => Array.from(selected), [selected]);
 
   useEffect(() => {
@@ -95,7 +100,8 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
   }
 
   function selectAll() {
-    setSelected(selected.size === entries.length ? new Set() : new Set(entries.map((entry) => entry.path)));
+    const allVisibleSelected = visibleEntries.length > 0 && visibleEntries.every((entry) => selected.has(entry.path));
+    setSelected(allVisibleSelected ? new Set() : new Set(visibleEntries.map((entry) => entry.path)));
   }
 
   function uploadFiles(files: File[]) {
@@ -206,7 +212,11 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
         <div className="grid gap-4" onDragOver={(event) => event.preventDefault()} onDrop={dropUpload}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <Breadcrumb path={path} onChange={changePath} />
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="dense-checkbox">
+                <input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />
+                Show hidden
+              </label>
               <Button variant="outline" size="sm" onClick={createDirectory} disabled={busy}>
                 <FolderPlus size={14} /> New folder
               </Button>
@@ -235,18 +245,20 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
 
           {!entries.length ? (
             <EmptyState>Drop files here or create a folder to start this workspace.</EmptyState>
+          ) : !visibleEntries.length ? (
+            <EmptyState>No visible files. Check Show hidden to reveal dot-prefixed entries.</EmptyState>
           ) : (
             <div className="data-table">
               <div className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_210px] gap-3 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground">
                 <button className="text-left" type="button" onClick={selectAll} aria-label="Toggle all entries">
-                  {selected.size === entries.length ? "All" : "Any"}
+                  {visibleEntries.length > 0 && visibleEntries.every((entry) => selected.has(entry.path)) ? "All" : "Any"}
                 </button>
                 <span>Name</span>
                 <span>Size</span>
                 <span>Modified</span>
                 <span>Actions</span>
               </div>
-              {entries.map((entry) => (
+              {visibleEntries.map((entry) => (
                 <div
                   key={entry.path}
                   className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_210px] items-center gap-3 border-t px-3 py-2"

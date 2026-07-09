@@ -1,12 +1,16 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { SquareTerminal } from "lucide-react";
+import { Check, Copy, SquareTerminal } from "lucide-react";
 
 import { configureIntegration, disableIntegration, enableIntegration } from "@/shared/lib/api";
 import type { IntegrationConfigInput } from "@/shared/types/api";
 import { Button } from "@/components/ui/button";
 import { DenseMeta, DenseSection, ErrorState, LoadingState, Page, ResourceList, ResourceListPrimary, Status } from "@/shared/components";
 import { useApiMutation, useBootstrap } from "@/shared/hooks";
+
+const OPTIONAL_CONFIG_FIELDS: Record<string, string[]> = {
+  web: ["jina_api_key"],
+};
 
 export function IntegrationDetailPage({ id }: { id: string }) {
   const navigate = useNavigate();
@@ -16,10 +20,12 @@ export function IntegrationDetailPage({ id }: { id: string }) {
   const disable = useApiMutation((type: string) => disableIntegration(type));
   const existing = data?.integrations.find((integration) => integration.type === id);
   const relatedRoutes = data?.routes.filter((route) => route.integration_type === id) ?? [];
-  const fields = useMemo(() => schemaFields(existing?.config_schema), [existing?.config_schema]);
+  const fields = useMemo(() => schemaFields(existing?.config_schema, id), [existing?.config_schema, id]);
+  const webhookUrl = useMemo(() => buildWebhookUrl(data?.public_url_base, id), [data?.public_url_base, id]);
   const [name, setName] = useState(id);
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [message, setMessage] = useState("");
+  const [webhookCopied, setWebhookCopied] = useState(false);
 
   useEffect(() => {
     setName(existing?.name ?? id);
@@ -77,6 +83,26 @@ export function IntegrationDetailPage({ id }: { id: string }) {
                 />
               </label>
             ))}
+          </div>
+        </DenseSection>
+        <DenseSection title="Webhook endpoint" description="Use this public endpoint in the source app webhook settings.">
+          <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+            <input className="input font-mono text-xs" value={webhookUrl} readOnly aria-label="Webhook URL" />
+            <Button
+              variant="outline"
+              onClick={async () => {
+                try {
+                  await copyToClipboard(webhookUrl);
+                  setWebhookCopied(true);
+                  window.setTimeout(() => setWebhookCopied(false), 1600);
+                } catch (err) {
+                  setMessage(err instanceof Error ? err.message : String(err));
+                }
+              }}
+            >
+              {webhookCopied ? <Check size={14} /> : <Copy size={14} />}
+              <span>{webhookCopied ? "Copied" : "Copy URL"}</span>
+            </Button>
           </div>
         </DenseSection>
         <div className="dense-actions-bar">
@@ -138,16 +164,17 @@ interface SchemaField {
   secret: boolean;
 }
 
-function schemaFields(schema: Record<string, unknown> | undefined): SchemaField[] {
+function schemaFields(schema: Record<string, unknown> | undefined, integrationId: string): SchemaField[] {
   const resolved = resolveSchema(schema);
   const properties = resolved?.properties;
   const required = new Set(Array.isArray(resolved?.required) ? resolved.required.filter((item): item is string => typeof item === "string") : []);
+  const optional = new Set(OPTIONAL_CONFIG_FIELDS[integrationId] ?? []);
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
     return [];
   }
   return Object.entries(properties).flatMap(([name, raw]) => {
     const item = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-    if (!required.has(name)) {
+    if (!required.has(name) && !optional.has(name)) {
       return [];
     }
     return {
@@ -188,4 +215,13 @@ function compactConfig(config: Record<string, unknown>): Record<string, unknown>
     compact[key] = value;
   }
   return compact;
+}
+
+function buildWebhookUrl(publicUrlBase: string | undefined, integrationId: string): string {
+  const base = (publicUrlBase || window.location.origin).replace(/\/+$/, "");
+  return `${base}/webhooks/app/${encodeURIComponent(integrationId)}`;
+}
+
+async function copyToClipboard(value: string): Promise<void> {
+  await navigator.clipboard.writeText(value);
 }
