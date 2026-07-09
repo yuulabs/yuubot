@@ -1083,7 +1083,7 @@ class Yuubot:
         return interrupted
 
     def conversation_active(self, conversation_id: str) -> bool:
-        return self.runtime.conversations.has(conversation_id)
+        return self.runtime.conversations.running(conversation_id)
 
     async def conversation_costs(self, conversation_id: str) -> list[CostRow]:
         return await self.runtime.state.load_costs(conversation_id)

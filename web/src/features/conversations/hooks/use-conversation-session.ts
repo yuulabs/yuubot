@@ -78,6 +78,7 @@ export function useConversationSession({
   const turnAppendReceivedRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const hadConnectedRef = useRef(false);
+  const lastLiveSeqRef = useRef(0);
 
   const [transcript, dispatchTranscript] = useReducer(transcriptReducer, history, createTranscriptState);
   const [wsReady, setWsReady] = useState(false);
@@ -148,6 +149,18 @@ export function useConversationSession({
     turnAppendReceivedRef.current = false;
     turnKeyRef.current = nextTurnKey;
     liveBlockIndexRef.current = 0;
+    dispatchTranscript({ type: "set_phase", phase: "streaming" });
+  }, []);
+
+  const beginReplayTurn = useCallback(() => {
+    const nextTurnKey = `replay-${Date.now()}`;
+    inFlightRef.current = true;
+    terminalHandledRef.current = false;
+    turnAppendReceivedRef.current = false;
+    turnKeyRef.current = nextTurnKey;
+    liveBlockIndexRef.current = 0;
+    lastLiveSeqRef.current = 0;
+    dispatchTranscript({ type: "begin_turn", turnKey: nextTurnKey, now: Date.now() });
     dispatchTranscript({ type: "set_phase", phase: "streaming" });
   }, []);
 
@@ -222,6 +235,18 @@ export function useConversationSession({
     );
   }, [subscribedConversationId]);
 
+  const shouldProcessLiveFrame = useCallback((frame: WsFrame): boolean => {
+    const liveSeq = numericPayloadValue(frame.payload?.live_seq);
+    if (!liveSeq) {
+      return true;
+    }
+    if (liveSeq <= lastLiveSeqRef.current) {
+      return false;
+    }
+    lastLiveSeqRef.current = liveSeq;
+    return true;
+  }, []);
+
   useEffect(() => {
     if (!isDraft) {
       setActiveConversationId(conversationId);
@@ -236,6 +261,7 @@ export function useConversationSession({
     activeCommandIdRef.current = null;
     terminalHandledRef.current = false;
     turnAppendReceivedRef.current = false;
+    lastLiveSeqRef.current = 0;
   }, [conversationId, finishTurn, isDraft, resetLiveTurn]);
 
   useEffect(() => {
@@ -315,8 +341,23 @@ export function useConversationSession({
         return;
       }
 
+      if (frame.type === "conversation.replay.start") {
+        if (!shouldProcessFrame(frame)) {
+          return;
+        }
+        beginReplayTurn();
+        return;
+      }
+
+      if (frame.type === "conversation.replay.end") {
+        return;
+      }
+
       if (frame.type === "conversation.tool_results") {
         if (!shouldProcessFrame(frame)) {
+          return;
+        }
+        if (!shouldProcessLiveFrame(frame)) {
           return;
         }
         if (!inFlightRef.current) {
@@ -331,11 +372,17 @@ export function useConversationSession({
         if (!shouldProcessFrame(frame)) {
           return;
         }
+        if (!shouldProcessLiveFrame(frame)) {
+          return;
+        }
         return;
       }
 
       if (frame.type === "conversation.stream") {
         if (!shouldProcessFrame(frame)) {
+          return;
+        }
+        if (!shouldProcessLiveFrame(frame)) {
           return;
         }
         if (!inFlightRef.current) {
@@ -447,6 +494,7 @@ export function useConversationSession({
     appendStreamEvent,
     appendToolResults,
     beginRemoteTurn,
+    beginReplayTurn,
     development,
     ensureHistorySubscription,
     finishTerminalTurn,
@@ -454,6 +502,7 @@ export function useConversationSession({
     flushPending,
     isDraft,
     resetLiveTurn,
+    shouldProcessLiveFrame,
     shouldProcessFrame,
   ]);
 
@@ -537,6 +586,10 @@ function parseHistoryItem(value: unknown): HistoryItem | null {
       : {},
     created_at: typeof item.created_at === "string" ? item.created_at : null,
   };
+}
+
+function numericPayloadValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export type { ConversationPhase };

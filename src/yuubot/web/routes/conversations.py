@@ -42,7 +42,11 @@ def register_conversation_routes(api: FastAPI, app: Yuubot) -> None:
             after_seq,
             limit,
         )
-        if not items and not app.conversation_active(conversation_id):
+        if (
+            not items
+            and not app.conversation_active(conversation_id)
+            and await app.conversation_summary(conversation_id) is None
+        ):
             return error_response(404, "not_found", "conversation not found")
         first_seq = items[0]["seq"] if items else None
         last_seq = items[-1]["seq"] if items else None

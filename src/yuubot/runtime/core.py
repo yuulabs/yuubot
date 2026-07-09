@@ -144,6 +144,7 @@ class Runtime:
     integrations: dict[str, Integration] = field(factory=dict)
     actors: dict[str, Actor] = field(factory=dict)
     _actor_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
+    _detached_tasks: set[asyncio.Task[None]] = field(factory=set, init=False)
     _task_delivery_tasks: set[asyncio.Task[None]] = field(factory=set, init=False)
     _cron: CronJobScheduler | None = field(default=None, init=False)
     _cron_executor: CronExecutor | None = field(default=None, init=False)
@@ -271,7 +272,8 @@ class Runtime:
         return self.mailboxes.ensure(address)
 
     def emit(self, payload: RuntimeEventPayload) -> None:
-        self.eventbus.emit(payload)
+        live_seq = self.conversations.record_live_payload(payload)
+        self.eventbus.emit(payload, live_seq)
 
     def skill_summaries(self) -> list[SkillSummary]:
         return [skill_summary(record) for record in sorted(self.skills.values(), key=lambda item: item.id)]
@@ -314,6 +316,10 @@ class Runtime:
             return
         _log.info("actor task starting actor_id=%s", actor_id)
         self._actor_tasks[key] = asyncio.create_task(self._run_actor_task(key, coro_factory))
+
+    def track_detached_task(self, task: asyncio.Task[None]) -> None:
+        self._detached_tasks.add(task)
+        task.add_done_callback(self._detached_tasks.discard)
 
     async def stop_actor_task(self, actor_id: str) -> None:
         key = f"actor:{actor_id}"
@@ -387,10 +393,11 @@ class Runtime:
 
     async def shutdown(self) -> None:
         _log.info(
-            "runtime shutdown starting actors=%s integrations=%s tasks=%s delivery_tasks=%s",
+            "runtime shutdown starting actors=%s integrations=%s tasks=%s detached_tasks=%s delivery_tasks=%s",
             len(self.actors),
             len(self.integrations),
             len(self.tasks.list()),
+            len(self._detached_tasks),
             len(self._task_delivery_tasks),
         )
         await self.resource_supervisor.stop()
@@ -403,6 +410,9 @@ class Runtime:
         await self.listeners.stop()
         await self.conversations.stop_background_cleanup()
         await self.conversations.close_all()
+        if self._detached_tasks:
+            await asyncio.gather(*self._detached_tasks, return_exceptions=True)
+            self._detached_tasks.clear()
         for integration in reversed(list(self.integrations.values())):
             await integration.close()
         self.integrations.clear()

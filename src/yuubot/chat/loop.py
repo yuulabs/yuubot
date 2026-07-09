@@ -44,7 +44,9 @@ from ..runtime.event_payloads import (
     ConversationInputPayload,
     ConversationOutputPayload,
     ConversationStreamPayload,
+    ConversationToolProgressPayload,
     ConversationToolResultsPayload,
+    RuntimeEventPayload,
 )
 from ..runtime.tasks import skip_conversation_task_deliveries
 from ..util.asyncio_ import BackgroundSweeper
@@ -73,6 +75,12 @@ PYTHON_RESET_NOTICE = (
 
 
 @define
+class LiveReplayPayload:
+    seq: int
+    payload: RuntimeEventPayload
+
+
+@define
 class Conversation:
     id: str
     context: ConversationContext
@@ -84,6 +92,8 @@ class Conversation:
     _running: bool = field(default=False, init=False)
     _pending_task_deliveries: list[str] = field(factory=list, init=False)
     _task_delivery_suppressed_until: float | None = field(default=None, init=False)
+    _live_replay_payloads: list[LiveReplayPayload] = field(factory=list, init=False)
+    _live_replay_seq: int = field(default=0, init=False)
     last_stop: StreamStop | None = field(default=None, init=False)
 
     @property
@@ -156,6 +166,18 @@ class Conversation:
         self.stop_event.set()
         return True
 
+    def record_live_payload(self, payload: RuntimeEventPayload) -> int:
+        if not self._running or not _is_live_replay_payload(payload):
+            return 0
+        self._live_replay_seq += 1
+        self._live_replay_payloads.append(LiveReplayPayload(self._live_replay_seq, payload))
+        return self._live_replay_seq
+
+    def live_replay_payloads(self) -> list[LiveReplayPayload]:
+        if not self._running:
+            return []
+        return list(self._live_replay_payloads)
+
     def queue_task_delivery(self, task_id: str) -> None:
         if task_id not in self._pending_task_deliveries:
             self._pending_task_deliveries.append(task_id)
@@ -191,6 +213,8 @@ class Conversation:
         if self._running:
             raise ConversationBusy(self.id)
         self._running = True
+        self._live_replay_payloads.clear()
+        self._live_replay_seq = 0
         self.runtime.conversations.mark_running(self.id)
         self.stop_event.clear()
 
@@ -199,6 +223,7 @@ class Conversation:
             await self.runtime.drain_pending_task_deliveries(self.id)
         finally:
             self._running = False
+            self._live_replay_payloads.clear()
             self.runtime.conversations.mark_idle(self.id)
 
     async def _run_loop(self, on_event: StreamCallback | None) -> list[GenOutput]:
@@ -374,11 +399,30 @@ class ConversationManager:
     def has(self, conversation_id: str) -> bool:
         return conversation_id in self._items
 
+    def running(self, conversation_id: str) -> bool:
+        conversation = self._items.get(conversation_id)
+        return conversation.running if conversation is not None else False
+
     def get_if_present(self, conversation_id: str) -> Conversation | None:
         item = self._items.get(conversation_id)
         if item is None:
             return None
         return item
+
+    def record_live_payload(self, payload: RuntimeEventPayload) -> int:
+        conversation_id = _payload_conversation_id(payload)
+        if conversation_id is None:
+            return 0
+        conversation = self._items.get(conversation_id)
+        if conversation is not None:
+            return conversation.record_live_payload(payload)
+        return 0
+
+    def live_replay_payloads(self, conversation_id: str) -> list[LiveReplayPayload]:
+        conversation = self._items.get(conversation_id)
+        if conversation is None:
+            return []
+        return conversation.live_replay_payloads()
 
     async def discard(self, conversation_id: str) -> bool:
         conversation = self._items.pop(conversation_id, None)
@@ -406,3 +450,20 @@ class ConversationManager:
 
     async def stop_background_cleanup(self) -> None:
         await self._sweeper.stop()
+
+
+def _is_live_replay_payload(payload: RuntimeEventPayload) -> bool:
+    return isinstance(
+        payload,
+        (
+            ConversationStreamPayload,
+            ConversationOutputPayload,
+            ConversationToolResultsPayload,
+            ConversationToolProgressPayload,
+        ),
+    )
+
+
+def _payload_conversation_id(payload: RuntimeEventPayload) -> str | None:
+    conversation_id = getattr(payload, "conversation_id", None)
+    return conversation_id if isinstance(conversation_id, str) and conversation_id else None

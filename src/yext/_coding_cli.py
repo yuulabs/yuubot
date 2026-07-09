@@ -10,7 +10,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from yuubot.runtime.pty_display import filter_tool_output
+from ._pty_output import filter_tool_output
 
 _MIN_ENV_KEYS = ("HOME", "USER", "LANG", "LC_ALL", "TERM")
 REDACTED = "***"

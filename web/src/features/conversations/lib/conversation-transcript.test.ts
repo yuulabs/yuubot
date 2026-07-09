@@ -808,6 +808,55 @@ test("live tool result deltas overlay durable gen_tool_call while tool is runnin
   assert.equal(items[1]?.blocks[1]?.toolResult, "[1/10]\n[2/10]\n");
 });
 
+test("live text after durable tool result stays visible in the same turn", () => {
+  const history: HistoryItem[] = [
+    {
+      seq: 0,
+      kind: "input",
+      payload: { role: "user", name: "user", content: [{ kind: "text", text: "check files" }] },
+      created_at: null,
+    },
+    {
+      seq: 1,
+      kind: "gen_tool_call",
+      payload: { id: "call-1", name: "bash", arguments: JSON.stringify({ command: "ls" }) },
+      created_at: null,
+    },
+    {
+      seq: 2,
+      kind: "tool_result",
+      payload: { tool_call_id: "call-1", content: [{ kind: "text", text: "README.md\n" }] },
+      created_at: null,
+    },
+  ];
+  const liveToolBlock: RenderBlock = {
+    key: "live:tool:call-1:group",
+    type: "tool_group",
+    content: "bash",
+    toolArgs: JSON.stringify({ command: "ls" }),
+    toolCallId: "call-1",
+    toolName: "bash",
+    toolResult: "README.md\n",
+    toolStatus: "completed",
+  };
+
+  const items = buildDisplayItems({
+    history,
+    liveBlocks: [
+      liveToolBlock,
+      { key: "live:text", type: "text", content: "I found README.md." },
+    ],
+    phase: "streaming",
+    turnKey: "turn-live",
+  });
+
+  assert.equal(items.length, 2);
+  assert.equal(items[1]?.role, "actor");
+  assert.equal(items[1]?.blocks[0]?.toolName, "bash");
+  assert.equal(items[1]?.blocks[1]?.type, "text");
+  assert.equal(items[1]?.blocks[1]?.content, "I found README.md.");
+});
+
 test("transcript reducer replaces live preview with durable history without changing turn key", () => {
   let state = createTranscriptState();
   state = transcriptReducer(state, { type: "begin_turn", turnKey: "turn-live", now: 1 });

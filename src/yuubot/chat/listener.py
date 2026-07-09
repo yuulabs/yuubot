@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
 import msgspec
 from attrs import define, field
@@ -53,6 +53,7 @@ class WsListener:
     _task_id: str | None = None
     _task_status: str = ""
     _task_stdout_task: asyncio.Task[None] | None = field(default=None, init=False)
+    _conversation_frame_lock: asyncio.Lock = field(factory=asyncio.Lock, init=False)
     _closed: bool = field(default=False, init=False)
 
     def track_events(self, kinds: set[str]) -> None:
@@ -61,6 +62,25 @@ class WsListener:
 
     def track_history(self, conversation_id: str) -> None:
         self._history_conversation_id = conversation_id
+
+    async def track_history_with_replay(
+        self,
+        command_id: str | None,
+        conversation_id: str,
+        replay_payloads: Sequence[object],
+        running: bool,
+    ) -> None:
+        async with self._conversation_frame_lock:
+            self.track_history(conversation_id)
+            await self._send(
+                {
+                    "id": command_id,
+                    "type": "conversation.history.subscribe.result",
+                    "payload": {"conversation_id": conversation_id},
+                }
+            )
+            if running:
+                await self._send_live_replay_locked(conversation_id, replay_payloads)
 
     def track_send(self, command_id: object, conversation_id: str, direct_stream: bool = False) -> None:
         self._send_tracks = [(cid, cid_, direct) for cid, cid_, direct in self._send_tracks if cid_ != conversation_id]
@@ -103,12 +123,13 @@ class WsListener:
                 {"type": "runtime.event", "payload": {"kind": kind, "event": _wire_event_payload(payload)}}
             )
         if self._history_conversation_id is not None and isinstance(payload, ConversationHistoryAppendPayload):
-            if payload.conversation_id != self._history_conversation_id:
-                return
-            item = payload.item
-            if str(item.get("kind")) in PREFIX_KINDS:
-                return
-            await self._send({"type": "conversation.history.append", "payload": msgspec.to_builtins(payload)})
+            async with self._conversation_frame_lock:
+                if payload.conversation_id != self._history_conversation_id:
+                    return
+                item = payload.item
+                if str(item.get("kind")) in PREFIX_KINDS:
+                    return
+                await self._send({"type": "conversation.history.append", "payload": msgspec.to_builtins(payload)})
 
         if kind not in _STREAM_KINDS:
             return
@@ -117,70 +138,131 @@ class WsListener:
         if conversation_id is None:
             return
 
+        async with self._conversation_frame_lock:
+            await self._send_tracked_conversation_frame(kind, payload, event.live_seq)
+
+    async def _send_tracked_conversation_frame(
+        self,
+        kind: str,
+        payload: object,
+        live_seq: int = 0,
+    ) -> None:
+        conversation_id = _conversation_id(payload)
+        if conversation_id is None:
+            return
+
         sent_via_track = False
-        completed_direct_stream_track: tuple[object, str] | None = None
+        completed_tracks: list[tuple[object, str]] = []
         for command_id, tracked_conversation_id, direct_stream in self._send_tracks:
             if conversation_id != tracked_conversation_id:
                 continue
+            terminal_stream = isinstance(payload, ConversationStreamPayload) and _is_terminal_stream_stop(payload.event)
             if direct_stream:
                 if isinstance(payload, ConversationStreamPayload):
                     sent_via_track = True
-                    if _is_terminal_stream_stop(payload.event):
-                        completed_direct_stream_track = (command_id, tracked_conversation_id)
+                    if terminal_stream:
+                        completed_tracks.append((command_id, tracked_conversation_id))
                     continue
                 if isinstance(payload, ConversationOutputPayload):
                     sent_via_track = True
                     continue
-            await self._send_conversation_frame(kind, command_id, payload)
+            await self._send_conversation_frame(kind, command_id, payload, live_seq)
             sent_via_track = True
+            if terminal_stream:
+                completed_tracks.append((command_id, tracked_conversation_id))
 
         if (
             not sent_via_track
             and self._history_conversation_id is not None
             and conversation_id == self._history_conversation_id
         ):
-            await self._send_conversation_frame(kind, None, payload)
-        if completed_direct_stream_track is not None:
-            command_id, tracked_conversation_id = completed_direct_stream_track
+            await self._send_conversation_frame(kind, None, payload, live_seq)
+        for command_id, tracked_conversation_id in completed_tracks:
             self.complete_send(command_id, tracked_conversation_id)
+
+    async def _send_live_replay_locked(
+        self,
+        conversation_id: str,
+        replay_payloads: Sequence[object],
+    ) -> None:
+        last_live_seq = _last_live_seq(replay_payloads)
+        await self._send(
+            {
+                "type": "conversation.replay.start",
+                "payload": {
+                    "conversation_id": conversation_id,
+                    "last_live_seq": last_live_seq,
+                    "count": len(replay_payloads),
+                },
+            }
+        )
+        for item in replay_payloads:
+            payload = getattr(item, "payload", None)
+            live_seq = getattr(item, "seq", 0)
+            kind = _payload_kind(payload)
+            if kind:
+                await self._send_conversation_frame(kind, None, payload, live_seq)
+        await self._send(
+            {
+                "type": "conversation.replay.end",
+                "payload": {
+                    "conversation_id": conversation_id,
+                    "last_live_seq": last_live_seq,
+                    "count": len(replay_payloads),
+                },
+            }
+        )
 
     async def _send_conversation_frame(
         self,
         kind: str,
         command_id: object | None,
         payload: object,
+        live_seq: int = 0,
     ) -> None:
         frame: dict[str, object] = {}
         if command_id is not None:
             frame["id"] = command_id
         if isinstance(payload, ConversationStreamPayload):
             frame["type"] = "conversation.stream"
-            frame["payload"] = {
+            payload_body: dict[str, object] = {
                 "conversation_id": payload.conversation_id,
                 "event": _wire_value(payload.event),
             }
+            if live_seq:
+                payload_body["live_seq"] = live_seq
+            frame["payload"] = payload_body
         elif isinstance(payload, ConversationOutputPayload):
             frame["type"] = "conversation.output"
-            frame["payload"] = {
+            payload_body: dict[str, object] = {
                 "conversation_id": payload.conversation_id,
                 "reason": payload.reason,
             }
+            if live_seq:
+                payload_body["live_seq"] = live_seq
+            frame["payload"] = payload_body
         elif isinstance(payload, ConversationToolResultsPayload):
             frame["type"] = "conversation.tool_results"
-            frame["payload"] = {
+            payload_body: dict[str, object] = {
                 "conversation_id": payload.conversation_id,
                 "count": payload.count,
                 "results": payload.results,
             }
+            if live_seq:
+                payload_body["live_seq"] = live_seq
+            frame["payload"] = payload_body
         elif isinstance(payload, ConversationToolProgressPayload):
             frame["type"] = "conversation.tool_progress"
-            frame["payload"] = {
+            payload_body: dict[str, object] = {
                 "conversation_id": payload.conversation_id,
                 "tool_call_id": payload.tool_call_id,
                 "tool_name": payload.tool_name,
                 "text": payload.text or None,
                 "task": payload.task or None,
             }
+            if live_seq:
+                payload_body["live_seq"] = live_seq
+            frame["payload"] = payload_body
         else:
             return
         await self._send(frame)
@@ -228,3 +310,24 @@ def _is_terminal_stream_stop(event: StreamEvent) -> bool:
         return False
     payload = event.payload
     return isinstance(payload, StreamStopPayload) and payload.reason not in {"tool_calls", "function_call"}
+
+
+def _payload_kind(payload: object) -> str:
+    if isinstance(payload, ConversationStreamPayload):
+        return "conversation.stream"
+    if isinstance(payload, ConversationOutputPayload):
+        return "conversation.output"
+    if isinstance(payload, ConversationToolResultsPayload):
+        return "conversation.tool_results"
+    if isinstance(payload, ConversationToolProgressPayload):
+        return "conversation.tool_progress"
+    return ""
+
+
+def _last_live_seq(replay_payloads: Sequence[object]) -> int:
+    last = 0
+    for item in replay_payloads:
+        seq = getattr(item, "seq", 0)
+        if isinstance(seq, int) and seq > last:
+            last = seq
+    return last

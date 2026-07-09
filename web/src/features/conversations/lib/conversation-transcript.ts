@@ -644,10 +644,64 @@ function hasDurableActorForTurn(items: DisplayItem[], turnKey: string): boolean 
   return items.some((item) => item.role === "actor" && item.turnKey === turnKey);
 }
 
-function liveToolOverlayBlocks(liveBlocks: RenderBlock[]): RenderBlock[] {
-  return liveBlocks.filter((block) => (
-    block.type === "tool_group" || block.type === "tool_call" || block.type === "tool_result"
-  ));
+function liveBlocksAfterDurablePrefix(liveBlocks: RenderBlock[], durableBlocks: RenderBlock[]): RenderBlock[] {
+  let liveIndex = 0;
+  let durableIndex = 0;
+
+  while (liveIndex < liveBlocks.length && durableIndex < durableBlocks.length) {
+    const liveBlock = liveBlocks[liveIndex];
+    const durableBlock = durableBlocks[durableIndex];
+    if (!durableCoversLiveBlock(durableBlock, liveBlock)) {
+      break;
+    }
+    liveIndex += 1;
+    durableIndex += 1;
+  }
+
+  return liveBlocks.slice(liveIndex);
+}
+
+function durableCoversLiveBlock(durableBlock: RenderBlock, liveBlock: RenderBlock): boolean {
+  if (durableBlock.type === liveBlock.type && (liveBlock.type === "text" || liveBlock.type === "thinking")) {
+    return true;
+  }
+  if (isToolLikeBlock(durableBlock) && isToolLikeBlock(liveBlock)) {
+    if (!sameToolIdentity(durableBlock, liveBlock)) {
+      return false;
+    }
+    if (!textCovers(durableBlock.toolArgs, liveBlock.toolArgs)) {
+      return false;
+    }
+    return textCovers(durableBlock.toolResult, liveBlock.toolResult);
+  }
+  return durableBlock.type === liveBlock.type && durableBlock.content === liveBlock.content;
+}
+
+function isToolLikeBlock(block: RenderBlock): boolean {
+  return block.type === "tool_group" || block.type === "tool_call" || block.type === "tool_result";
+}
+
+function sameToolIdentity(left: RenderBlock, right: RenderBlock): boolean {
+  if (left.toolCallId || right.toolCallId) {
+    return left.toolCallId === right.toolCallId;
+  }
+  if (left.toolStreamId || right.toolStreamId) {
+    return left.toolStreamId === right.toolStreamId;
+  }
+  if (left.toolName || right.toolName) {
+    return left.toolName === right.toolName;
+  }
+  return left.content === right.content;
+}
+
+function textCovers(durable: string | undefined, live: string | undefined): boolean {
+  if (!live) {
+    return true;
+  }
+  if (!durable) {
+    return false;
+  }
+  return durable.startsWith(live) || live.startsWith(durable);
 }
 
 function mergeLiveAssistantTurn({
@@ -672,11 +726,11 @@ function mergeLiveAssistantTurn({
   const stableTurnKey = lastUserTurnKey(items) ?? turnKey ?? "live";
   const liveKey = `${stableTurnKey}:actor`;
   if (hasDurableActorForTurn(items, stableTurnKey)) {
-    const overlay = liveToolOverlayBlocks(liveBlocks);
     return items.map((item) => {
       if (item.key !== liveKey) {
         return item;
       }
+      const overlay = liveBlocksAfterDurablePrefix(liveBlocks, item.blocks);
       return {
         ...item,
         blocks: overlay.length > 0 ? appendRenderBlocks(item.blocks, overlay) : item.blocks,

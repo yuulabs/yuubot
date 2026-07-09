@@ -14,7 +14,7 @@ import msgspec
 from ..app import Yuubot
 from ..runtime.tasks import TaskNotRunningError
 from ..chat import ConversationBlocked, ConversationBusy
-from ..domain.stream import StreamEvent
+from ..domain.stream import StreamEvent, StreamStopPayload
 from ..domain.messages import InputMessage
 from ..chat.listener import WsListener
 from .errors import internal_error_detail, internal_error_message, log_internal_error
@@ -56,7 +56,7 @@ async def handle_ws_command(
         case RuntimeEventsSubscribeCommand(id=command_id, payload=payload):
             return asyncio.create_task(_runtime_events_subscribe(send, ws_listener, command_id, payload))
         case ConversationHistorySubscribeCommand(id=command_id, payload=payload):
-            return asyncio.create_task(_history_subscribe(send, ws_listener, command_id, payload))
+            return asyncio.create_task(_history_subscribe(app, ws_listener, command_id, payload))
         case TaskSubscribeCommand(id=command_id, payload=payload):
             return asyncio.create_task(_task_subscribe(app, send, ws_listener, command_id, payload))
         case TaskStdinCommand(id=command_id, payload=payload):
@@ -108,10 +108,22 @@ async def _start_conversation_send(
     await send({"id": command_id, "type": "conversation.send.accepted", "payload": {"conversation_id": conversation.id}})
     ws_listener.track_send(command_id, conversation.id, direct_stream=True)
     message = InputMessage("user", actor_id, normalized_content)
-    return asyncio.create_task(
-        _conversation_send(send, ws_listener, command_id, app, actor_id, conversation.id, message, app.runtime.development),
+    task = asyncio.create_task(
+        _conversation_send(
+            send,
+            ws_listener,
+            command_id,
+            app,
+            actor_id,
+            conversation.id,
+            message,
+            app.runtime.development,
+        ),
         name="conversation_send",
     )
+    app.runtime.track_detached_task(task)
+    task.add_done_callback(_log_background_task_result)
+    return None
 
 
 async def _conversation_send(
@@ -126,34 +138,48 @@ async def _conversation_send(
 ) -> None:
     try:
         async def push_stream(event: StreamEvent) -> None:
-            await send(
-                {
-                    "id": command_id,
-                    "type": "conversation.stream",
-                    "payload": {
-                        "conversation_id": conversation_id,
-                        "event": msgspec.to_builtins(event),
-                    },
-                }
-            )
+            try:
+                await send(
+                    {
+                        "id": command_id,
+                        "type": "conversation.stream",
+                        "payload": {
+                            "conversation_id": conversation_id,
+                            "event": msgspec.to_builtins(event),
+                        },
+                    }
+                )
+            except Exception:
+                _log.debug(
+                    "conversation.stream frame dropped command_id=%s conversation_id=%s",
+                    command_id,
+                    conversation_id,
+                    exc_info=True,
+                )
+            if _is_terminal_stream_stop(event):
+                ws_listener.complete_send(command_id, conversation_id)
 
         await app.run_user_message(actor_id, message, conversation_id, on_event=push_stream)
     except ConversationBusy:
-        await send_error(send, command_id, "conversation_busy", "conversation is already running")
+        await _send_error_if_connected(send, command_id, "conversation_busy", "conversation is already running")
     except ConversationBlocked as exc:
-        await send_error(send, command_id, "conversation_blocked", "conversation blocked", {"reason": str(exc)})
+        await _send_error_if_connected(
+            send,
+            command_id,
+            "conversation_blocked",
+            "conversation blocked",
+            {"reason": str(exc)},
+        )
     except Exception as exc:
         log_context = f"conversation.send actor={actor_id} conversation={conversation_id}"
         log_internal_error(_log, exc, log_context)
-        await send_error(
+        await _send_error_if_connected(
             send,
             command_id,
             "internal_error",
             internal_error_message(exc, development),
             internal_error_detail(exc, development),
         )
-    finally:
-        ws_listener.complete_send(command_id, conversation_id)
 
 
 async def _runtime_events_subscribe(
@@ -168,19 +194,17 @@ async def _runtime_events_subscribe(
 
 
 async def _history_subscribe(
-    send: WSCommandSend,
+    app: Yuubot,
     ws_listener: WsListener,
     command_id: str | None,
     payload: ConversationHistorySubscribePayload,
 ) -> None:
     conversation_id = payload.conversation_id
-    ws_listener.track_history(conversation_id)
-    await send(
-        {
-            "id": command_id,
-            "type": "conversation.history.subscribe.result",
-            "payload": {"conversation_id": conversation_id},
-        }
+    await ws_listener.track_history_with_replay(
+        command_id,
+        conversation_id,
+        app.runtime.conversations.live_replay_payloads(conversation_id),
+        app.runtime.conversations.running(conversation_id),
     )
 
 
@@ -241,3 +265,32 @@ async def send_error(
     if detail:
         error["detail"] = detail
     await send({"id": command_id, "type": "error", "error": error})
+
+
+async def _send_error_if_connected(
+    send: WSCommandSend,
+    command_id: str | None,
+    code: str,
+    message: str,
+    detail: dict[str, object] | None = None,
+) -> None:
+    try:
+        await send_error(send, command_id, code, message, detail)
+    except Exception:
+        _log.debug("conversation.send error frame dropped command_id=%s code=%s", command_id, code, exc_info=True)
+
+
+def _log_background_task_result(task: asyncio.Task[None]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        _log.debug("detached conversation.send task cancelled")
+    except Exception:
+        _log.exception("detached conversation.send task failed")
+
+
+def _is_terminal_stream_stop(event: StreamEvent) -> bool:
+    if event.kind != "stream_stop":
+        return False
+    payload = event.payload
+    return isinstance(payload, StreamStopPayload) and payload.reason not in {"tool_calls", "function_call"}

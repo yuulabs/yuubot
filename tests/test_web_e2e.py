@@ -46,6 +46,7 @@ class CancellationAwareProvider:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
+        self.interrupted = asyncio.Event()
 
     async def list_presets(self) -> list[ModelCard]:
         return []
@@ -71,15 +72,16 @@ class CancellationAwareProvider:
         cache: CachePool,
         stop_event: asyncio.Event,
     ) -> AsyncIterator[StreamEvent]:
-        del input, model, context, cache, stop_event
+        del input, model, context, cache
         self.started.set()
         try:
-            await asyncio.sleep(30)
+            while not stop_event.is_set():
+                await asyncio.sleep(0.01)
         except asyncio.CancelledError:
             self.cancelled.set()
             raise
-        yield StreamEvent("text-1", "text_delta", TextDeltaPayload("not expected"))
-        yield StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))
+        self.interrupted.set()
+        yield StreamEvent("stop", "stream_stop", StreamStopPayload("interrupted"))
 
     async def close(self) -> None:
         return None
@@ -195,6 +197,7 @@ async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_
             "access_token": "***",
             "default_owner": "yuulabs",
             "default_repo": "yuubot",
+            "base_url": "https://api.github.com",
         }
 
         github = await put_integration(
@@ -207,6 +210,7 @@ async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_
             "access_token": "***",
             "default_owner": "openai",
             "default_repo": "codex",
+            "base_url": "https://api.github.com",
         }
 
         github = await http_json("POST", f"{url}/api/integrations/github/enable", {})
@@ -292,23 +296,31 @@ actors:
     assert github.enabled is False
 
 
-async def test_http_persists_integration_enable_error(tmp_path: Path) -> None:
+async def test_http_rejects_invalid_integration_config_before_enable(tmp_path: Path) -> None:
     app = await boot_app(tmp_path / "data")
     async with running_server(app) as server:
-        await put_integration(server, "github", name="gh", config={"default_owner": "yuulabs"})
-        await http_json("POST", f"{base_url(server)}/api/integrations/github/enable", {}, expected_status=422)
+        response = await http_json(
+            "PUT",
+            f"{base_url(server)}/api/integrations/github/config",
+            {"name": "gh", "config": {"default_owner": "yuulabs"}},
+            expected_status=400,
+        )
+        assert response["error"]["code"] == "bad_request"
+        assert "access_token" in str(response["error"])
 
         snapshot = await bootstrap(server)
         github = next(item for item in cast(list[JsonObject], snapshot["integrations"]) if item["type"] == "github")
+        assert github["configured"] is False
         assert github["enabled"] is False
-        assert cast(JsonObject, github["last_error"])["type"] == "ValidationError"
+        assert github["last_error"] is None
 
     restored = await boot_app(tmp_path / "data")
     async with running_server(restored) as server:
         restored_github = next(
             item for item in cast(list[JsonObject], (await bootstrap(server))["integrations"]) if item["type"] == "github"
         )
-    assert cast(JsonObject, restored_github["last_error"])["type"] == "ValidationError"
+    assert restored_github["configured"] is False
+    assert restored_github["last_error"] is None
 
 
 async def test_http_bootstrap_exposes_integration_schemas(shared_server: object) -> None:
@@ -486,7 +498,8 @@ async def test_ws_conversation_send_normalizes_workspace_refs(test_context: Shar
     )
     history = await conversation_history(test_context.server, conversation_id)
     assert history[0]["kind"] == "input"
-    content = cast(list[JsonObject], history[0]["payload"]["content"])
+    payload = cast(JsonObject, history[0]["payload"])
+    content = cast(list[JsonObject], payload["content"])
     assert len(content) == 1
     assert content[0]["kind"] == "text"
     assert cast(str, content[0]["text"]).endswith(
@@ -513,7 +526,7 @@ async def test_ws_preassigned_conversation_id_first_message(test_context: Shared
     assert [item["kind"] for item in history][-2:] == ["input", "gen_text"]
 
 
-async def test_ws_conversation_send_cancelled_after_client_disconnect(test_context: SharedTestContext) -> None:
+async def test_ws_conversation_send_survives_client_disconnect_until_interrupt(test_context: SharedTestContext) -> None:
     provider = CancellationAwareProvider()
     actor_id = await test_context.setup_actor(provider)
     conversation_id = test_context.conversation_id("ws-cancel")
@@ -534,7 +547,18 @@ async def test_ws_conversation_send_cancelled_after_client_disconnect(test_conte
         accepted = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))
         assert accepted["type"] == "conversation.send.accepted"
         await provider.started.wait()
-    await asyncio.wait_for(provider.cancelled.wait(), timeout=5)
+    await asyncio.sleep(0.05)
+    assert not provider.cancelled.is_set()
+    detail = await http_json("GET", f"{base_url(test_context.server)}/api/conversations/{conversation_id}")
+    assert detail["active"] is True
+
+    interrupted = await http_json(
+        "POST",
+        f"{base_url(test_context.server)}/api/admin/interrupt",
+        {"conversation_id": conversation_id},
+    )
+    assert interrupted == {"conversation_id": conversation_id, "interrupted": True}
+    await asyncio.wait_for(provider.interrupted.wait(), timeout=5)
     history = await conversation_history(test_context.server, conversation_id)
     assert [item["kind"] for item in history] == ["input"]
 

@@ -28,6 +28,7 @@ class RuntimeEvent(msgspec.Struct, frozen=True):
     kind: str
     payload: RuntimeEventPayload
     ts: str
+    live_seq: int = 0
 
 
 def _utc_now_iso() -> str:
@@ -41,8 +42,10 @@ class EventBus:
     _buffer: deque[RuntimeEvent] = field(factory=lambda: deque(maxlen=EVENT_BUFFER_SIZE))
     _queue: asyncio.Queue[RuntimeEvent] = field(factory=lambda: asyncio.Queue(maxsize=EVENT_QUEUE_SIZE))
 
-    def emit(self, payload: RuntimeEventPayload) -> None:
+    def emit(self, payload: RuntimeEventPayload, live_seq: int = 0) -> None:
         event = RuntimeEvent(event_kind(payload), payload, _utc_now_iso())
+        if live_seq:
+            event = RuntimeEvent(event.kind, event.payload, event.ts, live_seq)
         if _should_buffer_event(event):
             self._buffer.append(event)
         try:
