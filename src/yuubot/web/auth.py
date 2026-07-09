@@ -28,6 +28,7 @@ class AuthContext(msgspec.Struct, frozen=True):
 
 
 class LoginBody(msgspec.Struct, frozen=True):
+    username: str
     password: str
 
 

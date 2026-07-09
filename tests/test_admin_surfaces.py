@@ -92,14 +92,15 @@ async def test_trusted_builtin_requires_login_even_from_loopback(tmp_path: Path)
     app = await Yuubot.create(tmp_path / "data")
     deployment = DeploymentConfig(
         surface="trusted_admin",
-        admin_auth=AdminAuthConfig("builtin", AdminAuthBuiltinConfig(password="secret")),
+        admin_auth=AdminAuthConfig("builtin", AdminAuthBuiltinConfig(username="alice", password="secret")),
     )
 
     async with surface_server(app, deployment) as server:
         async with httpx.AsyncClient(base_url=base_url(server)) as client:
             unauthenticated = await client.get("/api/bootstrap")
             html_redirect = await client.get("/admin/conversations", headers={"accept": "text/html"}, follow_redirects=False)
-            login = await client.post("/api/auth/login", json={"password": "secret"})
+            bad_user = await client.post("/api/auth/login", json={"username": "bob", "password": "secret"})
+            login = await client.post("/api/auth/login", json={"username": "alice", "password": "secret"})
             csrf_token = cast(str, login.json()["csrf_token"])
             authenticated = await client.get("/api/bootstrap")
             missing_csrf = await client.post("/api/auth/logout")
@@ -108,6 +109,7 @@ async def test_trusted_builtin_requires_login_even_from_loopback(tmp_path: Path)
     assert unauthenticated.status_code == 401
     assert html_redirect.status_code == 303
     assert html_redirect.headers["location"].startswith("/login?redirect=")
+    assert bad_user.status_code == 401
     assert login.status_code == 200
     assert authenticated.status_code == 200
     assert authenticated.json()["auth"]["mode"] == "builtin"
@@ -170,7 +172,7 @@ async def test_trusted_admin_exposes_mcp_oauth_callback_without_admin_auth(tmp_p
 
     async with surface_server(app, deployment) as server:
         async with httpx.AsyncClient(base_url=base_url(server)) as admin_client:
-            login = await admin_client.post("/api/auth/login", json={"password": "secret"})
+            login = await admin_client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
             csrf_token = cast(str, login.json()["csrf_token"])
             start = await admin_client.post("/api/mcp-servers/oauth/auth/start", headers={"X-CSRF-Token": csrf_token})
             attempt = start.json()
@@ -272,6 +274,21 @@ def test_trusted_builtin_rejects_empty_password_config() -> None:
                 "trusted_admin_server": {
                     "enabled": True,
                     "auth": {"mode": "builtin", "builtin": {"password": ""}},
+                },
+            },
+            "127.0.0.1",
+            8765,
+        )
+
+
+def test_trusted_builtin_rejects_empty_username_config() -> None:
+    with pytest.raises(ValueError, match="trusted_admin_server.auth.builtin.username must be set"):
+        deployment_listeners_for_serve(
+            {
+                "local_admin_server": {"enabled": False},
+                "trusted_admin_server": {
+                    "enabled": True,
+                    "auth": {"mode": "builtin", "builtin": {"username": "", "password": "secret"}},
                 },
             },
             "127.0.0.1",

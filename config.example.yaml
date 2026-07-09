@@ -62,6 +62,7 @@ data_dir: ~/.yuubot-data
 #     builtin:
 #       session_cookie_name: yuubot_session
 #       csrf_header: X-CSRF-Token
+#       username: admin
 #       password: change-me
 #
 # trusted_proxies: [127.0.0.1]

@@ -185,7 +185,9 @@ install_caddy() {
 
 ensure_config() {
     info "Writing yuubot config and environment"
+    local bootstrap_admin_username
     local bootstrap_admin_password
+    bootstrap_admin_username="admin"
     bootstrap_admin_password="$(rand_token)"
     sudo install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$CONFIG_DIR"
     sudo install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$DATA_DIR"
@@ -208,6 +210,7 @@ trusted_admin_server:
   auth:
     mode: builtin
     builtin:
+      username: $bootstrap_admin_username
       password: $bootstrap_admin_password
 trusted_proxies: [127.0.0.1]
 EOF
@@ -257,13 +260,14 @@ update_listener_config() {
     local admin_url_base="$1"
     local public_enabled="$2"
     local public_url_base="$3"
-    local admin_password="$4"
+    local admin_username="$4"
+    local admin_password="$5"
     local tmp
     tmp="$(mktemp)"
     sudo cat "$CONFIG_FILE" >"$tmp"
     (
         cd "$REPO_ROOT"
-        uv run python - "$tmp" "$admin_url_base" "$public_enabled" "$public_url_base" "$YUUBOT_PUBLIC_PORT" "$YUUBOT_TRUSTED_ADMIN_PORT" "$admin_password" <<'PY'
+        uv run python - "$tmp" "$admin_url_base" "$public_enabled" "$public_url_base" "$YUUBOT_PUBLIC_PORT" "$YUUBOT_TRUSTED_ADMIN_PORT" "$admin_username" "$admin_password" <<'PY'
 import sys
 from pathlib import Path
 
@@ -275,7 +279,8 @@ public_enabled = sys.argv[3] == "true"
 public_url_base = sys.argv[4]
 public_port = int(sys.argv[5])
 trusted_port = int(sys.argv[6])
-admin_password = sys.argv[7]
+admin_username = sys.argv[7]
+admin_password = sys.argv[8]
 
 with config_path.open(encoding="utf-8") as handle:
     data = yaml.safe_load(handle) or {}
@@ -295,6 +300,7 @@ if not isinstance(auth, dict):
 builtin = auth.get("builtin")
 if not isinstance(builtin, dict):
     builtin = {}
+builtin["username"] = admin_username
 builtin["password"] = admin_password
 auth["mode"] = "builtin"
 auth["builtin"] = builtin
@@ -632,7 +638,7 @@ upgrade_existing_deployment() {
 
 prompt_caddy_config() {
     info "Configuring listeners, yuubot config, and Caddy HTTPS"
-    local domain password password_confirm admin_url_base public_domain
+    local domain username password password_confirm admin_url_base public_domain
 
     if [[ -f "$CADDY_SITE_FILE" ]]; then
         local target_pattern answer
@@ -675,6 +681,10 @@ prompt_caddy_config() {
         public_domain=""
     fi
 
+    read -r -p "Yuubot admin username [admin]: " username
+    username="${username:-admin}"
+    [[ -n "$username" ]] || die "admin username is required"
+
     while true; do
         read -r -s -p "Yuubot admin password: " password
         printf '\n'
@@ -688,7 +698,7 @@ prompt_caddy_config() {
         printf 'passwords did not match\n' >&2
     done
 
-    update_listener_config "$admin_url_base" "$([[ -n "$PUBLIC_URL" ]] && printf true || printf false)" "${PUBLIC_URL:-}" "$password"
+    update_listener_config "$admin_url_base" "$([[ -n "$PUBLIC_URL" ]] && printf true || printf false)" "${PUBLIC_URL:-}" "$username" "$password"
     unset password password_confirm
     write_caddy_site "$domain" "$public_domain"
 

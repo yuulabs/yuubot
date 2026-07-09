@@ -26,15 +26,19 @@ def register_auth_routes(api: FastAPI, deployment: DeploymentConfig, sessions: S
             body = await read_json(request, LoginBody)
         except (msgspec.DecodeError, msgspec.ValidationError) as exc:
             return bad_request(exc)
-        expected = deployment.admin_auth.builtin.password
-        if not expected.strip():
-            return error_response(500, "server_misconfigured", "builtin auth password is not configured")
-        if not secrets.compare_digest(body.password, expected):
+        builtin = deployment.admin_auth.builtin
+        expected_username = builtin.username
+        expected_password = builtin.password
+        if not expected_username.strip() or not expected_password.strip():
+            return error_response(500, "server_misconfigured", "builtin auth credentials are not configured")
+        username_matches = secrets.compare_digest(body.username, expected_username)
+        password_matches = secrets.compare_digest(body.password, expected_password)
+        if not username_matches or not password_matches:
             return error_response(401, "unauthorized", "invalid credentials")
-        session_id, csrf_token = sessions.create(user_id="admin", display_name="Admin")
+        session_id, csrf_token = sessions.create(user_id=expected_username, display_name=expected_username)
         response = json_response({"csrf_token": csrf_token})
         response.set_cookie(
-            deployment.admin_auth.builtin.session_cookie_name,
+            builtin.session_cookie_name,
             session_id,
             max_age=SESSION_MAX_AGE_SECONDS,
             httponly=True,

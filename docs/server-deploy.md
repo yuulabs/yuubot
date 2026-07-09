@@ -45,8 +45,8 @@ The script:
    `scripts/install-deps.sh`.
 4. Installs a single `yuubot.service` systemd unit, removes legacy
    `yuubot-daemon.service` / `yuubot-admin.service` units if present.
-5. Prompts for admin HTTPS and the Yuubot admin password, optionally enables
-   `public_server` from a public URL, updates listener config, and writes
+5. Prompts for admin HTTPS and the Yuubot admin username/password, optionally
+   enables `public_server` from a public URL, updates listener config, and writes
    `/etc/caddy/conf.d/yuubot.caddy`.
 6. Installs systemd, runs migrations, validates, and starts `yuubot.service`.
 
@@ -86,6 +86,7 @@ trusted_admin_server:
   auth:
     mode: builtin
     builtin:
+      username: admin
       password: <generated during install, replaced by the prompt>
 trusted_proxies: [127.0.0.1]
 ```

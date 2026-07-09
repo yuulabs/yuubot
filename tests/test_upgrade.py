@@ -105,6 +105,9 @@ def test_deploy_uses_builtin_admin_auth_not_caddy_basic_auth() -> None:
     ]
     assert "mode: builtin" in content
     assert 'auth["mode"] = "builtin"' in content
+    assert "username: $bootstrap_admin_username" in content
+    assert 'builtin["username"] = admin_username' in content
+    assert 'read -r -p "Yuubot admin username [admin]: " username' in content
     assert "caddy hash-password" not in content
     assert "header_up X-Forwarded-User {http.auth.user.id}" not in caddy_template
     assert "basic_auth {" not in caddy_template

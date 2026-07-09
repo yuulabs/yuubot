@@ -12,10 +12,10 @@ export interface SessionResponse {
   last_seen_at: number;
 }
 
-export async function login(password: string): Promise<LoginResponse> {
+export async function login(username: string, password: string): Promise<LoginResponse> {
   const response = await request<LoginResponse>(`${BASE}/auth/login`, {
     method: "POST",
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ username, password }),
   });
   setCsrfToken(response.csrf_token);
   return response;

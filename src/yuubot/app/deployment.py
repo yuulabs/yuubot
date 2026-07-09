@@ -30,6 +30,7 @@ class ListenerConfig(msgspec.Struct, frozen=True):
 class AdminAuthBuiltinConfig(msgspec.Struct, frozen=True):
     session_cookie_name: str = "yuubot_session"
     csrf_header: str = "X-CSRF-Token"
+    username: str = "admin"
     password: str = ""
 
 
@@ -309,5 +310,7 @@ def _trusted_proxies(raw: object) -> tuple[str, ...]:
 
 
 def _validate_trusted_admin_auth(auth: AdminAuthConfig) -> None:
+    if auth.mode == "builtin" and not auth.builtin.username.strip():
+        raise ValueError("trusted_admin_server.auth.builtin.username must be set")
     if auth.mode == "builtin" and not auth.builtin.password.strip():
         raise ValueError("trusted_admin_server.auth.builtin.password must be set")
