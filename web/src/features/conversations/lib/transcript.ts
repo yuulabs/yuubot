@@ -1,3 +1,5 @@
+import { formatWorkspaceRef } from "@/shared/lib/workspace-ref";
+
 export function contentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -6,7 +8,7 @@ export function contentText(content: unknown): string {
       if (!item || typeof item !== "object") return "";
       const payload = item as Record<string, unknown>;
       if (typeof payload.text === "string") return payload.text;
-      if (typeof payload.path === "string") return `[${String(payload.kind ?? "file")}: ${payload.path}]`;
+      if (typeof payload.path === "string") return formatWorkspaceRef(payload.path);
       if (typeof payload.url === "string") return `[${String(payload.kind ?? "url")}: ${payload.url}]`;
       return "";
     })

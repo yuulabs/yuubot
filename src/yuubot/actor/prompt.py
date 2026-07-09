@@ -37,7 +37,7 @@ def developer_prompt(
     if integration_docs:
         sections.append("# Integration SDKs\n" + integration_docs)
     sections.append("# Skills\n" + _skills(workspace, global_skills or []))
-    sections.append("# AGENTS.md Context\n" + _agents_context(workspace))
+    sections.append("# AGENTS.md\n" + _agents_context(workspace))
     sections.append("# Real-Time Data\n" + _real_time_data())
     return "\n\n".join(sections)
 
@@ -64,16 +64,32 @@ def _workspace_instructions(workspace: Path, actor_id: str = "") -> str:
             "- `notes/`: durable actor notes.",
             "- `scripts/`: helper scripts.",
             "- `.agents/skills/`: skill files you may inspect with the read tool.",
+            "- User and assistant messages may reference workspace files as `[[ relative/path ]]`; use the read tool to inspect referenced files before relying on their contents.",
+            "- Use the same `[[ relative/path ]]` syntax when showing users workspace images or files you created.",
         ]
     )
+    lines.append("- `AGENTS.md`: durable instructions that will be automatically loaded everytime you wake up. This file acts as a map of your workspace and helps you memorize. Offload details to each specific folders. Carefully maintain this file to anchor your workspace knowledge and avoid losing context. Don't write everything in this file, but use it as a map to your workspace.")
     return "\n".join(lines)
 
 
 def _tool_suggestions() -> str:
+    execute_python_example = """Example execute_python code block:
+```python
+results = await yext.web.search(query)
+print(results[:3])
+
+page = await yext.web.read(results[0].url)
+print(page.text[:2000])
+
+repo = yext.github.repo()
+issues = await repo.issues.list_recent()
+print([{"number": issue.number, "title": issue.title} for issue in issues[:10]])
+```"""
     return "\n".join(
         [
-            "Prefer execute_python for multi-step local work, data shaping, and integration facade calls. It runs an IPython session with native top-level await.",
-            "Examples: `await yext.web.search(...)`, `await yext.web.read(...)`, `yext.github.repo().issues.list_recent(...)`, and `yb.office.pdf.to_markdown(...)`.",
+            "Prefer one execute_python call for multi-step local work, data shaping, and integration facade calls. It runs an IPython session with native top-level await; execute_python calls are not concurrent, so orchestrate multiple facade calls inside one submitted code block.",
+            execute_python_example,
+            "Keep execute_python output quiet. Store uncertain or large intermediate results in variables, print a small slice or summary first, and only print the full value if that sample is useful.",
             "Use the `bash` tool for commands that may prompt, block, or need stdin. It runs in a PTY, streams output, detaches when idle, and returns a task id for `task.output()`, `task.write(text)`, and `task.cancel()`.",
             "Register background shell work with `await yb.tasks.submit(name, shell, intro, delivery=...)`. `manual` — poll with `task.output()` / `task.status()` yourself (`ttl_s <= 3600`). `conversation` — completion wakes this chat. `actor` — completion goes to the actor mailbox.",
             "Task output is an expiring offload buffer. For long jobs, write resumable workspace scripts that persist their own state and artifacts.",

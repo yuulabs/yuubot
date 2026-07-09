@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { MarkdownRenderer } from "@/components/conversation/markdown-renderer.tsx";
+import { formatWorkspaceRef } from "@/shared/lib/workspace-ref";
 import type { HistoryItem } from "@/shared/types/api";
 import { EmptyState, Panel } from "@/shared/components";
 import type { ReactNode } from "react";
@@ -81,7 +82,7 @@ function contentText(content: unknown): string {
     if (!item || typeof item !== "object") return "";
     const payload = item as Record<string, unknown>;
     if (typeof payload.text === "string") return payload.text;
-    if (typeof payload.path === "string") return `[${String(payload.kind ?? "file")}: ${payload.path}]`;
+    if (typeof payload.path === "string") return formatWorkspaceRef(payload.path);
     if (typeof payload.url === "string") return `[${String(payload.kind ?? "url")}: ${payload.url}]`;
     return "";
   }).filter(Boolean).join("\n\n");

@@ -1,5 +1,6 @@
 import type { HistoryItem } from "../../../shared/types/api";
 import { extractToolStringArg } from "../../../shared/lib/tool-renderers.ts";
+import { formatWorkspaceRef } from "../../../shared/lib/workspace-ref.ts";
 
 const REAL_TIME_CONTEXT_MARKER = "[yuubot-real-time-context]";
 const REAL_TIME_CONTEXT_SEPARATOR = "\n---\n";
@@ -19,7 +20,7 @@ function contentText(content: unknown): string {
       if (!item || typeof item !== "object") return "";
       const payload = item as Record<string, unknown>;
       if (typeof payload.text === "string") return stripRealTimeContext(payload.text);
-      if (typeof payload.path === "string") return `[${String(payload.kind ?? "file")}: ${payload.path}]`;
+      if (typeof payload.path === "string") return formatWorkspaceRef(payload.path);
       if (typeof payload.url === "string") return `[${String(payload.kind ?? "url")}: ${payload.url}]`;
       return "";
     })
@@ -882,7 +883,7 @@ export function contentItemsToText(content: Array<{ kind: string; text?: string;
         return item.text;
       }
       if (item.path) {
-        return `[${item.kind}: ${item.path}]`;
+        return formatWorkspaceRef(item.path);
       }
       return "";
     })

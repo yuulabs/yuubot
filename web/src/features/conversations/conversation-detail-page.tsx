@@ -16,6 +16,7 @@ import {
 import { ErrorState, LoadingState } from "@/shared/components";
 import { useApiMutation, useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
 import { describeConversationError } from "@/shared/lib/api-errors";
+import { segmentsToText, type ComposerSegment } from "@/shared/lib/workspace-ref";
 import type { ConversationHistoryResponse, HistoryItem } from "@/shared/types/api";
 import { ChatComposer } from "./components/chat-composer";
 import { ChatDebugDrawer } from "./components/chat-debug-drawer";
@@ -59,8 +60,8 @@ export function ConversationDetailPage({
   const history = historyPage?.items ?? [];
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [actorId, setActorId] = useState(draftActorId);
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<WsContentItem[]>([]);
+  const [segments, setSegments] = useState<ComposerSegment[]>([]);
+  const [draftText, setDraftText] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
 
@@ -85,6 +86,11 @@ export function ConversationDetailPage({
         ? "Actor provider is not configured."
         : "";
 
+  useEffect(() => {
+    setSegments([]);
+    setDraftText("");
+  }, [conversationId, selectedActor]);
+
   const costs = useQuery({
     queryKey: ["conversation-costs", conversationId],
     queryFn: () => getConversationCosts(conversationId),
@@ -93,19 +99,6 @@ export function ConversationDetailPage({
 
   const upload = useMutation({
     mutationFn: (files: File[]) => uploadActorFile(selectedActor, files),
-    onSuccess: (result) => {
-      setAttachments((current) => [
-        ...current,
-        ...result.files
-          .map((item) => ({
-            kind: String(item.kind ?? "file"),
-            path: String(item.path ?? ""),
-            mime: typeof item.mime === "string" ? item.mime : undefined,
-            meta: typeof item.meta === "object" && item.meta ? (item.meta as Record<string, unknown>) : undefined,
-          }))
-          .filter((item) => item.path),
-      ]);
-    },
   });
 
   const handleHistoryAppend = useCallback((targetId: string, item: HistoryItem) => {
@@ -236,8 +229,9 @@ export function ConversationDetailPage({
     });
   }, [conversationId, isDraft, navigate, pendingSend, queryClient, session.send, session.wsReady]);
 
-  const attachmentPaths = attachments.map((item) => item.path ?? "").filter(Boolean);
   const activeConversationId = session.activeConversationId || conversationId;
+  const sendText = buildSendText(segments, draftText);
+  const hasComposerContent = sendText.length > 0;
   const totalCost = sumConversationCost(costs.data?.items ?? []);
   const costItems = costs.data?.items ?? [];
   const latestCostUsage = costItems.length ? costItems[costItems.length - 1].usage : undefined;
@@ -319,6 +313,7 @@ export function ConversationDetailPage({
             </div>
           )}
           <ChatTranscript
+            actorId={selectedActor}
             items={displayItems}
             phase={session.phase}
             scrollResetKey={activeConversationId}
@@ -329,13 +324,14 @@ export function ConversationDetailPage({
             selectedActor={selectedActor}
             actorLocked={isDraft}
             newConversationActorId={selectedActor}
-            text={text}
-            attachments={attachmentPaths}
+            segments={segments}
+            draftText={draftText}
+            hasContent={hasComposerContent}
             onActorChange={setActorId}
-            onTextChange={setText}
-            onUpload={(files) => upload.mutate(files)}
-            onRemoveAttachment={(path) => {
-              setAttachments((current) => current.filter((item) => item.path !== path));
+            onDraftTextChange={setDraftText}
+            onUploadAtCursor={uploadAtCursor}
+            onRemoveSegment={(index) => {
+              setSegments((current) => current.filter((_, itemIndex) => itemIndex !== index));
             }}
             onSend={send}
             onInterrupt={() => session.interrupt(interruptTarget)}
@@ -366,11 +362,7 @@ export function ConversationDetailPage({
 
   function send() {
     if (!selectedActor || disabledReason) return false;
-    const content: WsContentItem[] = [];
-    if (text.trim()) {
-      content.push({ kind: "text", text: text.trim() });
-    }
-    content.push(...attachments);
+    const content = buildSendContent(segments, draftText);
     if (!content.length) return false;
 
     if (isDraft) {
@@ -381,17 +373,69 @@ export function ConversationDetailPage({
         state: { pendingSend: { actorId: selectedActor, content } },
         replace: true,
       });
-      setText("");
-      setAttachments([]);
+      clearComposer();
       return true;
     }
 
     const sent = session.send(selectedActor, content, conversationId);
     if (!sent) return false;
-    setText("");
-    setAttachments([]);
+    clearComposer();
     return true;
   }
+
+  function uploadAtCursor(files: File[], cursor: number) {
+    if (!files.length) return;
+    const before = draftText.slice(0, cursor);
+    const after = draftText.slice(cursor);
+    setSegments((current) => before ? [...current, { kind: "text", value: before }] : current);
+    setDraftText(after);
+    upload.mutate(files, {
+      onSuccess: (result) => {
+        const uploaded = result.files
+          .map((item): ComposerSegment | null => {
+            const path = String(item.path ?? "");
+            if (!path) return null;
+            return {
+              kind: "file",
+              path,
+              mime: typeof item.mime === "string" ? item.mime : undefined,
+              meta: typeof item.meta === "object" && item.meta ? (item.meta as Record<string, unknown>) : undefined,
+            };
+          })
+          .filter((item): item is ComposerSegment => item !== null);
+        if (uploaded.length) {
+          setSegments((current) => [...current, ...uploaded]);
+        }
+      },
+    });
+  }
+
+  function clearComposer() {
+    setSegments([]);
+    setDraftText("");
+  }
+}
+
+function buildSendText(segments: ComposerSegment[], draftText: string): string {
+  const all = draftText ? [...segments, { kind: "text", value: draftText } satisfies ComposerSegment] : segments;
+  return segmentsToText(all).trim();
+}
+
+function buildSendContent(segments: ComposerSegment[], draftText: string): WsContentItem[] {
+  const content: WsContentItem[] = [];
+  for (const segment of segments) {
+    if (segment.kind === "text") {
+      if (segment.value.trim()) {
+        content.push({ kind: "text", text: segment.value });
+      }
+      continue;
+    }
+    content.push({ kind: "file", path: segment.path, mime: segment.mime, meta: segment.meta });
+  }
+  if (draftText.trim()) {
+    content.push({ kind: "text", text: draftText });
+  }
+  return content;
 }
 
 function numericUsage(value: unknown): number | undefined {

@@ -6,11 +6,13 @@ import type { DisplayItem } from "../lib/conversation-transcript";
 import { ChatTurn } from "./chat-turn";
 
 export function ChatTranscript({
+  actorId,
   items,
   phase,
   scrollResetKey,
   waitingForResponse,
 }: {
+  actorId: string;
   items: DisplayItem[];
   phase: ConversationPhase;
   scrollResetKey: string;
@@ -64,7 +66,7 @@ export function ChatTranscript({
     <div className="chat__scroll" ref={scrollRef} onScroll={updateShouldFollowBottom}>
       <div className="chat__transcript">
         {items.map((item) => (
-          <ChatTurn key={item.key} item={item} />
+          <ChatTurn key={item.key} actorId={actorId} item={item} />
         ))}
         {waitingForResponse && phase === "sending" && (
           <div className="msg msg--assistant msg--pending">

@@ -33,6 +33,7 @@ from .ws_commands import (
     TaskSubscribePayload,
     WSCommand,
 )
+from .workspace_ref import normalize_conversation_content
 
 _log = logging.getLogger(__name__)
 
@@ -94,6 +95,10 @@ async def _start_conversation_send(
     if not payload.content:
         await send_error(send, command_id, "bad_request", "at least one content item is required")
         return None
+    normalized_content = normalize_conversation_content(payload.content)
+    if not normalized_content:
+        await send_error(send, command_id, "bad_request", "at least one content item is required")
+        return None
 
     conversation = await app.runtime.conversations.get_or_create(actor, payload.conversation_id)
     if conversation.running:
@@ -101,7 +106,7 @@ async def _start_conversation_send(
         return None
     await send({"id": command_id, "type": "conversation.send.accepted", "payload": {"conversation_id": conversation.id}})
     ws_listener.track_send(command_id, conversation.id)
-    message = InputMessage("user", actor_id, payload.content)
+    message = InputMessage("user", actor_id, normalized_content)
     return asyncio.create_task(
         _conversation_send(send, command_id, app, actor_id, conversation.id, message, app.runtime.development),
         name="conversation_send",

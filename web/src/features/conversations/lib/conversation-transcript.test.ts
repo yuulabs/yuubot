@@ -855,6 +855,6 @@ test("contentItemsToText formats text and attachments", () => {
       { kind: "text", text: "hello" },
       { kind: "file", path: "notes.txt" },
     ]),
-    "hello\n\n[file: notes.txt]",
+    "hello\n\n[[ notes.txt ]]",
   );
 });

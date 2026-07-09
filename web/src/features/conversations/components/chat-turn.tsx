@@ -1,7 +1,7 @@
 import type { DisplayItem } from "../lib/conversation-transcript";
 import { MessageBlockView } from "./message-block-view";
 
-export function ChatTurn({ item }: { item: DisplayItem }) {
+export function ChatTurn({ actorId, item }: { actorId: string; item: DisplayItem }) {
   const isUser = item.role === "user";
   const roleClass = isUser ? "msg msg--user" : "msg msg--assistant";
   const avatar = isUser ? "U" : "A";
@@ -19,6 +19,7 @@ export function ChatTurn({ item }: { item: DisplayItem }) {
           {item.blocks.map((block) => (
             <MessageBlockView
               key={block.key}
+              actorId={actorId}
               block={block}
               isStreaming={Boolean(item.streaming && (block.type === "thinking" || block.type === "text"))}
             />

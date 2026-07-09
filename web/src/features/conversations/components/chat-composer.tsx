@@ -1,10 +1,12 @@
 import { useRef } from "react";
-import { MessageSquarePlus, Paperclip, SquareStop, X } from "lucide-react";
+import { MessageSquarePlus, Paperclip, SquareStop } from "lucide-react";
 
 import { CostBadge } from "@/components/conversation/cost-badge";
+import type { ComposerSegment } from "@/shared/lib/workspace-ref";
 import type { ActorSnapshot } from "@/shared/types/api";
 
 import type { ConversationPhase, WsConnectionState } from "../hooks/use-conversation-session";
+import { ComposerInlineEditor } from "./composer-inline-editor";
 import { NewConversationLink } from "./new-conversation-link";
 import { TurnPill } from "./turn-pill";
 
@@ -12,12 +14,13 @@ export function ChatComposer({
   actors,
   selectedActor,
   actorLocked = false,
-  text,
-  attachments,
+  segments,
+  draftText,
+  hasContent,
   onActorChange,
-  onTextChange,
-  onUpload,
-  onRemoveAttachment,
+  onDraftTextChange,
+  onUploadAtCursor,
+  onRemoveSegment,
   onSend,
   onInterrupt,
   phase = "idle",
@@ -34,12 +37,13 @@ export function ChatComposer({
   selectedActor: string;
   actorLocked?: boolean;
   newConversationActorId?: string;
-  text: string;
-  attachments: string[];
+  segments: ComposerSegment[];
+  draftText: string;
+  hasContent: boolean;
   onActorChange: (actorId: string) => void;
-  onTextChange: (text: string) => void;
-  onUpload: (files: File[]) => void;
-  onRemoveAttachment: (path: string) => void;
+  onDraftTextChange: (text: string) => void;
+  onUploadAtCursor: (files: File[], cursor: number) => void;
+  onRemoveSegment: (index: number) => void;
   onSend: () => boolean;
   onInterrupt: () => void;
   phase?: ConversationPhase;
@@ -54,7 +58,7 @@ export function ChatComposer({
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isActive = phase === "sending" || phase === "streaming";
-  const canSend = !disabled && Boolean(text.trim()) && wsReady && !isActive;
+  const canSend = !disabled && hasContent && wsReady && !isActive;
   const connectionLabel = wsConnectionState === "connected"
     ? "Connected"
     : wsConnectionState === "reconnecting"
@@ -93,7 +97,7 @@ export function ChatComposer({
             multiple
             disabled={disabled}
             onChange={(event) => {
-              onUpload(Array.from(event.target.files ?? []));
+              onUploadAtCursor(Array.from(event.target.files ?? []), textareaRef.current?.selectionStart ?? draftText.length);
               event.target.value = "";
             }}
           />
@@ -117,39 +121,16 @@ export function ChatComposer({
           </div>
         </div>
 
-        {attachments.length > 0 && (
-          <div className="composer__attachments">
-            {attachments.map((path) => (
-              <span key={path} className="composer__attachment">
-                <Paperclip size={14} />
-                <span className="composer__attachment-name">{path.split("/").pop() ?? path}</span>
-                <button
-                  type="button"
-                  className="composer__attachment-remove"
-                  aria-label={`Remove ${path}`}
-                  onClick={() => onRemoveAttachment(path)}
-                >
-                  <X size={14} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-
-        <textarea
-          ref={textareaRef}
-          className="composer__input"
-          rows={4}
-          placeholder="Message the actor..."
-          value={text}
+        <ComposerInlineEditor
+          actorId={selectedActor}
+          segments={segments}
+          draftText={draftText}
           disabled={disabled}
-          onChange={(event) => onTextChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-              event.preventDefault();
-              sendAndRefocus();
-            }
-          }}
+          textareaRef={textareaRef}
+          onDraftTextChange={onDraftTextChange}
+          onUploadAtCursor={onUploadAtCursor}
+          onRemoveSegment={onRemoveSegment}
+          onSendShortcut={sendAndRefocus}
         />
 
         <div className="composer__footer">

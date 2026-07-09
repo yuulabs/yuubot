@@ -285,7 +285,15 @@ const toolRendererRegistry: Record<string, ToolRenderer> = {
   write: WriteRenderer,
 };
 
-export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; isStreaming: boolean }) {
+export function MessageBlockView({
+  actorId,
+  block,
+  isStreaming,
+}: {
+  actorId: string;
+  block: RenderBlock;
+  isStreaming: boolean;
+}) {
   if (block.type === "thinking") {
     return <ThinkingBlock content={block.content} isStreaming={isStreaming} />;
   }
@@ -384,7 +392,7 @@ export function MessageBlockView({ block, isStreaming }: { block: RenderBlock; i
 
   return (
     <>
-      <MarkdownRenderer content={block.content} />
+      <MarkdownRenderer actorId={actorId} content={block.content} />
       {isStreaming && <span className="stream-cursor" aria-hidden="true" />}
     </>
   );

@@ -16,7 +16,6 @@ from support.llm_rules import (
     reply_text,
     runtime_developer_notice,
     user_message_contains,
-    user_message_has_text_and_path,
 )
 from support.exec_py import ExecPyModuleContext
 from support.prompt_conditioned_llm import PromptConditionedProvider
@@ -183,7 +182,7 @@ async def test_http_multimodal_input_visible_to_llm_via_conditional_reply(test_c
         PromptConditionedProvider(
             [
                 (
-                    user_message_has_text_and_path("see this", "uploads/text-plain/report.txt"),
+                    user_message_contains("see this[[ uploads/text-plain/report.txt ]]"),
                     reply_text("saw-multimodal"),
                 ),
             ]

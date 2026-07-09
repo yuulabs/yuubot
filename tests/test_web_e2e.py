@@ -470,6 +470,30 @@ async def test_ws_conversation_send(test_context: SharedTestContext) -> None:
     assert (await conversation_history(test_context.server, conversation_id))[-1]["kind"] == "gen_text"
 
 
+async def test_ws_conversation_send_normalizes_workspace_refs(test_context: SharedTestContext) -> None:
+    actor_id = await test_context.setup_actor(scripted_reply("hi"))
+    conversation_id = test_context.conversation_id("ws-ref")
+    await ws_conversation_send(
+        test_context.server,
+        "m1",
+        actor_id,
+        conversation_id,
+        [
+            {"kind": "file", "path": "uploads/image-jpeg/one.jpg", "mime": "image/jpeg"},
+            {"kind": "text", "text": " cc ", "mime": "text/plain"},
+            {"kind": "file", "path": "uploads/image-jpeg/two.jpg", "mime": "image/jpeg"},
+        ],
+    )
+    history = await conversation_history(test_context.server, conversation_id)
+    assert history[0]["kind"] == "input"
+    content = cast(list[JsonObject], history[0]["payload"]["content"])
+    assert len(content) == 1
+    assert content[0]["kind"] == "text"
+    assert cast(str, content[0]["text"]).endswith(
+        "[[ uploads/image-jpeg/one.jpg ]] cc [[ uploads/image-jpeg/two.jpg ]]"
+    )
+
+
 async def test_ws_preassigned_conversation_id_first_message(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(scripted_reply("hello from draft"))
     conversation_id = test_context.conversation_id("draft-first")

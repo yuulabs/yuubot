@@ -30,6 +30,27 @@ def test_developer_prompt_documents_interactive_tasks(tmp_path: Path) -> None:
     assert "yb.tasks.submit" in prompt
 
 
+def test_developer_prompt_guides_single_execute_python_orchestration(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "Prefer one execute_python call" in prompt
+    assert "execute_python calls are not concurrent" in prompt
+    assert "inside one submitted code block" in prompt
+    assert "Example execute_python code block:\n```python\n" in prompt
+    assert "results = await yext.web.search(query)" in prompt
+    assert "page = await yext.web.read(results[0].url)" in prompt
+    assert "issues = await repo.issues.list_recent()" in prompt
+    assert "print a small slice or summary first" in prompt
+
+
+def test_developer_prompt_documents_workspace_ref_markers(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "[[ relative/path ]]" in prompt
+    assert "use the read tool to inspect referenced files" in prompt
+    assert "workspace images or files you created" in prompt
+
+
 def test_developer_prompt_documents_task_retention(tmp_path: Path) -> None:
     prompt = developer_prompt("", tmp_path, [], has_python=True)
 

@@ -2,6 +2,8 @@ import type { AnchorHTMLAttributes } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import { markdownPlugins } from "./markdown-renderer.ts";
+import { WorkspaceRefView } from "./workspace-ref-view";
+import { parseWorkspaceRefs } from "@/shared/lib/workspace-ref";
 
 export { markdownPlugins };
 
@@ -52,20 +54,28 @@ const tableComponents: Components = {
 
 export function MarkdownRenderer({
   content,
+  actorId = "",
   workspacePath: _workspacePath,
 }: {
   content: string;
+  actorId?: string;
   workspacePath?: string | null;
 }) {
+  const segments = parseWorkspaceRefs(content);
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none break-words whitespace-normal leading-[1.6] [&>:first-child]:mt-0 [&>:last-child]:mb-0 [&_blockquote]:my-2 [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:mt-4 [&_h2]:mb-2 [&_h3]:mt-3 [&_h3]:mb-2 [&_li]:my-1 [&_ol]:my-2 [&_p]:my-2 [&_pre]:whitespace-pre-wrap [&_ul]:my-2">
-      <ReactMarkdown
-        remarkPlugins={markdownPlugins.remark}
-        rehypePlugins={markdownPlugins.rehype}
-        components={{ ...markdownComponents, ...tableComponents }}
-      >
-        {content}
-      </ReactMarkdown>
+      {segments.map((segment, index) => segment.type === "text" ? (
+        <ReactMarkdown
+          key={index}
+          remarkPlugins={markdownPlugins.remark}
+          rehypePlugins={markdownPlugins.rehype}
+          components={{ ...markdownComponents, ...tableComponents }}
+        >
+          {segment.value}
+        </ReactMarkdown>
+      ) : (
+        <WorkspaceRefView key={index} actorId={actorId} path={segment.path} />
+      ))}
     </div>
   );
 }
