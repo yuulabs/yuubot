@@ -65,7 +65,8 @@ def _workspace_instructions(workspace: Path, actor_id: str = "") -> str:
             "- `scripts/`: helper scripts.",
             "- `.agents/skills/`: skill files you may inspect with the read tool.",
             "- User and assistant messages may reference workspace files as `[[ relative/path ]]`; use the read tool to inspect referenced files before relying on their contents.",
-            "- Use the same `[[ relative/path ]]` syntax when showing users workspace images or files you created.",
+            "- Show images with Markdown: `![short alt](relative/path)` or `![short alt](https://...)`. Prefer an external URL when the image is already online.",
+            "- Reference non-image workspace files as `[[ relative/path ]]`. Do not nest `[[...]]` inside Markdown image or link URLs.",
         ]
     )
     lines.append("- `AGENTS.md`: durable instructions that will be automatically loaded everytime you wake up. This file acts as a map of your workspace and helps you memorize. Offload details to each specific folders. Carefully maintain this file to anchor your workspace knowledge and avoid losing context. Don't write everything in this file, but use it as a map to your workspace.")
@@ -84,10 +85,16 @@ print(page[:2000])
 repo = yext.github.repo()
 issues = await repo.issues.list_recent()
 print([{"number": issue.number, "title": issue.title} for issue in issues[:10]])
+
+async def fetch_data(url):
+    return await yext.web.read(url)
+results = asyncio.gather(*(fetch_data(url) for url in ["https://example.com", "https://example.org"]))
+for r in results:
+    print(r[:1000])
 ```"""
     return "\n".join(
         [
-            "Prefer one execute_python call for multi-step local work, data shaping, and integration facade calls. It runs an IPython session with native top-level await; execute_python calls are not concurrent, so orchestrate multiple facade calls inside one submitted code block.",
+            "Prefer one execute_python call for multi-step local work, data shaping, and integration facade calls. It runs an IPython session with native top-level await; execute_python calls are not concurrent (but you can write concurrent code via it!), so orchestrate multiple facade calls inside one submitted code block.",
             execute_python_example,
             "Keep execute_python output quiet. Store uncertain or large intermediate results in variables, print a small slice or summary first, and only print the full value if that sample is useful.",
             "Use the `bash` tool for commands that may prompt, block, or need stdin. It runs in a PTY, streams output, detaches when idle, and returns a task id for `task.output()`, `task.write(text)`, and `task.cancel()`.",

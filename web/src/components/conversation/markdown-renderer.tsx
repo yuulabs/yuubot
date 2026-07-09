@@ -1,9 +1,10 @@
-import type { AnchorHTMLAttributes } from "react";
+import type { AnchorHTMLAttributes, ImgHTMLAttributes } from "react";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
 import { markdownPlugins } from "./markdown-renderer.ts";
 import { WorkspaceRefView } from "./workspace-ref-view";
-import { parseWorkspaceRefs } from "@/shared/lib/workspace-ref";
+import { getActorFileUrl } from "@/shared/lib/api";
+import { parseWorkspaceRefs, resolveMarkdownImageSrc } from "@/shared/lib/workspace-ref";
 
 export { markdownPlugins };
 
@@ -20,6 +21,25 @@ function markdownLinkProps(href: string | undefined): AnchorHTMLAttributes<HTMLA
     href,
     target: "_blank",
     rel: "noopener noreferrer",
+  };
+}
+
+function markdownImageComponents(actorId: string): Components {
+  return {
+    img: ({ src, alt }: ImgHTMLAttributes<HTMLImageElement>) => {
+      const resolved = typeof src === "string"
+        ? resolveMarkdownImageSrc(actorId, src, getActorFileUrl)
+        : "";
+      if (!resolved) return null;
+      return (
+        <img
+          className="markdown-content-image"
+          src={resolved}
+          alt={typeof alt === "string" ? alt : ""}
+          loading="lazy"
+        />
+      );
+    },
   };
 }
 
@@ -65,6 +85,7 @@ export function MarkdownRenderer({
   workspacePath?: string | null;
 }) {
   const segments = parseWorkspaceRefs(content);
+  const imageComponents = markdownImageComponents(actorId);
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none break-words whitespace-normal leading-[1.6] [&>:first-child]:mt-0 [&>:last-child]:mb-0 [&_blockquote]:my-2 [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:mt-4 [&_h2]:mb-2 [&_h3]:mt-3 [&_h3]:mb-2 [&_li]:my-1 [&_ol]:my-2 [&_p]:my-2 [&_pre]:whitespace-pre-wrap [&_ul]:my-2">
       {segments.map((segment, index) => segment.type === "text" ? (
@@ -72,7 +93,7 @@ export function MarkdownRenderer({
           key={index}
           remarkPlugins={markdownPlugins.remark}
           rehypePlugins={markdownPlugins.rehype}
-          components={{ ...markdownComponents, ...tableComponents }}
+          components={{ ...markdownComponents, ...tableComponents, ...imageComponents }}
         >
           {segment.value}
         </ReactMarkdown>

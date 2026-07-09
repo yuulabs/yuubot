@@ -27,7 +27,7 @@ Enabled integrations inject credentials into the process environment for `yext` 
 
 The session resets after each user turn. Variables, imports, and in-memory side effects do not survive; a developer notice appears when a prior session is gone.
 
-The runtime is headless: `plt.show()` does not reach the user. Save generated files under the workspace, normally `artifacts/`. For images, embed the saved file as a Markdown image in your final response.
+The runtime is headless: `plt.show()` does not reach the user. Save generated files under the workspace, normally `artifacts/`. For images, embed them in your final response as Markdown, e.g. `![plot](artifacts/plot.png)` or an external `https://...` URL — not `[[...]]`.
 
 After `uv add` or `uv remove`, call `restart_kernel` before expecting new imports.
 

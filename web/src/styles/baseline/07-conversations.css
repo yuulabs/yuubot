@@ -851,6 +851,19 @@
   background: var(--surface-3);
 }
 
+.markdown-content-image {
+  display: block;
+  max-width: min(100%, 560px);
+  max-height: 420px;
+  width: auto;
+  height: auto;
+  margin: 0.75rem 0;
+  object-fit: contain;
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
 /* ---------- Responsive ---------- */
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }

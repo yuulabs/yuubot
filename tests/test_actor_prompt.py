@@ -49,7 +49,8 @@ def test_developer_prompt_documents_workspace_ref_markers(tmp_path: Path) -> Non
 
     assert "[[ relative/path ]]" in prompt
     assert "use the read tool to inspect referenced files" in prompt
-    assert "workspace images or files you created" in prompt
+    assert "`![short alt](relative/path)`" in prompt
+    assert "Do not nest `[[...]]` inside Markdown image or link URLs." in prompt
 
 
 def test_developer_prompt_documents_task_retention(tmp_path: Path) -> None:
