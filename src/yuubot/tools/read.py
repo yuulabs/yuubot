@@ -33,11 +33,12 @@ async def _execute_read(root: Path, payload: msgspec.Struct, model: ModelCard) -
     path = workspace_path(root, data.path)
     mime, _ = mimetypes.guess_type(path)
     if (mime or "").startswith("image/"):
+        rel_path = path.relative_to(root).as_posix()
         if not model.vision:
-            return f"{data.path} is an image, but model {model.selector} does not support vision."
+            return f"{rel_path} is an image, but model {model.selector} does not support vision."
         return [
-            ContentItem("text", f"image file: {data.path}"),
-            ContentItem("image", path=str(path), mime=mime or "image/*"),
+            ContentItem("text", f"image file: {rel_path}"),
+            ContentItem("image", path=rel_path, mime=mime or "image/*"),
         ]
 
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()

@@ -5,6 +5,8 @@ from support.api import SharedTestContext, conversation_history, ws_conversation
 from support.assertions import tool_result_text
 from support.llm_rules import all_of, call_tool, has_tool_spec, has_tool_specs, messages_contain_tool_result, reply_text, user_message_contains
 from support.prompt_conditioned_llm import PromptConditionedProvider
+from yuubot.domain import ContentItem, ModelCard
+from yuubot.tools.read import ReadPayload, _execute_read
 
 
 async def test_http_read_tool_reads_requested_slice(test_context: SharedTestContext) -> None:
@@ -36,3 +38,21 @@ async def test_http_read_tool_reads_requested_slice(test_context: SharedTestCont
     )
     history = await conversation_history(test_context.server, conversation_id)
     assert tool_result_text(history) == "1\n2\n[truncated: lines 1-3 of 10]"
+
+
+async def test_read_tool_returns_image_content_with_workspace_relative_path(test_context: SharedTestContext) -> None:
+    workspace = test_context.workspace
+    image_path = workspace / "uploads" / "image-png" / "cat.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_path.write_bytes(b"image-bytes")
+
+    result = await _execute_read(
+        workspace,
+        ReadPayload("uploads/image-png/cat.png"),
+        ModelCard("gpt-test", vision=True),
+    )
+
+    assert result == [
+        ContentItem("text", "image file: uploads/image-png/cat.png"),
+        ContentItem("image", path="uploads/image-png/cat.png", mime="image/png"),
+    ]

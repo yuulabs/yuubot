@@ -12,9 +12,11 @@ from yuubot.domain import (
     ConversationContext,
     GenReasoning,
     GenText,
+    GenToolCall,
     InputMessage,
     LLMInput,
     ModelCard,
+    ToolResult,
     text_content,
 )
 from yuubot.llm.openai import (
@@ -121,6 +123,56 @@ def test_openai_provider_caches_image_data_url_with_explicit_size(tmp_path: Path
     )
     assert cached.value == expected_url
     assert cached.get_cache_size() == len(expected_url)
+
+
+def test_openai_provider_replays_tool_result_images_as_multimodal_content(tmp_path: Path) -> None:
+    image_path = tmp_path / "uploads" / "image-png" / "cat.png"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"image-bytes")
+
+    messages = _messages(
+        [
+            GenToolCall("call-read", "read", '{"path": "uploads/image-png/cat.png"}'),
+            ToolResult(
+                tool_call_id="call-read",
+                content=[
+                    ContentItem("text", "image file: uploads/image-png/cat.png"),
+                    ContentItem("image", path="uploads/image-png/cat.png", mime="image/png"),
+                ],
+            ),
+            GenText("I can inspect the image."),
+        ],
+        tmp_path,
+        CachePool(),
+    )
+
+    assert messages == [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-read",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": '{"path": "uploads/image-png/cat.png"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-read",
+            "content": "image file: uploads/image-png/cat.png",
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Tool result call-read:"},
+                {"type": "text", "text": "image file: uploads/image-png/cat.png"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2UtYnl0ZXM="}},
+            ],
+        },
+        {"role": "assistant", "content": "I can inspect the image."},
+    ]
 
 
 def test_openai_provider_keeps_tool_argument_chunks_without_repeated_type() -> None:
