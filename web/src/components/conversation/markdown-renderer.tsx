@@ -25,7 +25,10 @@ function markdownLinkProps(href: string | undefined): AnchorHTMLAttributes<HTMLA
 
 const markdownComponents: Components = {
   a: ({ href, children }) => (
-    <a className="text-primary underline underline-offset-2" {...markdownLinkProps(href)}>
+    <a
+      className="text-[var(--msg-link)] decoration-[var(--msg-link-underline)] underline underline-offset-2 hover:text-[var(--msg-link-hover)]"
+      {...markdownLinkProps(href)}
+    >
       {children}
     </a>
   ),

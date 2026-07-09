@@ -314,10 +314,10 @@ async def test_http_persists_integration_enable_error(tmp_path: Path) -> None:
 async def test_http_bootstrap_exposes_integration_schemas(shared_server: object) -> None:
     integrations = cast(list[JsonObject], (await bootstrap(shared_server))["integrations"])
     github = next(item for item in integrations if item["type"] == "github")
-    tavily = next(item for item in integrations if item["type"] == "tavily_web")
+    web = next(item for item in integrations if item["type"] == "web")
     defs = cast(JsonObject, cast(JsonObject, github["config_schema"])["$defs"])
     assert "access_token" in cast(JsonObject, cast(JsonObject, defs["GitHubConfig"])["properties"])
-    assert tavily["config_schema"]
+    assert web["config_schema"]
 
 
 async def test_http_serves_actor_workspace_files_with_containment(test_context: SharedTestContext, tmp_path: Path) -> None:
@@ -614,6 +614,47 @@ async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frame
         event = cast(JsonObject, payload["event"])
         event_payload = cast(JsonObject, event["payload"])
         texts.append(cast(str, event_payload["text"]))
+    assert texts == ["hel", "lo"]
+
+
+async def test_ws_direct_stream_survives_runtime_eventbus_noisy_backpressure(
+    test_context: SharedTestContext,
+) -> None:
+    provider = ScriptedProvider(
+        [
+            [
+                StreamEvent("text-1", "text_delta", TextDeltaPayload("hel")),
+                StreamEvent("text-1", "text_delta", TextDeltaPayload("lo")),
+                stream_stop_event("stop", Usage(), {}, False),
+            ],
+        ]
+    )
+    actor_id = await test_context.setup_actor(provider)
+    app = cast(Yuubot, getattr(test_context.server, "app"))
+    old_queue = app.runtime.eventbus._queue  # noqa: SLF001
+    app.runtime.eventbus._queue = asyncio.Queue(maxsize=1)  # noqa: SLF001
+    conversation_id = test_context.conversation_id("ws-direct-stream")
+    try:
+        frames = await ws_conversation_send(
+            test_context.server,
+            "m1",
+            actor_id,
+            conversation_id,
+            "hello",
+        )
+    finally:
+        app.runtime.eventbus._queue = old_queue  # noqa: SLF001
+
+    texts: list[str] = []
+    for frame in frames:
+        if frame.get("type") != "conversation.stream":
+            continue
+        event = cast(JsonObject, cast(JsonObject, frame["payload"])["event"])
+        if event.get("kind") != "text_delta":
+            continue
+        payload = cast(JsonObject, event["payload"])
+        texts.append(cast(str, payload["text"]))
+
     assert texts == ["hel", "lo"]
 
 

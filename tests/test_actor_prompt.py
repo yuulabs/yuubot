@@ -39,6 +39,7 @@ def test_developer_prompt_guides_single_execute_python_orchestration(tmp_path: P
     assert "Example execute_python code block:\n```python\n" in prompt
     assert "results = await yext.web.search(query)" in prompt
     assert "page = await yext.web.read(results[0].url)" in prompt
+    assert "print(page[:2000])" in prompt
     assert "issues = await repo.issues.list_recent()" in prompt
     assert "print a small slice or summary first" in prompt
 

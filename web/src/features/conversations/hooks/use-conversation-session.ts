@@ -331,11 +331,6 @@ export function useConversationSession({
         if (!shouldProcessFrame(frame)) {
           return;
         }
-        const reason = frame.payload?.reason;
-        if (reason === "tool_calls" || reason === "function_call") {
-          return;
-        }
-        finishTerminalTurn();
         return;
       }
 

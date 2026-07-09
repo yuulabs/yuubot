@@ -8,7 +8,7 @@ from yuubot.web.ws import _task_subscribe
 from yuubot.web.ws_commands import TaskSubscribePayload
 from typing import cast
 
-from support.runtime_events import conversation_stream
+from support.runtime_events import conversation_output, conversation_stream, conversation_tool_results
 
 
 class _Runtime:
@@ -144,3 +144,27 @@ async def test_track_send_prevents_duplicate_history_stream() -> None:
     stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
     assert len(stream_frames) == 1
     assert stream_frames[0]["id"] == "cmd1"
+
+
+@pytest.mark.asyncio
+async def test_direct_stream_track_suppresses_runtime_stream_and_output_frames() -> None:
+    sent: list[dict[str, object]] = []
+
+    async def send(payload: dict[str, object]) -> None:
+        sent.append(payload)
+
+    listener = WsListener(send)
+    listener.track_history("conv-1")
+    listener.track_send("cmd1", "conv-1", direct_stream=True)
+
+    await listener.on_event(
+        conversation_stream(
+            "conv-1",
+            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
+        )
+    )
+    await listener.on_event(conversation_output("conv-1", "stop"))
+    await listener.on_event(conversation_tool_results("conv-1", 1, [{"tool_call_id": "call-1", "content": []}]))
+
+    assert [frame.get("type") for frame in sent] == ["conversation.tool_results"]
+    assert sent[0]["id"] == "cmd1"

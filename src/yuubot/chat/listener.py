@@ -9,7 +9,7 @@ import msgspec
 from attrs import define, field
 
 from .history import PREFIX_KINDS
-from ..domain.stream import StreamEvent
+from ..domain.stream import StreamEvent, StreamStopPayload
 from ..runtime.event_payloads import (
     ConversationHistoryAppendPayload,
     ConversationOutputPayload,
@@ -49,7 +49,7 @@ class WsListener:
     _event_kinds: set[str] = field(factory=set)
     _track_all_events: bool = field(default=False, init=False)
     _history_conversation_id: str | None = None
-    _send_tracks: list[tuple[object, str]] = field(factory=list)
+    _send_tracks: list[tuple[object, str, bool]] = field(factory=list)
     _task_id: str | None = None
     _task_status: str = ""
     _task_stdout_task: asyncio.Task[None] | None = field(default=None, init=False)
@@ -62,9 +62,16 @@ class WsListener:
     def track_history(self, conversation_id: str) -> None:
         self._history_conversation_id = conversation_id
 
-    def track_send(self, command_id: object, conversation_id: str) -> None:
-        self._send_tracks = [(cid, cid_) for cid, cid_ in self._send_tracks if cid_ != conversation_id]
-        self._send_tracks.append((command_id, conversation_id))
+    def track_send(self, command_id: object, conversation_id: str, direct_stream: bool = False) -> None:
+        self._send_tracks = [(cid, cid_, direct) for cid, cid_, direct in self._send_tracks if cid_ != conversation_id]
+        self._send_tracks.append((command_id, conversation_id, direct_stream))
+
+    def complete_send(self, command_id: object, conversation_id: str) -> None:
+        self._send_tracks = [
+            (cid, cid_, direct)
+            for cid, cid_, direct in self._send_tracks
+            if (cid, cid_) != (command_id, conversation_id)
+        ]
 
     def track_task(self, task_id: str, status: str) -> None:
         self._task_id = task_id
@@ -111,9 +118,19 @@ class WsListener:
             return
 
         sent_via_track = False
-        for command_id, tracked_conversation_id in self._send_tracks:
+        completed_direct_stream_track: tuple[object, str] | None = None
+        for command_id, tracked_conversation_id, direct_stream in self._send_tracks:
             if conversation_id != tracked_conversation_id:
                 continue
+            if direct_stream:
+                if isinstance(payload, ConversationStreamPayload):
+                    sent_via_track = True
+                    if _is_terminal_stream_stop(payload.event):
+                        completed_direct_stream_track = (command_id, tracked_conversation_id)
+                    continue
+                if isinstance(payload, ConversationOutputPayload):
+                    sent_via_track = True
+                    continue
             await self._send_conversation_frame(kind, command_id, payload)
             sent_via_track = True
 
@@ -123,6 +140,9 @@ class WsListener:
             and conversation_id == self._history_conversation_id
         ):
             await self._send_conversation_frame(kind, None, payload)
+        if completed_direct_stream_track is not None:
+            command_id, tracked_conversation_id = completed_direct_stream_track
+            self.complete_send(command_id, tracked_conversation_id)
 
     async def _send_conversation_frame(
         self,
@@ -201,3 +221,10 @@ class WsListener:
 def _conversation_id(payload: object) -> str | None:
     conversation_id = getattr(payload, "conversation_id", None)
     return conversation_id if isinstance(conversation_id, str) and conversation_id else None
+
+
+def _is_terminal_stream_stop(event: StreamEvent) -> bool:
+    if event.kind != "stream_stop":
+        return False
+    payload = event.payload
+    return isinstance(payload, StreamStopPayload) and payload.reason not in {"tool_calls", "function_call"}

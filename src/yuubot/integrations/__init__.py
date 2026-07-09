@@ -4,7 +4,7 @@ from .coding_cli import CodexConfig, CodexIntegration, OpenCodeConfig, OpenCodeI
 from .github import GitHubConfig, GitHubIntegration
 from .records import IntegrationRecord
 from .registry import Integration, IntegrationFactory, IntegrationHealth, IntegrationRegistry, IntegrationSpec, default_registry, integration_health
-from .tavily_web import TavilyWebConfig, TavilyWebIntegration
+from .web import WebConfig, WebIntegration
 
 __all__ = [
     "CodexConfig",
@@ -19,8 +19,8 @@ __all__ = [
     "IntegrationSpec",
     "OpenCodeConfig",
     "OpenCodeIntegration",
-    "TavilyWebConfig",
-    "TavilyWebIntegration",
+    "WebConfig",
+    "WebIntegration",
     "default_registry",
     "integration_health",
 ]

@@ -165,8 +165,8 @@ async def test_http_execute_python_receives_enabled_integration_context(exec_py_
         config={"access_token": "token", "default_owner": "yuulabs", "default_repo": "yuubot"},
     )
     await exec_py_context.enable_integration("github")
-    await exec_py_context.put_integration("tavily_web", name="web", config={"api_key": "web-token", "max_read_chars": 42})
-    await exec_py_context.enable_integration("tavily_web")
+    await exec_py_context.put_integration("web", name="web", config={"tavily_api_key": "web-token", "max_read_chars": 42})
+    await exec_py_context.enable_integration("web")
     await exec_py_context.activate(
         PromptConditionedProvider(
             [

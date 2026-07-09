@@ -14,6 +14,7 @@ import msgspec
 from ..app import Yuubot
 from ..runtime.tasks import TaskNotRunningError
 from ..chat import ConversationBlocked, ConversationBusy
+from ..domain.stream import StreamEvent
 from ..domain.messages import InputMessage
 from ..chat.listener import WsListener
 from .errors import internal_error_detail, internal_error_message, log_internal_error
@@ -105,16 +106,17 @@ async def _start_conversation_send(
         await send_error(send, command_id, "conversation_busy", "conversation is already running")
         return None
     await send({"id": command_id, "type": "conversation.send.accepted", "payload": {"conversation_id": conversation.id}})
-    ws_listener.track_send(command_id, conversation.id)
+    ws_listener.track_send(command_id, conversation.id, direct_stream=True)
     message = InputMessage("user", actor_id, normalized_content)
     return asyncio.create_task(
-        _conversation_send(send, command_id, app, actor_id, conversation.id, message, app.runtime.development),
+        _conversation_send(send, ws_listener, command_id, app, actor_id, conversation.id, message, app.runtime.development),
         name="conversation_send",
     )
 
 
 async def _conversation_send(
     send: WSCommandSend,
+    ws_listener: WsListener,
     command_id: str | None,
     app: Yuubot,
     actor_id: str,
@@ -123,7 +125,19 @@ async def _conversation_send(
     development: bool,
 ) -> None:
     try:
-        await app.run_user_message(actor_id, message, conversation_id)
+        async def push_stream(event: StreamEvent) -> None:
+            await send(
+                {
+                    "id": command_id,
+                    "type": "conversation.stream",
+                    "payload": {
+                        "conversation_id": conversation_id,
+                        "event": msgspec.to_builtins(event),
+                    },
+                }
+            )
+
+        await app.run_user_message(actor_id, message, conversation_id, on_event=push_stream)
     except ConversationBusy:
         await send_error(send, command_id, "conversation_busy", "conversation is already running")
     except ConversationBlocked as exc:
@@ -138,6 +152,8 @@ async def _conversation_send(
             internal_error_message(exc, development),
             internal_error_detail(exc, development),
         )
+    finally:
+        ws_listener.complete_send(command_id, conversation_id)
 
 
 async def _runtime_events_subscribe(

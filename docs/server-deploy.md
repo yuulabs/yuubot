@@ -122,10 +122,13 @@ vhost that proxies Share pages, app webhooks, and MCP OAuth browser callbacks to
 
 ### Data layout
 
-The main database is `/var/lib/yuubot/db/yuubot.db`. Workspaces, logs, KV, temp
-files, and public shares live under `/var/lib/yuubot/workspace`,
-`/var/lib/yuubot/logs`, `/var/lib/yuubot/kv`, `/var/lib/yuubot/tmp`, and
-`/var/lib/yuubot/published`.
+All runtime paths are anchored under the configured `data_dir`. With the
+default deploy script value, `data_dir` is `/var/lib/yuubot`, but operators may
+override it during deployment.
+
+The main database is `<data_dir>/db/yuubot.db`. Workspaces, logs, KV, temp files,
+and public shares live under `<data_dir>/workspace`, `<data_dir>/logs`,
+`<data_dir>/kv`, `<data_dir>/tmp`, and `<data_dir>/published`.
 
 Providers, integrations, actors, routes, and model cards are stored in the
 database and managed from the Admin UI.
@@ -166,7 +169,7 @@ path used by `ybot upgrade apply`. Background apply runs sudo non-interactively;
 if the service user cannot restart `yuubot.service` without a password prompt,
 SSH in and run `./scripts/deploy-server.sh --upgrade-only` manually.
 
-Update logs are written under `/var/lib/yuubot/logs/update-*.log`.
+Update logs are written under `<data_dir>/logs/update-*.log`.
 
 ## Operations
 
@@ -179,6 +182,85 @@ curl -i http://127.0.0.1:8765/healthz
 uv run ybot status /etc/yuubot/config.yaml --json
 uv run ybot check /etc/yuubot/config.yaml --json
 uv run ybot db info /etc/yuubot/config.yaml --json
+```
+
+Anchor database inspection commands to the active SQLite database, not to a
+hardcoded install path. For the deploy-script config, the database is derived
+from `data_dir`:
+
+```bash
+CONFIG=/etc/yuubot/config.yaml
+DATA_DIR="$(awk -F: '/^data_dir:/ { sub(/^[[:space:]]+/, "", $2); print $2; exit }' "$CONFIG")"
+DB="$DATA_DIR/db/yuubot.db"
+```
+
+If the service environment overrides `data_dir`, use that value instead:
+
+```bash
+. /etc/yuubot/yuubot.env
+DB="$YUU_DATA_DIR/db/yuubot.db"
+```
+
+List recent conversations from raw backend history:
+
+```bash
+sqlite3 "$DB" '
+select conversation_id, count(*) as rows, max(seq) as last_seq, max(created_at) as last_at
+from history
+group by conversation_id
+order by max(created_at) desc
+limit 10;
+'
+```
+
+Inspect the latest conversation's raw persisted messages:
+
+```bash
+CID="$(sqlite3 "$DB" "
+select conversation_id
+from history
+group by conversation_id
+order by max(created_at) desc
+limit 1;
+")"
+
+echo "$CID"
+
+sqlite3 -json "$DB" '
+with latest(conversation_id) as (
+  select conversation_id
+  from history
+  group by conversation_id
+  order by max(created_at) desc
+  limit 1
+)
+select seq, kind, json(payload) as payload, created_at
+from history
+where conversation_id = (select conversation_id from latest)
+order by seq;
+'
+```
+
+Inspect the latest raw history rows across all conversations:
+
+```bash
+sqlite3 -json "$DB" '
+select conversation_id, seq, kind, json(payload) as payload, created_at
+from history
+order by created_at desc, seq desc
+limit 30;
+'
+```
+
+Inspect conversation metadata:
+
+```bash
+sqlite3 -header -column "$DB" '
+select id, actor_id, status, title, created_at, last_active_at, last_error
+from app_conversations
+order by last_active_at desc
+limit 20;
+'
 ```
 
 `trusted_admin_server` uses builtin auth by default. API health checks against

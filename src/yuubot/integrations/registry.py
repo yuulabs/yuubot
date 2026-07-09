@@ -10,7 +10,7 @@ from ..runtime.inbound import DEFAULT_INBOUND_ADAPTER, IntegrationInboundAdapter
 from .coding_cli import CodexConfig, OpenCodeConfig, make_codex, make_opencode
 from .github import GitHubConfig, make_github
 from .records import IntegrationRecord
-from .tavily_web import TavilyWebConfig, make_tavily_web
+from .web import WebConfig, make_web
 
 
 class Integration(Protocol):
@@ -113,12 +113,12 @@ def default_registry() -> IntegrationRegistry:
         ),
     )
     registry.register(
-        "tavily_web",
+        "web",
         IntegrationSpec(
             "yext.web",
-            TavilyWebConfig,
-            make_tavily_web,
-            JsonInboundAdapter("YUUBOT_TAVILY_WEB_WEBHOOK_SECRET"),
+            WebConfig,
+            make_web,
+            JsonInboundAdapter("YUUBOT_WEB_WEBHOOK_SECRET"),
         ),
     )
     registry.register(

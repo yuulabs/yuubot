@@ -79,7 +79,7 @@ results = await yext.web.search(query)
 print(results[:3])
 
 page = await yext.web.read(results[0].url)
-print(page.text[:2000])
+print(page[:2000])
 
 repo = yext.github.repo()
 issues = await repo.issues.list_recent()
