@@ -237,7 +237,6 @@ def _usage_from_chunk(usage: object) -> Usage:
 def _messages(history: list[HistoryItem], workspace: Path, cache: CachePool) -> list[ChatCompletionMessageParam]:
     messages: list[dict[str, object]] = []
     assistant: dict[str, object] | None = None
-    pending_tool_content: list[ContentItem] = []
 
     def flush_assistant() -> None:
         nonlocal assistant
@@ -245,16 +244,8 @@ def _messages(history: list[HistoryItem], workspace: Path, cache: CachePool) -> 
             messages.append(assistant)
             assistant = None
 
-    def flush_pending_tool_content() -> None:
-        nonlocal pending_tool_content
-        if not pending_tool_content:
-            return
-        messages.append({"role": "user", "content": _input_content(pending_tool_content, workspace, cache)})
-        pending_tool_content = []
-
     for item in history:
         if isinstance(item, InputMessage):
-            flush_pending_tool_content()
             flush_assistant()
             content = _input_content(item.content, workspace, cache)
             if item.role == "developer":
@@ -262,19 +253,16 @@ def _messages(history: list[HistoryItem], workspace: Path, cache: CachePool) -> 
             else:
                 messages.append({"role": item.role, "name": item.name, "content": content})
         elif isinstance(item, GenReasoning):
-            flush_pending_tool_content()
             if assistant is None:
                 assistant = {"role": "assistant", "content": ""}
             existing = assistant.get("reasoning_content", "")
             assistant["reasoning_content"] = f"{existing}{item.text}"
         elif isinstance(item, GenText):
-            flush_pending_tool_content()
             if assistant is None:
                 assistant = {"role": "assistant", "content": ""}
             existing = assistant.get("content", "")
             assistant["content"] = f"{existing}{item.text}"
         elif isinstance(item, GenToolCall):
-            flush_pending_tool_content()
             if assistant is None:
                 assistant = {"role": "assistant", "content": None, "tool_calls": []}
             elif "tool_calls" not in assistant:
@@ -285,21 +273,9 @@ def _messages(history: list[HistoryItem], workspace: Path, cache: CachePool) -> 
             tool_calls.append({"id": item.id, "type": "function", "function": {"name": item.name, "arguments": item.arguments}})
         elif isinstance(item, ToolResult):
             flush_assistant()
-            messages.append({"role": "tool", "tool_call_id": item.tool_call_id, "content": _content_text(item.content)})
-            if _has_image_content(item.content):
-                pending_tool_content.append(ContentItem("text", f"Tool result {item.tool_call_id}:"))
-                pending_tool_content.extend(item.content)
-    flush_pending_tool_content()
+            messages.append({"role": "tool", "tool_call_id": item.tool_call_id, "content": _input_content(item.content, workspace, cache)})
     flush_assistant()
     return cast(list[ChatCompletionMessageParam], messages)
-
-
-def _content_text(content: list[ContentItem]) -> str:
-    return "\n".join(item.text for item in content if item.text)
-
-
-def _has_image_content(content: list[ContentItem]) -> bool:
-    return any(item.kind == "image" and (item.path or item.url) for item in content)
 
 
 def _input_content(content: list[ContentItem], workspace: Path, cache: CachePool) -> str | list[dict[str, object]]:

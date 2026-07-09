@@ -379,6 +379,30 @@ test("history groups tool call and result into one actor bubble", () => {
   assert.equal(items[1]?.blocks[2]?.type, "text");
 });
 
+test("history textifies image-only tool results", () => {
+  const history: HistoryItem[] = [
+    {
+      seq: 0,
+      kind: "gen_tool_call",
+      payload: { id: "tool-1", name: "read", arguments: JSON.stringify({ path: "uploads/image-png/cat.png" }) },
+      created_at: "2026-01-01T00:00:02Z",
+    },
+    {
+      seq: 1,
+      kind: "tool_result",
+      payload: { tool_call_id: "tool-1", content: [{ kind: "image", path: "uploads/image-png/cat.png", mime: "image/png" }] },
+      created_at: "2026-01-01T00:00:03Z",
+    },
+  ];
+
+  const items = historyItemsFromHistory(history);
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.role, "actor");
+  assert.equal(items[0]?.blocks[0]?.type, "tool_group");
+  assert.equal(items[0]?.blocks[0]?.toolResult, "[[ uploads/image-png/cat.png ]]");
+});
+
 test("buildDisplayItems merges live blocks into active assistant turn", () => {
   const items = buildDisplayItems({
     history: [{

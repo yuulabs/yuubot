@@ -125,7 +125,7 @@ def test_openai_provider_caches_image_data_url_with_explicit_size(tmp_path: Path
     assert cached.get_cache_size() == len(expected_url)
 
 
-def test_openai_provider_replays_tool_result_images_as_multimodal_content(tmp_path: Path) -> None:
+def test_openai_provider_converts_tool_result_content_directly(tmp_path: Path) -> None:
     image_path = tmp_path / "uploads" / "image-png" / "cat.png"
     image_path.parent.mkdir(parents=True)
     image_path.write_bytes(b"image-bytes")
@@ -136,7 +136,6 @@ def test_openai_provider_replays_tool_result_images_as_multimodal_content(tmp_pa
             ToolResult(
                 tool_call_id="call-read",
                 content=[
-                    ContentItem("text", "image file: uploads/image-png/cat.png"),
                     ContentItem("image", path="uploads/image-png/cat.png", mime="image/png"),
                 ],
             ),
@@ -161,13 +160,7 @@ def test_openai_provider_replays_tool_result_images_as_multimodal_content(tmp_pa
         {
             "role": "tool",
             "tool_call_id": "call-read",
-            "content": "image file: uploads/image-png/cat.png",
-        },
-        {
-            "role": "user",
             "content": [
-                {"type": "text", "text": "Tool result call-read:"},
-                {"type": "text", "text": "image file: uploads/image-png/cat.png"},
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2UtYnl0ZXM="}},
             ],
         },

@@ -497,7 +497,7 @@ body::before {
   background:
     linear-gradient(135deg, rgba(0, 217, 255, .18), transparent 42%),
     var(--navy);
-  color: #ffffff;
+  color: var(--msg-text, #ffffff);
   border-color: var(--cyan);
 }
 

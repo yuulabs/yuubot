@@ -17,7 +17,7 @@ Paths are relative to the workspace root and cannot escape the workspace boundar
 
 Text files are decoded as UTF-8 with replacement characters for invalid bytes. Use `start_lo` (0-based line index) and `end_lo` (exclusive line index, or -1 for end of file) to page through large files. Full-file reads are capped at 300 lines and 64 KiB; when output is truncated, the result includes the final line position.
 
-Image files are handled differently: when the current model supports vision, the result includes a short text label plus image content for multimodal inspection. When the model does not support vision, the tool returns a clear text message instead of image bytes.
+Image files are handled differently: when the current model supports vision, the result contains image content for multimodal inspection. When the model does not support vision, the tool returns a clear text message instead of image bytes.
 
 Use this tool to inspect workspace files, skill documents, AGENTS.md, and generated artifacts. Prefer `execute_python` for multi-step data processing."""
 
@@ -37,7 +37,6 @@ async def _execute_read(root: Path, payload: msgspec.Struct, model: ModelCard) -
         if not model.vision:
             return f"{rel_path} is an image, but model {model.selector} does not support vision."
         return [
-            ContentItem("text", f"image file: {rel_path}"),
             ContentItem("image", path=rel_path, mime=mime or "image/*"),
         ]
 

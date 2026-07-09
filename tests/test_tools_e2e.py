@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from support.api import SharedTestContext, conversation_history, ws_conversation_send
 from support.assertions import tool_result_text
 from support.llm_rules import all_of, call_tool, has_tool_spec, has_tool_specs, messages_contain_tool_result, reply_text, user_message_contains
@@ -53,6 +52,5 @@ async def test_read_tool_returns_image_content_with_workspace_relative_path(test
     )
 
     assert result == [
-        ContentItem("text", "image file: uploads/image-png/cat.png"),
         ContentItem("image", path="uploads/image-png/cat.png", mime="image/png"),
     ]
