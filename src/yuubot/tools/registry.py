@@ -57,13 +57,18 @@ def tool_specs(configs: dict[str, ToolConfig]) -> list[dict[str, object]]:
     specs: list[dict[str, object]] = []
     for name, config in configs.items():
         spec = resolve(config.type)
+        parameters = _payload_schema(spec.payload_type)
+        if name == "delegate":
+            # OpenCode Zen's Kimi upstream rejects function schemas containing
+            # enum, while DelegatePayload still validates Literal values locally.
+            parameters = _without_enums(parameters)
         specs.append(
             {
                 "type": "function",
                 "function": {
                     "name": name,
                     "description": spec.description,
-                    "parameters": _payload_schema(spec.payload_type),
+                    "parameters": parameters,
                 },
             }
         )
@@ -83,3 +88,15 @@ def _payload_schema(payload_type: type[msgspec.Struct]) -> dict[str, object]:
         if isinstance(resolved, dict):
             return resolved
     return schema
+
+
+def _without_enums(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_enums(item)
+            for key, item in value.items()
+            if key != "enum"
+        }
+    if isinstance(value, list):
+        return [_without_enums(item) for item in value]
+    return value

@@ -90,6 +90,8 @@ def test_delegate_tool_spec_is_complete_and_schema_is_closed() -> None:
     parameters = spec["parameters"]
     assert parameters["additionalProperties"] is False
     assert set(parameters["properties"]) == {"subagent", "model_tier", "message"}
+    assert "enum" not in parameters["properties"]["subagent"]
+    assert "enum" not in parameters["properties"]["model_tier"]
     assert "endpoint" not in DESCRIPTION
     assert "persona" not in parameters["properties"]
 
