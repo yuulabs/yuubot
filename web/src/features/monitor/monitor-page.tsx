@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { ComponentType, FormEvent } from "react";
-import { Activity, CircleDot, Cpu, DollarSign, FileText, HardDrive, MemoryStick } from "lucide-react";
+import { Activity, CircleDot, Cpu, FileText, HardDrive, HeartPulse, MemoryStick } from "lucide-react";
 
 import { formatToolOutput } from "@/shared/lib/tool-renderers";
 import { cancelTask, getRuntime, getTask, listTasks, sendTaskStdin } from "@/shared/lib/api";
@@ -19,7 +19,7 @@ import {
   Status,
 } from "@/shared/components";
 import { useBootstrap, useHealth } from "@/shared/hooks";
-import { CostDashboard } from "./components/cost-dashboard";
+import { UsageDashboard } from "./components/usage-dashboard";
 import { useTaskStream } from "./hooks/use-task-stream";
 
 export function MonitorPage() {
@@ -71,13 +71,13 @@ export function MonitorPage() {
   const diskWarn = (host?.disk_percent ?? 0) >= 85;
 
   return (
-    <Page title="Runtime" sub="Live runtime, tasks, integrations, actors, and cost analytics.">
+    <Page title="Runtime" sub="Live runtime, tasks, integrations, actors, and usage analytics.">
       <div className="monitor-page">
         <div className="monitor-stats monitor-stats--four">
           <MonitorStat icon={Activity} label="Active Actors" value={actors.filter((actor) => actor.enabled).length} sub={`of ${actors.length} total`} />
-          <MonitorStat icon={CircleDot} label="Providers" value={bootstrap?.providers.length ?? 0} sub="configured" />
+          <MonitorStat icon={CircleDot} label="Actors" value={actors.length} sub="configured" />
           <MonitorStat icon={FileText} label="Routes" value={routes.length} sub="ingress bindings" />
-          <MonitorStat icon={DollarSign} label="Health" value={health?.status === "ok" || health?.ok ? "OK" : "N/A"} sub="system status" />
+          <MonitorStat icon={HeartPulse} label="Health" value={health?.status === "ok" || health?.ok ? "OK" : "N/A"} sub="system status" />
         </div>
         {host && (
           <div className="monitor-stats monitor-stats--three">
@@ -145,6 +145,9 @@ export function MonitorPage() {
                       ]}
                     />
                     {taskDetail.data.error && <pre className="resource-preview">{taskDetail.data.error}</pre>}
+                    {taskDetail.data.metadata && Object.keys(taskDetail.data.metadata).length > 0 && (
+                      <pre className="resource-preview">{JSON.stringify(taskDetail.data.metadata, null, 2)}</pre>
+                    )}
                     <pre className="resource-preview">{displayStdout(taskDetail.data, liveStdout) || "No stdout."}</pre>
                     {canSendStdin(taskDetail.data, liveStatus) && (
                       <form
@@ -184,7 +187,7 @@ export function MonitorPage() {
           </Panel>
         </div>
 
-        <CostDashboard />
+        <UsageDashboard />
       </div>
     </Page>
   );

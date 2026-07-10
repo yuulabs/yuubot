@@ -131,7 +131,6 @@ export function SettingsPage() {
           {data ? (
             <div className="grid gap-1 text-sm">
               <div>Schema version: {data.schema_version}</div>
-              <div>Providers: {data.providers.length}</div>
               <div>Integrations: {data.integrations.length}</div>
               <div>Actors: {data.actors.length}</div>
               <div>Routes: {data.routes.length}</div>

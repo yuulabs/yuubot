@@ -9,7 +9,7 @@ import pytest
 
 from yuubot.chat import harness as harness_module
 from yuubot.chat.harness import Harness, HarnessConfig
-from yuubot.domain.messages import ConversationContext, ModelCard
+from yuubot.domain.messages import ConversationContext
 from yuubot.domain.stream import ToolCall
 from yuubot.tools.base import ToolConfig
 
@@ -62,7 +62,7 @@ async def test_harness_starts_prepare_from_config(monkeypatch: pytest.MonkeyPatc
     harness = Harness.from_config(
         HarnessConfig({"slow": ToolConfig("slow")}),
         ConversationContext(
-            ModelCard("test"),
+            "test",
             "c1",
             "a1",
             tmp_path,

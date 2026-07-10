@@ -10,12 +10,16 @@ import { useQuery } from "@tanstack/react-query";
 
 export type UsageRange = "day" | "week" | "month" | "year" | "total";
 
-export interface UsageSummary {
-  cost: number;
+export interface GatewayUsageSummary {
   requests: number;
-  input_tokens_uncached: number;
+  input_tokens: number;
   cached_input_tokens: number;
+  cache_write_tokens: number;
   output_tokens: number;
+  avg_gateway_latency_ms: number;
+  fallback_requests: number;
+  endpoints: Array<{ name: string; requests: number }>;
+  models: Array<{ name: string; requests: number }>;
 }
 
 export interface UsageLatency {
@@ -66,10 +70,10 @@ export const usageKeys = {
   phases: (range: UsageRange) => ["usage", "phases", range] as const,
 };
 
-export function useUsageSummary(range: UsageRange) {
+export function useGatewayUsageSummary(range: UsageRange) {
   return useQuery({
     queryKey: usageKeys.summary(range),
-    queryFn: () => fetchJson<UsageSummary>(`${USAGE_BASE}/summary?range=${range}`),
+    queryFn: () => fetchJson<GatewayUsageSummary>(`/api/usage?range=${range}`),
   });
 }
 

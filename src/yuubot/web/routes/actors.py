@@ -48,7 +48,10 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
     async def api_enable_actor(actor_id: str) -> Response:
         if actor_id not in app.actor_records:
             return error_response(404, "not_found", "actor not found")
-        await app.enable_actor(actor_id)
+        try:
+            await app.enable_actor(actor_id)
+        except ActorConfigError as exc:
+            return error_response(422, exc.code, str(exc), exc.detail)
         snapshot = await app.actor_snapshot(actor_id)
         assert snapshot is not None
         return json_response(msgspec.to_builtins(snapshot))

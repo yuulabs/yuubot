@@ -7,7 +7,7 @@ import pytest
 from yuubot import Yuubot
 from yuubot.domain.messages import ContentItem, HistoryToolSpecs, InputMessage, SystemPrompt
 
-from support.api import JsonObject, base_url, boot_app, http_json, put_actor, put_provider, running_server, ws_conversation_send
+from support.api import JsonObject, base_url, boot_app, http_json, put_actor, running_server, ws_conversation_send
 from support.api import SharedTestContext
 
 
@@ -120,7 +120,6 @@ async def test_http_conversation_history_pagination_metadata(test_context: Share
 async def test_http_actor_put_returns_actor_snapshot_not_bootstrap(tmp_path: Path) -> None:
     app = await boot_app(tmp_path / "data")
     async with running_server(app) as server:
-        await put_provider(server, "fake")
         actor = await put_actor(server, "amy", workspace=tmp_path / "workspace")
         assert actor["id"] == "amy"
         assert "schema_version" not in actor

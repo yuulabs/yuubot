@@ -1,6 +1,7 @@
 """Cron job and push notification helpers for admin routes."""
 
 import msgspec
+from typing import cast
 
 from ..runtime.cron import (
     CronAction,
@@ -39,7 +40,7 @@ async def list_cron_jobs(
     status: CronJobStatus | str | None = None,
     name_glob: str = "",
 ) -> list[dict[str, object]]:
-    parsed_status = status if status in {"active", "paused", "completed", "cancelled"} else None
+    parsed_status = cast(CronJobStatus, status) if status in {"active", "paused", "completed", "cancelled"} else None
     jobs = await runtime.cron_jobs.list_jobs(
         owner,
         status=parsed_status,

@@ -4,7 +4,7 @@ from typing import Final, cast
 
 import msgspec
 
-from ..domain.messages import ContentItem, ModelCard
+from ..domain.messages import ContentItem
 from .base import workspace_tool
 from .paths import workspace_path
 
@@ -28,14 +28,14 @@ class ReadPayload(msgspec.Struct, frozen=True):
     end_lo: int = -1
 
 
-async def _execute_read(root: Path, payload: msgspec.Struct, model: ModelCard) -> str | list[ContentItem]:
+async def _execute_read(root: Path, payload: msgspec.Struct, model: str, supports_vision: bool) -> str | list[ContentItem]:
     data = cast(ReadPayload, payload)
     path = workspace_path(root, data.path)
     mime, _ = mimetypes.guess_type(path)
     if (mime or "").startswith("image/"):
         rel_path = path.relative_to(root).as_posix()
-        if not model.vision:
-            return f"{rel_path} is an image, but model {model.selector} does not support vision."
+        if not supports_vision:
+            return f"{rel_path} is an image, but model {model} does not support vision."
         return [
             ContentItem("image", path=rel_path, mime=mime or "image/*"),
         ]
@@ -63,5 +63,5 @@ READ_SPEC = workspace_tool(
     ReadPayload,
     DESCRIPTION,
     _execute_read,
-    lambda context: {"model": context.model},
+    lambda context: {"model": context.model, "supports_vision": context.model_supports_vision},
 )

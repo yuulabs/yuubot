@@ -51,9 +51,9 @@ async def send_web_push(data_dir: Path, subscription: PushSubscription, payload:
     from pywebpush import WebPushException, webpush
 
     keys = load_or_create_vapid_keys(data_dir)
-    subscription_info = {
+    subscription_info: dict[str, str | bytes | dict[str, str | bytes]] = {
         "endpoint": subscription.endpoint,
-        "keys": subscription.keys,
+        "keys": {key: value for key, value in subscription.keys.items()},
     }
     try:
         webpush(

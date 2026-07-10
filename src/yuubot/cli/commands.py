@@ -169,7 +169,7 @@ async def check(app_loader: AppLoader, config: Path, json_output: bool) -> int:
         "database": str(app.runtime.state.path),
         "workspace_dir": str(app.runtime.workspace_dir),
         "schema_version": await app.runtime.state.schema_version(),
-        "providers": len(app.provider_records),
+        "gateway": msgspec.to_builtins(app.gateway_status_snapshot()),
         "actors": len(app.actor_records),
         "integrations": len(app.integration_records),
     }

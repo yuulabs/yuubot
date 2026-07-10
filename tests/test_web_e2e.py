@@ -11,11 +11,9 @@ import pytest
 import websockets
 from yuubot import Yuubot
 from yuubot.app import load_process_config
-from yuubot.db import Database
-from yuubot.domain import ConversationContext, LLMInput, ModelCard
+from yuubot.domain import ConversationContext, LLMInput
 from yuubot.domain.stream import StreamEvent, StreamStopPayload, TextDeltaPayload, Usage
-from yuubot.llm import ScriptedProvider
-from yuubot.llm.types import AccountSnapshot, ValidationResult
+from yuubot.llm import ScriptedStream
 from yuubot.runtime.cache import CachePool
 from yuubot.util.stream import stream_stop_event
 
@@ -33,13 +31,12 @@ from support.api import (
     post_inbound,
     put_actor,
     put_integration,
-    put_provider,
     recv_ws_frames,
     running_server,
     ws_conversation_send,
     ws_url,
 )
-from support.llm_fakes import InterruptibleProvider, scripted_reply
+from support.llm_fakes import InterruptibleStream, scripted_reply
 
 
 class CancellationAwareProvider:
@@ -48,31 +45,16 @@ class CancellationAwareProvider:
         self.cancelled = asyncio.Event()
         self.interrupted = asyncio.Event()
 
-    async def list_presets(self) -> list[ModelCard]:
-        return []
-
-    async def list_remote_models(self) -> list[str]:
-        return []
-
-    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
-        del remote
-        return presets
-
-    async def get_balance(self) -> AccountSnapshot | None:
-        return None
-
-    async def validate(self) -> ValidationResult:
-        return ValidationResult(True)
-
     async def stream(
         self,
         input: LLMInput,
-        model: ModelCard,
+        model: str,
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        del input, model, context, cache
+        del input, model, context, cache, metadata
         self.started.set()
         try:
             while not stop_event.is_set():
@@ -124,36 +106,6 @@ async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_
     app = await boot_app(tmp_path / "data", scripted_reply("hi"))
     async with running_server(app) as server:
         url = base_url(server)
-        protocols = await http_json("GET", f"{url}/api/provider-protocols")
-        [protocol] = cast(list[JsonObject], protocols["items"])
-        assert protocol["protocol"] == "openai-compatible"
-        assert "config_schema" in protocol
-
-        provider = await http_json(
-            "PUT",
-            f"{url}/api/providers/fake",
-            {
-                "name": "Fake",
-                "protocol": "openai-compatible",
-                "config": {"endpoint": "", "api_key": "test-key", "options": {}},
-            },
-        )
-        assert provider == {
-            "id": "fake",
-            "name": "Fake",
-            "protocol": "openai-compatible",
-            "configured": True,
-            "last_error": None,
-            "model_count": 0,
-            "configured_model_count": 0,
-        }
-        assert "schema_version" not in provider
-        assert "providers" not in provider
-        await http_json(
-            "PUT",
-            f"{url}/api/providers/fake/model-cards/fake-model",
-            {"selector": "fake-model", "toolcall": True, "input_price_per_million": 1.0},
-        )
 
         actor = await http_json(
             "PUT",
@@ -162,8 +114,7 @@ async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_
                 "name": "Amy",
                 "workspace": str(tmp_path / "workspace"),
                 "persona": "Be concise.",
-                "provider": "fake",
-                "model": {"selector": "fake-model", "reasoning_effort": " high "},
+                "model": {"type": "alias", "alias": "fake-model"},
                 "tools": {"read": {"type": "read"}},
             },
         )
@@ -173,18 +124,6 @@ async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_
         editable_actor = await http_json("GET", f"{url}/api/actors/amy")
         assert editable_actor["id"] == "amy"
         assert editable_actor["persona"] == "Be concise."
-        assert editable_actor["provider"] == "fake"
-        assert editable_actor["model"] == {
-            "selector": "fake-model",
-            "reasoning_effort": "high",
-            "max_context_tokens": None,
-            "vision": False,
-            "toolcall": True,
-            "json": True,
-            "input_price_per_million": 1.0,
-            "cached_input_price_per_million": 0.0,
-            "output_price_per_million": 0.0,
-        }
         assert "tools" not in editable_actor
 
         github = await put_integration(
@@ -231,7 +170,6 @@ async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_
     restored = await boot_app(tmp_path / "data")
     async with running_server(restored) as server:
         restored_bootstrap = await bootstrap(server)
-    assert [item["id"] for item in cast(list[JsonObject], restored_bootstrap["providers"])] == ["fake"]
     github = next(item for item in cast(list[JsonObject], restored_bootstrap["integrations"]) if item["type"] == "github")
     assert github["configured"] is True
     assert github["enabled"] is False
@@ -291,8 +229,8 @@ actors:
     finally:
         await app.shutdown()
 
-    assert snapshot.providers == []
     assert snapshot.actors == []
+    assert "secret" not in repr(snapshot)
     github = next(item for item in snapshot.integrations if item.type == "github")
     assert github.configured is False
     assert github.enabled is False
@@ -342,7 +280,7 @@ async def test_http_serves_actor_workspace_files_with_containment(test_context: 
     tmp_path.joinpath("outside.txt").write_text("secret", encoding="utf-8")
     workspace.joinpath("escape").symlink_to(tmp_path / "outside.txt")
 
-    actor_id = await test_context.setup_actor(ScriptedProvider([]))
+    actor_id = await test_context.setup_actor(ScriptedStream([]))
     url = base_url(test_context.server)
     listing = await http_json("GET", f"{url}/api/actors/{actor_id}/browse?path=notes")
     assert listing["path"] == "notes"
@@ -362,7 +300,7 @@ async def test_http_serves_actor_workspace_files_with_containment(test_context: 
 
 
 async def test_http_uploads_actor_workspace_files(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(ScriptedProvider([]))
+    actor_id = await test_context.setup_actor(ScriptedStream([]))
     url = base_url(test_context.server)
     boundary = "yuubot-test-boundary"
     body = multipart_body(boundary, "report.txt", "text/plain", b"hello")
@@ -391,7 +329,7 @@ async def test_http_uploads_actor_workspace_files(test_context: SharedTestContex
 
 
 async def test_http_manages_actor_workspace_entries(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(ScriptedProvider([]))
+    actor_id = await test_context.setup_actor(ScriptedStream([]))
     test_context.workspace.mkdir(exist_ok=True)
     url = base_url(test_context.server)
 
@@ -441,7 +379,7 @@ async def test_http_manages_actor_workspace_entries(test_context: SharedTestCont
 
 
 async def test_http_workspace_mutations_reject_unsafe_paths(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(ScriptedProvider([]))
+    actor_id = await test_context.setup_actor(ScriptedStream([]))
     test_context.workspace.mkdir(exist_ok=True)
     url = base_url(test_context.server)
 
@@ -460,7 +398,7 @@ async def test_http_workspace_mutations_reject_unsafe_paths(test_context: Shared
 
 
 async def test_http_browses_disabled_actor_workspace(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(ScriptedProvider([]), enable=False)
+    actor_id = await test_context.setup_actor(ScriptedStream([]), enable=False)
     test_context.workspace.mkdir(exist_ok=True)
     test_context.workspace.joinpath("note.txt").write_text("hello", encoding="utf-8")
 
@@ -566,16 +504,16 @@ async def test_ws_conversation_send_survives_client_disconnect_until_interrupt(t
 
 
 async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frames(test_context: SharedTestContext) -> None:
-    provider = ScriptedProvider(
+    provider = ScriptedStream(
         [
             [
                 StreamEvent("text-1", "text_delta", TextDeltaPayload("first")),
-                stream_stop_event("stop", Usage(), {}, False),
+                stream_stop_event("stop", Usage(), {}),
             ],
             [
                 StreamEvent("text-1", "text_delta", TextDeltaPayload("hel")),
                 StreamEvent("text-1", "text_delta", TextDeltaPayload("lo")),
-                stream_stop_event("stop", Usage(), {}, False),
+                stream_stop_event("stop", Usage(), {}),
             ],
         ]
     )
@@ -642,12 +580,12 @@ async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frame
 async def test_ws_direct_stream_survives_runtime_eventbus_noisy_backpressure(
     test_context: SharedTestContext,
 ) -> None:
-    provider = ScriptedProvider(
+    provider = ScriptedStream(
         [
             [
                 StreamEvent("text-1", "text_delta", TextDeltaPayload("hel")),
                 StreamEvent("text-1", "text_delta", TextDeltaPayload("lo")),
-                stream_stop_event("stop", Usage(), {}, False),
+                stream_stop_event("stop", Usage(), {}),
             ],
         ]
     )
@@ -681,7 +619,7 @@ async def test_ws_direct_stream_survives_runtime_eventbus_noisy_backpressure(
 
 
 async def test_ws_rejects_busy_conversation(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(InterruptibleProvider())
+    actor_id = await test_context.setup_actor(InterruptibleStream())
     conversation_id = test_context.conversation_id("busy-c1")
     frames = await recv_ws_frames(
         test_context.server,
@@ -715,7 +653,7 @@ async def test_ws_rejects_busy_conversation(test_context: SharedTestContext) -> 
 
 
 async def test_ws_interrupts_running_conversation(test_context: SharedTestContext) -> None:
-    actor_id = await test_context.setup_actor(InterruptibleProvider())
+    actor_id = await test_context.setup_actor(InterruptibleStream())
     conversation_id = test_context.conversation_id("interrupt-ws")
     frames: list[JsonObject] = []
     async with websockets.connect(ws_url(test_context.server), open_timeout=5) as ws:
@@ -946,16 +884,8 @@ async def test_http_disable_actor_closes_active_conversation(test_context: Share
 async def test_http_actor_startup_failure_visible_in_bootstrap(tmp_path: Path) -> None:
     app = await boot_app(tmp_path / "data", scripted_reply("hi"))
     async with running_server(app) as server:
-        await put_provider(server, model="fake-model")
         await put_actor(server, "amy", workspace=tmp_path / "workspace", model="fake-model")
         await enable_actor(server, "amy")
-
-    db = await Database.open(tmp_path / "data" / "db")
-    try:
-        await db.execute("delete from llm_providers where id = ?", ("fake",))
-        await db.commit()
-    finally:
-        await db.close()
 
     restored = await boot_app(tmp_path / "data")
     async with running_server(restored) as server:
@@ -963,4 +893,3 @@ async def test_http_actor_startup_failure_visible_in_bootstrap(tmp_path: Path) -
     assert actor["id"] == "amy"
     assert actor["enabled"] is True
     assert actor["status"] == "blocked"
-    assert cast(JsonObject, actor["last_error"])["type"] == "KeyError"

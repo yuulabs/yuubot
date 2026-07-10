@@ -15,7 +15,7 @@ import httpx
 import websockets
 from yuubot import Yuubot
 from yuubot.domain import StreamEvent, StreamStopPayload
-from yuubot.llm import Provider, ScriptedProvider, scripted_reply
+from yuubot.llm import StreamClient, ScriptedStream, scripted_reply
 from yuubot.web import make_server
 
 from .workspaces import workspace_shard
@@ -28,10 +28,11 @@ def _test_prefix(test_name: str) -> str:
     return f"{stem}-{uuid.uuid4().hex[:8]}"
 
 
-async def boot_app(data_dir: Path, provider: Provider | None = None) -> Yuubot:
+async def boot_app(data_dir: Path, provider: StreamClient | None = None) -> Yuubot:
     app = await Yuubot.create(data_dir)
-    if provider is not None:
-        app.provider_instances["fake"] = provider
+    app.gateway_client = provider or ScriptedStream(
+        [[StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))]]
+    )
     return app
 
 
@@ -96,22 +97,19 @@ class SharedTestContext:
 
     async def put_provider(
         self,
-        provider: Provider | None = None,
+        provider: StreamClient | None = None,
         provider_id: str | None = None,
         model: str = "fake",
     ) -> str:
         resolved = provider_id or self.provider_id
         app = getattr(self.server, "app", None)
         if isinstance(app, Yuubot) and provider is not None:
-            app.provider_instances[resolved] = provider
-        await put_provider(self.server, resolved, model=model, client=self._http)
-        if resolved not in self._providers:
-            self._providers.append(resolved)
+            app.gateway_client = provider
         return resolved
 
     async def setup_actor(
         self,
-        provider: Provider | None = None,
+        provider: StreamClient | None = None,
         actor_id: str | None = None,
         provider_id: str | None = None,
         workspace: Path | None = None,
@@ -126,7 +124,6 @@ class SharedTestContext:
             self.server,
             resolved_actor,
             workspace=resolved_workspace,
-            provider=resolved_provider,
             model=model,
             client=self._http,
         )
@@ -171,12 +168,6 @@ class SharedTestContext:
         if self._actors:
             for actor_id in reversed(self._actors):
                 await _try_http_json("DELETE", f"{url}/api/actors/{actor_id}", client=self._http)
-        if self._providers:
-            for provider_id in reversed(self._providers):
-                await _try_http_json("DELETE", f"{url}/api/providers/{provider_id}", client=self._http)
-                app = getattr(self.server, "app", None)
-                if isinstance(app, Yuubot):
-                    self._remove_provider_instance(app, provider_id)
         await self._cleanup_integrations()
         await self._http.aclose()
 
@@ -206,11 +197,6 @@ class SharedTestContext:
             await app.runtime.db.execute("delete from app_integrations where type = ?", (integration_type,))
         if self._integrations:
             await app.runtime.db.commit()
-
-    @staticmethod
-    def _remove_provider_instance(app: Yuubot, provider_id: str) -> None:
-        app.provider_instances.pop(provider_id, None)
-
 
 async def _try_http_json(
     method: str,
@@ -280,40 +266,14 @@ async def put_provider(
     model: str = "fake",
     client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
-    app = getattr(server, "app", None)
-    injected = app.provider_instances.get(provider_id) if isinstance(app, Yuubot) else None
-    if injected is None:
-        injected = ScriptedProvider([[StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))]])
-    result = await http_json(
-        "PUT",
-        f"{base_url(server)}/api/providers/{provider_id}",
-        {
-            "name": provider_id.title(),
-            "protocol": "openai-compatible",
-            "config": {"endpoint": "", "api_key": "test-key", "options": {}},
-        },
-        client=client,
-    )
-    await http_json(
-        "PUT",
-        f"{base_url(server)}/api/providers/{provider_id}/model-cards/{model}",
-        {
-            "selector": model,
-            "toolcall": True,
-            "input_price_per_million": 1.0,
-        },
-        client=client,
-    )
-    if isinstance(app, Yuubot) and injected is not None:
-        app.provider_instances[provider_id] = injected
-    return result
+    del server, provider_id, model, client
+    return {}
 
 
 async def put_actor(
     server: object,
     actor_id: str,
     workspace: Path,
-    provider: str = "fake",
     model: str = "fake",
     client: httpx.AsyncClient | None = None,
 ) -> JsonObject:
@@ -323,8 +283,7 @@ async def put_actor(
         {
             "name": actor_id.title(),
             "workspace": str(workspace),
-            "provider": provider,
-            "model": {"selector": model},
+            "model": {"type": "alias", "alias": model},
         },
         client=client,
     )
@@ -401,8 +360,8 @@ async def conversation_summary(server: object, conversation_id: str) -> JsonObje
     return await http_json("GET", f"{base_url(server)}/api/conversations/{conversation_id}")
 
 
-async def conversation_costs(server: object, conversation_id: str) -> list[JsonObject]:
-    payload = await http_json("GET", f"{base_url(server)}/api/conversations/{conversation_id}/costs")
+async def conversation_usage(server: object, conversation_id: str) -> list[JsonObject]:
+    payload = await http_json("GET", f"{base_url(server)}/api/conversations/{conversation_id}/usage")
     return cast(list[JsonObject], payload["items"])
 
 
@@ -495,7 +454,6 @@ async def setup_amy(
     enable: bool = True,
 ) -> None:
     workspace = tmp_path / "workspace"
-    await put_provider(server)
     await put_actor(server, "amy", workspace=workspace)
     if enable:
         await enable_actor(server, "amy")
@@ -520,4 +478,4 @@ async def wait_for_history_kind(
     raise AssertionError(f"conversation {conversation_id} did not reach history kind {kind!r}")
 
 
-__all__ = ["boot_app", "put_provider", "scripted_reply"]
+__all__ = ["boot_app", "scripted_reply"]

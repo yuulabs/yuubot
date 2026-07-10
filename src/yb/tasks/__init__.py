@@ -31,7 +31,7 @@ Examples::
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 import msgspec
 
@@ -174,7 +174,7 @@ def _task_from_payload(payload: dict[str, object], base_url: str) -> Task:
 
 
 def _task_status(value: str) -> TaskStatus:
-    return value if value in _TASK_STATUSES else "pending"
+    return cast(TaskStatus, value) if value in _TASK_STATUSES else "pending"
 
 
 from . import cron as cron  # noqa: E402  # expose yb.tasks.cron after helpers are defined

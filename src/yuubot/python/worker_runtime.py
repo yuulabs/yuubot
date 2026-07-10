@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import importlib
 import os
 
 import psutil
@@ -27,8 +28,7 @@ def maybe_recycle_worker() -> None:
 
 
 def import_facades() -> None:
-    import facade_bootstrap
-
+    facade_bootstrap = importlib.import_module("facade_bootstrap")
     facade_bootstrap.import_facades()
 
 

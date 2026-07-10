@@ -31,7 +31,7 @@ The runtime is headless: `plt.show()` does not reach the user. Save generated fi
 
 After `uv add` or `uv remove`, call `restart_kernel` before expecting new imports.
 
-Runtime facades (`yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions."""
+Runtime facades (`yb.fixer`, `yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions. `yb.fixer.ask_gemini` and `ask_grok` each provide one successful cited hosted-search answer per user turn; include related subquestions in one prompt. `yext.web.search` provides three successful searches per turn, while `read` and `download` remain available for inspecting sources."""
 
 
 class ExecutePythonPayload(msgspec.Struct, frozen=True):
@@ -58,6 +58,11 @@ class ExecutePythonTool:
     async def execute(self, payload: msgspec.Struct) -> str:
         data = cast(ExecutePythonPayload, payload)
         worker, newly_acquired = await self._worker_or_acquire()
+        turn_token = self.env.get("YUUBOT_TURN_TOKEN", "")
+        await worker.run_code(
+            "import yb._turn_guard as _yuubot_turn_guard; "
+            f"_yuubot_turn_guard.configure({turn_token!r})"
+        )
         progress = current_progress()
         if newly_acquired:
             self._set_partial_result("execute_python acquired a Python kernel worker and is executing the submitted code.")
@@ -122,6 +127,9 @@ def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime)
     if isinstance(daemon_url, str) and daemon_url:
         env["YUUBOT_DAEMON_URL"] = daemon_url
     env["YUUBOT_TASK_OWNER"] = make_owner(context.actor, context.conversation_id)
+    turn_token = context.rpc.get("turn_token")
+    if isinstance(turn_token, str) and turn_token:
+        env["YUUBOT_TURN_TOKEN"] = turn_token
     db_path = runtime.db_dir / "yuubot.db"
     env["YUUBOT_DB_PATH"] = str(db_path)
     env["TMPDIR"] = str(runtime.tmp_dir)

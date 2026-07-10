@@ -22,6 +22,47 @@ def test_developer_prompt_documents_cron_facade(tmp_path: Path) -> None:
     assert "+1m" in prompt
 
 
+def test_developer_prompt_documents_turn_limited_research_facades(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "yb.fixer.ask_gemini" in prompt
+    assert "ask_grok" in prompt
+    assert "one successful answer per user turn" in prompt
+    assert "verified citations" in prompt
+    assert "yext.web.search` provides up to three successful searches per user turn" in prompt
+    assert "include all related subquestions in one prompt" in prompt
+
+
+def test_workspace_prompt_routes_one_time_delivery_to_artifacts(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "one-time reports, web pages, charts, and exports" in prompt
+    assert "`artifacts/<slug>/`" in prompt
+
+
+def test_workspace_prompt_routes_maintained_work_to_projects(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "developed or maintained over time" in prompt
+    assert "`projects/<slug>/`" in prompt
+    assert "reserve the workspace root" in prompt
+    assert "concise workspace map" in prompt
+
+
+def test_workspace_skill_frontmatter_description_is_visible(tmp_path: Path) -> None:
+    skill = tmp_path / ".agents" / "skills" / "explain" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: explain\ndescription: Explain systems for a specific audience.\n---\n\n# Explain\n",
+        encoding="utf-8",
+    )
+
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
+
+    assert "explain: Explain systems for a specific audience." in prompt
+    assert "explain: ---" not in prompt
+
+
 def test_developer_prompt_documents_interactive_tasks(tmp_path: Path) -> None:
     prompt = developer_prompt("", tmp_path, [], has_python=True)
 

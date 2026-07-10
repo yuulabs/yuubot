@@ -10,48 +10,6 @@ export interface HealthResponse {
   status?: string;
 }
 
-export interface ProviderSnapshot {
-  id: string;
-  name: string;
-  protocol: string;
-  configured: boolean;
-  last_error: string | null;
-  model_count: number;
-  configured_model_count: number;
-}
-
-export interface ProviderProtocolSpec {
-  protocol: string;
-  title: string;
-  default_endpoint: string;
-  config_schema: Record<string, unknown>;
-  secret_fields: string[];
-}
-
-export interface ProviderInput {
-  name: string;
-  protocol: string;
-  config: Record<string, unknown>;
-}
-
-export interface ProviderDetail extends ProviderSnapshot {
-  config: Record<string, unknown>;
-  model_cards: ModelCard[];
-}
-
-export interface ValidationResult {
-  ok: boolean;
-  message?: string;
-  detail?: Record<string, unknown>;
-}
-
-export interface AccountSnapshot {
-  available?: boolean;
-  balance?: number | null;
-  currency?: string | null;
-  raw?: Record<string, unknown>;
-}
-
 export interface ActorSnapshot {
   id: string;
   name: string;
@@ -60,8 +18,7 @@ export interface ActorSnapshot {
   status: string;
   last_error: Record<string, unknown> | null;
   workspace: string;
-  provider: string;
-  model: ModelCard;
+  model: ModelSelector | null;
   context_compression_tokens: number;
 }
 
@@ -131,26 +88,10 @@ export interface BootstrapSnapshot {
   public_url_base?: string;
   schema_version: number;
   workspace_dir: string;
-  providers: ProviderSnapshot[];
   actors: ActorSnapshot[];
   integrations: IntegrationSnapshot[];
   routes: RouteRecord[];
 }
-
-export interface ModelCard {
-  selector: string;
-  reasoning_effort?: string;
-  max_context_tokens?: number | null;
-  vision?: boolean;
-  toolcall?: boolean;
-  json?: boolean;
-  input_price_per_million?: number | null;
-  cached_input_price_per_million?: number | null;
-  output_price_per_million?: number | null;
-  configured?: boolean;
-}
-
-export type ModelCardInput = Omit<ModelCard, "selector" | "reasoning_effort" | "configured">;
 
 export interface ActorRecord {
   id: string;
@@ -158,12 +99,15 @@ export interface ActorRecord {
   description?: string;
   workspace?: string;
   persona?: string;
-  model: ModelCard;
-  provider: string;
+  model: ModelSelector;
   context_compression_tokens?: number;
 }
 
 export type ActorInput = Omit<ActorRecord, "id">;
+
+export type ModelSelector =
+  | { type: "alias"; alias: string }
+  | { type: "exact"; endpoint_id: string; model: string };
 
 export interface ActorInboundBody {
   text: string;
@@ -292,6 +236,12 @@ export interface SkillSummary {
   description: string;
   scope: "global";
   inspect_hint: string;
+  source: "builtin" | "custom" | "package";
+  can_edit: boolean;
+  can_update: boolean;
+  can_delete: boolean;
+  can_copy: boolean;
+  error: string;
 }
 
 export interface SkillRecord {
@@ -302,19 +252,49 @@ export interface SkillRecord {
   body: string;
   created_at?: string;
   updated_at?: string;
+  source: "builtin" | "custom" | "package";
+  source_path?: string;
 }
 
 export type SkillInput = Pick<SkillRecord, "name" | "description" | "body" | "scope">;
 
-export type SkillCliAction = "add" | "remove" | "update";
+export interface SkillCopyFile {
+  path: string;
+  status: "added" | "deleted" | "modified" | "unchanged";
+  binary: boolean;
+  diff: string;
+}
 
-export interface SkillCliCommandResult {
-  action: SkillCliAction;
+export interface SkillCopyPreview {
+  skill_id: string;
+  actor_id: string;
+  path: string;
+  exists: boolean;
+  conflict: boolean;
+  up_to_date: boolean;
+  files: SkillCopyFile[];
+}
+
+export interface SkillCopyBody {
+  actor_id: string;
+  replace: boolean;
+}
+
+export interface SkillPackageBody {
+  source: string;
+  skills: string[];
+  agents: string[];
+  copy: boolean;
+}
+
+export interface SkillPackageResult {
+  action: "add" | "remove" | "update";
   target: string;
   command: string[];
   exit_code: number;
   stdout: string;
   stderr: string;
+  warning: string;
 }
 
 export interface HistoryItem {
@@ -332,12 +312,11 @@ export interface ConversationHistoryResponse {
   last_seq: number | null;
 }
 
-export interface ConversationCostRecord {
+export interface ConversationUsageRecord {
   conversation_id: string;
   seq: number;
   usage: Record<string, unknown>;
   account: Record<string, unknown>;
-  estimated: boolean;
   created_at: string;
 }
 
@@ -389,6 +368,7 @@ export interface TaskRecord {
   created_at?: string;
   started_at?: string | null;
   finished_at?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface CronScheduleRecord {

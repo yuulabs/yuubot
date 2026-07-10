@@ -18,7 +18,7 @@ from .event_payloads import RuntimeEventPayload
 from ..chat.history import HistoryStore
 from ..integrations.registry import Integration, IntegrationRegistry, default_registry
 from ..integrations.records import IntegrationRecord
-from ..llm.registry import ProviderRegistry, default_registry as default_provider_registry
+from ..llm.gateway import StreamClient
 from ..domain.messages import ActorMessage
 from ..domain.records import RouteRecord
 from .cache import CachePool
@@ -29,7 +29,7 @@ from .shares import ShareRegistry
 from .credentials import CredentialStore
 from .auth_attempts import AuthAttemptRegistry
 from .mcp import McpManager
-from .skills import SkillRecord, SkillSummary, skill_summary
+from .skills import SkillRecord, SkillSummary, resolve_catalog, skill_summary
 from .tasks import (
     RuntimeTaskRecord,
     TaskRegistry,
@@ -40,6 +40,7 @@ from .tasks import (
     wait_until_terminal_or_timeout,
 )
 from .wakeup import WakeupDelivery
+from .turn_limits import TurnLimitRegistry
 from .resource_config import ResourceConfig
 from .resources import ResourceSupervisor, resolve_tmp_dir
 from .cron import (
@@ -125,7 +126,7 @@ class Runtime:
     gateway: Gateway
     conversations: ConversationManager
     integration_registry: IntegrationRegistry
-    provider_registry: ProviderRegistry
+    gateway_client: StreamClient
     mailboxes: ActorMailboxRegistry
     tasks: TaskRegistry
     scheduler: TaskScheduler
@@ -137,9 +138,12 @@ class Runtime:
     mcps: McpManager
     python_kernels: PythonKernelsConfig
     kernel_limiter: KernelLimiter
+    turn_limits: TurnLimitRegistry
     resources_config: ResourceConfig
     resource_supervisor: ResourceSupervisor
     skills: dict[str, SkillRecord] = field(factory=dict)
+    package_skills: list[SkillRecord] = field(factory=list)
+    skill_discovery_warning: str = ""
     auth_attempts: AuthAttemptRegistry = field(factory=AuthAttemptRegistry)
     integrations: dict[str, Integration] = field(factory=dict)
     actors: dict[str, Actor] = field(factory=dict)
@@ -177,9 +181,14 @@ class Runtime:
         db: Database,
         kernels: PythonKernelsConfig | None = None,
         resources: ResourceConfig | None = None,
+        gateway_client: StreamClient | None = None,
     ) -> Runtime:
         from ..chat.loop import ConversationManager
 
+        if gateway_client is None:
+            from ..llm.gateway import GatewayClient
+
+            gateway_client = GatewayClient()
         root = Path(data_dir)
         for sub in ("workspace", "logs", "db", "published", "kv", "tmp"):
             (root / sub).mkdir(parents=True, exist_ok=True)
@@ -211,11 +220,11 @@ class Runtime:
             cache=CachePool(),
             eventbus=eventbus,
             listeners=ListenerHub(eventbus),
-            wakeup=WakeupDelivery(mailboxes=mailboxes, emit=eventbus.emit),
+            wakeup=WakeupDelivery(mailboxes, eventbus.emit),
             gateway=Gateway(),
             conversations=ConversationManager(),
             integration_registry=default_registry(),
-            provider_registry=default_provider_registry(),
+            gateway_client=gateway_client,
             mailboxes=mailboxes,
             tasks=task_registry,
             scheduler=scheduler,
@@ -227,6 +236,7 @@ class Runtime:
             mcps=mcps,
             python_kernels=python_kernels,
             kernel_limiter=KernelLimiter(python_kernels),
+            turn_limits=TurnLimitRegistry(),
             resources_config=resources_config,
             resource_supervisor=resource_supervisor,
         )
@@ -238,16 +248,8 @@ class Runtime:
                 raise RuntimeError("cron scheduler not initialized")
             return runtime._cron
 
-        runtime._cron_executor = CronExecutor(
-            runtime=runtime,
-            scheduler_getter=scheduler_ref,
-            workspace_resolver=runtime._resolve_workspace,
-        )
-        runtime._cron = CronJobScheduler(
-            runtime=runtime,
-            store=cron_jobs,
-            executor=runtime._cron_executor,
-        )
+        runtime._cron_executor = CronExecutor(runtime, scheduler_ref, runtime._resolve_workspace)
+        runtime._cron = CronJobScheduler(runtime, cron_jobs, runtime._cron_executor)
         return runtime
 
     @property
@@ -280,7 +282,16 @@ class Runtime:
         self.eventbus.emit(payload)
 
     def skill_summaries(self) -> list[SkillSummary]:
-        return [skill_summary(record) for record in sorted(self.skills.values(), key=lambda item: item.id)]
+        records, _items = resolve_catalog(list(self.skills.values()), self.package_skills)
+        return [skill_summary(records[key]) for key in sorted(records)]
+
+    def skill_catalog(self) -> list[SkillSummary]:
+        _records, items = resolve_catalog(list(self.skills.values()), self.package_skills)
+        return items
+
+    def skill_record(self, skill_id: str) -> SkillRecord:
+        records, _items = resolve_catalog(list(self.skills.values()), self.package_skills)
+        return records[skill_id]
 
     def enable_integration(self, record: IntegrationRecord) -> Integration:
         _log.info(
@@ -310,8 +321,8 @@ class Runtime:
         async with self.db.transaction():
             history = await self.db.execute("delete from history where conversation_id = ?", (conversation_id,))
             conversation = await self.db.execute("delete from app_conversations where id = ?", (conversation_id,))
-            costs = await self.db.execute("delete from app_costs where conversation_id = ?", (conversation_id,))
-        return history.rowcount > 0 or conversation.rowcount > 0 or costs.rowcount > 0
+            usage = await self.db.execute("delete from app_usage where conversation_id = ?", (conversation_id,))
+        return history.rowcount > 0 or conversation.rowcount > 0 or usage.rowcount > 0
 
     def start_actor_task(self, actor_id: str, coro_factory: TaskCoroFactory) -> None:
         key = f"actor:{actor_id}"

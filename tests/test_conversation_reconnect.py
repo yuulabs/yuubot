@@ -9,9 +9,7 @@ import pytest
 import websockets
 
 from support.api import JsonObject, SharedTestContext, conversation_history, conversation_summary, wait_for_history_kind, ws_url
-from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent, TextDeltaPayload, Usage
-from yuubot.llm import merge_catalog
-from yuubot.llm.types import AccountSnapshot, ValidationResult
+from yuubot.domain import ConversationContext, LLMInput, StreamEvent, TextDeltaPayload, Usage
 from yuubot.runtime.cache import CachePool
 from yuubot.util.stream import stream_stop_event
 
@@ -24,39 +22,25 @@ class PausedStreamingProvider:
         self.first_sent = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def list_presets(self) -> list[ModelCard]:
-        return []
-
-    async def list_remote_models(self) -> list[str]:
-        return []
-
-    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
-        return merge_catalog(presets, remote)
-
-    async def get_balance(self) -> AccountSnapshot | None:
-        return None
-
-    async def validate(self) -> ValidationResult:
-        return ValidationResult(True)
-
     async def stream(
         self,
         input: LLMInput,
-        model: ModelCard,
+        model: str,
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        del input, model, context, cache
+        del input, model, context, cache, metadata
         self.started.set()
         yield StreamEvent("text-1", "text_delta", TextDeltaPayload(self.first))
         self.first_sent.set()
         await self.release.wait()
         if stop_event.is_set():
-            yield stream_stop_event("interrupted", Usage(), {}, False)
+            yield stream_stop_event("interrupted", Usage(), {})
             return
         yield StreamEvent("text-1", "text_delta", TextDeltaPayload(self.second))
-        yield stream_stop_event("stop", Usage(), {}, False)
+        yield stream_stop_event("stop", Usage(), {})
 
     async def close(self) -> None:
         return None

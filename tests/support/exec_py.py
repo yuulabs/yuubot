@@ -11,16 +11,14 @@ import httpx
 import pytest
 
 from yuubot import Yuubot
-from yuubot.llm import Provider
+from yuubot.llm import StreamClient
 
 from .api import (
     _try_http_json,
     base_url,
-    disable_actor,
     enable_actor,
     http_json,
     put_actor,
-    put_provider,
 )
 from .workspaces import reset_workspace_files, workspace_shard
 
@@ -47,16 +45,16 @@ class ExecPyModuleContext:
     def conversation_id(self, suffix: str) -> str:
         return self.name(suffix)
 
-    def set_provider(self, provider: Provider, model: str = "fake") -> None:
+    def set_provider(self, provider: StreamClient, model: str = "fake") -> None:
         app = getattr(self.server, "app", None)
         assert isinstance(app, Yuubot)
-        app.provider_instances[self.provider_id] = provider
+        app.gateway_client = provider
 
     async def reset_state(self) -> None:
         reset_workspace_files(self.workspace)
         await self.reset_integrations()
 
-    async def activate(self, provider: Provider, model: str = "fake") -> None:
+    async def activate(self, provider: StreamClient, model: str = "fake") -> None:
         self.set_provider(provider, model)
         await _try_http_json(
             "POST",
@@ -99,12 +97,10 @@ class ExecPyModuleContext:
         self._integrations.clear()
 
     async def setup(self) -> None:
-        await put_provider(self.server, self.provider_id, client=self._http)
         await put_actor(
             self.server,
             self.actor_id,
             workspace=self.workspace,
-            provider=self.provider_id,
             client=self._http,
         )
 
@@ -112,10 +108,6 @@ class ExecPyModuleContext:
         url = base_url(self.server)
         await _try_http_json("POST", f"{url}/api/actors/{self.actor_id}/disable", {}, self._http)
         await _try_http_json("DELETE", f"{url}/api/actors/{self.actor_id}", client=self._http)
-        await _try_http_json("DELETE", f"{url}/api/providers/{self.provider_id}", client=self._http)
-        app = getattr(self.server, "app", None)
-        if isinstance(app, Yuubot):
-            app.provider_instances.pop(self.provider_id, None)
         await self.reset_integrations()
         reset_workspace_files(self.workspace)
         await self._http.aclose()

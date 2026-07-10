@@ -1,7 +1,9 @@
 """Async web facade.
 
 Use await search(query), await read(url), and await download(url) for web search,
-reader extraction, and HTTP downloads.
+reader extraction, and HTTP downloads. A user turn provides three successful
+search calls. Combine related questions into focused queries; read and download
+remain available for inspecting the returned sources.
 """
 
 from __future__ import annotations
@@ -14,6 +16,9 @@ from typing import Final, cast
 
 import httpx
 import msgspec
+
+from yb._daemon import daemon_url, request_json
+from yb._turn_guard import run as run_turn_limited
 
 DEFAULT_BASE_URL: Final[str] = "https://api.tavily.com"
 DEFAULT_JINA_BASE_URL: Final[str] = "https://r.jina.ai"
@@ -45,13 +50,40 @@ class _TavilySearchResponse(msgspec.Struct, frozen=True):
 
 async def search(query: str, max_results: int = 5, integration_id: str = "") -> list[SearchResult]:
     del integration_id
-    api_key = os.getenv("YEXT_WEB_TAVILY_API_KEY")
-    if not api_key:
+    value = query.strip()
+    if not value:
+        raise ValueError("query must not be empty")
+    if max_results < 1 or max_results > 20:
+        raise ValueError("max_results must be between 1 and 20")
+
+    async def request() -> list[SearchResult]:
+        if os.getenv("YUUBOT_TURN_TOKEN"):
+            payload = await request_json(
+                "POST",
+                f"{daemon_url()}/api/web/search",
+                json={"query": value, "max_results": max_results},
+            )
+            return msgspec.convert(payload.get("items", []), list[SearchResult])
+        return await _search_direct(value, max_results)
+
+    return await run_turn_limited("web_search", request)
+
+
+async def _search_direct(
+    query: str,
+    max_results: int,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    timeout_s: float | None = None,
+) -> list[SearchResult]:
+    resolved_key = api_key or os.getenv("YEXT_WEB_TAVILY_API_KEY")
+    if not resolved_key:
         raise RuntimeError("YEXT_WEB_TAVILY_API_KEY is required for yext.web.search")
-    async with _client() as client:
+    resolved_base_url = base_url or os.getenv("TAVILY_BASE_URL") or DEFAULT_BASE_URL
+    async with _client(timeout_s) as client:
         response = await client.post(
-            f"{os.getenv('TAVILY_BASE_URL', DEFAULT_BASE_URL).rstrip('/')}/search",
-            json={"api_key": api_key, "query": query, "max_results": max_results},
+            f"{resolved_base_url.rstrip('/')}/search",
+            json={"api_key": resolved_key, "query": query, "max_results": max_results},
         )
         response.raise_for_status()
         body = response.json()

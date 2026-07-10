@@ -1,6 +1,7 @@
 import json
 import sys
 import urllib.request
+from typing import cast
 
 import msgspec
 
@@ -19,6 +20,7 @@ def emit(payload: dict[str, object], json_output: bool) -> None:
         return
     error = payload["error"]
     if isinstance(error, dict):
+        error = cast(dict[str, object], error)
         print(f"error: {error.get('code') or error.get('type')}: {error['message']}", file=sys.stderr)
 
 

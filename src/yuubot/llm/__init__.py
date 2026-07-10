@@ -1,52 +1,42 @@
-"""LLM provider core: protocol registry, vendor adapters, and catalog helpers."""
+"""LLM Gateway client and streaming types."""
 
-from .catalog import (
-    build_actor_provider,
-    has_pricing_configured,
-    is_configured,
-    merge_catalog,
-    model_card_from_input,
-    model_card_wire,
-    provider_configured,
-    refresh_catalog,
+from .gateway import (
+    AliasInput,
+    AliasRecord,
+    AliasTarget,
+    EndpointClient,
+    EndpointInput,
+    EndpointRecord,
+    EndpointStatus,
+    GatewayClient,
+    GatewayError,
+    GatewayStatus,
+    RequestMetadata,
+    StreamClient,
+    alias_record_from_input,
+    endpoint_record_from_input,
+    validate_alias,
+    validate_endpoint,
 )
-from .openai import OpenAIProvider, OpenAIProviderConfig, make_openai_provider
-from .scripted import ScriptedProvider, scripted_reply
-from .protocol import Provider
-from .records import ProviderRecord
-from .registry import ProviderRegistry, ProviderSpec, default_registry
-from .types import (
-    AccountSnapshot,
-    ModelCardInput,
-    ProviderInput,
-    ProviderProtocolSpec,
-    ProviderSnapshot,
-    ValidationResult,
-)
+from .scripted import ScriptedStream, scripted_reply
 
 __all__ = [
-    "AccountSnapshot",
-    "ModelCardInput",
-    "OpenAIProvider",
-    "OpenAIProviderConfig",
-    "Provider",
-    "ProviderInput",
-    "ProviderProtocolSpec",
-    "ProviderRecord",
-    "ProviderRegistry",
-    "ProviderSnapshot",
-    "ProviderSpec",
-    "ScriptedProvider",
-    "ValidationResult",
-    "build_actor_provider",
-    "default_registry",
-    "has_pricing_configured",
-    "is_configured",
-    "make_openai_provider",
-    "merge_catalog",
-    "model_card_from_input",
-    "model_card_wire",
-    "provider_configured",
-    "refresh_catalog",
+    "AliasInput",
+    "AliasRecord",
+    "AliasTarget",
+    "EndpointClient",
+    "EndpointInput",
+    "EndpointRecord",
+    "EndpointStatus",
+    "GatewayClient",
+    "GatewayError",
+    "GatewayStatus",
+    "RequestMetadata",
+    "ScriptedStream",
+    "StreamClient",
+    "alias_record_from_input",
+    "endpoint_record_from_input",
     "scripted_reply",
+    "validate_alias",
+    "validate_endpoint",
 ]

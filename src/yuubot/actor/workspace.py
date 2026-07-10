@@ -28,11 +28,13 @@ def prepare_workspace(path: Path) -> None:
             [
                 "# Workspace",
                 "",
-                "- `artifacts/`: user-visible outputs.",
+                "- Put one-time reports, pages, charts, and exports in `artifacts/<slug>/`.",
                 "- `uploads/`: uploaded files grouped by MIME type.",
-                "- `projects/`: actor-managed project files.",
+                "- Put code and documentation with an ongoing maintenance lifecycle in `projects/<slug>/`.",
                 "- `notes/`: actor notes.",
                 "- `scripts/`: helper scripts.",
+                "- Keep implementation files inside their artifact or project directory; reserve the workspace root for this map and established entry points.",
+                "- Keep this AGENTS.md concise as the workspace map. Store project details, run instructions, and design notes with the corresponding project.",
             ]
         )
         + "\n",

@@ -10,9 +10,8 @@ import pytest
 from yuubot.actor import ActorConfig
 from yuubot.app import Yuubot
 from yuubot.chat import harness as harness_module
-from yuubot.domain import ConversationContext, InputMessage, LLMInput, ModelCard, StreamEvent, TextDeltaPayload, Usage, text_content
-from yuubot.llm import merge_catalog, scripted_reply
-from yuubot.llm.types import AccountSnapshot, ValidationResult
+from yuubot.domain import ConversationContext, InputMessage, LLMInput, StreamEvent, TextDeltaPayload, Usage, text_content
+from yuubot.llm import scripted_reply
 from yuubot.runtime.cache import CachePool
 from yuubot.util.stream import stream_stop_event
 
@@ -22,35 +21,21 @@ class BlockingProvider:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def list_presets(self) -> list[ModelCard]:
-        return []
-
-    async def list_remote_models(self) -> list[str]:
-        return []
-
-    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
-        return merge_catalog(presets, remote)
-
-    async def get_balance(self) -> AccountSnapshot | None:
-        return None
-
-    async def validate(self) -> ValidationResult:
-        return ValidationResult(True)
-
     async def stream(
         self,
         input: LLMInput,
-        model: ModelCard,
+        model: str,
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        del input, model, context, cache
+        del input, model, context, cache, metadata
         self.started.set()
         await self.release.wait()
         reason = "interrupted" if stop_event.is_set() else "stop"
         yield StreamEvent("text-1", "text_delta", TextDeltaPayload("done"))
-        yield stream_stop_event(reason, Usage(), {}, False)
+        yield stream_stop_event(reason, Usage(), {})
 
     async def close(self) -> None:
         return None
@@ -75,7 +60,7 @@ async def test_terminal_turn_marks_closed_when_harness_close_fails(
                 id="amy",
                 name="Amy",
                 workspace=str(tmp_path / "workspace"),
-                model=ModelCard("fake"),
+                model="fake",
             ),
             scripted_reply("done"),
         )
@@ -102,7 +87,7 @@ async def test_running_conversation_is_not_swept_until_it_becomes_idle(tmp_path:
                 id="amy",
                 name="Amy",
                 workspace=str(tmp_path / "workspace"),
-                model=ModelCard("fake"),
+                model="fake",
             ),
             provider,
         )
@@ -138,7 +123,7 @@ async def test_history_append_does_not_refresh_conversation_idle_ttl(tmp_path: P
                 id="amy",
                 name="Amy",
                 workspace=str(tmp_path / "workspace"),
-                model=ModelCard("fake"),
+                model="fake",
             ),
             scripted_reply("done"),
         )

@@ -5,43 +5,26 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent, StreamStopPayload
-from yuubot.llm import Provider, ScriptedProvider, scripted_reply
+from yuubot.domain import ConversationContext, LLMInput, StreamEvent, StreamStopPayload
+from yuubot.llm import ScriptedStream, scripted_reply
 from yuubot.runtime.cache import CachePool
 
 
-def scripted_reply_text(text: str) -> ScriptedProvider:
+def scripted_reply_text(text: str) -> ScriptedStream:
     return scripted_reply(text)
 
 
-class InterruptibleProvider:
-    async def list_presets(self) -> list[ModelCard]:
-        return []
-
-    async def list_remote_models(self) -> list[str]:
-        return []
-
-    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
-        del presets, remote
-        return []
-
-    async def get_balance(self):
-        return None
-
-    async def validate(self):
-        from yuubot.llm.types import ValidationResult
-
-        return ValidationResult(True)
-
+class InterruptibleStream:
     async def stream(
         self,
         input: LLMInput,
-        model: ModelCard,
+        model: str,
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        del input, model, context, cache
+        del input, model, context, cache, metadata
         for _ in range(100):
             if stop_event.is_set():
                 yield StreamEvent("stop", "stream_stop", StreamStopPayload("interrupted"))

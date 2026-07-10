@@ -6,7 +6,6 @@ import fnmatch
 import logging
 import os
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -18,10 +17,10 @@ from ..util.asyncio_ import BackgroundSweeper
 from .host_stats import HostStats, collect_host_stats
 from .logging_config import rotated_log_paths
 from .resource_config import ResourceConfig
+from .event_payloads import EmitFn, ResourceDiskCriticalPayload, ResourceDiskOkPayload, ResourceDiskWarningPayload
 
 _log = logging.getLogger(__name__)
-
-from .event_payloads import EmitFn, ResourceDiskCriticalPayload, ResourceDiskOkPayload, ResourceDiskWarningPayload
+DiskAlertLevel = Literal["ok", "warning", "critical"]
 
 
 def resolve_tmp_dir(data_dir: Path, config: ResourceConfig) -> Path:

@@ -6,17 +6,15 @@ import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import aiosqlite
 import msgspec
 import yaml
 
 from yuubot.integrations.records import IntegrationRecord
-from yuubot.domain.messages import ModelCard
-from yuubot.llm.records import ProviderRecord
-from yuubot.domain.messages import ContentItem, GenText, HistoryToolSpecs, InputMessage, ModelCard, ToolResult
-from yuubot.domain.records import ActorRecord, RouteRecord
+from yuubot.domain.messages import ContentItem, GenText, HistoryToolSpecs, InputMessage, ToolResult
+from yuubot.domain.records import ActorRecord, LifecycleError, RouteRecord
 
 from .database import Database
 from .migrate import current_version, pending_versions
@@ -178,7 +176,6 @@ async def _import(
         old.row_factory = aiosqlite.Row
         tables = await _table_names(old)
         capabilities = {row["id"]: dict(row) for row in await _rows(old, "capability_sets", tables)}
-        await _import_llms(db, old, tables, report)
         await _import_integrations(db, old, tables, old_config_info, report)
         await _import_actors(db, old, tables, capabilities, data_dir, _old_data_dir(old_config_info, legacy_db), report)
         await _import_routes(db, old, tables, report)
@@ -189,41 +186,7 @@ async def _import(
     return report
 
 
-async def _import_llms(db: Database, old: aiosqlite.Connection, tables: set[str], report: dict[str, object]) -> None:
-    for row in await _rows(old, "llm_backends", tables):
-        data = dict(row)
-        model_configs = _json_obj(data.get("model_configs"), {})
-        model = next(iter(model_configs), "default")
-        provider_options = _json_obj(data.get("provider_options"), {})
-        endpoint = _string(provider_options.get("base_url") or provider_options.get("endpoint"))
-        name = _string(data.get("name") or data.get("id"))
-        api_key_ref = _legacy_secret_ref(name) if _contains_secret(provider_options) else ""
-        if api_key_ref:
-            _append(report, "manual_actions", {"type": "llm_api_key", "llm": name, "api_key_ref": api_key_ref})
-        dropped = sorted(set(model_configs) - {model})
-        if dropped:
-            _append(report, "dropped_metadata", {"table": "llm_backends", "id": name, "field": "model_configs", "models": dropped})
-        protocol = _provider_protocol(_string(data.get("provider_identity")))
-        config = {
-            "endpoint": endpoint,
-            "api_key": "",
-            "options": {key: value for key, value in provider_options.items() if key not in {"base_url", "endpoint", "api_key"}},
-        }
-        record = ProviderRecord(name, name, protocol, config)
-        await db.execute(
-            """
-            insert or replace into llm_providers (id, name, protocol, config, last_error, updated_at)
-            values (?, ?, ?, ?, ?, ?)
-            """,
-            (name, record.name, record.protocol, msgspec.json.encode(record.config), None, _timestamp(data.get("updated_at"))),
-        )
-        await db.execute(
-            """
-            insert or replace into model_cards (provider_id, selector, payload, updated_at)
-            values (?, ?, ?, ?)
-            """,
-            (name, model, msgspec.json.encode(ModelCard(model)), _timestamp(data.get("updated_at"))),
-        )
+
 
 
 async def _import_integrations(
@@ -271,13 +234,22 @@ async def _import_actors(
             description=_description(data, capability),
             workspace=workspace,
             persona=_string(data.get("persona_prompt")),
-            provider=_string(data.get("llm_backend_id")),
-            model=ModelCard(_string(data.get("model") or "default")),
+            model=None,
+        )
+        last_error = LifecycleError(
+            "gateway_model_unavailable",
+            "actor needs a Gateway model selection after legacy import",
         )
         await db.execute(
             "insert or replace into app_actors (id, payload, enabled, status, last_error, updated_at) values (?, ?, ?, ?, ?, ?)",
-            (actor_id, msgspec.json.encode(record), int(bool(data.get("enabled", 1))), "idle", None, _timestamp(data.get("updated_at"))),
+            (actor_id, msgspec.json.encode(record), 0, "blocked", msgspec.json.encode(last_error), _timestamp(data.get("updated_at"))),
         )
+        if data.get("llm_backend_id") or data.get("model"):
+            _append(
+                report,
+                "manual_actions",
+                {"type": "gateway_model_selection", "actor": actor_id},
+            )
         _record_actor_dropped_metadata(data, capability, report)
 
 
@@ -376,13 +348,16 @@ def _convert_history_item(data: dict[str, object]) -> tuple[str, bytes] | None:
     item_kind = _string(data.get("item_kind"))
     raw = _json_any(data.get("item_json"), None)
     if item_kind == "tools":
-        specs = raw if isinstance(raw, list) else raw.get("tools", []) if isinstance(raw, dict) else []
-        return "tool_specs", msgspec.json.encode(HistoryToolSpecs([x for x in specs if isinstance(x, dict)]))
+        specs = raw if isinstance(raw, list) else cast(dict[str, object], raw).get("tools", []) if isinstance(raw, dict) else []
+        values = specs if isinstance(specs, list) else []
+        return "tool_specs", msgspec.json.encode(
+            HistoryToolSpecs([cast(dict[str, object], item) for item in values if isinstance(item, dict)])
+        )
     if item_kind != "message":
         return None
     if not isinstance(raw, dict):
         return None
-    return _legacy_message_dict_to_history(raw)
+    return _legacy_message_dict_to_history(cast(dict[str, object], raw))
 
 
 def _legacy_message_dict_to_history(raw: dict[str, object]) -> tuple[str, bytes] | None:
@@ -390,7 +365,7 @@ def _legacy_message_dict_to_history(raw: dict[str, object]) -> tuple[str, bytes]
     content = raw.get("content", raw.get("raw_content", ""))
     name = _string(raw.get("name") or role or "legacy")
     if role in {"user", "developer", "system"}:
-        input_role = "developer" if role == "system" else role
+        input_role = cast(Literal["user", "developer"], "developer" if role == "system" else role)
         return "input", msgspec.json.encode(InputMessage(input_role, name, _content_items(content)))
     if role == "assistant":
         return "gen_text", msgspec.json.encode(GenText(_content_text(content)))
@@ -403,7 +378,8 @@ def _message_to_history(data: dict[str, object]) -> tuple[str, bytes] | None:
     role = _string(data.get("role"))
     content = _string(data.get("raw_content"))
     if role in {"user", "developer", "system"}:
-        return "input", msgspec.json.encode(InputMessage("developer" if role == "system" else role, role or "legacy", _content_items(content)))
+        input_role = cast(Literal["user", "developer"], "developer" if role == "system" else role)
+        return "input", msgspec.json.encode(InputMessage(input_role, role or "legacy", _content_items(content)))
     if role == "assistant":
         return "gen_text", msgspec.json.encode(GenText(content))
     return None
@@ -413,7 +389,7 @@ async def _rows(old: aiosqlite.Connection, table: str, tables: set[str], order_b
     if table not in tables:
         return []
     cursor = await old.execute(f'select * from "{table}" order by {order_by}')
-    return await cursor.fetchall()
+    return list(await cursor.fetchall())
 
 
 async def _table_names(connection: aiosqlite.Connection) -> set[str]:
@@ -430,7 +406,7 @@ async def _already_imported(db: Database, source: Path) -> bool:
 
 
 async def _has_application_rows(db: Database) -> bool:
-    for table in ("llm_providers", "model_cards", "app_integrations", "app_actors", "app_routes", "app_conversations", "history"):
+    for table in ("app_integrations", "app_actors", "app_routes", "app_conversations", "history"):
         cursor = await db.execute(f'select count(*) from "{table}"')
         row = await cursor.fetchone()
         if row is not None and int(row[0]) > 0:
@@ -497,14 +473,18 @@ def _decrypt_config(config: dict[str, object], master_key: str) -> dict[str, obj
     if not master_key:
         raise LegacyImportError("old config secrets.master_key is required to decrypt integration secrets")
     codec = _SecretCodec(master_key)
-    return _decrypt_value(config, codec)
+    decrypted = _decrypt_value(config, codec)
+    if not isinstance(decrypted, dict):
+        raise LegacyImportError("decrypted legacy config must be an object")
+    return {str(key): value for key, value in decrypted.items()}
 
 
 def _decrypt_value(value: object, codec: "_SecretCodec") -> Any:
     if isinstance(value, dict):
-        if value.get("$enc") == "v1" and isinstance(value.get("ct"), str):
-            return codec.decrypt(str(value["ct"]))
-        return {str(key): _decrypt_value(item, codec) for key, item in value.items()}
+        data = cast(dict[object, object], value)
+        if data.get("$enc") == "v1" and isinstance(data.get("ct"), str):
+            return codec.decrypt(str(data["ct"]))
+        return {str(key): _decrypt_value(item, codec) for key, item in data.items()}
     if isinstance(value, list):
         return [_decrypt_value(item, codec) for item in value]
     return value
@@ -535,7 +515,8 @@ def _decode_master_key(value: str) -> bytes:
 
 def _contains_encrypted_marker(value: object) -> bool:
     if isinstance(value, dict):
-        return value.get("$enc") == "v1" or any(_contains_encrypted_marker(item) for item in value.values())
+        data = cast(dict[object, object], value)
+        return data.get("$enc") == "v1" or any(_contains_encrypted_marker(item) for item in data.values())
     if isinstance(value, list):
         return any(_contains_encrypted_marker(item) for item in value)
     return False
@@ -547,13 +528,6 @@ def _contains_secret(value: object) -> bool:
     if isinstance(value, list):
         return any(_contains_secret(item) for item in value)
     return False
-
-
-def _provider_protocol(value: str) -> str:
-    normalized = (value or "openai_compatible").replace("_", "-")
-    if normalized in {"openai", "deepseek"}:
-        return "openai-compatible"
-    return normalized
 
 
 def _integration_type_from_source(value: str) -> str:
@@ -581,12 +555,14 @@ def _content_text(value: object) -> str:
             if isinstance(item, str):
                 parts.append(item)
             elif isinstance(item, dict):
-                text = item.get("text") or item.get("content")
+                data = cast(dict[str, object], item)
+                text = data.get("text") or data.get("content")
                 if isinstance(text, str):
                     parts.append(text)
         return "\n".join(parts)
     if isinstance(value, dict):
-        text = value.get("text") or value.get("content")
+        data = cast(dict[str, object], value)
+        text = data.get("text") or data.get("content")
         if isinstance(text, str):
             return text
     return ""
@@ -594,7 +570,7 @@ def _content_text(value: object) -> str:
 
 def _json_obj(value: object, default: dict[str, object]) -> dict[str, object]:
     decoded = _json_any(value, default)
-    return decoded if isinstance(decoded, dict) else dict(default)
+    return {str(key): item for key, item in decoded.items()} if isinstance(decoded, dict) else dict(default)
 
 
 def _json_any(value: object, default: object) -> object:
@@ -635,7 +611,7 @@ def _now() -> str:
 def _append(report: dict[str, object], key: str, value: object) -> None:
     items = report.setdefault(key, [])
     if isinstance(items, list):
-        items.append(value)
+        cast(list[object], items).append(value)
 
 
 def _append_jsonl(path: Path, value: object) -> None:

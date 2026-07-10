@@ -9,7 +9,7 @@ from support.integration_app import reset_actor_app_state
 from yuubot.actor import ActorConfig
 from yuubot.actor.prompt import REAL_TIME_CONTEXT_MARKER
 from yuubot.app import Yuubot
-from yuubot.domain import ActorMessage, ModelCard
+from yuubot.domain import ActorMessage
 from yuubot.llm import scripted_reply
 
 
@@ -64,7 +64,7 @@ async def test_mailbox_user_message_includes_actor_mode_context(real_time_app: t
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )
@@ -86,12 +86,12 @@ async def test_mailbox_user_message_includes_actor_mode_context(real_time_app: t
 @pytest.mark.asyncio
 async def test_direct_user_message_includes_conversation_mode_context(real_time_app: tuple[Yuubot, Path]) -> None:
     app, workspace = real_time_app
-    actor = app.create_actor(
+    app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )
@@ -112,7 +112,7 @@ async def test_developer_callback_does_not_attach_mode_context(real_time_app: tu
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )

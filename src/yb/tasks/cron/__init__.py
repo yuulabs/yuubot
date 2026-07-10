@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from yb._daemon import daemon_url, request_json, task_owner
@@ -35,9 +36,9 @@ class CronJob:
         self.owner = str(payload.get("owner", ""))
         self.status = str(payload.get("status", "active"))  # type: ignore[assignment]
         schedule = payload.get("schedule")
-        self.schedule = schedule if isinstance(schedule, dict) else {}
+        self.schedule = cast(dict[str, object], schedule) if isinstance(schedule, dict) else {}
         action = payload.get("action")
-        self.action = action if isinstance(action, dict) else {}
+        self.action = cast(dict[str, object], action) if isinstance(action, dict) else {}
         next_run = payload.get("next_run_at")
         self.next_run_at = next_run if isinstance(next_run, str) else None
         last_run = payload.get("last_run_at")
@@ -58,7 +59,7 @@ async def list_jobs(name_glob: str = "", status: str = "") -> list[CronJob]:
     items = payload.get("items", [])
     if not isinstance(items, list):
         return []
-    return [_job_from_payload(item, base_url) for item in items if isinstance(item, dict)]
+    return [_job_from_payload(cast(dict[str, object], item), base_url) for item in items if isinstance(item, dict)]
 
 
 async def find(job_id: str) -> CronJob:
@@ -89,7 +90,13 @@ async def add(
         schedule["at"] = _normalize_at(at or "", timezone)
     base_url = daemon_url()
     owner = task_owner()
-    body = {"name": name, "owner": owner, "schedule": schedule, "action": action, "once": once}
+    body: dict[str, object] = {
+        "name": name,
+        "owner": owner,
+        "schedule": schedule,
+        "action": action,
+        "once": once,
+    }
     payload = await request_json("POST", f"{base_url}/api/cron-jobs", json=body)
     return _job_from_payload(payload, base_url)
 

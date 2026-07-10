@@ -5,20 +5,10 @@ from typing import Literal, TypeAlias
 
 import msgspec
 
+from .models import ModelSelector
+
 ContentKind = Literal["text", "image", "audio", "file"]
 InputRole = Literal["user", "developer"]
-
-
-class ModelCard(msgspec.Struct, frozen=True):
-    selector: str
-    reasoning_effort: str = ""
-    max_context_tokens: int | None = None
-    vision: bool = False
-    toolcall: bool = True
-    json: bool = True
-    input_price_per_million: float | None = None
-    cached_input_price_per_million: float | None = None
-    output_price_per_million: float | None = None
 
 
 class ContentItem(msgspec.Struct, frozen=True):
@@ -91,13 +81,14 @@ class ActorMessage(msgspec.Struct, frozen=True):
 class ConversationContext(msgspec.Struct, frozen=True):
     """Read-only context tree shared by every unit of one conversation."""
 
-    model: ModelCard
+    model: ModelSelector | str
     conversation_id: str
     actor: str
     workspace: Path
     integrations: dict[str, dict[str, str]] = msgspec.field(default_factory=dict)
     otel: dict[str, object] = msgspec.field(default_factory=dict)
     rpc: dict[str, object] = msgspec.field(default_factory=dict)
+    model_supports_vision: bool = False
 
 
 class LLMInput(msgspec.Struct, frozen=True):

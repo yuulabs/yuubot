@@ -8,10 +8,19 @@ import pytest
 
 from support.integration_app import reset_actor_app_state
 from yuubot.actor import ActorConfig
-from yuubot.domain import ActorMessage, ConversationContext, LLMInput, ModelCard, StreamEvent, StreamStopPayload, TextDeltaPayload
-from yuubot.runtime.event_payloads import ActorContextCompactedPayload, ActorContextCompactionStoppedPayload
-from yuubot.llm import merge_catalog, scripted_reply
-from yuubot.llm.types import AccountSnapshot, ValidationResult
+from yuubot.domain import (
+    ActorMessage,
+    ConversationContext,
+    LLMInput,
+    StreamEvent,
+    StreamStopPayload,
+    TextDeltaPayload,
+)
+from yuubot.runtime.event_payloads import (
+    ActorContextCompactedPayload,
+    ActorContextCompactionStoppedPayload,
+)
+from yuubot.llm import scripted_reply
 from yuubot.app import Yuubot
 from yuubot.runtime.cache import CachePool
 from support.llm_rules import prompt_contains, reply_text, user_message_contains
@@ -51,33 +60,40 @@ class BlockingProvider:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def list_presets(self) -> list[ModelCard]:
-        return []
+    async def stream(
+        self,
+        input: LLMInput,
+        model: str,
+        context: ConversationContext,
+        cache: CachePool,
+        stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        del input, model, context, cache, stop_event, metadata
+        self.started.set()
+        await self.release.wait()
+        yield StreamEvent("text-1", "text_delta", TextDeltaPayload("ok"))
+        yield StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))
 
-    async def list_remote_models(self) -> list[str]:
-        return []
-
-    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
-        return merge_catalog(presets, remote)
-
-    async def get_balance(self) -> AccountSnapshot | None:
+    async def close(self) -> None:
         return None
 
-    async def validate(self) -> ValidationResult:
-        return ValidationResult(True)
+
+class MetadataRecordingStream:
+    def __init__(self) -> None:
+        self.metadata: list[dict[str, str] | None] = []
 
     async def stream(
         self,
         input: LLMInput,
-        model: ModelCard,
+        model: str,
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         del input, model, context, cache, stop_event
-        self.started.set()
-        await self.release.wait()
-        yield StreamEvent("text-1", "text_delta", TextDeltaPayload("ok"))
+        self.metadata.append(metadata)
         yield StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))
 
     async def close(self) -> None:
@@ -95,66 +111,108 @@ async def actor_loop_app(tmp_path) -> AsyncIterator[tuple[Yuubot, Path]]:
 
 
 @pytest.fixture(autouse=True)
-async def _reset_actor_loop_module_state(actor_loop_app: tuple[Yuubot, Path]) -> AsyncIterator[None]:
+async def _reset_actor_loop_module_state(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> AsyncIterator[None]:
     yield
     await reset_actor_app_state(actor_loop_app[0])
 
 
 @pytest.mark.asyncio
-async def test_actor_inbound_without_conversation_reuses_default_conversation(actor_loop_app: tuple[Yuubot, Path]) -> None:
+async def test_actor_inbound_without_conversation_reuses_default_conversation(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> None:
     app, workspace = actor_loop_app
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )
-    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(
+        ActorMessage("first", source={"inbound_kind": "actor_inbound"})
+    )
     first_conversation = actor._mailbox_conversation
     assert first_conversation is not None
 
-    await actor.handle_mailbox_message(ActorMessage("second", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(
+        ActorMessage("second", source={"inbound_kind": "actor_inbound"})
+    )
 
     assert actor._mailbox_conversation == first_conversation
-    items, _has_more = await app.runtime.history.load_interaction_wrapped(first_conversation)
+    items, _has_more = await app.runtime.history.load_interaction_wrapped(
+        first_conversation
+    )
     assert _input_roles(items) == ["user", "user"]
 
 
 @pytest.mark.asyncio
-async def test_actor_inbound_without_conversation_creates_new_default_after_ttl(actor_loop_app: tuple[Yuubot, Path]) -> None:
+async def test_conversation_propagates_safe_chat_gateway_metadata(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> None:
+    app, workspace = actor_loop_app
+    stream = MetadataRecordingStream()
+    app.create_actor(
+        ActorConfig(id="amy", name="Amy", workspace=str(workspace), model="main"),
+        stream,
+    )
+
+    await app.chat("amy", "private user text", conversation_id="conversation-1")
+
+    assert stream.metadata == [
+        {
+            "trace_id": "conversation-1",
+            "actor_id": "amy",
+            "conversation_id": "conversation-1",
+            "purpose": "chat",
+        }
+    ]
+    assert "private user text" not in str(stream.metadata)
+
+
+@pytest.mark.asyncio
+async def test_actor_inbound_without_conversation_creates_new_default_after_ttl(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> None:
     app, workspace = actor_loop_app
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )
-    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(
+        ActorMessage("first", source={"inbound_kind": "actor_inbound"})
+    )
     first_conversation = actor._mailbox_conversation
     assert first_conversation is not None
 
     app.runtime.conversations.ttl_s = -1
-    await actor.handle_mailbox_message(ActorMessage("second", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(
+        ActorMessage("second", source={"inbound_kind": "actor_inbound"})
+    )
 
     assert actor._mailbox_conversation is not None
     assert actor._mailbox_conversation != first_conversation
 
 
 @pytest.mark.asyncio
-async def test_actor_explicit_conversation_and_callback_roles(actor_loop_app: tuple[Yuubot, Path]) -> None:
+async def test_actor_explicit_conversation_and_callback_roles(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> None:
     app, workspace = actor_loop_app
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )
@@ -174,33 +232,47 @@ async def test_actor_explicit_conversation_and_callback_roles(actor_loop_app: tu
 
 
 @pytest.mark.asyncio
-async def test_actor_mailbox_compacts_once_and_continues(actor_loop_app: tuple[Yuubot, Path]) -> None:
+async def test_actor_mailbox_compacts_once_and_continues(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> None:
     app, workspace = actor_loop_app
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
             context_compression_tokens=5,
         ),
         PromptConditionedProvider(
             [
-                (prompt_contains("Summarize the current work"), reply_text("summary text", {"input_tokens": 1})),
+                (
+                    prompt_contains("Summarize the current work"),
+                    reply_text("summary text", {"input_tokens": 1}),
+                ),
                 (
                     user_message_contains("automatic context compression continuation"),
                     reply_text("continued", {"input_tokens": 1}),
                 ),
-                (user_message_contains("first"), reply_text("old done", {"input_tokens": 5})),
+                (
+                    user_message_contains("first"),
+                    reply_text("old done", {"input_tokens": 5}),
+                ),
             ]
         ),
     )
 
-    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(
+        ActorMessage("first", source={"inbound_kind": "actor_inbound"})
+    )
 
     new_conversation = actor._mailbox_conversation
     assert new_conversation is not None
-    compacted_event = next(event for event in app.runtime.eventbus.events if event.kind == "actor.context_compacted")
+    compacted_event = next(
+        event
+        for event in app.runtime.eventbus.events
+        if event.kind == "actor.context_compacted"
+    )
     assert isinstance(compacted_event.payload, ActorContextCompactedPayload)
     old_conversation = compacted_event.payload.old_conversation_id
     assert new_conversation == compacted_event.payload.new_conversation_id
@@ -223,45 +295,61 @@ async def test_actor_mailbox_second_compaction_trigger_discards_runtime_conversa
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
             context_compression_tokens=5,
         ),
         PromptConditionedProvider(
             [
-                (prompt_contains("Summarize the current work"), reply_text("summary text", {"input_tokens": 1})),
+                (
+                    prompt_contains("Summarize the current work"),
+                    reply_text("summary text", {"input_tokens": 1}),
+                ),
                 (
                     user_message_contains("automatic context compression continuation"),
                     reply_text("continued", {"input_tokens": 5}),
                 ),
-                (user_message_contains("first"), reply_text("old done", {"input_tokens": 5})),
+                (
+                    user_message_contains("first"),
+                    reply_text("old done", {"input_tokens": 5}),
+                ),
             ]
         ),
     )
 
-    await actor.handle_mailbox_message(ActorMessage("first", source={"inbound_kind": "actor_inbound"}))
+    await actor.handle_mailbox_message(
+        ActorMessage("first", source={"inbound_kind": "actor_inbound"})
+    )
 
-    stopped_event = next(event for event in app.runtime.eventbus.events if event.kind == "actor.context_compaction_stopped")
+    stopped_event = next(
+        event
+        for event in app.runtime.eventbus.events
+        if event.kind == "actor.context_compaction_stopped"
+    )
     assert isinstance(stopped_event.payload, ActorContextCompactionStoppedPayload)
     stopped_conversation = stopped_event.payload.conversation_id
     assert actor._mailbox_conversation is None
     assert actor.status == "idle"
     assert not app.runtime.conversations.has(stopped_conversation)
     assert await app.runtime.history.conversation_meta(stopped_conversation) is not None
-    assert await app.runtime.state.load_costs(stopped_conversation)
+    assert await app.runtime.state.load_usage(stopped_conversation)
 
 
 @pytest.mark.asyncio
-async def test_actor_explicit_conversation_does_not_compact(actor_loop_app: tuple[Yuubot, Path]) -> None:
+async def test_actor_explicit_conversation_does_not_compact(
+    actor_loop_app: tuple[Yuubot, Path],
+) -> None:
     app, workspace = actor_loop_app
     actor = app.create_actor(
         ActorConfig(
             id="amy",
             name="Amy",
             workspace=str(workspace),
-            model=ModelCard("fake"),
+            model="fake",
             context_compression_tokens=5,
         ),
-        PromptConditionedProvider([(user_message_contains("first"), reply_text("ok", {"input_tokens": 5}))]),
+        PromptConditionedProvider(
+            [(user_message_contains("first"), reply_text("ok", {"input_tokens": 5}))]
+        ),
     )
 
     await actor.handle_mailbox_message(
@@ -269,7 +357,9 @@ async def test_actor_explicit_conversation_does_not_compact(actor_loop_app: tupl
     )
 
     assert actor._mailbox_conversation is None
-    assert all(event.kind != "actor.context_compacted" for event in app.runtime.eventbus.events)
+    assert all(
+        event.kind != "actor.context_compacted" for event in app.runtime.eventbus.events
+    )
 
 
 @pytest.mark.asyncio
@@ -281,7 +371,7 @@ async def test_task_delivery_busy_does_not_append_developer_notice(tmp_path) -> 
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         provider,
     )
@@ -297,12 +387,16 @@ async def test_task_delivery_busy_does_not_append_developer_notice(tmp_path) -> 
             )
         )
 
-        items, _has_more = await app.runtime.history.load_interaction_wrapped("explicit")
+        items, _has_more = await app.runtime.history.load_interaction_wrapped(
+            "explicit"
+        )
         assert _input_roles(items) == ["user"]
 
         provider.release.set()
         await task
-        items, _has_more = await app.runtime.history.load_interaction_wrapped("explicit")
+        items, _has_more = await app.runtime.history.load_interaction_wrapped(
+            "explicit"
+        )
         assert _input_roles(items) == ["user"]
         assert items[-1]["kind"] == "gen_text"
     finally:

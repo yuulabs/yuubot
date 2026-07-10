@@ -46,7 +46,7 @@ class OAuthCredentialSecret(msgspec.Struct, frozen=True):
 def normalize_auth_mode(mode: str) -> McpAuthMode:
     mapped = _LEGACY_AUTH_MODES.get(mode, mode)
     if mapped in {"none", "api_key", "oauth_auto", "oauth_manual"}:
-        return mapped  # type: ignore[return-value]
+        return cast(McpAuthMode, mapped)
     raise ValueError(f"unsupported MCP auth mode: {mode}")
 
 

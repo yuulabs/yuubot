@@ -2,20 +2,20 @@
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, TypeVar, cast
 
 import msgspec
-from attrs import define, field
+from attrs import define
 
 from ..db import Database
 from ..util.time import utc_now_iso
 from ..db.migrate import current_version
-from ..domain.messages import ModelCard
+
 from ..domain.records import (
     ActorRecord,
     ActorStatus,
     ConversationRow,
-    CostRow,
+    UsageRow,
     IntegrationStatus,
     LifecycleError,
     RouteRecord,
@@ -24,10 +24,11 @@ from ..domain.records import (
 )
 from ..domain.stream import Usage
 from ..integrations import IntegrationRecord
+from ..llm.gateway import AliasRecord, EndpointRecord, validate_alias, validate_endpoint
 from .mcp import McpCapabilityIndex, McpServerRecord
 from .skills import SkillRecord
 from .auth_attempts import AuthAttempt
-from ..llm.records import ProviderRecord
+
 from .shares import ShareGrant
 
 
@@ -66,6 +67,68 @@ class ApplicationStateStore:
 
     async def schema_version(self) -> int:
         return await current_version(self._db)
+
+    async def list_gateway_endpoints(self) -> list[EndpointRecord]:
+        cursor = await self._db.execute(
+            "select payload from app_gateway_endpoints order by id"
+        )
+        rows = list(await cursor.fetchall())
+        endpoints = [msgspec.json.decode(row[0], type=EndpointRecord) for row in rows]
+        for endpoint in endpoints:
+            validate_endpoint(endpoint)
+        return endpoints
+
+    async def put_gateway_endpoint(self, endpoint: EndpointRecord) -> None:
+        validate_endpoint(endpoint)
+        await self._db.execute(
+            """
+            insert into app_gateway_endpoints (id, payload, updated_at)
+            values (?, ?, ?)
+            on conflict(id) do update set
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (endpoint.id, msgspec.json.encode(endpoint), utc_now_iso()),
+        )
+        await self._db.commit()
+
+    async def delete_gateway_endpoint(self, endpoint_id: str) -> bool:
+        cursor = await self._db.execute(
+            "delete from app_gateway_endpoints where id = ?", (endpoint_id,)
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def list_gateway_aliases(self) -> list[AliasRecord]:
+        cursor = await self._db.execute(
+            "select payload from app_gateway_aliases order by id"
+        )
+        rows = await cursor.fetchall()
+        aliases = [msgspec.json.decode(row[0], type=AliasRecord) for row in rows]
+        for alias in aliases:
+            validate_alias(alias)
+        return aliases
+
+    async def put_gateway_alias(self, alias: AliasRecord) -> None:
+        validate_alias(alias)
+        await self._db.execute(
+            """
+            insert into app_gateway_aliases (id, payload, updated_at)
+            values (?, ?, ?)
+            on conflict(id) do update set
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (alias.id, msgspec.json.encode(alias), utc_now_iso()),
+        )
+        await self._db.commit()
+
+    async def delete_gateway_alias(self, alias_id: str) -> bool:
+        cursor = await self._db.execute(
+            "delete from app_gateway_aliases where id = ?", (alias_id,)
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     # --- generic CRUD primitives -------------------------------------------------
 
@@ -138,78 +201,9 @@ class ApplicationStateStore:
         )
         await self._db.commit()
 
-    # --- providers ---------------------------------------------------------------
-
-    _PROVIDERS = Table[ProviderRecord](
-        name="llm_providers",
-        id_columns=("id",),
-        record_type=ProviderRecord,
-        columns=("id", "name", "protocol", "config", "last_error"),
-        order_by="id",
-        to_row=lambda r, _: (r.id, r.name, r.protocol, msgspec.json.encode(r.config), r.last_error),
-        from_row=lambda row: ProviderRecord(
-            row[0],
-            row[1],
-            row[2],
-            msgspec.json.decode(row[3], type=dict[str, object]),
-            row[4],
-        ),
-    )
-
-    async def list_providers(self) -> list[ProviderRecord]:
-        return await self._store_list(self._PROVIDERS)
-
-    async def load_provider(self, provider_id: str) -> ProviderRecord:
-        return await self._store_load(self._PROVIDERS, provider_id)
-
-    async def put_provider(self, record: ProviderRecord) -> None:
-        await self._store_put(self._PROVIDERS, record)
-
-    async def set_provider_last_error(self, provider_id: str, last_error: str | None) -> None:
-        await self._store_set_col(self._PROVIDERS, "last_error", last_error, provider_id)
-
-    async def delete_provider(self, provider_id: str) -> bool:
-        return await self._store_delete(self._PROVIDERS, provider_id)
-
-    # --- model cards -------------------------------------------------------------
-
-    _MODEL_CARDS = Table[ModelCard](
-        name="model_cards",
-        id_columns=("provider_id", "selector"),
-        record_type=ModelCard,
-        columns=("provider_id", "selector", "payload"),
-        order_by="selector",
-        to_row=lambda c, x: (x["provider_id"], c.selector, msgspec.json.encode(c)),
-        from_row=lambda row: msgspec.json.decode(row[2], type=ModelCard),
-    )
-
-    async def list_model_cards(self, provider_id: str) -> list[ModelCard]:
-        cursor = await self._db.execute(
-            "select payload from model_cards where provider_id = ? order by selector",
-            (provider_id,),
-        )
-        rows = await cursor.fetchall()
-        return [msgspec.json.decode(payload, type=ModelCard) for payload, in rows]
-
-    async def load_model_card(self, provider_id: str, selector: str) -> ModelCard | None:
-        cursor = await self._db.execute(
-            "select payload from model_cards where provider_id = ? and selector = ?",
-            (provider_id, selector),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return msgspec.json.decode(row[0], type=ModelCard)
-
-    async def upsert_model_card(self, provider_id: str, card: ModelCard) -> None:
-        await self._store_put(self._MODEL_CARDS, card, provider_id=provider_id)
-
-    async def delete_model_card(self, provider_id: str, selector: str) -> bool:
-        return await self._store_delete(self._MODEL_CARDS, provider_id, selector)
-
     # --- integrations ------------------------------------------------------------
 
-    _INTEGRATIONS = Table[IntegrationRecord](
+    _INTEGRATIONS: Table[Any] = Table(
         name="app_integrations",
         id_columns=("type",),
         record_type=IntegrationRecord,
@@ -225,7 +219,7 @@ class ApplicationStateStore:
     )
 
     async def load_integrations(self) -> list[tuple[IntegrationRecord, bool, dict[str, object] | None]]:
-        return await self._store_list(self._INTEGRATIONS)
+        return cast(list[tuple[IntegrationRecord, bool, dict[str, object] | None]], await self._store_list(self._INTEGRATIONS))
 
     async def put_integration(self, record: IntegrationRecord, enabled: bool, last_error: LifecycleError | None = None) -> None:
         await self._store_put(self._INTEGRATIONS, record, enabled=enabled, last_error=last_error)
@@ -247,7 +241,7 @@ class ApplicationStateStore:
 
     # --- mcp servers -------------------------------------------------------------
 
-    _MCP = Table[McpServerRecord](
+    _MCP: Table[Any] = Table(
         name="app_mcp_servers",
         id_columns=("id",),
         record_type=McpServerRecord,
@@ -273,7 +267,10 @@ class ApplicationStateStore:
     )
 
     async def load_mcp_servers(self) -> list[tuple[McpServerRecord, bool, str | None, McpCapabilityIndex | None]]:
-        return await self._store_list(self._MCP)
+        return cast(
+            list[tuple[McpServerRecord, bool, str | None, McpCapabilityIndex | None]],
+            await self._store_list(self._MCP),
+        )
 
     async def put_mcp_server(
         self,
@@ -309,8 +306,22 @@ class ApplicationStateStore:
     async def put_skill(self, record: SkillRecord) -> None:
         await self._store_put(self._SKILLS, record)
 
-    async def delete_skill(self, skill_id: str) -> bool:
-        return await self._store_delete(self._SKILLS, skill_id)
+    async def delete_skill(self, skill_id: str, tombstone: bool = False) -> bool:
+        async with self._db.transaction():
+            cursor = await self._db.execute("delete from app_skills where id = ?", (skill_id,))
+            if tombstone:
+                await self._db.execute("insert or replace into app_skill_tombstones (id) values (?)", (skill_id,))
+            else:
+                await self._db.execute("delete from app_skill_tombstones where id = ?", (skill_id,))
+        return cursor.rowcount > 0
+
+    async def load_skill_tombstones(self) -> set[str]:
+        cursor = await self._db.execute("select id from app_skill_tombstones")
+        return {str(row[0]) for row in await cursor.fetchall()}
+
+    async def clear_skill_tombstone(self, skill_id: str) -> None:
+        await self._db.execute("delete from app_skill_tombstones where id = ?", (skill_id,))
+        await self._db.commit()
 
     # --- auth attempts -----------------------------------------------------------
 
@@ -335,7 +346,7 @@ class ApplicationStateStore:
 
     # --- actors ------------------------------------------------------------------
 
-    _ACTORS = Table[ActorRecord](
+    _ACTORS: Table[Any] = Table(
         name="app_actors",
         id_columns=("id",),
         record_type=ActorRecord,
@@ -347,7 +358,7 @@ class ApplicationStateStore:
     )
 
     async def load_actor_records(self) -> list[tuple[ActorRecord, bool]]:
-        return await self._store_list(self._ACTORS)
+        return cast(list[tuple[ActorRecord, bool]], await self._store_list(self._ACTORS))
 
     async def put_actor(self, record: ActorRecord, enabled: bool = True, status: str = "idle", last_error: LifecycleError | None = None) -> None:
         await self._store_put(self._ACTORS, record, enabled=enabled)
@@ -446,55 +457,110 @@ class ApplicationStateStore:
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         conversation = await self._db.execute("delete from app_conversations where id = ?", (conversation_id,))
-        costs = await self._db.execute("delete from app_costs where conversation_id = ?", (conversation_id,))
+        usage = await self._db.execute("delete from app_usage where conversation_id = ?", (conversation_id,))
         await self._db.commit()
-        return conversation.rowcount > 0 or costs.rowcount > 0
+        return conversation.rowcount > 0 or usage.rowcount > 0
 
-    # --- costs -------------------------------------------------------------------
+    # --- usage -------------------------------------------------------------------
 
-    async def append_cost(self, conversation_id: str, usage: Usage, account: dict[str, object], estimated: bool) -> CostRow:
+    async def append_usage(self, conversation_id: str, usage: Usage, account: dict[str, object]) -> UsageRow:
         created_at = utc_now_iso()
         usage_payload = msgspec.json.encode(usage)
         account_payload = msgspec.json.encode(account)
         async with self._db.transaction():
             cursor = await self._db.execute(
-                "select coalesce(max(seq) + 1, 0) from app_costs where conversation_id = ?",
+                "select coalesce(max(seq) + 1, 0) from app_usage where conversation_id = ?",
                 (conversation_id,),
             )
             row = await cursor.fetchone()
             if row is None:
-                raise RuntimeError("cost sequence query returned no row")
+                raise RuntimeError("usage sequence query returned no row")
             seq = row[0]
             await self._db.execute(
-                "insert into app_costs (conversation_id, seq, usage, account, estimated, created_at) values (?, ?, ?, ?, ?, ?)",
-                (conversation_id, seq, usage_payload, account_payload, int(estimated), created_at),
+                "insert into app_usage (conversation_id, seq, usage, account, created_at) values (?, ?, ?, ?, ?)",
+                (conversation_id, seq, usage_payload, account_payload, created_at),
             )
-        return CostRow(
+        return UsageRow(
             conversation_id,
             seq,
             usage,
             dict(account),
-            estimated,
             created_at,
         )
 
-    async def load_costs(self, conversation_id: str) -> list[CostRow]:
+    async def load_usage(self, conversation_id: str) -> list[UsageRow]:
         cursor = await self._db.execute(
-            "select seq, usage, account, estimated, created_at from app_costs where conversation_id = ? order by seq",
+            "select seq, usage, account, created_at from app_usage where conversation_id = ? order by seq",
             (conversation_id,),
         )
         rows = await cursor.fetchall()
         return [
-            CostRow(
+            UsageRow(
                 conversation_id,
                 seq,
                 msgspec.json.decode(usage, type=Usage),
                 msgspec.json.decode(account, type=dict[str, object]) if account is not None else {},
-                bool(estimated),
                 created_at,
             )
-            for seq, usage, account, estimated, created_at in rows
+            for seq, usage, account, created_at in rows
         ]
+
+    async def usage_dashboard(self, since: str | None = None) -> dict[str, object]:
+        query = "select usage, account from app_usage"
+        params: tuple[object, ...] = ()
+        if since is not None:
+            query += " where created_at >= ?"
+            params = (since,)
+        cursor = await self._db.execute(query, params)
+        rows = list(await cursor.fetchall())
+        input_tokens = cached_input_tokens = cache_write_tokens = output_tokens = 0
+        latency_total = 0.0
+        latency_samples = 0
+        fallback_requests = 0
+        endpoints: dict[str, int] = {}
+        models: dict[str, int] = {}
+        for usage_payload, account_payload in rows:
+            usage = msgspec.json.decode(usage_payload, type=Usage)
+            account = (
+                msgspec.json.decode(account_payload, type=dict[str, object])
+                if account_payload is not None
+                else {}
+            )
+            input_tokens += usage.input_tokens
+            cached_input_tokens += usage.cached_input_tokens
+            cache_write_tokens += usage.cache_write_tokens
+            output_tokens += usage.output_tokens
+            latency = account.get("gateway_latency_ms")
+            if isinstance(latency, int | float) and not isinstance(latency, bool):
+                latency_total += float(latency)
+                latency_samples += 1
+            endpoint_id = account.get("endpoint_id")
+            model = account.get("model")
+            if isinstance(endpoint_id, str) and endpoint_id:
+                endpoints[endpoint_id] = endpoints.get(endpoint_id, 0) + 1
+            if isinstance(model, str) and model:
+                key = f"{endpoint_id}/{model}" if isinstance(endpoint_id, str) else model
+                models[key] = models.get(key, 0) + 1
+            path = account.get("fallback_path")
+            if isinstance(path, list) and len(path) > 1:
+                fallback_requests += 1
+        return {
+            "requests": len(rows),
+            "input_tokens": input_tokens,
+            "cached_input_tokens": cached_input_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "output_tokens": output_tokens,
+            "avg_gateway_latency_ms": latency_total / latency_samples if latency_samples else 0,
+            "fallback_requests": fallback_requests,
+            "endpoints": [
+                {"name": name, "requests": count}
+                for name, count in sorted(endpoints.items(), key=lambda item: (-item[1], item[0]))
+            ],
+            "models": [
+                {"name": name, "requests": count}
+                for name, count in sorted(models.items(), key=lambda item: (-item[1], item[0]))
+            ],
+        }
 
     # --- routes ------------------------------------------------------------------
 

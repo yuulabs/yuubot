@@ -1,5 +1,5 @@
 import type {
-  ConversationCostRecord,
+  ConversationUsageRecord,
   ConversationHistoryResponse,
   ConversationSummary,
   HistoryItem,
@@ -60,8 +60,8 @@ export function deleteConversation(conversationId: string): Promise<{ id: string
   return request<{ id: string; deleted: boolean }>(`${BASE}/conversations/${encodeURIComponent(conversationId)}`, { method: "DELETE" });
 }
 
-export function getConversationCosts(conversationId: string): Promise<ItemsResponse<ConversationCostRecord>> {
-  return request<ItemsResponse<ConversationCostRecord>>(`${BASE}/conversations/${encodeURIComponent(conversationId)}/costs`);
+export function getConversationUsage(conversationId: string): Promise<ItemsResponse<ConversationUsageRecord>> {
+  return request<ItemsResponse<ConversationUsageRecord>>(`${BASE}/conversations/${encodeURIComponent(conversationId)}/usage`);
 }
 
 export function mergeHistoryItems(current: HistoryItem[], incoming: HistoryItem[]): HistoryItem[] {

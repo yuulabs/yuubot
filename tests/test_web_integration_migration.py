@@ -36,6 +36,29 @@ async def test_migration_renames_tavily_web_integration_to_web(tmp_path: Path) -
                 created_at text not null,
                 updated_at text not null
             );
+            create table app_actors (
+                id text primary key,
+                payload blob not null,
+                enabled integer not null,
+                status text not null default 'idle',
+                last_error blob,
+                updated_at text not null
+            );
+            create table llm_providers (
+                id text primary key,
+                name text not null,
+                protocol text not null,
+                config blob not null,
+                last_error text,
+                updated_at text not null
+            );
+            create table model_cards (
+                provider_id text not null references llm_providers(id) on delete cascade,
+                selector text not null,
+                payload blob not null,
+                updated_at text not null,
+                primary key (provider_id, selector)
+            );
             """
         )
         old_record = IntegrationRecord(

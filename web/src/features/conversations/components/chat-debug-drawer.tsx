@@ -1,9 +1,9 @@
 export function ChatDebugDrawer({
   events,
-  costsJson,
+  usageJson,
 }: {
   events: string[];
-  costsJson: string;
+  usageJson: string;
 }) {
   return (
     <aside className="chat-debug-drawer" aria-label="Debug">
@@ -24,9 +24,9 @@ export function ChatDebugDrawer({
           ))
         )}
         <div className="chat-bind__line">
-          <span>Costs</span>
+          <span>Usage</span>
         </div>
-        <pre className="msg__code">{costsJson || "No cost records."}</pre>
+        <pre className="msg__code">{usageJson || "No usage records."}</pre>
       </div>
     </aside>
   );

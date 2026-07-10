@@ -12,15 +12,13 @@ export function ActorNewPage() {
   const { data, error, isLoading } = useBootstrap();
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState error={error} />;
-  const firstProvider = data?.providers[0]?.id ?? "";
   const initialActor: ActorRecord = {
     id: "amy",
     name: "Amy",
     description: "Default assistant",
     workspace: "amy",
     persona: "",
-    model: { selector: "", toolcall: true, json: true },
-    provider: firstProvider,
+    model: { type: "alias", alias: "" },
     context_compression_tokens: 262144,
   };
   return (

@@ -19,6 +19,7 @@ def test_all_facade_packages_include_registered_integrations_and_runtime_facades
     assert "yext.github" in ALL_FACADE_PACKAGES
     assert "yext.web" in ALL_FACADE_PACKAGES
     assert "yb.tasks" in ALL_FACADE_PACKAGES
+    assert "yb.fixer" in ALL_FACADE_PACKAGES
     assert "yb.mcps" in ALL_FACADE_PACKAGES
     assert "yb.skills" in ALL_FACADE_PACKAGES
     assert "yb.office.pdf" in ALL_FACADE_PACKAGES

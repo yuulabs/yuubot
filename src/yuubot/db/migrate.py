@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _MIGRATION_PATTERN = re.compile(r"^(\d+)_.*\.sql$")
+_PROVIDER_CONTROL_PLANE_DROP_VERSION = 10
 
 
 def migration_files() -> list[tuple[int, Path]]:
@@ -51,5 +52,11 @@ async def migrate(db: Database) -> int:
             (str(version),),
         )
         await db.commit()
+        if version == _PROVIDER_CONTROL_PLANE_DROP_VERSION:
+            # The dropped provider rows may have contained credentials. A
+            # secure-delete rewrite plus WAL truncation ensures old frames do
+            # not remain in SQLite sidecar files after the migration commits.
+            cursor = await db.execute("pragma wal_checkpoint(truncate)")
+            await cursor.fetchall()
         applied = version
     return applied

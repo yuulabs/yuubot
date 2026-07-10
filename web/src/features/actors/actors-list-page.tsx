@@ -14,6 +14,7 @@ import {
   Status,
 } from "@/shared/components";
 import { useApiMutation, useBootstrap } from "@/shared/hooks";
+import { formatModelSelector } from "./model-selector";
 
 export function ActorsListPage() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -66,8 +67,7 @@ export function ActorsListPage() {
             >
               <ResourceMeta
                 items={[
-                  { label: "Provider", value: actor.provider || "unbound", tone: actor.provider ? "default" : "warning" },
-                  { label: "Model", value: actor.model.selector || "missing", tone: actor.model.selector ? "default" : "warning" },
+                  { label: "Model", value: formatModelSelector(actor.model), tone: actor.model ? "default" : "warning" },
                   { label: "Workspace", value: actor.workspace || actor.id, tone: "default" },
                   { label: "Health", value: actor.last_error ? "error" : "ready", tone: actor.last_error ? "warning" : "ok" },
                 ]}

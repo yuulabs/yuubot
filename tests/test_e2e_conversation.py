@@ -62,10 +62,10 @@ async def test_http_enabled_actor_receives_inbound_messages(test_context: Shared
 
 async def test_http_actor_blocked_state_visible_in_bootstrap(test_context: SharedTestContext) -> None:
     from yuubot.domain import StreamEvent, StreamStopPayload, TextDeltaPayload
-    from yuubot.llm import ScriptedProvider
+    from yuubot.llm import ScriptedStream
 
     actor_id = await test_context.setup_actor(
-        ScriptedProvider(
+        ScriptedStream(
             [
                 [
                     StreamEvent("text-1", "text_delta", TextDeltaPayload("partial")),

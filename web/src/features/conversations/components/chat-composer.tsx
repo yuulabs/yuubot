@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { MessageSquarePlus, Paperclip, SquareStop } from "lucide-react";
 
-import { CostBadge } from "@/components/conversation/cost-badge";
+import { UsageBadge } from "@/components/conversation/usage-badge";
 import type { ComposerSegment } from "@/shared/lib/workspace-ref";
 import type { ActorSnapshot } from "@/shared/types/api";
 
@@ -24,7 +24,7 @@ export function ChatComposer({
   onSend,
   onInterrupt,
   phase = "idle",
-  totalCost = 0,
+  totalTokens = 0,
   contextUsageLabel = "",
   canInterrupt = false,
   disabled = false,
@@ -47,7 +47,7 @@ export function ChatComposer({
   onSend: () => boolean;
   onInterrupt: () => void;
   phase?: ConversationPhase;
-  totalCost?: number;
+  totalTokens?: number;
   contextUsageLabel?: string;
   canInterrupt?: boolean;
   disabled?: boolean;
@@ -117,7 +117,7 @@ export function ChatComposer({
               </span>
             )}
             <TurnPill phase={phase} />
-            <CostBadge totalCost={totalCost} />
+            <UsageBadge totalTokens={totalTokens} />
           </div>
         </div>
 

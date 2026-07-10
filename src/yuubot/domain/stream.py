@@ -1,10 +1,10 @@
-"""Stream protocol types, event merging, and cost estimation."""
+"""Stream protocol types and event merging."""
 
 from typing import Literal
 
 import msgspec
 
-from .messages import GenOutput, GenReasoning, GenText, GenToolCall, ModelCard
+from .messages import GenOutput, GenReasoning, GenText, GenToolCall
 
 StopReason = Literal["stop", "length", "tool_calls", "content_filter", "function_call", "interrupted"]
 StreamKind = Literal[
@@ -22,15 +22,16 @@ StreamKind = Literal[
 class Usage(msgspec.Struct, frozen=True):
     input_tokens: int = 0
     cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
     output_tokens: int = 0
-    payg_cost: float | None = None
+    input_details: dict[str, int | float] = msgspec.field(default_factory=dict)
+    output_details: dict[str, int | float] = msgspec.field(default_factory=dict)
 
 
 class StreamStop(msgspec.Struct, frozen=True):
     reason: StopReason
     usage: Usage = msgspec.field(default_factory=Usage)
     account: dict[str, object] = msgspec.field(default_factory=dict)
-    cost_estimated: bool = False
 
 
 class TextDeltaPayload(msgspec.Struct, frozen=True):
@@ -70,7 +71,6 @@ class StreamStopPayload(msgspec.Struct, frozen=True):
     reason: StopReason = "stop"
     usage: Usage = msgspec.field(default_factory=Usage)
     account: dict[str, object] = msgspec.field(default_factory=dict)
-    cost_estimated: bool = False
 
 
 StreamEventPayload = (
@@ -97,19 +97,6 @@ class ToolCall(msgspec.Struct, frozen=True):
     arguments: str
 
 
-def estimate_cost(model: ModelCard, usage: Usage) -> float:
-    input_price = model.input_price_per_million
-    cached_price = model.cached_input_price_per_million
-    output_price = model.output_price_per_million
-    if input_price is None or cached_price is None or output_price is None:
-        return 0.0
-    return (
-        usage.input_tokens * input_price
-        + usage.cached_input_tokens * cached_price
-        + usage.output_tokens * output_price
-    ) / 1_000_000
-
-
 def merge(events: list[StreamEvent], drop_partial_toolcall: bool = True) -> tuple[list[GenOutput], StreamStop]:
     text: dict[str, list[str]] = {}
     reasoning: dict[str, list[str]] = {}
@@ -126,7 +113,6 @@ def merge(events: list[StreamEvent], drop_partial_toolcall: bool = True) -> tupl
                 payload.reason,
                 payload.usage,
                 payload.account,
-                payload.cost_estimated,
             )
         elif event.kind == "text_delta":
             payload = event.payload

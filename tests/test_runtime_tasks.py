@@ -7,9 +7,8 @@ from pathlib import Path
 import pytest
 
 from yuubot.app import Yuubot
-from yuubot.domain import ConversationContext, LLMInput, ModelCard, StreamEvent, StreamStopPayload, TextDeltaPayload
-from yuubot.llm import merge_catalog, scripted_reply
-from yuubot.llm.types import AccountSnapshot, ValidationResult
+from yuubot.domain import ConversationContext, LLMInput, StreamEvent, StreamStopPayload, TextDeltaPayload
+from yuubot.llm import scripted_reply
 from yuubot.runtime.cache import CachePool
 from yuubot.runtime.tasks import (
     PENDING_DELIVERY_TASK_RETENTION_S,
@@ -37,30 +36,16 @@ class BlockingProvider:
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def list_presets(self) -> list[ModelCard]:
-        return []
-
-    async def list_remote_models(self) -> list[str]:
-        return []
-
-    def merge_catalog(self, presets: list[ModelCard], remote: list[str]) -> list[ModelCard]:
-        return merge_catalog(presets, remote)
-
-    async def get_balance(self) -> AccountSnapshot | None:
-        return None
-
-    async def validate(self) -> ValidationResult:
-        return ValidationResult(True)
-
     async def stream(
         self,
         input: LLMInput,
-        model: ModelCard,
+        model: str,
         context: ConversationContext,
         cache: CachePool,
         stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        del input, model, context, cache, stop_event
+        del input, model, context, cache, stop_event, metadata
         self.started.set()
         await self.release.wait()
         yield StreamEvent("text-1", "text_delta", TextDeltaPayload("ok"))
@@ -320,7 +305,7 @@ async def test_task_delivery_queues_while_conversation_busy(tmp_path: Path) -> N
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         provider,
     )
@@ -362,7 +347,7 @@ async def test_suppressed_conversation_delivery_skips_pending_and_future_tasks(t
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         provider,
     )
@@ -408,6 +393,51 @@ async def test_suppressed_conversation_delivery_skips_pending_and_future_tasks(t
 
 
 @pytest.mark.asyncio
+async def test_parent_interrupt_preserves_queued_agent_task_delivery(tmp_path: Path) -> None:
+    from yuubot.actor import ActorConfig
+
+    app = await Yuubot.create(tmp_path / "data")
+    provider = BlockingProvider()
+    app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(tmp_path / "workspace"),
+            model="fake",
+        ),
+        provider,
+    )
+    try:
+        chat_task = asyncio.create_task(app.chat("amy", "first", conversation_id="agent-interrupt-c1"))
+        await provider.started.wait()
+        conversation = app.runtime.conversations.get_if_present("agent-interrupt-c1")
+        assert conversation is not None
+        record = RuntimeTaskRecord(
+            "t-agent-interrupt",
+            "actor:amy:conv:agent-interrupt-c1",
+            "agent",
+            "reviewer:t-agent-interrupt",
+            status="done",
+            delivery="conversation",
+            delivery_state="queued",
+            metadata={"subagent": "reviewer", "model_tier": "same"},
+        )
+        app.runtime.tasks.put(record)
+        conversation.queue_task_delivery(record.id)
+
+        assert app.interrupt("agent-interrupt-c1")
+        assert record.delivery_state == "queued"
+        assert conversation.pending_task_delivery_ids() == [record.id]
+
+        provider.release.set()
+        await chat_task
+        await wait_for_delivery_state(record, "delivered")
+    finally:
+        provider.release.set()
+        await app.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_discarded_conversation_skips_queued_task_deliveries(tmp_path: Path) -> None:
     from yuubot.actor import ActorConfig
 
@@ -417,7 +447,7 @@ async def test_discarded_conversation_skips_queued_task_deliveries(tmp_path: Pat
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )
@@ -509,7 +539,7 @@ async def test_manual_delivery_skips_delivery(tmp_path: Path) -> None:
             id="amy",
             name="Amy",
             workspace=str(tmp_path / "workspace"),
-            model=ModelCard("fake"),
+            model="fake",
         ),
         scripted_reply("ok"),
     )

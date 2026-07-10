@@ -65,6 +65,31 @@ Useful deploy-time overrides (all optional):
 | `YUUBOT_PUBLIC_URL` | interactive prompt; when set, enables `public_server` |
 | `YUUBOT_SERVICE_USER` / `YUUBOT_SERVICE_GROUP` | current user / group |
 
+## Configure the OpenAI-compatible Gateway
+
+The Admin **Gateway** page owns two resources:
+
+- **Endpoint**: a standard OpenAI-compatible `/v1` base URL, optional encrypted
+  API key, timeouts, connection state, and discovered `/v1/models` IDs.
+- **Alias**: an ordered `endpoint/model` fallback chain plus administrator
+  declared input modalities. Alias capability is not inferred from model names.
+
+An Actor selects either an Alias or an exact `endpoint/model`. Exact selections
+bypass Alias routing. Alias fallback happens only before the first visible
+stream event, and each target is attempted at most once.
+
+There are two supported deployment paths:
+
+1. Connect yuubot directly to any compatible hosted or local Endpoint.
+2. For budgets, accurate billing, rate limits, supplier routing, or more complex
+   governance, operate your own OpenAI-compatible gateway and connect it as one
+   Endpoint. All such policy remains owned by that external gateway.
+
+yuubot does not calculate monetary cost. The compatibility protocol does not
+standardize billing, while cache writes, hosted search, audio, images, and video
+change independently across suppliers. The Usage Dashboard therefore reports
+requests, tokens, latency, actual endpoint/model, and fallback paths only.
+
 ## Config
 
 Fresh installs get this shape from the deploy script:
@@ -130,8 +155,13 @@ The main database is `<data_dir>/db/yuubot.db`. Workspaces, logs, KV, temp files
 and public shares live under `<data_dir>/workspace`, `<data_dir>/logs`,
 `<data_dir>/kv`, `<data_dir>/tmp`, and `<data_dir>/published`.
 
-Providers, integrations, actors, routes, and model cards are stored in the
-database and managed from the Admin UI.
+Integrations, actors, routes, Gateway Endpoints, and Aliases are stored in the
+database and managed from the Admin UI. Endpoint API keys are encrypted; the
+credential encryption key is stored under `<data_dir>/secrets/`.
+
+Configure connections from the **Gateway** page. A failed model refresh does
+not stop the Admin listener and does not erase the last discovered model list.
+Exact model selections remain valid even when a model is not currently listed.
 
 ### Public surface
 

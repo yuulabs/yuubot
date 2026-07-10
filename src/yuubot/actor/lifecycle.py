@@ -14,8 +14,9 @@ from attrs import define, field
 from ..chat import Conversation, ConversationBlocked, ConversationBusy
 from ..chat.harness import HarnessConfig
 from ..chat.history import HistoryHelper
-from ..llm import Provider
-from ..domain.messages import ActorMessage, ConversationContext, GenReasoning, GenText, InputMessage, ModelCard, text_content
+from ..llm.gateway import StreamClient
+from ..domain.messages import ActorMessage, ConversationContext, GenReasoning, GenText, InputMessage, text_content
+from ..domain.models import ModelSelector
 from ..domain.records import DEFAULT_CONTEXT_COMPRESSION_TOKENS
 from ..python import KernelPool
 from ..runtime.event_payloads import (
@@ -39,7 +40,8 @@ class ActorConfig(msgspec.Struct, frozen=True, kw_only=True):
     description: str = ""
     workspace: str
     persona: str = ""
-    model: ModelCard
+    model: ModelSelector | str
+    model_supports_vision: bool = False
     context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
 
 
@@ -84,6 +86,7 @@ async def build_conversation_context(
         actor=actor_config.id,
         workspace=Path(actor_config.workspace).resolve(),
         rpc={"daemon_url": _daemon_url(runtime)},
+        model_supports_vision=actor_config.model_supports_vision,
     )
 
 
@@ -98,7 +101,7 @@ class Actor:
 
     config: ActorConfig
     runtime: Runtime
-    provider: Provider
+    stream_client: StreamClient
     mailbox: Mailbox
     kernels: KernelPool
     status: str = "idle"
@@ -108,14 +111,14 @@ class Actor:
     _mailbox_context_compactions: int = field(default=0, init=False)
 
     @classmethod
-    def from_config(cls, config: ActorConfig, runtime: Runtime, provider: Provider) -> Actor:
+    def from_config(cls, config: ActorConfig, runtime: Runtime, stream_client: StreamClient) -> Actor:
         prepare_workspace(Path(config.workspace))
         kernels = KernelPool(runtime.python_kernels, runtime.kernel_limiter)
         kernels.start()
         return cls(
             config=config,
             runtime=runtime,
-            provider=provider,
+            stream_client=stream_client,
             mailbox=runtime.get_mailbox(f"actor:{config.id}"),
             kernels=kernels,
         )
@@ -143,7 +146,7 @@ class Actor:
             cid,
             context,
             history,
-            self.provider,
+            self.stream_client,
             HarnessConfig(tools),
             self.runtime,
             prefix,

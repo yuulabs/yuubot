@@ -17,6 +17,7 @@ Concurrency contract
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
@@ -27,7 +28,7 @@ from .harness import Harness, HarnessConfig
 from .history import PREFIX_KINDS, HistoryHelper
 from .titles import title_from_user_message
 from ..actor.prompt import SessionMode, augment_user_message
-from ..llm import Provider
+from ..llm.gateway import RequestMetadata, StreamClient
 from ..domain.messages import (
     ContentItem,
     ConversationContext,
@@ -37,12 +38,13 @@ from ..domain.messages import (
     InputMessage,
     text_content,
 )
-from ..domain.stream import StreamEvent, StreamStop, estimate_cost, extract_tool_calls, merge
+from ..domain.stream import StreamEvent, StreamStop, extract_tool_calls, merge
 from ..runtime.event_payloads import (
-    ConversationCostPayload,
+    ConversationUsagePayload,
     ConversationInputPayload,
 )
 from ..runtime.tasks import skip_conversation_task_deliveries
+from ..runtime.turn_limits import TurnIdentity
 from ..util.asyncio_ import BackgroundSweeper
 from ..util.stream import stream_stop_from
 
@@ -96,7 +98,7 @@ class Conversation:
     id: str
     context: ConversationContext
     history: HistoryHelper
-    provider: Provider
+    stream_client: StreamClient
     harness_config: HarnessConfig
     runtime: "Runtime"
     prefix: list[dict[str, object]] = field(factory=list)
@@ -122,9 +124,21 @@ class Conversation:
         session_mode: SessionMode | None = None,
     ) -> list[GenOutput]:
         self._enter_run()
+        turn_token = ""
         try:
             await self._mark_status("active")
             if input.role == "user":
+                turn_id = uuid.uuid4().hex
+                turn_token = self.runtime.turn_limits.open(
+                    TurnIdentity(
+                        self.context.actor,
+                        self.id,
+                        turn_id,
+                        str(self.context.otel.get("trace_id") or self.id),
+                    )
+                )
+                self.context.rpc["turn_id"] = turn_id
+                self.context.rpc["turn_token"] = turn_token
                 self.runtime.allow_task_deliveries(self.id)
                 if session_mode is not None:
                     input = augment_user_message(input, session_mode)
@@ -146,6 +160,10 @@ class Conversation:
             await self._mark_status("interrupted")
             raise
         finally:
+            if turn_token:
+                self.runtime.turn_limits.close(turn_token)
+                self.context.rpc.pop("turn_id", None)
+                self.context.rpc.pop("turn_token", None)
             await self._exit_run()
 
     async def run_continuation(self, on_event: StreamCallback | None = None) -> list[GenOutput]:
@@ -201,7 +219,11 @@ class Conversation:
     def schedule_delta(self, chunk: StreamEvent) -> None:
         task = asyncio.create_task(self._emit_delta(chunk))
         self._pending_deltas.append(task)
-        task.add_done_callback(self._pending_deltas.remove)
+        task.add_done_callback(self._discard_pending_delta)
+
+    def _discard_pending_delta(self, task: asyncio.Task[None]) -> None:
+        if task in self._pending_deltas:
+            self._pending_deltas.remove(task)
 
     def queue_task_delivery(self, task_id: str) -> None:
         if task_id not in self._pending_task_deliveries:
@@ -265,12 +287,18 @@ class Conversation:
         try:
             while True:
                 stop_chunk: StreamEvent | None = None
-                async for chunk in self.provider.stream(
+                async for chunk in self.stream_client.stream(
                     self.history.to_llm_input(),
                     model=self.context.model,
                     context=self.context,
                     cache=self.runtime.cache,
                     stop_event=self.stop_event,
+                    metadata=RequestMetadata(
+                        trace_id=str(self.context.otel.get("trace_id") or self.id),
+                        actor_id=self.context.actor,
+                        conversation_id=self.id,
+                        purpose="chat",
+                    ).to_dict(),
                 ):
                     if chunk.kind != "stream_stop":
                         if on_event is not None:
@@ -289,7 +317,7 @@ class Conversation:
                     await self._emit_commit(outputs, True)
                 else:
                     terminal_append = await self._extend(outputs)
-                await self._record_cost(stop)
+                await self._record_usage(stop)
                 if stop.reason in {"stop", "interrupted"}:
                     await close_harness()
                     await self._mark_status("interrupted" if stop.reason == "interrupted" else "closed")
@@ -366,20 +394,19 @@ class Conversation:
 
     async def _flush_pending_deltas(self) -> None:
         while self._pending_deltas:
-            await asyncio.gather(*list(self._pending_deltas))
+            pending = self._pending_deltas
+            self._pending_deltas = []
+            await asyncio.gather(*pending)
 
-    async def _record_cost(self, stop: StreamStop) -> None:
-        estimated = stop.cost_estimated or stop.usage.payg_cost is None
-        payg_cost = stop.usage.payg_cost if stop.usage.payg_cost is not None else estimate_cost(self.context.model, stop.usage)
-        await self.runtime.state.append_cost(self.id, stop.usage, stop.account, estimated)
+    async def _record_usage(self, stop: StreamStop) -> None:
+        await self.runtime.state.append_usage(self.id, stop.usage, stop.account)
         self.runtime.emit(
-            ConversationCostPayload(
+            ConversationUsagePayload(
                 self.id,
                 stop.usage.input_tokens,
                 stop.usage.cached_input_tokens,
+                stop.usage.cache_write_tokens,
                 stop.usage.output_tokens,
-                payg_cost,
-                estimated,
                 stop.account,
             )
         )

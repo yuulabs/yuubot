@@ -23,9 +23,9 @@ from yuubot.app.deployment import (
     DeploymentConfig,
     deployment_listeners_for_serve,
 )
-from yuubot.domain.records import ActorInput, ActorModelInput, RouteRecord
+from yuubot.domain.records import RouteRecord
 from yuubot.integrations.records import IntegrationRecord
-from yuubot.llm import ModelCardInput, ProviderInput, ScriptedProvider
+from yuubot.llm import ScriptedStream
 from yuubot.domain.stream import StreamEvent, StreamStopPayload
 from yuubot.runtime.mcp import McpCapabilityIndex, McpServerRecord, McpToolSpec
 from yuubot.web.auth import SessionStore, is_auth_exempt
@@ -302,23 +302,12 @@ async def test_public_surface_webhook_requires_hmac_signature(tmp_path: Path, mo
     secret = "webhook-secret"
     monkeypatch.setenv("YUUBOT_GITHUB_WEBHOOK_SECRET", secret)
     app = await Yuubot.create(tmp_path / "data")
-    app.provider_instances["fake"] = ScriptedProvider([[StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))]])
-    await app.put_provider(
-        "fake",
-        ProviderInput(
-            "Fake",
-            "openai-compatible",
-            {"endpoint": "", "api_key": "test-key", "options": {}},
-        ),
-    )
-    await app.put_model_card(
-        "fake",
-        "fake",
-        ModelCardInput(toolcall=True, input_price_per_million=1.0, output_price_per_million=1.0),
-    )
+    app.gateway_client = ScriptedStream([[StreamEvent("stop", "stream_stop", StreamStopPayload("stop"))]])
+    from yuubot.domain.records import ActorInput
+
     await app.put_actor(
         "amy",
-        ActorInput(name="Amy", workspace=str(tmp_path / "workspace"), provider="fake", model=ActorModelInput("fake")),
+        ActorInput(name="Amy", workspace=str(tmp_path / "workspace"), model="fake"),
     )
     await app.enable_actor("amy")
     integration = IntegrationRecord("github", "github", "gh", {"access_token": "test-token"})

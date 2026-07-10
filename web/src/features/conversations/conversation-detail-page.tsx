@@ -6,7 +6,7 @@ import { useTopbarActions } from "@/features/shell/app-layout";
 import {
   createConversation,
   deleteConversation,
-  getConversationCosts,
+  getConversationUsage,
   uploadActorFile,
   type WsContentItem,
 } from "@/shared/lib/api";
@@ -22,7 +22,7 @@ import { ChatTopbar } from "./components/chat-topbar";
 import { ChatTranscript } from "./components/chat-transcript";
 import { useConversationSession } from "./hooks/use-conversation-session";
 import { parsePendingSend } from "./lib/pending-send";
-import { sumConversationCost } from "./lib/transcript";
+import { sumConversationTokens } from "./lib/transcript";
 
 export function ConversationDetailPage({
   conversationId,
@@ -53,7 +53,6 @@ export function ConversationDetailPage({
   const [debugOpen, setDebugOpen] = useState(false);
 
   const actors = bootstrap?.actors ?? [];
-  const providers = bootstrap?.providers ?? [];
   const durableSummary = conversations.data?.find((item) => item.id === conversationId);
   const selectedActor = useMemo(
     () => draftActorId || actorId || durableSummary?.actor_id || actors[0]?.id || "",
@@ -64,23 +63,20 @@ export function ConversationDetailPage({
   );
   const remove = useApiMutation((id: string) => deleteConversation(id));
   const selectedActorSnapshot = actors.find((actor) => actor.id === selectedActor);
-  const selectedProvider = providers.find((provider) => provider.id === selectedActorSnapshot?.provider);
   const disabledReason = !selectedActorSnapshot
     ? "Select an actor before sending."
     : !selectedActorSnapshot.enabled
       ? "Actor is disabled."
-      : !selectedProvider?.configured
-        ? "Actor provider is not configured."
-        : "";
+      : "";
 
   useEffect(() => {
     setSegments([]);
     setDraftText("");
   }, [conversationId, selectedActor]);
 
-  const costs = useQuery({
-    queryKey: ["conversation-costs", conversationId],
-    queryFn: () => getConversationCosts(conversationId),
+  const usage = useQuery({
+    queryKey: ["conversation-usage", conversationId],
+    queryFn: () => getConversationUsage(conversationId),
     enabled: !isDraft && !awaitingFirstSend,
   });
 
@@ -89,9 +85,9 @@ export function ConversationDetailPage({
   });
 
   const handleTurnComplete = useCallback(() => {
-    void costs.refetch();
+    void usage.refetch();
     void queryClient.invalidateQueries({ queryKey: conversationsQueryKey });
-  }, [costs, queryClient]);
+  }, [usage, queryClient]);
 
   const session = useConversationSession({
     conversationId,
@@ -120,19 +116,19 @@ export function ConversationDetailPage({
       state: {},
     });
     void queryClient.prefetchQuery({
-      queryKey: ["conversation-costs", conversationId],
-      queryFn: () => getConversationCosts(conversationId),
+      queryKey: ["conversation-usage", conversationId],
+      queryFn: () => getConversationUsage(conversationId),
     });
   }, [conversationId, isDraft, navigate, pendingSend, queryClient, session.send, session.wsReady]);
 
   const activeConversationId = session.activeConversationId || conversationId;
   const sendText = buildSendText(segments, draftText);
   const hasComposerContent = sendText.length > 0;
-  const totalCost = sumConversationCost(costs.data?.items ?? []);
-  const costItems = costs.data?.items ?? [];
-  const latestCostUsage = costItems.length ? costItems[costItems.length - 1].usage : undefined;
-  const latestInputTokens = durableSummary?.last_input_tokens ?? numericUsage(latestCostUsage?.input_tokens);
-  const maxContextTokens = selectedActorSnapshot?.model.max_context_tokens;
+  const totalTokens = sumConversationTokens(usage.data?.items ?? []);
+  const usageItems = usage.data?.items ?? [];
+  const latestUsage = usageItems.length ? usageItems[usageItems.length - 1].usage : undefined;
+  const latestInputTokens = durableSummary?.last_input_tokens ?? numericUsage(latestUsage?.input_tokens);
+  const maxContextTokens = null;
   const contextUsageLabel = `${formatTokens(latestInputTokens ?? 0)} / ${maxContextTokens ? formatTokens(maxContextTokens) : "unknown"}`;
   const displayItems = session.displayItems;
   const hasAcceptedDraftState = !isDraft
@@ -218,7 +214,7 @@ export function ConversationDetailPage({
             onSend={send}
             onInterrupt={() => session.interrupt(interruptTarget)}
             phase={session.phase}
-            totalCost={totalCost}
+            totalTokens={totalTokens}
             contextUsageLabel={contextUsageLabel}
             canInterrupt={Boolean(interruptTarget)}
             disabled={Boolean(disabledReason) || upload.isPending}
@@ -234,7 +230,7 @@ export function ConversationDetailPage({
           {bootstrap?.development && debugOpen && (
             <ChatDebugDrawer
               events={session.events}
-              costsJson={JSON.stringify(costs.data?.items ?? [], null, 2)}
+              usageJson={JSON.stringify(usage.data?.items ?? [], null, 2)}
             />
           )}
         </ChatMain>

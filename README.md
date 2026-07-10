@@ -1,6 +1,6 @@
 # yuubot
 
-yuubot 是一个面向 Agent 用户的本地控制台：你可以在 Web UI 里配置 LLM、集成和
+yuubot 是一个面向 Agent 用户的本地控制台：你可以在 Web UI 里配置 OpenAI-compatible Gateway、集成和
 Actor，然后让 Agent 在隔离工作区中执行代码、调用工具，并通过 WebSocket 进行对话。
 
 ![yuubot Admin Actors 页面](docs/images/admin-actors.png)
@@ -32,14 +32,14 @@ cd yuubot
 uv sync
 ```
 
-### 3. 创建配置
+### 3. 创建 yuubot 配置
 
 ```bash
 cp config.example.yaml config.yaml
 ```
 
-`config.yaml` 只保存进程启动配置。Providers、Integrations、Actors 和 Routes
-在 Admin UI 中配置，并持久化到 `data_dir` 下的数据库。数据默认写入 `.yuubot-data/`。
+`config.yaml` 只保存进程启动配置。Gateway、Integrations、Actors 和 Routes 在 Admin UI 中
+配置，并持久化到 `data_dir` 下的数据库。数据默认写入 `.yuubot-data/`。
 
 ### 4. 构建前端并启动
 
@@ -49,6 +49,17 @@ uv run ybot serve config.yaml
 ```
 
 打开 <http://127.0.0.1:8765>。
+
+### 5. 配置 Gateway
+
+打开 Admin UI 的 **Gateway** 页面，添加一个或多个标准 OpenAI-compatible Endpoint。
+Endpoint API key 可为空，本地服务也能直接接入；非空 key 会加密保存且不会由 API 返回。
+随后创建 Alias，手工声明其接受的输入模态，并按优先级配置 `endpoint/model` targets。
+Actor 可以选择 Alias，也可以精确选择一个 `endpoint/model`。
+
+yuubot 记录 tokens、延迟、实际目标和 fallback 路径，但不计算金额。OpenAI-compatible
+协议没有统一账单字段，缓存写入、搜索和多模态的计费也持续变化。需要准确成本、预算、
+限流或供应商治理时，请部署自己的 OpenAI-compatible gateway，再把它作为普通 Endpoint 接入。
 
 开发时可用 Vite dev server：
 

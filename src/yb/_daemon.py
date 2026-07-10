@@ -30,10 +30,18 @@ async def request_json(
     json: dict[str, object] | None = None,
     timeout_s: float = 30.0,
 ) -> dict[str, object]:
+    headers: dict[str, str] = {}
+    turn_token = os.getenv("YUUBOT_TURN_TOKEN")
+    if turn_token:
+        headers["X-Yuubot-Turn-Token"] = turn_token
     async with httpx.AsyncClient() as client:
-        response = await client.request(method, url, params=params, json=json, timeout=timeout_s)
-        response.raise_for_status()
+        response = await client.request(method, url, params=params, json=json, headers=headers, timeout=timeout_s)
         body = response.json()
+        if response.is_error:
+            if isinstance(body, dict) and isinstance(body.get("error"), dict):
+                error = body["error"]
+                raise RuntimeError(f"{error.get('code', 'daemon_error')}: {error.get('message', 'daemon request failed')}")
+            response.raise_for_status()
     if not isinstance(body, dict):
         raise RuntimeError("unexpected daemon API response")
     return body

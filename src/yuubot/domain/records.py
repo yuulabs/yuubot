@@ -2,8 +2,8 @@
 
 import msgspec
 
-from .messages import ModelCard
 from .stream import Usage
+from .models import ModelSelector
 
 DEFAULT_CONTEXT_COMPRESSION_TOKENS = 262144
 
@@ -23,12 +23,11 @@ class ConversationRow(msgspec.Struct, frozen=True):
     title: str = ""
 
 
-class CostRow(msgspec.Struct, frozen=True):
+class UsageRow(msgspec.Struct, frozen=True):
     conversation_id: str
     seq: int
     usage: Usage
     account: dict[str, object]
-    estimated: bool
     created_at: str
 
 
@@ -49,22 +48,8 @@ class ActorRecord(msgspec.Struct, frozen=True, kw_only=True):
     description: str = ""
     workspace: str = ""
     persona: str = ""
-    model: ModelCard
-    provider: str
+    model: ModelSelector | None = None
     context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
-
-
-class ActorModelInput(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
-    selector: str
-    reasoning_effort: str = ""
-    max_context_tokens: int | None = None
-    vision: bool = False
-    toolcall: bool = True
-    json: bool = True
-    input_price_per_million: float | None = None
-    cached_input_price_per_million: float | None = None
-    output_price_per_million: float | None = None
-    configured: bool = False
 
 
 class ActorInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
@@ -72,8 +57,7 @@ class ActorInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_field
     description: str = ""
     workspace: str = ""
     persona: str = ""
-    model: ActorModelInput
-    provider: str
+    model: ModelSelector
     context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
     tools: dict[str, object] = msgspec.field(default_factory=dict)
 
@@ -86,14 +70,7 @@ class ActorConfigError(ValueError):
 
 
 def decode_actor_record(payload: bytes) -> ActorRecord:
-    raw = msgspec.json.decode(payload)
-    if isinstance(raw, dict) and "llm" in raw and "provider" not in raw:
-        raw = dict(raw)
-        raw["provider"] = raw.pop("llm")
-    if isinstance(raw, dict) and "tools" in raw:
-        raw = dict(raw)
-        raw.pop("tools")
-    return msgspec.convert(raw, ActorRecord)
+    return msgspec.json.decode(payload, type=ActorRecord)
 
 
 class RouteRecord(msgspec.Struct, frozen=True, kw_only=True):

@@ -108,7 +108,7 @@ def deployment_for_serve(
     host: str,
     port: int,
 ) -> DeploymentConfig:
-    data = raw if isinstance(raw, dict) else {}
+    data = msgspec.convert(raw, dict[str, object]) if isinstance(raw, dict) else {}
     base = msgspec.convert(cast(object, data), DeploymentConfig)
     origin = origin_for(host, port)
     admin_url_base = base.admin_url_base or origin
@@ -245,7 +245,10 @@ def _listener_config(
 ) -> ListenerConfig:
     if not isinstance(raw, dict):
         return ListenerConfig(default_enabled, default_host, default_port)
-    return msgspec.convert(_listener_raw(raw, default_host, default_port), ListenerConfig)
+    return msgspec.convert(
+        _listener_raw(cast(dict[str, object], raw), default_host, default_port),
+        ListenerConfig,
+    )
 
 
 def _local_admin_listener_config(

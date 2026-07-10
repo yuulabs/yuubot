@@ -73,7 +73,7 @@ export interface StreamEventFrame {
 
 export type ConversationPhase = "idle" | "sending" | "streaming" | "error";
 
-const PREFIX_KINDS = new Set(["tool_specs", "system_prompt", "cost"]);
+const PREFIX_KINDS = new Set(["tool_specs", "system_prompt"]);
 
 export function toolDisplay(block: RenderBlock): ToolDisplay {
   const name = block.toolName ?? (block.content.replace(/^Tool:\s*/, "") || "tool");

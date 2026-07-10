@@ -14,12 +14,12 @@ from .messages import (
     InputMessage,
     InputRole,
     LLMInput,
-    ModelCard,
     SystemPrompt,
     ToolResult,
     text_content,
 )
 from .records import ActorRecord, RouteBody, RouteInput, RouteRecord, decode_actor_record
+from .models import AliasModelSelector, ExactModelSelector, ModelSelector
 from .stream import (
     ReasoningDeltaPayload,
     StopReason,
@@ -35,7 +35,6 @@ from .stream import (
     ToolResultDeltaPayload,
     ToolResultEndPayload,
     Usage,
-    estimate_cost,
     extract_tool_calls,
     merge,
 )
@@ -43,10 +42,12 @@ from .stream import (
 __all__ = [
     "ActorMessage",
     "ActorRecord",
+    "AliasModelSelector",
     "decode_actor_record",
     "ContentItem",
     "ContentKind",
     "ConversationContext",
+    "ExactModelSelector",
     "GenAudio",
     "GenImage",
     "GenOutput",
@@ -58,7 +59,7 @@ __all__ = [
     "InputMessage",
     "InputRole",
     "LLMInput",
-    "ModelCard",
+    "ModelSelector",
     "RouteBody",
     "RouteInput",
     "RouteRecord",
@@ -78,7 +79,6 @@ __all__ = [
     "ToolCall",
     "ToolResult",
     "Usage",
-    "estimate_cost",
     "extract_tool_calls",
     "merge",
     "text_content",

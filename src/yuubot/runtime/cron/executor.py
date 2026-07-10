@@ -31,7 +31,7 @@ WorkspaceResolver = Callable[[str], Path | None]
 SchedulerGetter = Callable[[], "CronJobScheduler"]
 
 def _with_job(job: CronJob, **changes: object) -> CronJob:
-    fields = {
+    fields: dict[str, object] = {
         "id": job.id,
         "owner": job.owner,
         "name": job.name,

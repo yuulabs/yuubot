@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from yuubot.actor.workspace import resolve_actor_workspace_path, resolve_workspace_path
-from yuubot.domain.records import ActorRecord, ModelCard
+from yuubot.domain.records import ActorRecord
 
 
 def _record(actor_id: str = "amy", workspace: str = "") -> ActorRecord:
@@ -9,8 +9,7 @@ def _record(actor_id: str = "amy", workspace: str = "") -> ActorRecord:
         id=actor_id,
         name="Amy",
         workspace=workspace,
-        model=ModelCard("fake"),
-        provider="fake",
+        model="fake",
     )
 
 

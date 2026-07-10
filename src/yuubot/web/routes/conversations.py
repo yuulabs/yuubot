@@ -77,9 +77,9 @@ def register_conversation_routes(api: FastAPI, app: Yuubot) -> None:
             }
         )
 
-    @api.get("/api/conversations/{conversation_id}/costs")
-    async def api_conversation_costs(conversation_id: str) -> Response:
-        items = await app.conversation_costs(conversation_id)
+    @api.get("/api/conversations/{conversation_id}/usage")
+    async def api_conversation_usage(conversation_id: str) -> Response:
+        items = await app.conversation_usage(conversation_id)
         if not items and await app.conversation_summary(conversation_id) is None:
             return error_response(404, "not_found", "conversation not found")
         return json_response({"conversation_id": conversation_id, "items": items})

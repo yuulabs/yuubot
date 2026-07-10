@@ -9,8 +9,3 @@ export function formatNumber(n: number | undefined): string {
   if (n === undefined || n === null || Number.isNaN(n)) return "--";
   return n.toLocaleString();
 }
-
-export function formatCost(usd: number | undefined): string {
-  if (usd === undefined || usd === null || Number.isNaN(usd)) return "--";
-  return `$${usd.toFixed(3)}`;
-}

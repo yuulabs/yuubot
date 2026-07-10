@@ -27,12 +27,13 @@ from .kv import register_kv_routes
 from .mcp_oauth_callback import register_mcp_oauth_callback_route
 from .mcp_servers import register_mcp_routes
 from .notifications import register_notification_routes
-from .providers import register_provider_routes
+from .gateway import register_gateway_routes
 from .route_table import register_route_table_routes
 from .shares import register_share_routes
 from .skills import register_skill_routes
 from .tasks import register_task_routes
 from .terminal import register_terminal_routes
+from .turn_capabilities import register_turn_capability_routes
 from .update import register_update_routes
 from .websocket import register_websocket_routes
 
@@ -82,12 +83,13 @@ def create_admin_app(
     register_credential_routes(api, app)
     register_skill_routes(api, app)
     register_auth_attempt_routes(api, app)
-    register_provider_routes(api, app)
+    register_gateway_routes(api, app)
     register_actor_routes(api, app)
     register_integration_routes(api, app)
     register_conversation_routes(api, app)
     register_route_table_routes(api, app)
     register_task_routes(api, app, client_is_loopback)
+    register_turn_capability_routes(api, app, client_is_loopback)
     register_cron_routes(api, app)
     register_notification_routes(api, app)
     register_share_routes(api, app, deployment)

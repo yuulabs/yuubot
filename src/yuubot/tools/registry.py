@@ -9,6 +9,7 @@ from ..runtime.core import Runtime
 from .base import Tool, ToolConfig, ToolSpec
 from .bash import BASH_SPEC
 from .edit import EDIT_SPEC
+from .delegate import DELEGATE_SPEC
 from .execute_python import EXECUTE_PYTHON_SPEC
 from .restart_kernel import RESTART_KERNEL_SPEC
 from .read import READ_SPEC
@@ -17,6 +18,7 @@ from .write import WRITE_SPEC
 _REGISTRY: dict[str, ToolSpec] = {
     "read": READ_SPEC,
     "edit": EDIT_SPEC,
+    "delegate": DELEGATE_SPEC,
     "write": WRITE_SPEC,
     "bash": BASH_SPEC,
     "execute_python": EXECUTE_PYTHON_SPEC,

@@ -7,7 +7,7 @@ import pytest
 
 from yuubot.app import Yuubot
 from yuubot.chat.harness import Harness, HarnessConfig
-from yuubot.domain.messages import ConversationContext, ModelCard
+from yuubot.domain.messages import ConversationContext
 from yuubot.domain.stream import ToolCall
 from yuubot.tools.base import ToolConfig
 
@@ -22,7 +22,7 @@ async def test_bash_fast_command_returns_sync_result(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = ConversationContext(
-        ModelCard("test"),
+        "test",
         "bash-fast",
         "amy",
         workspace,
@@ -50,7 +50,7 @@ async def test_bash_detaches_on_stdout_idle(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = ConversationContext(
-        ModelCard("test"),
+        "test",
         "bash-idle",
         "amy",
         workspace,
@@ -87,7 +87,7 @@ async def test_bash_progress_output_filters_carriage_returns(tmp_path: Path) -> 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = ConversationContext(
-        ModelCard("test"),
+        "test",
         "bash-progress",
         "amy",
         workspace,
@@ -122,7 +122,7 @@ async def test_bash_detaches_for_stdin_waiting_command(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     context = ConversationContext(
-        ModelCard("test"),
+        "test",
         "bash-stdin",
         "amy",
         workspace,

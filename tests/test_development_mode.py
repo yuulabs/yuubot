@@ -9,7 +9,7 @@ from yuubot.runtime.logging_config import LOG_FILENAME, configure_logging
 from yuubot.runtime.shares import ShareRegistry
 from yuubot.web.errors import INTERNAL_ERROR_MESSAGE
 
-from support.api import base_url, boot_app, running_server, bootstrap, enable_actor, http_json, put_actor, put_provider
+from support.api import base_url, boot_app, running_server, bootstrap, enable_actor, http_json, put_actor
 
 
 @pytest.mark.asyncio
@@ -53,7 +53,6 @@ async def test_internal_error_sanitized_outside_development(tmp_path: Path, monk
     monkeypatch.setattr(ShareRegistry, "publish", broken_publish)
 
     async with running_server(app, False) as server:
-        await put_provider(server)
         await put_actor(server, "actor-a", workspace=workspace)
         await enable_actor(server, "actor-a")
         payload = await http_json(
@@ -87,7 +86,6 @@ async def test_internal_error_passthrough_in_development(tmp_path: Path, monkeyp
     monkeypatch.setattr(ShareRegistry, "publish", broken_publish)
 
     async with running_server(app, True) as server:
-        await put_provider(server)
         await put_actor(server, "actor-a", workspace=workspace)
         await enable_actor(server, "actor-a")
         payload = await http_json(

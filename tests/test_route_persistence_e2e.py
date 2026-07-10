@@ -13,7 +13,6 @@ from support.api import (
     http_json,
     post_inbound,
     put_actor,
-    put_provider,
     running_server,
     wait_for_history_kind,
 )
@@ -25,7 +24,6 @@ async def test_http_gateway_routes_persist_across_restart(tmp_path: Path) -> Non
     llm = PromptConditionedProvider([(user_message_contains("hello"), reply_text("hi"))])
     app = await boot_app(tmp_path / "data", llm)
     async with running_server(app) as server:
-        await put_provider(server)
         await put_actor(server, "amy", workspace=tmp_path / "workspace")
         await enable_actor(server, "amy")
         await create_route(server, "mailbox", "mailbox", "amy")

@@ -8,8 +8,8 @@ from .chat.harness import Harness, HarnessConfig
 from .chat.history import HistoryHelper, HistoryStore
 from .app.deployment import ProcessConfig
 from .integrations import CodexConfig, GitHubConfig, IntegrationRecord, OpenCodeConfig, WebConfig
-from .llm import Provider, ProviderInput, ProviderRecord, ScriptedProvider, scripted_reply
-from .domain.messages import ActorMessage, ContentItem, ConversationContext, InputMessage, LLMInput, ModelCard
+from .llm import GatewayClient, StreamClient, scripted_reply
+from .domain.messages import ActorMessage, ContentItem, ConversationContext, InputMessage, LLMInput
 from .runtime import Gateway, Runtime
 from .runtime.mcp import McpServerRecord
 from .runtime.skills import SkillRecord
@@ -30,6 +30,7 @@ __all__ = [
     "ConversationManager",
     "Database",
     "Gateway",
+    "GatewayClient",
     "GitHubConfig",
     "Harness",
     "HarnessConfig",
@@ -37,13 +38,8 @@ __all__ = [
     "HistoryStore",
     "InputMessage",
     "IntegrationRecord",
-    "Provider",
-    "ProviderInput",
-    "ProviderRecord",
     "ProcessConfig",
-    "ScriptedProvider",
     "LLMInput",
-    "ModelCard",
     "McpServerRecord",
     "OpenCodeConfig",
     "Runtime",
@@ -51,6 +47,7 @@ __all__ = [
     "SkillRecord",
     "WebConfig",
     "TextStream",
+    "StreamClient",
     "Yuubot",
     "build_conversation_context",
     "create_asgi_app",

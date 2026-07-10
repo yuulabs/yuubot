@@ -1,11 +1,12 @@
 """Read-only view builders merging durable records with runtime state."""
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 
-from ..domain.messages import ModelCard
+
 from ..domain.stream import ToolNamePayload, Usage
+from ..domain.models import ModelSelector
 from ..domain.records import ActorRecord, ActorStatus, IntegrationStatus, LifecycleError, RouteRecord
 from ..runtime.event_payloads import (
     ActorBlockedPayload,
@@ -13,7 +14,7 @@ from ..runtime.event_payloads import (
     ActorContextCompactedPayload,
     ActorContextCompactionStoppedPayload,
     ActorOutputPayload,
-    ConversationCostPayload,
+    ConversationUsagePayload,
     ConversationInputPayload,
     ConversationOutputPayload,
     ConversationStreamPayload,
@@ -31,14 +32,14 @@ from ..runtime.event_payloads import (
     ShareExpiredPayload,
     ShareRevokedPayload,
     TaskFinishedPayload,
+    TaskUsagePayload,
     TaskStartedPayload,
     WakeupDeliveredPayload,
 )
 from ..integrations import IntegrationRecord, integration_health
 from ..integrations.registry import IntegrationSpec
 from ..actor.lifecycle import Actor
-from ..llm.records import ProviderRecord
-from ..llm.types import ProviderSnapshot
+
 from ..runtime.host_stats import HostStats, collect_host_stats
 from ..runtime.events import RuntimeEvent
 from ..runtime.tasks import TaskSnapshot, task_record_snapshot
@@ -62,8 +63,7 @@ class ActorSnapshot(msgspec.Struct, frozen=True):
     enabled: bool
     status: str
     workspace: str
-    provider: str
-    model: ModelCard
+    model: ModelSelector | str | None
     context_compression_tokens: int
     last_error: LifecycleError | None = None
 
@@ -130,7 +130,6 @@ class BootstrapSnapshot(msgspec.Struct, frozen=True):
     development: bool
     schema_version: int
     workspace_dir: str
-    providers: list[ProviderSnapshot]
     actors: list[ActorSnapshot]
     integrations: list[IntegrationSnapshot]
     routes: list[RouteRecord]
@@ -140,10 +139,6 @@ async def bootstrap_snapshot(app: "Yuubot") -> BootstrapSnapshot:
         app.runtime.development,
         await app.runtime.state.schema_version(),
         str(app.runtime.workspace_dir),
-        [
-            await _provider_snapshot(app, record)
-            for record in sorted(app.provider_records.values(), key=lambda item: item.id)
-        ],
         await actor_snapshots(app),
         await integration_snapshots(app),
         await app.list_routes(),
@@ -165,7 +160,6 @@ async def actor_snapshot(app: "Yuubot", actor_id: str) -> ActorSnapshot | None:
         True,
         live.status,
         live.config.workspace,
-        "",
         live.config.model,
         live.config.context_compression_tokens,
     )
@@ -187,7 +181,6 @@ async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
                 True,
                 actor.status,
                 actor.config.workspace,
-                "",
                 actor.config.model,
                 actor.config.context_compression_tokens,
             )
@@ -204,7 +197,6 @@ def _actor_snapshot(record: ActorRecord, live: Actor | None, status: ActorStatus
         live.status if live is not None else (status.status if status is not None else "disabled"),
         last_error=status.last_error if status is not None else None,
         workspace=record.workspace or record.id,
-        provider=record.provider,
         model=record.model,
         context_compression_tokens=record.context_compression_tokens,
     )
@@ -216,7 +208,7 @@ async def conversation_summary(app: "Yuubot", conversation_id: str) -> Conversat
     if record is None and history is None:
         return None
     if record is not None:
-        usage = await _last_cost_usage(app, record.id)
+        usage = await _last_usage(app, record.id)
         return ConversationSummary(
             record.id,
             record.actor_id,
@@ -231,7 +223,7 @@ async def conversation_summary(app: "Yuubot", conversation_id: str) -> Conversat
             last_cached_input_tokens=usage.cached_input_tokens,
             last_output_tokens=usage.output_tokens,
         )
-    usage = await _last_cost_usage(app, conversation_id)
+    usage = await _last_usage(app, conversation_id)
     return ConversationSummary(
         history.id,
         message_count=history.message_count,
@@ -248,7 +240,7 @@ async def conversation_summaries(app: "Yuubot") -> list[ConversationSummary]:
     summaries: list[ConversationSummary] = []
     for record in await app.runtime.state.list_conversations():
         history = by_id.pop(record.id, None)
-        usage = await _last_cost_usage(app, record.id)
+        usage = await _last_usage(app, record.id)
         summaries.append(
             ConversationSummary(
                 record.id,
@@ -266,7 +258,7 @@ async def conversation_summaries(app: "Yuubot") -> list[ConversationSummary]:
             )
         )
     for item in by_id.values():
-        usage = await _last_cost_usage(app, item.id)
+        usage = await _last_usage(app, item.id)
         summaries.append(
             ConversationSummary(
                 item.id,
@@ -281,11 +273,11 @@ async def conversation_summaries(app: "Yuubot") -> list[ConversationSummary]:
     return summaries
 
 
-async def _last_cost_usage(app: "Yuubot", conversation_id: str) -> Usage:
-    costs = await app.runtime.state.load_costs(conversation_id)
-    if not costs:
+async def _last_usage(app: "Yuubot", conversation_id: str) -> Usage:
+    usage = await app.runtime.state.load_usage(conversation_id)
+    if not usage:
         return Usage()
-    return costs[-1].usage
+    return usage[-1].usage
 
 
 async def integration_snapshot(app: "Yuubot", integration_type: str) -> IntegrationSnapshot | None:
@@ -375,11 +367,6 @@ def task_snapshot(app: "Yuubot", task_id: str, include_stdout: bool = False) -> 
     return task_record_snapshot(app.runtime.tasks.get(task_id), include_stdout)
 
 
-async def _provider_snapshot(app: "Yuubot", record: ProviderRecord) -> ProviderSnapshot:
-    cards = await app.runtime.state.list_model_cards(record.id)
-    return app.provider_snapshot(record, cards)
-
-
 def _runtime_event_view(event: RuntimeEvent) -> RuntimeEventView | None:
     if event.kind in SKIPPED_RUNTIME_EVENT_KINDS:
         return None
@@ -416,16 +403,16 @@ def _runtime_event_copy(kind: str, payload: RuntimeEventPayload) -> tuple[str, s
         return ("Turn finished", f"Reason: {payload.reason or 'unknown'}")
     if isinstance(payload, ConversationToolResultsPayload):
         return ("Tool results ready", _count_detail(payload.count, "result"))
-    if isinstance(payload, ConversationCostPayload):
+    if isinstance(payload, ConversationUsagePayload):
         tokens = payload.input_tokens + payload.cached_input_tokens + payload.output_tokens
-        if payload.estimated:
-            return ("Cost recorded", f"{tokens} tokens")
-        return ("Cost recorded", f"{tokens} tokens / ${payload.payg_cost:.6f}")
+        return ("Usage recorded", f"{tokens} tokens")
     if isinstance(payload, TaskStartedPayload):
         return ("Task started", payload.name or payload.task_id)
     if isinstance(payload, TaskFinishedPayload):
-        name = payload.name or payload.task_id
-        return ("Task finished", f"{name} / {payload.status}" if name else payload.status)
+        return ("Task finished", f"{payload.task_id} / {payload.status}")
+    if isinstance(payload, TaskUsagePayload):
+        tokens = payload.input_tokens + payload.cached_input_tokens + payload.output_tokens
+        return ("Task usage recorded", f"{payload.task_id} / {tokens} tokens")
     if isinstance(payload, ActorOutputPayload):
         return ("Actor replied", _count_detail(payload.outputs, "output"))
     if isinstance(payload, ActorBusyPayload):
@@ -479,7 +466,7 @@ def _runtime_event_context(kind: str, payload: RuntimeEventPayload) -> dict[str,
             "input_tokens",
             "cached_input_tokens",
             "output_tokens",
-            "payg_cost",
+            "cache_write_tokens",
             "estimated",
         )
     if kind.startswith("task."):
@@ -508,7 +495,7 @@ def _compact_context(payload: object) -> dict[str, object]:
     if not isinstance(payload, dict):
         return {}
     compact: dict[str, object] = {}
-    for key, value in payload.items():
+    for key, value in cast(dict[str, object], payload).items():
         if len(compact) >= RUNTIME_EVENT_CONTEXT_LIMIT:
             break
         if _is_compact_value(value):

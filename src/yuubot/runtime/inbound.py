@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from collections.abc import Callable
 from typing import Protocol
 
 import msgspec

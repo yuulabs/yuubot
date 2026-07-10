@@ -4,7 +4,7 @@ from support.api import SharedTestContext, conversation_history, ws_conversation
 from support.assertions import tool_result_text
 from support.llm_rules import all_of, call_tool, has_tool_spec, has_tool_specs, messages_contain_tool_result, reply_text, user_message_contains
 from support.prompt_conditioned_llm import PromptConditionedProvider
-from yuubot.domain import ContentItem, ModelCard
+from yuubot.domain import ContentItem
 from yuubot.tools.read import ReadPayload, _execute_read
 
 
@@ -18,7 +18,7 @@ async def test_http_read_tool_reads_requested_slice(test_context: SharedTestCont
                 (messages_contain_tool_result("read"), reply_text("done")),
                 (
                     all_of(
-                        has_tool_specs("read", "edit", "write", "bash", "execute_python", "restart_kernel"),
+                        has_tool_specs("read", "edit", "write", "bash", "execute_python", "restart_kernel", "delegate"),
                         has_tool_spec("read"),
                         user_message_contains("read slice"),
                     ),
@@ -48,7 +48,8 @@ async def test_read_tool_returns_image_content_with_workspace_relative_path(test
     result = await _execute_read(
         workspace,
         ReadPayload("uploads/image-png/cat.png"),
-        ModelCard("gpt-test", vision=True),
+        "gpt-test",
+        True,
     )
 
     assert result == [

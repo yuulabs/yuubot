@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState, Page, ResourceCard, ResourceCardGrid, ResourceMeta, Status } from "@/shared/components";
 import { useBootstrap, useConversations } from "@/shared/hooks";
+import { formatModelSelector } from "./model-selector";
 
 export function ActorDetailPage({ id }: { id: string }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -57,8 +58,7 @@ export function ActorDetailPage({ id }: { id: string }) {
         >
           <ResourceMeta
             items={[
-              { label: "Provider", value: actor.provider || "unbound", tone: actor.provider ? "default" : "warning" },
-              { label: "Model", value: actor.model.selector },
+              { label: "Model", value: formatModelSelector(actor.model), tone: actor.model ? "default" : "warning" },
               { label: "Workspace", value: actor.workspace },
             ]}
           />

@@ -7,7 +7,7 @@ from support.api import (
     JsonObject,
     SharedTestContext,
     boot_app,
-    conversation_costs,
+    conversation_usage,
     conversation_history,
     conversation_summary,
     recv_ws_frames,
@@ -93,13 +93,13 @@ async def test_http_resume_keeps_conversation_usable(exec_py_context: ExecPyModu
     assert interaction_kinds(history).count("gen_tool_call") == 1
 
 
-async def test_http_llm_rounds_append_cost_records(test_context: SharedTestContext) -> None:
+async def test_http_llm_rounds_append_usage_records(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(_write_loop_llm())
-    conversation_id = test_context.conversation_id("cost-c1")
+    conversation_id = test_context.conversation_id("usage-c1")
     await ws_conversation_send(test_context.server, "m1", actor_id, conversation_id, "write note")
-    costs = await conversation_costs(test_context.server, conversation_id)
+    usage = await conversation_usage(test_context.server, conversation_id)
     summary = await conversation_summary(test_context.server, conversation_id)
-    assert len(costs) == 2
+    assert len(usage) == 2
     assert summary["status"] == "closed"
 
 

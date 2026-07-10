@@ -38,13 +38,12 @@ class ConversationHistoryAppendPayload(msgspec.Struct, frozen=True, tag="convers
     item: dict[str, object]
 
 
-class ConversationCostPayload(msgspec.Struct, frozen=True, tag="conversation.cost"):
+class ConversationUsagePayload(msgspec.Struct, frozen=True, tag="conversation.usage"):
     conversation_id: str
     input_tokens: int
     cached_input_tokens: int
+    cache_write_tokens: int
     output_tokens: int
-    payg_cost: float
-    estimated: bool
     account: dict[str, object] = msgspec.field(default_factory=dict)
 
 
@@ -104,6 +103,15 @@ class TaskFinishedPayload(msgspec.Struct, frozen=True, tag="task.finished"):
     status: str
     error: str | None = None
     exit_code: int | None = None
+
+
+class TaskUsagePayload(msgspec.Struct, frozen=True, tag="task.usage"):
+    task_id: str
+    input_tokens: int
+    cached_input_tokens: int
+    cache_write_tokens: int
+    output_tokens: int
+    account: dict[str, object] = msgspec.field(default_factory=dict)
 
 
 class CronStartedPayload(msgspec.Struct, frozen=True, tag="cron.started"):
@@ -196,7 +204,7 @@ RuntimeEventPayload = (
     | ConversationOutputPayload
     | ConversationToolResultsPayload
     | ConversationHistoryAppendPayload
-    | ConversationCostPayload
+    | ConversationUsagePayload
     | ConversationToolProgressPayload
     | ActorBlockedPayload
     | ActorBusyPayload
@@ -205,6 +213,7 @@ RuntimeEventPayload = (
     | ActorContextCompactionStoppedPayload
     | TaskStartedPayload
     | TaskFinishedPayload
+    | TaskUsagePayload
     | CronStartedPayload
     | CronFailedPayload
     | CronFinishedPayload
@@ -228,7 +237,7 @@ _PAYLOAD_KIND: dict[type[RuntimeEventPayload], RuntimeEventKind] = {
     ConversationOutputPayload: "conversation.output",
     ConversationToolResultsPayload: "conversation.tool_results",
     ConversationHistoryAppendPayload: "conversation.history.append",
-    ConversationCostPayload: "conversation.cost",
+    ConversationUsagePayload: "conversation.usage",
     ConversationToolProgressPayload: "conversation.tool_progress",
     ActorBlockedPayload: "actor.blocked",
     ActorBusyPayload: "actor.busy",
@@ -237,6 +246,7 @@ _PAYLOAD_KIND: dict[type[RuntimeEventPayload], RuntimeEventKind] = {
     ActorContextCompactionStoppedPayload: "actor.context_compaction_stopped",
     TaskStartedPayload: "task.started",
     TaskFinishedPayload: "task.finished",
+    TaskUsagePayload: "task.usage",
     CronStartedPayload: "cron.started",
     CronFailedPayload: "cron.failed",
     CronFinishedPayload: "cron.finished",

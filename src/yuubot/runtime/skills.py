@@ -1,11 +1,13 @@
-"""Global skill records for progressive SOP/workflow loading."""
+"""Unified global skill catalog and Actor workspace copies."""
 
 from __future__ import annotations
 
 import asyncio
+import difflib
 from pathlib import Path
 import re
 import shutil
+import tempfile
 from typing import Literal
 
 import msgspec
@@ -13,11 +15,8 @@ import msgspec
 from ..util.time import utc_now_iso
 
 _SKILL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$")
-
-
-class InstalledSkillRow(msgspec.Struct, frozen=True):
-    name: str
-    path: str
+SkillSource = Literal["builtin", "custom", "package"]
+_discovery_cache: tuple[list[SkillRecord] | None, str] | None = None
 
 
 class SkillRecord(msgspec.Struct, frozen=True):
@@ -28,6 +27,8 @@ class SkillRecord(msgspec.Struct, frozen=True):
     scope: str = "global"
     created_at: str = ""
     updated_at: str = ""
+    source: SkillSource = "custom"
+    source_path: str = ""
 
 
 class SkillInput(msgspec.Struct, frozen=True):
@@ -37,13 +38,17 @@ class SkillInput(msgspec.Struct, frozen=True):
     scope: str = "global"
 
     def to_record(self, skill_id: str) -> SkillRecord:
-        return SkillRecord(
-            skill_id,
-            self.name,
-            self.description,
-            self.body,
-            self.scope,
-        )
+        return SkillRecord(skill_id, self.name, self.description, self.body, self.scope)
+
+
+class SkillCreateInput(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    id: str
+    name: str
+    description: str = ""
+    body: str = ""
+
+    def to_record(self) -> SkillRecord:
+        return SkillRecord(self.id, self.name, self.description, self.body)
 
 
 class SkillSummary(msgspec.Struct, frozen=True, kw_only=True):
@@ -52,23 +57,54 @@ class SkillSummary(msgspec.Struct, frozen=True, kw_only=True):
     description: str = ""
     scope: str = "global"
     inspect_hint: str
+    source: SkillSource
+    can_edit: bool
+    can_update: bool
+    can_delete: bool
+    can_copy: bool = True
+    error: str = ""
 
 
-SkillCliAction = Literal["add", "remove", "update"]
+class SkillCopyFile(msgspec.Struct, frozen=True):
+    path: str
+    status: Literal["added", "deleted", "modified", "unchanged"]
+    binary: bool = False
+    diff: str = ""
 
 
-class SkillCliCommandBody(msgspec.Struct, frozen=True):
-    action: SkillCliAction
-    target: str = ""
+class SkillCopyPreview(msgspec.Struct, frozen=True):
+    skill_id: str
+    actor_id: str
+    path: str
+    exists: bool
+    conflict: bool
+    up_to_date: bool
+    files: tuple[SkillCopyFile, ...] = ()
 
 
-class SkillCliCommandResult(msgspec.Struct, frozen=True):
-    action: SkillCliAction
+class SkillCopyBody(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    actor_id: str
+    replace: bool = False
+
+
+class SkillPackageBody(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    source: str
+    skills: tuple[str, ...] = ()
+    agents: tuple[str, ...] = ()
+    copy: bool = False
+
+
+SkillPackageAction = Literal["add", "remove", "update"]
+
+
+class SkillPackageResult(msgspec.Struct, frozen=True):
+    action: SkillPackageAction
     target: str
     command: tuple[str, ...]
     exit_code: int
     stdout: str = ""
     stderr: str = ""
+    warning: str = ""
 
 
 def validate_skill_record(record: SkillRecord) -> None:
@@ -77,16 +113,23 @@ def validate_skill_record(record: SkillRecord) -> None:
     if not record.name.strip():
         raise ValueError("skill name is required")
     if record.scope != "global":
-        raise ValueError("only global skills are supported in v1")
+        raise ValueError("only global skills are supported")
 
 
-def skill_summary(record: SkillRecord) -> SkillSummary:
+def skill_summary(record: SkillRecord, error: str = "") -> SkillSummary:
+    usable = not error
     return SkillSummary(
         id=record.id,
         name=record.name,
         description=record.description or _description_from_body(record.body),
         scope=record.scope,
-        inspect_hint=f"await yb.skills.read({record.id!r})",
+        inspect_hint=f"await yb.skills.read({record.id!r})" if usable else "",
+        source=record.source,
+        can_edit=usable and record.source in {"builtin", "custom"},
+        can_update=usable and record.source == "package",
+        can_delete=True,
+        can_copy=usable,
+        error=error,
     )
 
 
@@ -101,58 +144,101 @@ def stored_skill(record: SkillRecord, existing: SkillRecord | None = None) -> Sk
         record.scope,
         existing.created_at if existing is not None and existing.created_at else now,
         now,
+        existing.source if existing is not None else record.source,
+        existing.source_path if existing is not None else record.source_path,
     )
 
 
-def _description_from_body(body: str) -> str:
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            return stripped[:240]
-    return "No description provided."
-
-
-async def installed_global_skill_summaries() -> list[SkillSummary]:
-    """List global skills installed by the public `skills` CLI.
-
-    The admin UI should keep working when Node or the CLI is not available, so
-    discovery failures intentionally resolve to an empty list.
-    """
-    command = ("npx", "-y", "skills", "ls", "-g", "--json")
-    if shutil.which(command[0]) is None:
-        return []
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+def builtin_skill_records() -> list[SkillRecord]:
+    root = Path(__file__).resolve().parent.parent / "builtin_skills"
+    records: list[SkillRecord] = []
+    for path in sorted(root.glob("*/SKILL.md")):
+        body = path.read_text(encoding="utf-8")
+        metadata = _frontmatter(body)
+        skill_id = path.parent.name
+        records.append(
+            SkillRecord(
+                skill_id,
+                metadata.get("name", skill_id),
+                metadata.get("description", _description_from_body(body)),
+                body,
+                source="builtin",
+                source_path=str(path.parent),
+            )
         )
-        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=30)
-    except (OSError, TimeoutError):
-        return []
-    if process.returncode != 0:
-        return []
-    try:
-        items = msgspec.json.decode(stdout, type=list[InstalledSkillRow])
-    except msgspec.DecodeError:
-        return []
-    summaries: dict[str, SkillSummary] = {}
-    for item in items:
-        if not item.name or not item.path:
+    return records
+
+
+def resolve_catalog(
+    managed: list[SkillRecord], packages: list[SkillRecord]
+) -> tuple[dict[str, SkillRecord], list[SkillSummary]]:
+    grouped: dict[str, list[SkillRecord]] = {}
+    for record in [*managed, *packages]:
+        grouped.setdefault(record.id, []).append(record)
+    usable: dict[str, SkillRecord] = {}
+    items: list[SkillSummary] = []
+    for skill_id in sorted(grouped):
+        records = grouped[skill_id]
+        if len(records) == 1:
+            usable[skill_id] = records[0]
+            items.append(skill_summary(records[0]))
             continue
-        summaries[item.name] = _installed_skill_summary(item.name, Path(item.path))
-    return [summaries[key] for key in sorted(summaries)]
+        sources = ", ".join(record.source for record in records)
+        error = f"Duplicate skill ID '{skill_id}' from: {sources}. Rename or remove one source."
+        items.extend(skill_summary(record, error) for record in records)
+    return usable, items
 
 
-async def run_skill_cli_command(body: SkillCliCommandBody) -> SkillCliCommandResult:
-    target = body.target.strip()
-    command = _skill_cli_command(body.action, target)
+async def discover_package_skills(force: bool = False) -> tuple[list[SkillRecord] | None, str]:
+    global _discovery_cache
+    if not force and _discovery_cache is not None:
+        records, warning = _discovery_cache
+        return list(records) if records is not None else None, warning
+    root = Path.home() / ".agents" / "skills"
+    try:
+        paths = sorted(root.glob("*/SKILL.md")) if root.exists() else []
+    except OSError as exc:
+        result = (None, f"Package discovery failed: {exc}")
+        _discovery_cache = _discovery_cache or result
+        return result
+    records: list[SkillRecord] = []
+    warnings: list[str] = []
+    for skill_file in paths:
+        skill_root = skill_file.parent
+        skill_id = skill_root.name
+        try:
+            body = skill_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            warnings.append(f"{skill_id}: {exc}")
+            continue
+        metadata = _frontmatter(body)
+        record = SkillRecord(
+            skill_id,
+            metadata.get("name") or skill_id,
+            metadata.get("description") or _description_from_body(body),
+            body,
+            source="package",
+            source_path=str(skill_root),
+        )
+        try:
+            validate_skill_record(record)
+        except ValueError as exc:
+            warnings.append(f"{skill_id}: {exc}")
+            continue
+        records.append(record)
+    warning = "Package discovery skipped invalid entries: " + "; ".join(warnings) if warnings else ""
+    _discovery_cache = (list(records), warning)
+    return records, warning
+
+
+async def run_package_command(
+    action: SkillPackageAction, target: str = "", body: SkillPackageBody | None = None
+) -> SkillPackageResult:
+    command = _package_command(action, target, body)
     if shutil.which(command[0]) is None:
         raise RuntimeError("npx was not found on PATH")
     process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     try:
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
@@ -160,49 +246,178 @@ async def run_skill_cli_command(body: SkillCliCommandBody) -> SkillCliCommandRes
         process.kill()
         await process.wait()
         raise RuntimeError("skills command timed out after 120s") from None
-    return SkillCliCommandResult(
-        body.action,
+    result = SkillPackageResult(
+        action,
         target,
         command,
         int(process.returncode or 0),
         stdout.decode("utf-8", errors="replace"),
         stderr.decode("utf-8", errors="replace"),
     )
+    if result.exit_code != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"skills exited with {result.exit_code}")
+    return result
 
 
-def _skill_cli_command(action: SkillCliAction, target: str) -> tuple[str, ...]:
+def _package_command(
+    action: SkillPackageAction, target: str, body: SkillPackageBody | None
+) -> tuple[str, ...]:
     if action == "add":
-        if not target:
+        if body is None or not body.source.strip():
             raise ValueError("skill source is required")
-        return ("npx", "-y", "skills", "add", "-g", "-y", target)
+        args: list[str] = ["npx", "-y", "skills", "add", body.source.strip()]
+        for skill in body.skills:
+            if skill.strip():
+                args.extend(("--skill", skill.strip()))
+        for agent in body.agents:
+            if agent.strip():
+                args.extend(("--agent", agent.strip()))
+        if body.copy:
+            args.append("--copy")
+        return (*args, "--global", "--yes")
     if action == "remove":
-        if not target:
-            raise ValueError("skill name is required")
-        return ("npx", "-y", "skills", "remove", "-g", "-y", target)
+        if not target.strip():
+            raise ValueError("skill id is required")
+        return ("npx", "-y", "skills", "remove", target.strip(), "--global", "--yes")
     if action == "update":
-        if target:
-            return ("npx", "-y", "skills", "update", "-g", target)
-        return ("npx", "-y", "skills", "update", "-g")
-    raise ValueError(f"unsupported skills action: {action}")
+        middle = (target.strip(),) if target.strip() else ()
+        return ("npx", "-y", "skills", "update", *middle, "--global", "--yes")
+    raise ValueError(f"unsupported package action: {action}")
 
 
-def _installed_skill_summary(name: str, path: Path) -> SkillSummary:
-    skill_file = path / "SKILL.md"
-    text = ""
-    try:
-        text = skill_file.read_text(encoding="utf-8")
-    except OSError:
-        pass
-    metadata = _frontmatter(text)
-    display_name = metadata.get("name") or name
-    description = metadata.get("description") or _description_from_body(text)
-    return SkillSummary(
-        id=name,
-        name=display_name,
-        description=description,
-        scope="global",
-        inspect_hint=str(skill_file),
+def skill_copy_preview(record: SkillRecord, actor_id: str, workspace: Path) -> SkillCopyPreview:
+    validate_skill_record(record)
+    target = workspace.resolve() / ".agents" / "skills" / record.id
+    if target.is_symlink():
+        raise ValueError(f"skill target may not be a symlink: {target}")
+    source_files = _source_files(record)
+    target_files = _tree_files(target) if target.exists() else {}
+    files: list[SkillCopyFile] = []
+    for relative in sorted(source_files.keys() | target_files.keys()):
+        source = source_files.get(relative)
+        current = target_files.get(relative)
+        if current is None:
+            files.append(SkillCopyFile(relative, "added", _is_binary(source or b"")))
+        elif source is None:
+            files.append(SkillCopyFile(relative, "deleted", _is_binary(current)))
+        elif source == current:
+            files.append(SkillCopyFile(relative, "unchanged", _is_binary(source)))
+        else:
+            binary = _is_binary(source) or _is_binary(current)
+            diff = "" if binary else _text_diff(relative, current, source)
+            files.append(SkillCopyFile(relative, "modified", binary, diff))
+    changed = any(item.status != "unchanged" for item in files)
+    exists = target.exists()
+    return SkillCopyPreview(
+        record.id,
+        actor_id,
+        f".agents/skills/{record.id}",
+        exists,
+        exists and changed,
+        exists and not changed,
+        tuple(files),
     )
+
+
+def copy_skill(record: SkillRecord, actor_id: str, workspace: Path, replace: bool) -> SkillCopyPreview:
+    preview = skill_copy_preview(record, actor_id, workspace)
+    if preview.up_to_date:
+        return preview
+    if preview.exists and not replace:
+        raise FileExistsError(f"workspace skill already exists: {preview.path}")
+    target = workspace.resolve() / preview.path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_files = _source_files(record)
+    staging = Path(tempfile.mkdtemp(prefix=f".{record.id}-", dir=target.parent))
+    backup = target.parent / f".{record.id}-backup"
+    try:
+        for relative, content in source_files.items():
+            destination = staging / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+        if target.exists():
+            if backup.exists():
+                shutil.rmtree(backup)
+            target.rename(backup)
+        staging.rename(target)
+        if backup.exists():
+            shutil.rmtree(backup)
+    except Exception:
+        if not target.exists() and backup.exists():
+            backup.rename(target)
+        raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    return skill_copy_preview(record, actor_id, workspace)
+
+
+def _source_files(record: SkillRecord) -> dict[str, bytes]:
+    if record.source_path:
+        files = _tree_files(Path(record.source_path))
+        if record.source == "builtin":
+            files["SKILL.md"] = (record.body.rstrip() + "\n").encode()
+        return files
+    body = record.body
+    if not body.startswith("---\n"):
+        body = f"---\nname: {record.name}\ndescription: {record.description}\n---\n{body}"
+    return {"SKILL.md": (body.rstrip() + "\n").encode()}
+
+
+def _tree_files(root: Path) -> dict[str, bytes]:
+    if not root.exists():
+        return {}
+    if root.is_symlink():
+        raise ValueError(f"skill root may not be a symlink: {root}")
+    resolved_root = root.resolve()
+    files: dict[str, bytes] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            resolved = path.resolve(strict=True)
+            if not _is_within(resolved, resolved_root):
+                raise ValueError(f"unsafe skill symlink escapes root: {path}")
+            if resolved.is_dir():
+                raise ValueError(f"skill directory symlinks are not supported: {path}")
+        if path.is_file():
+            files[path.relative_to(root).as_posix()] = path.read_bytes()
+    return files
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_binary(content: bytes) -> bool:
+    if b"\0" in content:
+        return True
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def _text_diff(path: str, current: bytes, source: bytes) -> str:
+    return "".join(
+        difflib.unified_diff(
+            current.decode().splitlines(keepends=True),
+            source.decode().splitlines(keepends=True),
+            fromfile=f"workspace/{path}",
+            tofile=f"global/{path}",
+        )
+    )
+
+
+def _description_from_body(body: str) -> str:
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped != "---" and ":" not in stripped:
+            return stripped[:240]
+    return "No description provided."
 
 
 def _frontmatter(text: str) -> dict[str, str]:
@@ -214,10 +429,6 @@ def _frontmatter(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in text[4:end].splitlines():
         key, separator, value = line.partition(":")
-        if not separator:
-            continue
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key in {"name", "description"} and value:
-            values[key] = value
+        if separator and key.strip() in {"name", "description"} and value.strip():
+            values[key.strip()] = value.strip().strip('"').strip("'")
     return values

@@ -77,6 +77,7 @@ class TaskSnapshot(msgspec.Struct, frozen=True):
     created_at: str = ""
     started_at: str | None = None
     finished_at: str | None = None
+    metadata: dict[str, object] = msgspec.field(default_factory=dict)
 
 
 @define
@@ -100,6 +101,7 @@ class RuntimeTaskRecord:
     created_at: str = field(factory=_iso_now)
     started_at: str | None = None
     finished_at: str | None = None
+    metadata: dict[str, object] = field(factory=dict)
     _terminal: asyncio.Event = field(factory=asyncio.Event, init=False)
 
     def is_terminal(self) -> bool:
@@ -165,6 +167,7 @@ def task_record_size_bytes(record: RuntimeTaskRecord) -> int:
             record.created_at,
             record.started_at or "",
             record.finished_at or "",
+            repr(sorted(record.metadata.items())),
         ]
     )
     return (
@@ -462,6 +465,16 @@ async def wait_until_terminal_or_idle(
 
 
 def format_task_delivery(record: RuntimeTaskRecord) -> str:
+    if record.kind == "agent":
+        subagent = str(record.metadata.get("subagent", "unknown"))
+        model_tier = str(record.metadata.get("model_tier", "same"))
+        lines = [f"Subagent task {record.id} {record.status}.", f"subagent: {subagent}", f"model_tier: {model_tier}"]
+        if record.status == "done":
+            result = record.result if isinstance(record.result, str) else record.stdout.tail(max_bytes=65536)
+            lines.extend(["result:", _truncate_agent_notice(result)])
+        elif record.error:
+            lines.append(f"error: {record.error}")
+        return "\n".join(lines)
     lines = [f"Task '{record.name}' finished with status {record.status}."]
     if record.intro:
         lines.append(record.intro)
@@ -474,6 +487,13 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
     if record.exit_code is not None:
         lines.append(f"Exit code: {record.exit_code}")
     return "\n".join(lines)
+
+
+def _truncate_agent_notice(text: str, max_bytes: int = 65536) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="replace") + "\n[Result truncated; query the Task API for the full output.]"
 
 
 async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> None:
@@ -522,6 +542,7 @@ async def schedule_task_delivery(runtime: Runtime, record: RuntimeTaskRecord) ->
     conversation = runtime.conversations.get_if_present(conversation_id)
     if (
         record.delivery == "conversation"
+        and record.kind != "agent"
         and conversation is not None
         and conversation.task_deliveries_suppressed(now=time.monotonic())
     ):
@@ -556,7 +577,7 @@ async def drain_pending_task_deliveries(runtime: Runtime, conversation_id: str) 
         record = runtime.tasks.get(task_id)
         if record.delivery_state not in {"pending", "queued"}:
             continue
-        if record.status == "cancelled":
+        if record.status == "cancelled" and record.kind != "agent":
             record.delivery_state = "skipped"
             runtime.tasks.refresh_terminal_retention(record)
             _log.info("queued task delivery skipped cancelled task_id=%s", record.id)
@@ -584,7 +605,19 @@ def suppress_conversation_task_deliveries(runtime: Runtime, conversation_id: str
         conversation_id,
         len(task_ids),
     )
-    skip_conversation_task_deliveries(runtime, conversation_id, task_ids)
+    agent_task_ids = [
+        task_id
+        for task_id in task_ids
+        if task_id in runtime.tasks and runtime.tasks.get(task_id).kind == "agent"
+    ]
+    if conversation is not None:
+        for task_id in agent_task_ids:
+            conversation.queue_task_delivery(task_id)
+    skip_conversation_task_deliveries(
+        runtime,
+        conversation_id,
+        [task_id for task_id in task_ids if task_id not in agent_task_ids],
+    )
 
 
 def skip_conversation_task_deliveries(
@@ -595,7 +628,7 @@ def skip_conversation_task_deliveries(
     for task_id in task_ids:
         if task_id in runtime.tasks:
             record = runtime.tasks.get(task_id)
-            if record.delivery_state in {"pending", "queued"}:
+            if record.kind != "agent" and record.delivery_state in {"pending", "queued"}:
                 record.delivery_state = "skipped"
                 runtime.tasks.refresh_terminal_retention(record)
                 _log.info(
@@ -605,7 +638,7 @@ def skip_conversation_task_deliveries(
                 )
     owner = f":conv:{conversation_id}"
     for record in runtime.tasks.list():
-        if record.delivery == "conversation" and owner in record.owner and record.delivery_state in {"pending", "queued"}:
+        if record.kind != "agent" and record.delivery == "conversation" and owner in record.owner and record.delivery_state in {"pending", "queued"}:
             record.delivery_state = "skipped"
             runtime.tasks.refresh_terminal_retention(record)
 
@@ -627,4 +660,5 @@ def task_record_snapshot(record: RuntimeTaskRecord, include_stdout: bool = False
         record.created_at,
         record.started_at,
         record.finished_at,
+        dict(record.metadata),
     )

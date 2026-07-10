@@ -9,7 +9,7 @@ from ..integrations.registry import Integration
 from ..runtime.skills import SkillSummary
 from .prompt_docs import ADMIN_PAGES
 
-_RUNTIME_FACADE_PACKAGES = ("yb.tasks", "yb.tasks.cron", "yb.mcps", "yb.skills")
+_RUNTIME_FACADE_PACKAGES = ("yb.fixer", "yb.tasks", "yb.tasks.cron", "yb.mcps", "yb.skills")
 
 SessionMode = Literal["conversation", "actor"]
 REAL_TIME_CONTEXT_MARKER = "[yuubot-real-time-context]"
@@ -62,9 +62,9 @@ def _workspace_instructions(workspace: Path, actor_id: str = "") -> str:
         lines.append(f"Actor id: {actor_id}")
     lines.extend(
         [
-            "- `artifacts/`: user-visible outputs.",
+            "- Put one-time reports, web pages, charts, and exports in `artifacts/<slug>/`.",
             "- `uploads/`: uploaded files grouped by MIME type.",
-            "- `projects/`: actor-managed project files.",
+            "- Put code and documentation that will be developed or maintained over time in a cohesive `projects/<slug>/` directory.",
             "- `notes/`: durable actor notes.",
             "- `scripts/`: helper scripts.",
             "- `.agents/skills/`: skill files you may inspect with the read tool.",
@@ -74,7 +74,8 @@ def _workspace_instructions(workspace: Path, actor_id: str = "") -> str:
             "- Use `uv` to manage python dependencies and run shell commmands(uv run) instead of raw python."
         ]
     )
-    lines.append("- `AGENTS.md`: durable instructions that will be automatically loaded everytime you wake up. This file acts as a map of your workspace and helps you memorize. Offload details to each specific folders. Carefully maintain this file to anchor your workspace knowledge and avoid losing context. Don't write everything in this file, but use it as a map to your workspace.")
+    lines.append("- Keep implementation files inside their artifact or project directory; reserve the workspace root for established entry points and workspace conventions.")
+    lines.append("- `AGENTS.md`: the concise workspace map and durable-constraint entry point loaded for each session. Keep project details, run instructions, and design notes in the corresponding project directory, and record their location here.")
     return "\n".join(lines)
 
 
@@ -106,6 +107,8 @@ for r in results:
             "Register background shell work with `await yb.tasks.submit(name, shell, intro, delivery=...)`. `manual` — poll with `task.output()` / `task.status()` yourself (`ttl_s <= 3600`). `conversation` — completion wakes this chat. `actor` — completion goes to the actor mailbox.",
             "Task output is an expiring offload buffer. For long jobs, write resumable workspace scripts that persist their own state and artifacts.",
             "MCP data sources: use `yb.mcps` (see Integration SDKs). Durable schedules: use `yb.tasks.cron`.",
+            "When the Gateway enables its hosted-search aliases, call `await yb.fixer.ask_gemini(prompt)` for research beyond the current model; use `ask_grok` when current X/Twitter posts matter. Each enabled facade provides one successful answer per user turn, so include all related subquestions in one prompt. Answers include verified citations.",
+            "When `yext.web` appears in Integration SDKs, `yext.web.search` provides up to three successful searches per user turn. Combine related questions into focused searches; `yext.web.read` and `download` remain available for source inspection and files.",
             ADMIN_PAGES,
             "After `uv add` or `uv remove`, call the `restart_kernel` tool before expecting new imports in execute_python.",
         ]
@@ -148,8 +151,21 @@ def _skills(workspace: Path, global_skills: list[SkillSummary]) -> str:
 
 
 def _skill_description(text: str) -> str:
-    for line in text.splitlines():
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            key, separator, value = line.partition(":")
+            if separator and key.strip() == "description" and value.strip():
+                return value.strip().strip('"').strip("'")
+    inside_frontmatter = bool(lines and lines[0].strip() == "---")
+    for line in lines[1:] if inside_frontmatter else lines:
         stripped = line.strip()
+        if inside_frontmatter:
+            if stripped == "---":
+                inside_frontmatter = False
+            continue
         if stripped and not stripped.startswith("#"):
             return stripped
     return "No description provided."

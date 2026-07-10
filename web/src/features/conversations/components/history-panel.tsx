@@ -63,12 +63,6 @@ function renderHistory(item: HistoryItem): { label: string; markdown?: string; n
   if (item.kind === "tool_result") {
     return { label: "tool result", markdown: contentText(item.payload.content), raw: true };
   }
-  if (item.kind === "cost") {
-    return {
-      label: "cost",
-      node: <pre className="overflow-auto rounded border p-3 text-xs">{JSON.stringify(item.payload, null, 2)}</pre>,
-    };
-  }
   return {
     label: item.kind,
     node: <pre className="overflow-auto rounded border p-3 text-xs">{JSON.stringify(item.payload, null, 2)}</pre>,

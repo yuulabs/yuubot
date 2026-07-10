@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from attrs import define, field
 
-from .models import CronJob, CronJobStatus
+from .models import CronJob
 from .triggers import build_trigger
 
 if TYPE_CHECKING:

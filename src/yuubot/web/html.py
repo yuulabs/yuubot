@@ -10,14 +10,11 @@ def html_page(app: Yuubot) -> str:
 <body>
 <main>
   <pre id="bootstrap"></pre>
-  <input id="provider-id" placeholder="provider id">
-  <textarea id="provider-config" rows="6" placeholder='{{"name":"DeepSeek","protocol":"openai-compatible","config":{{"endpoint":"https://api.deepseek.com","api_key":"..."}}}}'></textarea>
-  <button id="save-provider">Save provider</button>
   <select id="integration-type"></select>
   <input id="integration-name" placeholder="integration name">
   <textarea id="integration-config" rows="6" placeholder='{{"access_token":"..."}}'></textarea>
   <button id="save-integration">Save integration</button>
-  <textarea id="actor-config" rows="8" placeholder='{{"name":"Amy","provider":"deepseek","model":{{"selector":"deepseek-chat"}},"tools":{{}}}}'></textarea>
+  <textarea id="actor-config" rows="8" placeholder='{{"name":"Amy","model":"intelligent","tools":{{}}}}'></textarea>
   <button id="save-actor">Save actor</button>
   <select id="actor">{actors}</select>
   <input id="conversation" placeholder="conversation id">
@@ -54,17 +51,6 @@ document.getElementById('save-integration').onclick = async () => {{
     method: 'PUT',
     headers: {{'content-type': 'application/json'}},
     body: JSON.stringify({{name, config}})
-  }});
-  bootstrapEl.textContent = JSON.stringify(await response.json(), null, 2);
-}};
-
-document.getElementById('save-provider').onclick = async () => {{
-  const providerId = encodeURIComponent(document.getElementById('provider-id').value);
-  const config = JSON.parse(document.getElementById('provider-config').value || '{{}}');
-  const response = await fetch(`/api/providers/${{providerId}}`, {{
-    method: 'PUT',
-    headers: {{'content-type': 'application/json'}},
-    body: JSON.stringify(config)
   }});
   bootstrapEl.textContent = JSON.stringify(await response.json(), null, 2);
 }};

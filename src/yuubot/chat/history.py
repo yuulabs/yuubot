@@ -7,7 +7,7 @@ replayed to the LLM on resume; it is stripped from every frontend-facing view.
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import msgspec
 from attrs import define
@@ -167,7 +167,7 @@ class HistoryStore:
             )
             has_more = False
             if limit is not None and len(rows) == limit:
-                last_seq = int(rows[-1]["seq"])
+                last_seq = cast(int, rows[-1]["seq"])
                 has_more = await self._has_interaction_after(conversation_id, last_seq)
             return rows, has_more
         rows = await self._load_interaction_rows(
@@ -178,7 +178,7 @@ class HistoryStore:
         rows.reverse()
         has_more = False
         if limit is not None and rows:
-            first_seq = int(rows[0]["seq"])
+            first_seq = cast(int, rows[0]["seq"])
             has_more = await self._has_interaction_before(conversation_id, first_seq)
         return rows, has_more
 
@@ -316,4 +316,3 @@ def _wrapped(seq: int, kind: str, payload: bytes, created_at: str) -> dict[str, 
         "payload": msgspec.to_builtins(msgspec.json.decode(payload, type=_TYPES[kind])),
         "created_at": created_at or None,
     }
-

@@ -16,10 +16,17 @@ export function contentText(content: unknown): string {
     .join("\n\n");
 }
 
-export function sumConversationCost(items: Array<{ usage?: Record<string, unknown> }>): number {
+export function sumConversationTokens(items: Array<{ usage?: Record<string, unknown> }>): number {
   return items.reduce((total, item) => {
     const usage = item.usage ?? {};
-    const cost = usage.payg_cost ?? usage.cost_usd ?? usage.total_cost_usd ?? usage.usd;
-    return total + (typeof cost === "number" ? cost : 0);
+    return total
+      + numeric(usage.input_tokens)
+      + numeric(usage.cached_input_tokens)
+      + numeric(usage.cache_write_tokens)
+      + numeric(usage.output_tokens);
   }, 0);
+}
+
+function numeric(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
