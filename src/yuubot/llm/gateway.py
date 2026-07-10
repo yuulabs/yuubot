@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 import msgspec
 from attrs import define, field
-from openai import AsyncOpenAI, AsyncStream
+from openai import AsyncOpenAI, AsyncStream, BadRequestError
 from openai.types.chat import (
     ChatCompletionChunk,
     ChatCompletionMessageParam,
@@ -240,6 +240,38 @@ def _map_openai_error(exc: Exception) -> GatewayError:
     return GatewayError("gateway_request_failed", "gateway request failed")
 
 
+def _is_bad_request_error(exc: Exception) -> bool:
+    return isinstance(exc, BadRequestError)
+
+
+def _request_debug_summary(
+    messages: list[ChatCompletionMessageParam],
+    tool_specs: list[dict[str, object]],
+) -> dict[str, object]:
+    """Return safe request shape diagnostics without prompt or secret contents."""
+    return {
+        "message_count": len(messages),
+        "messages": [
+            {
+                "role": message.get("role"),
+                "content_type": type(message.get("content")).__name__,
+                "content_length": len(message.get("content") or "")
+                if isinstance(message.get("content"), str)
+                else None,
+                "tool_call_count": len(message.get("tool_calls") or [])
+                if isinstance(message.get("tool_calls"), list)
+                else 0,
+            }
+            for message in messages
+        ],
+        "tool_count": len(tool_specs),
+        "tool_names": [
+            str((tool.get("function") or {}).get("name", ""))
+            for tool in tool_specs
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Stream client protocol
 # ---------------------------------------------------------------------------
@@ -449,12 +481,25 @@ class EndpointClient:
             options["tools"] = cast(list[ChatCompletionToolParam], input.tool_specs)
         if metadata:
             options["extra_body"] = {"metadata": metadata}
-        completion = await self._sdk_client().chat.completions.create(
-            model=model,
-            messages=messages,
-            stream=True,
-            **options,
-        )
+        try:
+            completion = await self._sdk_client().chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=True,
+                **options,
+            )
+        except Exception as exc:
+            if _is_bad_request_error(exc):
+                _log.error(
+                    "gateway completion rejected endpoint=%s model=%s status=%s "
+                    "error=%s request=%s",
+                    self.config.id,
+                    model,
+                    getattr(exc, "status_code", None),
+                    getattr(exc, "body", None),
+                    _request_debug_summary(messages, input.tool_specs),
+                )
+            raise
         return completion
 
     async def hosted_search(
