@@ -138,6 +138,7 @@ class Actor:
             tool_specs=tool_specs(tools),
             system_prompt=prompt,
         )
+        prefix, _ = await self.runtime.history.load_interaction_wrapped(cid)
         return Conversation(
             cid,
             context,
@@ -145,6 +146,7 @@ class Actor:
             self.provider,
             HarnessConfig(tools),
             self.runtime,
+            prefix,
         )
 
     async def run(self) -> None:

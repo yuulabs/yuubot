@@ -89,7 +89,7 @@ async def test_ws_disconnect_does_not_interrupt_running_conversation(test_contex
 
 
 @pytest.mark.asyncio
-async def test_history_subscribe_replays_active_in_memory_stream(test_context: SharedTestContext) -> None:
+async def test_conversation_open_snapshots_active_in_memory_stream(test_context: SharedTestContext) -> None:
     provider = PausedStreamingProvider()
     actor_id = await test_context.setup_actor(provider)
     conversation_id = test_context.conversation_id("replay-c1")
@@ -107,22 +107,22 @@ async def test_history_subscribe_replays_active_in_memory_stream(test_context: S
             await ws.send(
                 json.dumps(
                     {
-                        "id": "history-1",
-                        "type": "conversation.history.subscribe",
+                        "id": "open-1",
+                        "type": "conversation.open",
                         "payload": {"conversation_id": conversation_id},
                     }
                 )
             )
-            await _recv_until(ws, lambda frame: frame.get("type") == "conversation.history.subscribe.result")
-            replay_start = await _recv_until(ws, lambda frame: frame.get("type") == "conversation.replay.start")
-            replayed_delta = await _recv_until(ws, _is_text_delta(provider.first))
-            assert cast(JsonObject, replay_start["payload"])["count"] == 1
-            assert cast(JsonObject, replayed_delta["payload"])["live_seq"] == 1
+            snapshot = await _recv_until(ws, lambda frame: frame.get("type") == "conversation.snapshot")
+            snapshot_payload = cast(JsonObject, snapshot["payload"])
+            assert snapshot_payload["version"] == 2
+            living = cast(list[JsonObject], snapshot_payload["living_chunks"])
+            assert cast(JsonObject, living[0]["payload"])["text"] == provider.first
 
             provider.release.set()
             live_delta = await _recv_until(ws, _is_text_delta(provider.second))
-            assert cast(JsonObject, live_delta["payload"])["live_seq"] == 2
-            await _recv_until(ws, _is_terminal_stop)
+            assert cast(JsonObject, live_delta["payload"])["version"] == 3
+            await _recv_until(ws, _is_terminal_commit)
 
         history = await conversation_history(test_context.server, conversation_id)
         assert history[-1]["payload"] == {"text": f"{provider.first}{provider.second}"}
@@ -172,13 +172,13 @@ async def _recv_until(
 
 def _is_text_delta(expected: str) -> Callable[[JsonObject], bool]:
     def predicate(frame: JsonObject) -> bool:
-        if frame.get("type") != "conversation.stream":
+        if frame.get("type") != "conversation.delta":
             return False
         payload = frame.get("payload")
         if not isinstance(payload, dict):
             return False
         payload = cast(JsonObject, payload)
-        event_value = payload.get("event")
+        event_value = payload.get("chunk")
         if not isinstance(event_value, dict):
             return False
         event = cast(JsonObject, event_value)
@@ -193,21 +193,11 @@ def _is_text_delta(expected: str) -> Callable[[JsonObject], bool]:
     return predicate
 
 
-def _is_terminal_stop(frame: JsonObject) -> bool:
-    if frame.get("type") != "conversation.stream":
+def _is_terminal_commit(frame: JsonObject) -> bool:
+    if frame.get("type") != "conversation.commit":
         return False
     payload = frame.get("payload")
     if not isinstance(payload, dict):
         return False
     payload = cast(JsonObject, payload)
-    event_value = payload.get("event")
-    if not isinstance(event_value, dict):
-        return False
-    event = cast(JsonObject, event_value)
-    if event.get("kind") != "stream_stop":
-        return False
-    event_payload = event.get("payload")
-    if not isinstance(event_payload, dict):
-        return False
-    event_payload = cast(JsonObject, event_payload)
-    return event_payload.get("reason") == "stop"
+    return payload.get("continues") is False

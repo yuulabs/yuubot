@@ -272,8 +272,12 @@ class Runtime:
         return self.mailboxes.ensure(address)
 
     def emit(self, payload: RuntimeEventPayload) -> None:
-        live_seq = self.conversations.record_live_payload(payload)
-        self.eventbus.emit(payload, live_seq)
+        from .event_payloads import ConversationStreamPayload
+
+        if isinstance(payload, ConversationStreamPayload):
+            self.conversations.schedule_delta(payload.conversation_id, payload.event)
+            return
+        self.eventbus.emit(payload)
 
     def skill_summaries(self) -> list[SkillSummary]:
         return [skill_summary(record) for record in sorted(self.skills.values(), key=lambda item: item.id)]

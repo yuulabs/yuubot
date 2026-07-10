@@ -12,11 +12,11 @@ import {
   ResourceMeta,
   Status,
 } from "@/shared/components";
-import { useApiMutation, useBootstrap } from "@/shared/hooks";
+import { useApiMutation, useConversations } from "@/shared/hooks";
 
 export function ConversationsListPage() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const { data, error, isLoading } = useBootstrap();
+  const { data, error, isLoading } = useConversations();
   const remove = useApiMutation((id: string) => deleteConversation(id));
 
   if (pathname !== "/admin/conversations") {
@@ -26,9 +26,9 @@ export function ConversationsListPage() {
   if (error) return <ErrorState error={error} />;
   return (
     <Page title="Conversations" sub="Persisted conversations and history from the new backend.">
-      {!data?.conversations.length ? <EmptyState>No conversations yet.</EmptyState> : (
+      {!data?.length ? <EmptyState>No conversations yet.</EmptyState> : (
         <ResourceCardGrid>
-          {data.conversations.map((conversation) => (
+          {data.map((conversation) => (
             <ResourceCard
               key={conversation.id}
               variant="conversation"

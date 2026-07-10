@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import msgspec
 
 from ..domain.messages import ModelCard
-from ..domain.stream import StreamEvent, ToolNamePayload, Usage
+from ..domain.stream import ToolNamePayload, Usage
 from ..domain.records import ActorRecord, ActorStatus, IntegrationStatus, LifecycleError, RouteRecord
 from ..runtime.event_payloads import (
     ActorBlockedPayload,
@@ -134,7 +134,6 @@ class BootstrapSnapshot(msgspec.Struct, frozen=True):
     actors: list[ActorSnapshot]
     integrations: list[IntegrationSnapshot]
     routes: list[RouteRecord]
-    conversations: list[ConversationSummary]
 
 async def bootstrap_snapshot(app: "Yuubot") -> BootstrapSnapshot:
     return BootstrapSnapshot(
@@ -148,7 +147,6 @@ async def bootstrap_snapshot(app: "Yuubot") -> BootstrapSnapshot:
         await actor_snapshots(app),
         await integration_snapshots(app),
         await app.list_routes(),
-        await conversation_summaries(app),
     )
 
 

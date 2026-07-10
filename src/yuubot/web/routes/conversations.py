@@ -3,15 +3,32 @@
 from __future__ import annotations
 
 import msgspec
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import Response
 
 from ...app import Yuubot
-from ..request import bad_request
+from ..request import bad_request, read_json
 from ..responses import error_response, json_response
 
 
 def register_conversation_routes(api: FastAPI, app: Yuubot) -> None:
+    @api.get("/api/conversations")
+    async def api_conversations() -> Response:
+        return json_response(msgspec.to_builtins(await app.conversation_summaries()))
+
+    @api.post("/api/conversations")
+    async def api_create_conversation(request: Request) -> Response:
+        try:
+            body = await read_json(request, ConversationCreateBody)
+        except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
+            return bad_request(exc)
+        actor = app.actors.get(body.actor_id)
+        if actor is None:
+            return error_response(404, "not_found", "actor not found")
+        conversation = await app.runtime.conversations.get_or_create(actor)
+        await app.runtime.state.put_conversation(conversation.id, body.actor_id, "closed")
+        return json_response({"conversation_id": conversation.id})
+
     @api.get("/api/conversations/{conversation_id}")
     async def api_conversation(conversation_id: str) -> Response:
         summary = await app.conversation_summary(conversation_id)
@@ -73,3 +90,7 @@ def register_conversation_routes(api: FastAPI, app: Yuubot) -> None:
         if not deleted:
             return error_response(404, "not_found", "conversation not found")
         return json_response({"id": conversation_id, "deleted": True})
+
+
+class ConversationCreateBody(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    actor_id: str

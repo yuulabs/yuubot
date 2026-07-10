@@ -90,10 +90,10 @@ document.getElementById('send').onclick = () => {{
   socket = new WebSocket(`ws://${{location.host}}/api/ws`);
   socket.onmessage = (event) => {{
     const frame = JSON.parse(event.data);
-    if (frame.type === 'conversation.stream' && frame.payload.event.kind === 'text_delta') {{
-      log.textContent += frame.payload.event.payload.text || '';
+    if (frame.type === 'conversation.delta' && frame.payload.chunk.kind === 'text_delta') {{
+      log.textContent += frame.payload.chunk.payload.text || '';
     }}
-    if (frame.type === 'conversation.stream' && frame.payload.event.kind === 'stream_stop') {{
+    if (frame.type === 'conversation.commit' && !frame.payload.continues) {{
       socket.close();
     }}
   }};

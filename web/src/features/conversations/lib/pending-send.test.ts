@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { newConversationId, parsePendingSend } from "./pending-send.ts";
-
-test("newConversationId returns a 32-char hex string", () => {
-  const id = newConversationId();
-  assert.match(id, /^[0-9a-f]{32}$/);
-});
+import { parsePendingSend } from "./pending-send.ts";
 
 test("parsePendingSend parses valid router state", () => {
   const parsed = parsePendingSend({

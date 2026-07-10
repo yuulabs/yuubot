@@ -46,18 +46,27 @@ export function interruptConversation(ws: WebSocket, conversationId: string, com
   return commandId;
 }
 
-export function subscribeConversationHistory(
+export function openConversation(
   ws: WebSocket,
   conversationId: string,
-  commandId = `history-${Date.now()}`,
+  commandId = `open-${Date.now()}`,
 ): string {
   ws.send(
     JSON.stringify({
       id: commandId,
-      type: "conversation.history.subscribe",
+      type: "conversation.open",
       payload: { conversation_id: conversationId },
     }),
   );
+  return commandId;
+}
+
+export function closeConversation(ws: WebSocket, conversationId: string, commandId = `close-${Date.now()}`): string {
+  ws.send(JSON.stringify({
+    id: commandId,
+    type: "conversation.close",
+    payload: { conversation_id: conversationId },
+  }));
   return commandId;
 }
 

@@ -40,13 +40,7 @@ from ..domain.messages import (
 from ..domain.stream import StreamEvent, StreamStop, estimate_cost, extract_tool_calls, merge
 from ..runtime.event_payloads import (
     ConversationCostPayload,
-    ConversationHistoryAppendPayload,
     ConversationInputPayload,
-    ConversationOutputPayload,
-    ConversationStreamPayload,
-    ConversationToolProgressPayload,
-    ConversationToolResultsPayload,
-    RuntimeEventPayload,
 )
 from ..runtime.tasks import skip_conversation_task_deliveries
 from ..util.asyncio_ import BackgroundSweeper
@@ -74,10 +68,27 @@ PYTHON_RESET_NOTICE = (
 )
 
 
-@define
-class LiveReplayPayload:
-    seq: int
-    payload: RuntimeEventPayload
+@define(frozen=True)
+class ConversationSnapshot:
+    prefix: list[dict[str, object]]
+    living_chunks: list[StreamEvent]
+    version: int
+
+
+class ConversationSubscriber(Protocol):
+    async def on_snapshot(self, conversation_id: str, snapshot: ConversationSnapshot) -> None: ...
+
+    async def on_delta(self, conversation_id: str, chunk: StreamEvent, version: int) -> None: ...
+
+    async def on_commit(
+        self,
+        conversation_id: str,
+        append: list[dict[str, object]],
+        continues: bool,
+        version: int,
+    ) -> None: ...
+
+    async def on_error(self, conversation_id: str, error: str) -> None: ...
 
 
 @define
@@ -88,12 +99,16 @@ class Conversation:
     provider: Provider
     harness_config: HarnessConfig
     runtime: "Runtime"
+    prefix: list[dict[str, object]] = field(factory=list)
+    living_chunks: list[StreamEvent] = field(factory=list, init=False)
+    version: int = field(default=0, init=False)
     stop_event: asyncio.Event = field(factory=asyncio.Event)
     _running: bool = field(default=False, init=False)
     _pending_task_deliveries: list[str] = field(factory=list, init=False)
     _task_delivery_suppressed_until: float | None = field(default=None, init=False)
-    _live_replay_payloads: list[LiveReplayPayload] = field(factory=list, init=False)
-    _live_replay_seq: int = field(default=0, init=False)
+    _subscribers: set[ConversationSubscriber] = field(factory=set, init=False)
+    _pending_deltas: list[asyncio.Task[None]] = field(factory=list, init=False)
+    _state_lock: asyncio.Lock = field(factory=asyncio.Lock, init=False)
     last_stop: StreamStop | None = field(default=None, init=False)
 
     @property
@@ -118,10 +133,11 @@ class Conversation:
                     title_from_user_message(input),
                 )
             if self._needs_python_reset_notice():
-                await self._append(
-                    InputMessage("developer", "yuubot", [ContentItem("text", PYTHON_RESET_NOTICE)])
+                await self._emit_commit(
+                    [InputMessage("developer", "yuubot", [ContentItem("text", PYTHON_RESET_NOTICE)])],
+                    True,
                 )
-            await self._append(input)
+            await self._emit_commit([input], True)
             self.runtime.emit(
                 ConversationInputPayload(self.id, msgspec.to_builtins(input.content))
             )
@@ -149,7 +165,7 @@ class Conversation:
         self._enter_run()
         try:
             await self._mark_status("active")
-            await self._append(InputMessage("developer", name, text_content(text)))
+            await self._emit_commit([InputMessage("developer", name, text_content(text))], True)
             return await self._run_loop(on_event)
         finally:
             await self._exit_run()
@@ -157,7 +173,7 @@ class Conversation:
     async def append_items(self, items: Sequence[HistoryItem]) -> None:
         if self._running:
             raise ConversationBusy(self.id)
-        await self._extend(items)
+        await self._emit_commit(items, False)
 
     def interrupt(self) -> bool:
         if not self._running:
@@ -166,17 +182,26 @@ class Conversation:
         self.stop_event.set()
         return True
 
-    def record_live_payload(self, payload: RuntimeEventPayload) -> int:
-        if not self._running or not _is_live_replay_payload(payload):
-            return 0
-        self._live_replay_seq += 1
-        self._live_replay_payloads.append(LiveReplayPayload(self._live_replay_seq, payload))
-        return self._live_replay_seq
+    async def snapshot(self) -> ConversationSnapshot:
+        async with self._state_lock:
+            return ConversationSnapshot(list(self.prefix), list(self.living_chunks), self.version)
 
-    def live_replay_payloads(self) -> list[LiveReplayPayload]:
-        if not self._running:
-            return []
-        return list(self._live_replay_payloads)
+    async def subscribe(self, subscriber: ConversationSubscriber) -> None:
+        async with self._state_lock:
+            self._subscribers.add(subscriber)
+            await subscriber.on_snapshot(self.id, ConversationSnapshot(
+                list(self.prefix),
+                list(self.living_chunks),
+                self.version,
+            ))
+
+    def unsubscribe(self, subscriber: ConversationSubscriber) -> None:
+        self._subscribers.discard(subscriber)
+
+    def schedule_delta(self, chunk: StreamEvent) -> None:
+        task = asyncio.create_task(self._emit_delta(chunk))
+        self._pending_deltas.append(task)
+        task.add_done_callback(self._pending_deltas.remove)
 
     def queue_task_delivery(self, task_id: str) -> None:
         if task_id not in self._pending_task_deliveries:
@@ -213,8 +238,6 @@ class Conversation:
         if self._running:
             raise ConversationBusy(self.id)
         self._running = True
-        self._live_replay_payloads.clear()
-        self._live_replay_seq = 0
         self.runtime.conversations.mark_running(self.id)
         self.stop_event.clear()
 
@@ -223,7 +246,6 @@ class Conversation:
             await self.runtime.drain_pending_task_deliveries(self.id)
         finally:
             self._running = False
-            self._live_replay_payloads.clear()
             self.runtime.conversations.mark_idle(self.id)
 
     async def _run_loop(self, on_event: StreamCallback | None) -> list[GenOutput]:
@@ -242,7 +264,7 @@ class Conversation:
 
         try:
             while True:
-                chunks: list[StreamEvent] = []
+                stop_chunk: StreamEvent | None = None
                 async for chunk in self.provider.stream(
                     self.history.to_llm_input(),
                     model=self.context.model,
@@ -250,30 +272,34 @@ class Conversation:
                     cache=self.runtime.cache,
                     stop_event=self.stop_event,
                 ):
-                    chunks.append(chunk)
                     if chunk.kind != "stream_stop":
                         if on_event is not None:
                             await on_event(chunk)
-                        self.runtime.emit(
-                            ConversationStreamPayload(self.id, chunk)
-                        )
-                outputs, stop = merge(chunks)
+                        await self._emit_delta(chunk)
+                    else:
+                        stop_chunk = chunk
+                merge_chunks = list(self.living_chunks)
+                if stop_chunk is not None:
+                    merge_chunks.append(stop_chunk)
+                outputs, stop = merge(merge_chunks)
                 self.last_stop = stop
-                await self._extend(outputs)
+                continues = stop.reason in {"tool_calls", "function_call"}
+                terminal_append: list[dict[str, object]] | None = None
+                if continues:
+                    await self._emit_commit(outputs, True)
+                else:
+                    terminal_append = await self._extend(outputs)
                 await self._record_cost(stop)
-                self.runtime.emit(ConversationOutputPayload(self.id, stop.reason))
                 if stop.reason in {"stop", "interrupted"}:
                     await close_harness()
                     await self._mark_status("interrupted" if stop.reason == "interrupted" else "closed")
+                    await self._publish_commit(terminal_append or [], False)
                 # The stream_stop frame is sent after history persistence and,
                 # for terminal turns, after tool resources have been released
                 # and terminal status has been persisted.
                 stop_frame = stream_stop_from(stop)
                 if on_event is not None:
                     await on_event(stop_frame)
-                self.runtime.emit(
-                    ConversationStreamPayload(self.id, stop_frame)
-                )
 
                 if stop.reason in {"stop", "interrupted"}:
                     return outputs
@@ -282,26 +308,20 @@ class Conversation:
                     raise ConversationBlocked(stop.reason)
 
                 results = await harness.gather(extract_tool_calls(outputs), self.stop_event)
-                await self._extend(results)
-                self.runtime.emit(
-                    ConversationToolResultsPayload(
-                        self.id,
-                        len(results),
-                        msgspec.to_builtins(results),
-                    )
-                )
+                await self._flush_pending_deltas()
+                await self._emit_commit(results, True)
                 if self.stop_event.is_set():
                     stop = StreamStop("interrupted")
-                    self.runtime.emit(ConversationOutputPayload(self.id, stop.reason))
                     await close_harness()
                     await self._mark_status("interrupted")
+                    await self._emit_commit([], False)
                     stop_frame = stream_stop_from(stop)
                     if on_event is not None:
                         await on_event(stop_frame)
-                    self.runtime.emit(
-                        ConversationStreamPayload(self.id, stop_frame)
-                    )
                     return outputs
+        except Exception as exc:
+            await self._emit_error(str(exc))
+            raise
         finally:
             await close_harness()
 
@@ -313,17 +333,40 @@ class Conversation:
                 return True
         return False
 
-    async def _append(self, item: HistoryItem) -> None:
-        await self._extend([item])
-
-    async def _extend(self, items: Sequence[HistoryItem]) -> None:
+    async def _extend(self, items: Sequence[HistoryItem]) -> list[dict[str, object]]:
+        if not items:
+            return []
         self.history.extend(items)
         wrapped_items = await self.runtime.history.extend(self.id, items)
-        for item in wrapped_items:
-            if str(item["kind"]) not in PREFIX_KINDS:
-                self.runtime.emit(
-                    ConversationHistoryAppendPayload(self.id, item)
-                )
+        return [item for item in wrapped_items if str(item["kind"]) not in PREFIX_KINDS]
+
+    async def _emit_delta(self, chunk: StreamEvent) -> None:
+        async with self._state_lock:
+            self.living_chunks.append(chunk)
+            self.version += 1
+            for subscriber in list(self._subscribers):
+                await subscriber.on_delta(self.id, chunk, self.version)
+
+    async def _emit_commit(self, items: Sequence[HistoryItem], continues: bool) -> None:
+        append = await self._extend(items)
+        await self._publish_commit(append, continues)
+
+    async def _publish_commit(self, append: list[dict[str, object]], continues: bool) -> None:
+        async with self._state_lock:
+            self.prefix.extend(append)
+            self.living_chunks.clear()
+            self.version += 1
+            for subscriber in list(self._subscribers):
+                await subscriber.on_commit(self.id, append, continues, self.version)
+
+    async def _emit_error(self, error: str) -> None:
+        async with self._state_lock:
+            for subscriber in list(self._subscribers):
+                await subscriber.on_error(self.id, error)
+
+    async def _flush_pending_deltas(self) -> None:
+        while self._pending_deltas:
+            await asyncio.gather(*list(self._pending_deltas))
 
     async def _record_cost(self, stop: StreamStop) -> None:
         estimated = stop.cost_estimated or stop.usage.payg_cost is None
@@ -375,6 +418,16 @@ class ConversationManager:
             self._idle_since[conversation.id] = time.time()
             return conversation
 
+    async def get_or_load(self, creator: ConversationCreator, conversation_id: str) -> Conversation:
+        async with self._create_lock:
+            existing = self._items.get(conversation_id)
+            if existing is not None:
+                return existing
+            conversation = await creator.spawn_conversation(conversation_id)
+            self._items[conversation.id] = conversation
+            self._idle_since[conversation.id] = time.time()
+            return conversation
+
     def mark_running(self, conversation_id: str) -> None:
         if conversation_id in self._items:
             self._idle_since.pop(conversation_id, None)
@@ -409,20 +462,12 @@ class ConversationManager:
             return None
         return item
 
-    def record_live_payload(self, payload: RuntimeEventPayload) -> int:
-        conversation_id = _payload_conversation_id(payload)
-        if conversation_id is None:
-            return 0
+    def schedule_delta(self, conversation_id: str, chunk: StreamEvent) -> bool:
         conversation = self._items.get(conversation_id)
-        if conversation is not None:
-            return conversation.record_live_payload(payload)
-        return 0
-
-    def live_replay_payloads(self, conversation_id: str) -> list[LiveReplayPayload]:
-        conversation = self._items.get(conversation_id)
-        if conversation is None:
-            return []
-        return conversation.live_replay_payloads()
+        if conversation is None or not conversation.running:
+            return False
+        conversation.schedule_delta(chunk)
+        return True
 
     async def discard(self, conversation_id: str) -> bool:
         conversation = self._items.pop(conversation_id, None)
@@ -450,20 +495,3 @@ class ConversationManager:
 
     async def stop_background_cleanup(self) -> None:
         await self._sweeper.stop()
-
-
-def _is_live_replay_payload(payload: RuntimeEventPayload) -> bool:
-    return isinstance(
-        payload,
-        (
-            ConversationStreamPayload,
-            ConversationOutputPayload,
-            ConversationToolResultsPayload,
-            ConversationToolProgressPayload,
-        ),
-    )
-
-
-def _payload_conversation_id(payload: RuntimeEventPayload) -> str | None:
-    conversation_id = getattr(payload, "conversation_id", None)
-    return conversation_id if isinstance(conversation_id, str) and conversation_id else None

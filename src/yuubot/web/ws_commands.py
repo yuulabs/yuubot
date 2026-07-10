@@ -31,15 +31,22 @@ class RuntimeEventsSubscribeCommand(msgspec.Struct, frozen=True, tag="runtime.ev
     payload: RuntimeEventsSubscribePayload = msgspec.field(default_factory=RuntimeEventsSubscribePayload)
 
 
-class ConversationHistorySubscribePayload(msgspec.Struct, frozen=True):
+class ConversationOpenPayload(msgspec.Struct, frozen=True):
     conversation_id: NonEmptyStr
 
 
-class ConversationHistorySubscribeCommand(
-    msgspec.Struct, frozen=True, kw_only=True, tag="conversation.history.subscribe"
-):
+class ConversationOpenCommand(msgspec.Struct, frozen=True, kw_only=True, tag="conversation.open"):
     id: str | None = None
-    payload: ConversationHistorySubscribePayload
+    payload: ConversationOpenPayload
+
+
+class ConversationClosePayload(msgspec.Struct, frozen=True):
+    conversation_id: NonEmptyStr
+
+
+class ConversationCloseCommand(msgspec.Struct, frozen=True, kw_only=True, tag="conversation.close"):
+    id: str | None = None
+    payload: ConversationClosePayload
 
 
 class TaskSubscribePayload(msgspec.Struct, frozen=True):
@@ -82,7 +89,8 @@ class TaskCancelCommand(msgspec.Struct, frozen=True, kw_only=True, tag="task.can
 WSCommand = (
     ConversationSendCommand
     | RuntimeEventsSubscribeCommand
-    | ConversationHistorySubscribeCommand
+    | ConversationOpenCommand
+    | ConversationCloseCommand
     | TaskSubscribeCommand
     | TaskStdinCommand
     | ConversationInterruptCommand

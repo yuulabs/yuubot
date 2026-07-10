@@ -39,7 +39,7 @@ def register_websocket_routes(api: FastAPI, app: Yuubot) -> None:
         except WebSocketDisconnect:
             pass
         finally:
-            ws_listener.close()
+            await ws_listener.close()
             app.runtime.listeners.remove(ws_listener)
             for task in list(connection_tasks):
                 task.cancel()

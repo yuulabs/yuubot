@@ -1,14 +1,15 @@
+import asyncio
+from typing import cast
+
 import pytest
 
 from yuubot import Yuubot
 from yuubot.chat.listener import WsListener
+from yuubot.chat.loop import ConversationSnapshot
 from yuubot.domain.stream import StreamEvent, TextDeltaPayload
 from yuubot.runtime.tasks import RuntimeTaskRecord, TaskRegistry
 from yuubot.web.ws import _task_subscribe
 from yuubot.web.ws_commands import TaskSubscribePayload
-from typing import cast
-
-from support.runtime_events import conversation_output, conversation_stream, conversation_tool_results
 
 
 class _Runtime:
@@ -22,26 +23,47 @@ class _App:
 
 
 @pytest.mark.asyncio
-async def test_track_send_replaces_existing_conversation_track() -> None:
+async def test_conversation_frames_preserve_snapshot_delta_commit_order() -> None:
     sent: list[dict[str, object]] = []
 
     async def send(payload: dict[str, object]) -> None:
         sent.append(payload)
 
     listener = WsListener(send)
-    listener.track_send("cmd1", "conv-1")
-    listener.track_send("cmd2", "conv-1")
+    listener._ensure_conversation_worker()
+    await listener.on_snapshot("conv-1", ConversationSnapshot([], [], 0))
+    chunk = StreamEvent("text-0", "text_delta", TextDeltaPayload("hi"))
+    await listener.on_delta("conv-1", chunk, 1)
+    await listener.on_commit("conv-1", [], False, 2)
+    await asyncio.sleep(0)
 
-    await listener.on_event(
-        conversation_stream(
-            "conv-1",
-            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
-        )
-    )
+    assert [frame["type"] for frame in sent] == [
+        "conversation.snapshot",
+        "conversation.delta",
+        "conversation.commit",
+    ]
+    assert cast(dict[str, object], sent[1]["payload"])["version"] == 1
+    await listener.close()
 
-    stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
-    assert len(stream_frames) == 1
-    assert stream_frames[0]["id"] == "cmd2"
+
+@pytest.mark.asyncio
+async def test_conversation_queue_overflow_retains_newest_version_for_gap_recovery() -> None:
+    sent: list[dict[str, object]] = []
+
+    async def send(payload: dict[str, object]) -> None:
+        sent.append(payload)
+
+    listener = WsListener(send)
+    chunk = StreamEvent("text-0", "text_delta", TextDeltaPayload("x"))
+    for version in range(1, 301):
+        await listener.on_delta("conv-1", chunk, version)
+    listener._ensure_conversation_worker()
+    await asyncio.sleep(0.01)
+
+    versions = [cast(dict[str, object], frame["payload"])["version"] for frame in sent]
+    assert versions[-1] == 300
+    assert versions[0] > 1
+    await listener.close()
 
 
 @pytest.mark.asyncio
@@ -64,107 +86,13 @@ async def test_task_subscribe_terminal_frame_includes_stdout_written_before_subs
         stdout: object,
         status: str,
     ) -> None:
-        del self, stdout
-        del task_id, status
+        del self, stdout, task_id, status
         record.stdout.write("ready\n")
         record.status = "done"
         record.mark_terminal()
 
     monkeypatch.setattr(WsListener, "start_task_stdout", complete_before_stdout_subscription)
-
     await _task_subscribe(cast(Yuubot, _App(tasks)), send, listener, "cmd-1", TaskSubscribePayload(record.id))
 
     task_events = [frame for frame in sent if frame.get("type") == "task.event"]
     assert task_events[-1]["payload"] == {"task_id": record.id, "status": "done", "stdout": "ready\n"}
-
-
-@pytest.mark.asyncio
-async def test_track_send_keeps_different_conversations() -> None:
-    sent: list[dict[str, object]] = []
-
-    async def send(payload: dict[str, object]) -> None:
-        sent.append(payload)
-
-    listener = WsListener(send)
-    listener.track_send("cmd1", "conv-1")
-    listener.track_send("cmd2", "conv-2")
-
-    await listener.on_event(
-        conversation_stream(
-            "conv-1",
-            StreamEvent("text-0", "text_delta", TextDeltaPayload("a")),
-        )
-    )
-
-    stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
-    assert len(stream_frames) == 1
-    assert stream_frames[0]["id"] == "cmd1"
-
-
-@pytest.mark.asyncio
-async def test_history_subscriber_receives_stream_without_track_send() -> None:
-    sent: list[dict[str, object]] = []
-
-    async def send(payload: dict[str, object]) -> None:
-        sent.append(payload)
-
-    listener = WsListener(send)
-    listener.track_history("conv-1")
-
-    await listener.on_event(
-        conversation_stream(
-            "conv-1",
-            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
-        )
-    )
-
-    stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
-    assert len(stream_frames) == 1
-    assert "id" not in stream_frames[0]
-
-
-@pytest.mark.asyncio
-async def test_track_send_prevents_duplicate_history_stream() -> None:
-    sent: list[dict[str, object]] = []
-
-    async def send(payload: dict[str, object]) -> None:
-        sent.append(payload)
-
-    listener = WsListener(send)
-    listener.track_history("conv-1")
-    listener.track_send("cmd1", "conv-1")
-
-    await listener.on_event(
-        conversation_stream(
-            "conv-1",
-            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
-        )
-    )
-
-    stream_frames = [frame for frame in sent if frame.get("type") == "conversation.stream"]
-    assert len(stream_frames) == 1
-    assert stream_frames[0]["id"] == "cmd1"
-
-
-@pytest.mark.asyncio
-async def test_direct_stream_track_suppresses_runtime_stream_and_output_frames() -> None:
-    sent: list[dict[str, object]] = []
-
-    async def send(payload: dict[str, object]) -> None:
-        sent.append(payload)
-
-    listener = WsListener(send)
-    listener.track_history("conv-1")
-    listener.track_send("cmd1", "conv-1", direct_stream=True)
-
-    await listener.on_event(
-        conversation_stream(
-            "conv-1",
-            StreamEvent("text-0", "text_delta", TextDeltaPayload("hi")),
-        )
-    )
-    await listener.on_event(conversation_output("conv-1", "stop"))
-    await listener.on_event(conversation_tool_results("conv-1", 1, [{"tool_call_id": "call-1", "content": []}]))
-
-    assert [frame.get("type") for frame in sent] == ["conversation.tool_results"]
-    assert sent[0]["id"] == "cmd1"

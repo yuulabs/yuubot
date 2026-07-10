@@ -7,7 +7,7 @@ handed back to the model; nothing propagates to the conversation.
 
 import asyncio
 from contextvars import Token
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import msgspec
 from attrs import define, field
@@ -18,6 +18,9 @@ from ..runtime.event_payloads import ConversationStreamPayload, EmitFn
 from ..tools import Tool, ToolConfig, build_tools
 from ..tools.progress import ToolProgress, bind_progress
 from ..util.secrets import redact_value
+
+if TYPE_CHECKING:
+    from ..runtime.core import Runtime
 
 TOOL_TIMEOUT_S = 240
 

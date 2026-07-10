@@ -617,19 +617,6 @@ export function historyItemsFromHistory(history: HistoryItem[]): DisplayItem[] {
   return items;
 }
 
-export function uniqueHistoryItems(history: HistoryItem[]): HistoryItem[] {
-  const seenSeq = new Set<number>();
-  const unique: HistoryItem[] = [];
-  for (const item of [...history].sort((left, right) => left.seq - right.seq)) {
-    if (seenSeq.has(item.seq)) {
-      continue;
-    }
-    seenSeq.add(item.seq);
-    unique.push(item);
-  }
-  return unique;
-}
-
 function lastUserTurnKey(items: DisplayItem[]): string | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
@@ -638,70 +625,6 @@ function lastUserTurnKey(items: DisplayItem[]): string | undefined {
     }
   }
   return undefined;
-}
-
-function hasDurableActorForTurn(items: DisplayItem[], turnKey: string): boolean {
-  return items.some((item) => item.role === "actor" && item.turnKey === turnKey);
-}
-
-function liveBlocksAfterDurablePrefix(liveBlocks: RenderBlock[], durableBlocks: RenderBlock[]): RenderBlock[] {
-  let liveIndex = 0;
-  let durableIndex = 0;
-
-  while (liveIndex < liveBlocks.length && durableIndex < durableBlocks.length) {
-    const liveBlock = liveBlocks[liveIndex];
-    const durableBlock = durableBlocks[durableIndex];
-    if (!durableCoversLiveBlock(durableBlock, liveBlock)) {
-      break;
-    }
-    liveIndex += 1;
-    durableIndex += 1;
-  }
-
-  return liveBlocks.slice(liveIndex);
-}
-
-function durableCoversLiveBlock(durableBlock: RenderBlock, liveBlock: RenderBlock): boolean {
-  if (durableBlock.type === liveBlock.type && (liveBlock.type === "text" || liveBlock.type === "thinking")) {
-    return true;
-  }
-  if (isToolLikeBlock(durableBlock) && isToolLikeBlock(liveBlock)) {
-    if (!sameToolIdentity(durableBlock, liveBlock)) {
-      return false;
-    }
-    if (!textCovers(durableBlock.toolArgs, liveBlock.toolArgs)) {
-      return false;
-    }
-    return textCovers(durableBlock.toolResult, liveBlock.toolResult);
-  }
-  return durableBlock.type === liveBlock.type && durableBlock.content === liveBlock.content;
-}
-
-function isToolLikeBlock(block: RenderBlock): boolean {
-  return block.type === "tool_group" || block.type === "tool_call" || block.type === "tool_result";
-}
-
-function sameToolIdentity(left: RenderBlock, right: RenderBlock): boolean {
-  if (left.toolCallId || right.toolCallId) {
-    return left.toolCallId === right.toolCallId;
-  }
-  if (left.toolStreamId || right.toolStreamId) {
-    return left.toolStreamId === right.toolStreamId;
-  }
-  if (left.toolName || right.toolName) {
-    return left.toolName === right.toolName;
-  }
-  return left.content === right.content;
-}
-
-function textCovers(durable: string | undefined, live: string | undefined): boolean {
-  if (!live) {
-    return true;
-  }
-  if (!durable) {
-    return false;
-  }
-  return durable.startsWith(live) || live.startsWith(durable);
 }
 
 function mergeLiveAssistantTurn({
@@ -725,30 +648,12 @@ function mergeLiveAssistantTurn({
   const streaming = phase === "streaming";
   const stableTurnKey = lastUserTurnKey(items) ?? turnKey ?? "live";
   const liveKey = `${stableTurnKey}:actor`;
-  if (hasDurableActorForTurn(items, stableTurnKey)) {
-    return items.map((item) => {
-      if (item.key !== liveKey) {
-        return item;
-      }
-      const overlay = liveBlocksAfterDurablePrefix(liveBlocks, item.blocks);
-      return {
-        ...item,
-        blocks: overlay.length > 0 ? appendRenderBlocks(item.blocks, overlay) : item.blocks,
-        streaming,
-        turnKey: stableTurnKey,
-      };
-    });
-  }
-
   const existingIndex = items.findIndex((item) => item.key === liveKey);
   if (existingIndex >= 0) {
-    return items.map((item, index) => (
-      index === existingIndex
-        ? { ...item, blocks: liveBlocks, streaming, turnKey: stableTurnKey }
-        : item
-    ));
+    return items.map((item, index) => index === existingIndex
+      ? { ...item, blocks: appendRenderBlocks(item.blocks, liveBlocks), streaming }
+      : item);
   }
-
   return [
     ...items,
     {
@@ -769,30 +674,30 @@ export interface PendingUserMessage {
 }
 
 export interface TranscriptState {
-  history: HistoryItem[];
-  liveBlocks: RenderBlock[];
-  phase: ConversationPhase;
-  turnKey?: string;
+  prefix: HistoryItem[];
+  livingChunks: StreamEventFrame[];
+  version: number;
+  phase: "idle" | "subscribing" | "synced" | "error";
+  continues: boolean;
   previewStartedAt: number;
   pendingUser: PendingUserMessage | null;
 }
 
 export type TranscriptAction =
-  | { type: "reset"; history: HistoryItem[] }
-  | { type: "begin_turn"; turnKey: string; now: number }
-  | { type: "history_append"; item: HistoryItem }
+  | { type: "snapshot"; prefix: HistoryItem[]; livingChunks: StreamEventFrame[]; version: number }
+  | { type: "delta"; chunk: StreamEventFrame; version: number }
+  | { type: "commit"; append: HistoryItem[]; continues: boolean; version: number }
+  | { type: "gap" }
   | { type: "pending_user"; clientKey: string; text: string; now: number }
-  | { type: "append_blocks"; blocks: RenderBlock[] }
-  | { type: "mark_tools_completed" }
-  | { type: "finish_turn" }
-  | { type: "set_phase"; phase: ConversationPhase }
-  | { type: "clear_live" };
+  | { type: "error" };
 
-export function createTranscriptState(history: HistoryItem[] = []): TranscriptState {
+export function createTranscriptState(): TranscriptState {
   return {
-    history: uniqueHistoryItems(history),
-    liveBlocks: [],
-    phase: "idle",
+    prefix: [],
+    livingChunks: [],
+    version: 0,
+    phase: "subscribing",
+    continues: false,
     previewStartedAt: Date.now(),
     pendingUser: null,
   };
@@ -803,16 +708,15 @@ function isUserInputItem(item: HistoryItem): boolean {
 }
 
 export function transcriptReducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
-  if (action.type === "reset") {
-    return createTranscriptState(action.history);
-  }
-  if (action.type === "begin_turn") {
+  if (action.type === "snapshot") {
     return {
-      ...state,
-      liveBlocks: [],
-      phase: "sending",
-      turnKey: action.turnKey,
-      previewStartedAt: action.now,
+      prefix: action.prefix,
+      livingChunks: action.livingChunks,
+      version: action.version,
+      phase: "synced",
+      continues: action.livingChunks.length > 0,
+      previewStartedAt: state.previewStartedAt,
+      pendingUser: null,
     };
   }
   if (action.type === "pending_user") {
@@ -825,63 +729,56 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
       },
     };
   }
-  if (action.type === "history_append") {
-    if (PREFIX_KINDS.has(action.item.kind) || state.history.some((item) => item.seq === action.item.seq)) {
-      return state;
-    }
+  if (action.type === "delta") {
     return {
       ...state,
-      history: uniqueHistoryItems([...state.history, action.item]),
-      pendingUser: isUserInputItem(action.item) ? null : state.pendingUser,
+      livingChunks: [...state.livingChunks, action.chunk],
+      version: action.version,
+      phase: "synced",
+      continues: true,
     };
   }
-  if (action.type === "append_blocks") {
-    if (!action.blocks.length) {
-      return state;
-    }
+  if (action.type === "commit") {
+    const appendedUser = action.append.some(isUserInputItem);
     return {
       ...state,
-      liveBlocks: appendRenderBlocks(state.liveBlocks, action.blocks),
-      phase: state.phase === "sending" ? "streaming" : state.phase,
+      prefix: [...state.prefix, ...action.append],
+      livingChunks: [],
+      version: action.version,
+      phase: "synced",
+      continues: action.continues,
+      pendingUser: appendedUser ? null : state.pendingUser,
     };
   }
-  if (action.type === "mark_tools_completed") {
-    return {
-      ...state,
-      liveBlocks: markToolBlocksCompleted(state.liveBlocks),
-      phase: "streaming",
-    };
+  if (action.type === "gap") {
+    return { ...state, phase: "subscribing" };
   }
-  if (action.type === "finish_turn") {
-    return {
-      ...state,
-      phase: "idle",
-      liveBlocks: [],
-      turnKey: undefined,
-    };
-  }
-  if (action.type === "set_phase") {
-    return {
-      ...state,
-      phase: action.phase,
-    };
-  }
-  if (action.type === "clear_live") {
-    return {
-      ...state,
-      liveBlocks: [],
-      turnKey: undefined,
-    };
+  if (action.type === "error") {
+    return { ...state, phase: "error", continues: false };
   }
   return state;
 }
 
 export function transcriptDisplayItems(state: TranscriptState): DisplayItem[] {
+  let blockIndex = 0;
+  const nextHistorySeq = state.prefix.reduce((max, item) => Math.max(max, item.seq), -1) + 1;
+  const liveBlocks = state.livingChunks.reduce<RenderBlock[]>(
+    (blocks, chunk) => appendRenderBlocks(
+      blocks,
+      renderBlocksFromStreamEvent(chunk, "live", () => blockIndex++),
+    ),
+    [],
+  ).map((block, index) => ({
+    ...block,
+    key: `history-${nextHistorySeq + index}${block.type === "tool_group" ? ":group" : ""}`,
+  }));
+  const displayPhase: ConversationPhase = state.continues
+    ? liveBlocks.length > 0 ? "streaming" : "sending"
+    : "idle";
   return buildDisplayItems({
-    history: state.history,
-    liveBlocks: state.liveBlocks,
-    phase: state.phase,
-    turnKey: state.turnKey,
+    history: state.prefix,
+    liveBlocks,
+    phase: displayPhase,
     previewStartedAt: state.previewStartedAt,
     pendingUser: state.pendingUser,
   });
@@ -916,7 +813,7 @@ export function buildDisplayItems({
   previewStartedAt?: number;
   pendingUser?: PendingUserMessage | null;
 }): DisplayItem[] {
-  const items = historyItemsFromHistory(uniqueHistoryItems(history));
+  const items = historyItemsFromHistory(history);
   if (pendingUser) {
     items.push(pendingUserDisplayItem(pendingUser));
   }

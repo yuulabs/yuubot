@@ -88,14 +88,13 @@ def test_bind_progress_emits_tool_progress_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ws_listener_forwards_tool_progress_frame() -> None:
+async def test_ws_listener_does_not_forward_tool_progress_as_conversation_frame() -> None:
     sent: list[dict[str, object]] = []
 
     async def send(payload: dict[str, object]) -> None:
         sent.append(payload)
 
     listener = WsListener(send)
-    listener.track_send("cmd-1", "conv-1")
 
     await listener.on_event(
         conversation_tool_progress(
@@ -106,13 +105,4 @@ async def test_ws_listener_forwards_tool_progress_frame() -> None:
         )
     )
 
-    frames = [frame for frame in sent if frame.get("type") == "conversation.tool_progress"]
-    assert len(frames) == 1
-    assert frames[0]["id"] == "cmd-1"
-    assert frames[0]["payload"] == {
-        "conversation_id": "conv-1",
-        "tool_call_id": "call-1",
-        "tool_name": "bash",
-        "text": "building",
-        "task": None,
-    }
+    assert sent == []

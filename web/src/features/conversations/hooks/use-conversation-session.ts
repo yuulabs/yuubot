@@ -4,8 +4,8 @@ import { toast } from "sonner";
 import {
   connectWs,
   interruptConversation,
+  openConversation,
   sendConversation,
-  subscribeConversationHistory,
   type WsContentItem,
 } from "@/shared/lib/api";
 import { describeWsError } from "@/shared/lib/api-errors";
@@ -14,14 +14,11 @@ import type { HistoryItem } from "@/shared/types/api";
 import {
   contentItemsToText,
   createTranscriptState,
-  isTerminalStreamStop,
-  renderBlocksFromStreamEvent,
-  renderBlocksFromToolResults,
   transcriptDisplayItems,
   transcriptReducer,
   type ConversationPhase,
+  type StreamEventFrame,
 } from "../lib/conversation-transcript";
-import { shouldProcessConversationFrame } from "../lib/ws-frame";
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -38,558 +35,257 @@ interface WsFrame {
 interface PendingSend {
   actorId: string;
   content: WsContentItem[];
-  conversationId?: string;
+  conversationId: string;
 }
 
 export function useConversationSession({
   conversationId,
-  history,
   isDraft,
   development,
-  onHistoryAppend,
   onTurnComplete,
-  onReconnect,
-  onHistoryFallback,
 }: {
   conversationId: string;
-  history: HistoryItem[];
   isDraft: boolean;
   development: boolean;
-  onHistoryAppend: (conversationId: string, item: HistoryItem) => void;
-  /** Called after a terminal stream stop; must not re-fetch conversation history. */
   onTurnComplete: () => void;
-  onReconnect?: () => void;
-  onHistoryFallback?: () => void;
 }) {
   const wsRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<PendingSend | null>(null);
-  const onHistoryAppendRef = useRef(onHistoryAppend);
-  const onTurnCompleteRef = useRef(onTurnComplete);
-  const onReconnectRef = useRef(onReconnect);
-  const onHistoryFallbackRef = useRef(onHistoryFallback);
-  const historyRef = useRef(history);
+  const localVersionRef = useRef(0);
   const conversationIdRef = useRef(conversationId);
-  const liveBlockIndexRef = useRef(0);
-  const turnKeyRef = useRef("");
-  const activeCommandIdRef = useRef<string | null>(null);
-  const inFlightRef = useRef(false);
-  const terminalHandledRef = useRef(false);
-  const historySubscriptionRef = useRef<string | null>(null);
-  const turnAppendReceivedRef = useRef(false);
-  const reconnectAttemptRef = useRef(0);
-  const hadConnectedRef = useRef(false);
-  const lastLiveSeqRef = useRef(0);
+  const disposedRef = useRef(false);
+  const resubscribingRef = useRef(false);
+  const onTurnCompleteRef = useRef(onTurnComplete);
 
-  const [transcript, dispatchTranscript] = useReducer(transcriptReducer, history, createTranscriptState);
+  const [transcript, dispatch] = useReducer(transcriptReducer, undefined, createTranscriptState);
   const [wsReady, setWsReady] = useState(false);
   const [wsConnectionState, setWsConnectionState] = useState<WsConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<string[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState(isDraft ? "" : conversationId);
 
-  onHistoryAppendRef.current = onHistoryAppend;
-  onTurnCompleteRef.current = onTurnComplete;
-  onReconnectRef.current = onReconnect;
-  onHistoryFallbackRef.current = onHistoryFallback;
-  historyRef.current = history;
   conversationIdRef.current = conversationId;
+  onTurnCompleteRef.current = onTurnComplete;
 
-  const subscribedConversationId = activeConversationId || conversationId;
-
-  const resetLiveTurn = useCallback(() => {
-    turnKeyRef.current = "";
-    liveBlockIndexRef.current = 0;
-    dispatchTranscript({ type: "clear_live" });
-  }, []);
-
-  const finishTurn = useCallback(() => {
-    inFlightRef.current = false;
-  }, []);
-
-  const finishTerminalTurn = useCallback(() => {
-    if (terminalHandledRef.current) {
-      return;
-    }
-    terminalHandledRef.current = true;
-    dispatchTranscript({ type: "finish_turn" });
-    finishTurn();
-    activeCommandIdRef.current = null;
-    resetLiveTurn();
-    if (!turnAppendReceivedRef.current) {
-      onHistoryFallbackRef.current?.();
-    }
-    turnAppendReceivedRef.current = false;
-    onTurnCompleteRef.current();
-  }, [finishTurn, resetLiveTurn]);
-
-  const beginTurn = useCallback(() => {
-    const nextTurnKey = `turn-${Date.now()}`;
-    inFlightRef.current = true;
-    terminalHandledRef.current = false;
-    turnAppendReceivedRef.current = false;
-    turnKeyRef.current = nextTurnKey;
-    liveBlockIndexRef.current = 0;
-    dispatchTranscript({ type: "begin_turn", turnKey: nextTurnKey, now: Date.now() });
-  }, []);
-
-  const beginRemoteTurn = useCallback(() => {
-    if (inFlightRef.current) {
-      return;
-    }
-    beginTurn();
-  }, [beginTurn]);
-
-  const markRemoteTurnActive = useCallback(() => {
-    if (inFlightRef.current) {
-      return;
-    }
-    const nextTurnKey = `remote-${Date.now()}`;
-    inFlightRef.current = true;
-    terminalHandledRef.current = false;
-    turnAppendReceivedRef.current = false;
-    turnKeyRef.current = nextTurnKey;
-    liveBlockIndexRef.current = 0;
-    dispatchTranscript({ type: "set_phase", phase: "streaming" });
-  }, []);
-
-  const beginReplayTurn = useCallback(() => {
-    const nextTurnKey = `replay-${Date.now()}`;
-    inFlightRef.current = true;
-    terminalHandledRef.current = false;
-    turnAppendReceivedRef.current = false;
-    turnKeyRef.current = nextTurnKey;
-    liveBlockIndexRef.current = 0;
-    lastLiveSeqRef.current = 0;
-    dispatchTranscript({ type: "begin_turn", turnKey: nextTurnKey, now: Date.now() });
-    dispatchTranscript({ type: "set_phase", phase: "streaming" });
-  }, []);
-
-  const appendStreamEvent = useCallback((event: Record<string, unknown>) => {
-    const groupId = typeof event.group_id === "string" ? event.group_id : "stream";
-    const kind = typeof event.kind === "string" ? event.kind : "";
-    const payload = event.payload && typeof event.payload === "object"
-      ? (event.payload as Record<string, unknown>)
-      : {};
-    const keyPrefix = turnKeyRef.current || "live";
-    const blocks = renderBlocksFromStreamEvent(
-      { group_id: groupId, kind, payload },
-      keyPrefix,
-      () => liveBlockIndexRef.current++,
-    );
-    if (!blocks.length) {
-      return;
-    }
-    dispatchTranscript({ type: "append_blocks", blocks });
-  }, []);
-
-  const appendToolResults = useCallback((results: unknown[]) => {
-    const keyPrefix = turnKeyRef.current || "live";
-    const blocks = renderBlocksFromToolResults(results, keyPrefix, () => liveBlockIndexRef.current++);
-    if (!blocks.length) {
-      return;
-    }
-    dispatchTranscript({ type: "append_blocks", blocks });
-  }, []);
-
-  const ensureHistorySubscription = useCallback((ws: WebSocket, targetConversationId: string | undefined) => {
-    if (!targetConversationId || historySubscriptionRef.current === targetConversationId) {
-      return;
-    }
-    historySubscriptionRef.current = targetConversationId;
-    subscribeConversationHistory(ws, targetConversationId);
-  }, []);
-
-  const queueOptimisticUser = useCallback((content: WsContentItem[]) => {
-    const text = contentItemsToText(content);
-    if (!text) {
-      return;
-    }
-    dispatchTranscript({
-      type: "pending_user",
-      clientKey: `pending-${Date.now()}`,
-      text,
-      now: Date.now(),
-    });
+  const requestSnapshot = useCallback((ws: WebSocket) => {
+    if (resubscribingRef.current || ws.readyState !== WebSocket.OPEN) return;
+    resubscribingRef.current = true;
+    setWsReady(false);
+    dispatch({ type: "gap" });
+    openConversation(ws, conversationIdRef.current);
   }, []);
 
   const flushPending = useCallback((ws: WebSocket) => {
     const pending = pendingRef.current;
     if (!pending) return;
     pendingRef.current = null;
-    ensureHistorySubscription(ws, pending.conversationId);
-    const commandId = sendConversation(ws, pending.actorId, pending.content, pending.conversationId);
-    activeCommandIdRef.current = commandId;
-    beginTurn();
-    setError(null);
-  }, [beginTurn, ensureHistorySubscription]);
-
-  const shouldProcessFrame = useCallback((frame: WsFrame): boolean => {
-    const frameConversationId = typeof frame.payload?.conversation_id === "string"
-      ? frame.payload.conversation_id
-      : undefined;
-    return shouldProcessConversationFrame(
-      frameConversationId,
-      subscribedConversationId,
-      frame.id,
-      activeCommandIdRef.current,
-    );
-  }, [subscribedConversationId]);
-
-  const shouldProcessLiveFrame = useCallback((frame: WsFrame): boolean => {
-    const liveSeq = numericPayloadValue(frame.payload?.live_seq);
-    if (!liveSeq) {
-      return true;
-    }
-    if (liveSeq <= lastLiveSeqRef.current) {
-      return false;
-    }
-    lastLiveSeqRef.current = liveSeq;
-    return true;
+    sendConversation(ws, pending.actorId, pending.content, pending.conversationId);
   }, []);
 
   useEffect(() => {
-    if (!isDraft) {
-      setActiveConversationId(conversationId);
-    }
+    if (isDraft) return;
+    disposedRef.current = false;
+    localVersionRef.current = 0;
+    resubscribingRef.current = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: number | undefined;
 
-    historySubscriptionRef.current = null;
-    dispatchTranscript({ type: "reset", history: historyRef.current });
-    finishTurn();
-    resetLiveTurn();
-    setError(null);
-    pendingRef.current = null;
-    activeCommandIdRef.current = null;
-    terminalHandledRef.current = false;
-    turnAppendReceivedRef.current = false;
-    lastLiveSeqRef.current = 0;
-  }, [conversationId, finishTurn, isDraft, resetLiveTurn]);
-
-  useEffect(() => {
-    for (const item of history) {
-      dispatchTranscript({ type: "history_append", item });
-    }
-  }, [history]);
-
-  useEffect(() => {
-    if (isDraft) {
-      return;
-    }
-    const ws = wsRef.current;
-    const target = activeConversationId || conversationId;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !target || !wsReady) {
-      return;
-    }
-    if (historySubscriptionRef.current === target) {
-      return;
-    }
-    ensureHistorySubscription(ws, target);
-  }, [activeConversationId, conversationId, ensureHistorySubscription, isDraft, wsReady]);
-
-  useEffect(() => {
-    if (isDraft) {
-      return;
-    }
-
-    let disposed = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const scheduleReconnect = () => {
-      if (disposed) return;
-      const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttemptRef.current, RECONNECT_MAX_MS);
-      reconnectAttemptRef.current += 1;
-      setWsConnectionState("reconnecting");
-      setWsReady(false);
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        openSocket();
-      }, delay);
-    };
-
-    const handleMessage = (event: MessageEvent) => {
-      if (disposed) return;
-      if (development) {
-        setEvents((items) => [...items.slice(-100), String(event.data)]);
-      }
-      const frame = parseFrame(String(event.data));
+    const handleMessage = (message: MessageEvent<string>) => {
+      const frame = parseFrame(message.data);
       if (!frame) return;
-
-      if (frame.type === "conversation.send.accepted") {
-        const acceptedId = frame.payload?.conversation_id;
-        if (typeof acceptedId === "string" && acceptedId) {
-          setActiveConversationId(acceptedId);
+      if (development) {
+        setEvents((current) => [...current.slice(-99), JSON.stringify(frame, null, 2)]);
+      }
+      const payload = frame.payload;
+      if (payload?.conversation_id !== conversationIdRef.current) {
+        if (frame.type === "error" && frame.id?.startsWith("open-")) {
+          setError(describeWsError(frame.error));
+          dispatch({ type: "error" });
         }
         return;
       }
 
-      if (frame.type === "conversation.history.append") {
-        const targetId = typeof frame.payload?.conversation_id === "string"
-          ? frame.payload.conversation_id
-          : "";
-        const item = parseHistoryItem(frame.payload?.item);
-        if (targetId && item) {
-          turnAppendReceivedRef.current = true;
-          dispatchTranscript({ type: "history_append", item });
-          onHistoryAppendRef.current(targetId, item);
-        }
+      if (frame.type === "conversation.snapshot") {
+        const prefix = parseHistoryItems(payload.prefix);
+        const livingChunks = parseStreamChunks(payload.living_chunks);
+        const version = numericVersion(payload.version);
+        localVersionRef.current = version;
+        resubscribingRef.current = false;
+        dispatch({ type: "snapshot", prefix, livingChunks, version });
+        setWsReady(true);
+        setError(null);
+        const ws = wsRef.current;
+        if (ws) flushPending(ws);
         return;
       }
 
-      if (frame.type === "conversation.interrupt.result") {
-        if (frame.payload?.interrupted !== true) {
-          toast.error("Could not interrupt conversation.");
+      if (frame.type === "conversation.delta" || frame.type === "conversation.commit") {
+        const version = numericVersion(payload.version);
+        if (version <= localVersionRef.current) return;
+        if (version !== localVersionRef.current + 1) {
+          const ws = wsRef.current;
+          if (ws) requestSnapshot(ws);
+          return;
         }
+        localVersionRef.current = version;
+        if (frame.type === "conversation.delta") {
+          const chunk = parseStreamChunk(payload.chunk);
+          if (chunk) dispatch({ type: "delta", chunk, version });
+          return;
+        }
+        const continues = payload.continues === true;
+        dispatch({ type: "commit", append: parseHistoryItems(payload.append), continues, version });
+        if (!continues) onTurnCompleteRef.current();
         return;
       }
 
-      if (frame.type === "conversation.replay.start") {
-        if (!shouldProcessFrame(frame)) {
-          return;
-        }
-        beginReplayTurn();
-        return;
-      }
-
-      if (frame.type === "conversation.replay.end") {
-        return;
-      }
-
-      if (frame.type === "conversation.tool_results") {
-        if (!shouldProcessFrame(frame)) {
-          return;
-        }
-        if (!shouldProcessLiveFrame(frame)) {
-          return;
-        }
-        if (!inFlightRef.current) {
-          beginRemoteTurn();
-        }
-        const results = Array.isArray(frame.payload?.results) ? frame.payload.results : [];
-        appendToolResults(results);
-        return;
-      }
-
-      if (frame.type === "conversation.output") {
-        if (!shouldProcessFrame(frame)) {
-          return;
-        }
-        if (!shouldProcessLiveFrame(frame)) {
-          return;
-        }
-        return;
-      }
-
-      if (frame.type === "conversation.stream") {
-        if (!shouldProcessFrame(frame)) {
-          return;
-        }
-        if (!shouldProcessLiveFrame(frame)) {
-          return;
-        }
-        if (!inFlightRef.current) {
-          beginRemoteTurn();
-        }
-        const streamPayload = frame.payload;
-        const streamEvent = streamPayload?.event as Record<string, unknown> | undefined;
-        const kind = streamEvent?.kind;
-        if (
-          kind === "text_delta" ||
-          kind === "reasoning_delta" ||
-          kind === "tool_name" ||
-          kind === "tool_arguments_delta" ||
-          kind === "tool_arguments_end" ||
-          kind === "tool_result_delta" ||
-          kind === "tool_result_end"
-        ) {
-          appendStreamEvent(streamEvent ?? {});
-          return;
-        }
-        if (kind === "stream_stop") {
-          const stopPayload = streamEvent?.payload && typeof streamEvent.payload === "object"
-            ? (streamEvent.payload as Record<string, unknown>)
-            : {};
-          if (isTerminalStreamStop(stopPayload)) {
-            finishTerminalTurn();
-          } else {
-            dispatchTranscript({ type: "mark_tools_completed" });
-          }
-          return;
-        }
+      if (frame.type === "conversation.error") {
+        const message = typeof payload.error === "string" ? payload.error : "Conversation failed.";
+        setError(message);
+        dispatch({ type: "error" });
+        toast.error(message);
         return;
       }
 
       if (frame.type === "error") {
-        if (!shouldProcessFrame(frame)) {
-          return;
-        }
         const message = describeWsError(frame.error);
-        const turnAlreadyFinished = terminalHandledRef.current;
-        if (turnAlreadyFinished) {
-          toast.warning(message);
-          onTurnCompleteRef.current();
-          return;
-        }
         setError(message);
-        dispatchTranscript({ type: "set_phase", phase: "error" });
-        finishTurn();
-        activeCommandIdRef.current = null;
-        resetLiveTurn();
+        dispatch({ type: "error" });
         toast.error(message);
-        onTurnCompleteRef.current();
       }
     };
 
     const openSocket = () => {
-      if (disposed) return;
+      if (disposedRef.current) return;
       const ws = connectWs();
       wsRef.current = ws;
       setWsReady(false);
-      setWsConnectionState(reconnectAttemptRef.current > 0 ? "reconnecting" : "connecting");
-
+      setWsConnectionState(reconnectAttempt ? "reconnecting" : "connecting");
       ws.onopen = () => {
-        if (disposed) return;
-        const reconnected = hadConnectedRef.current;
-        hadConnectedRef.current = true;
-        reconnectAttemptRef.current = 0;
-        setWsReady(true);
+        if (disposedRef.current) return;
+        reconnectAttempt = 0;
+        resubscribingRef.current = false;
         setWsConnectionState("connected");
-        setError(null);
-        historySubscriptionRef.current = null;
-        ensureHistorySubscription(ws, conversationIdRef.current);
-        flushPending(ws);
-        if (reconnected) {
-          onReconnectRef.current?.();
-        }
+        requestSnapshot(ws);
       };
-
+      ws.onmessage = handleMessage;
       ws.onerror = () => {
-        if (disposed) return;
-        setError("WebSocket connection failed.");
-        dispatchTranscript({ type: "set_phase", phase: "error" });
-        finishTurn();
+        if (!disposedRef.current) setError("WebSocket connection failed.");
       };
-
       ws.onclose = () => {
-        if (disposed) return;
+        if (disposedRef.current) return;
         wsRef.current = null;
         setWsReady(false);
-        scheduleReconnect();
+        resubscribingRef.current = false;
+        reconnectAttempt += 1;
+        const delay = Math.min(RECONNECT_BASE_MS * 2 ** (reconnectAttempt - 1), RECONNECT_MAX_MS);
+        reconnectTimer = window.setTimeout(openSocket, delay);
       };
-
-      ws.onmessage = handleMessage;
     };
 
     openSocket();
-
     return () => {
-      disposed = true;
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-      }
+      disposedRef.current = true;
+      if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       wsRef.current?.close();
       wsRef.current = null;
-      hadConnectedRef.current = false;
-      reconnectAttemptRef.current = 0;
     };
-  }, [
-    appendStreamEvent,
-    appendToolResults,
-    beginRemoteTurn,
-    beginReplayTurn,
-    development,
-    ensureHistorySubscription,
-    finishTerminalTurn,
-    finishTurn,
-    flushPending,
-    isDraft,
-    resetLiveTurn,
-    shouldProcessLiveFrame,
-    shouldProcessFrame,
-  ]);
+  }, [development, flushPending, isDraft, requestSnapshot, conversationId]);
 
-  const send = useCallback(
-    (actorId: string, content: WsContentItem[], durableId?: string) => {
-      if (isDraft) {
-        return false;
-      }
-      if (inFlightRef.current) {
-        return false;
-      }
-
-      queueOptimisticUser(content);
-
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        pendingRef.current = { actorId, content, conversationId: durableId };
-        beginTurn();
-        setError(null);
-        return true;
-      }
-
-      ensureHistorySubscription(ws, durableId);
-      const commandId = sendConversation(ws, actorId, content, durableId);
-      activeCommandIdRef.current = commandId;
-      beginTurn();
-      setError(null);
-      return true;
-    },
-    [beginTurn, ensureHistorySubscription, isDraft, queueOptimisticUser],
-  );
-
-  const interrupt = useCallback((targetConversationId: string) => {
+  const send = useCallback((actorId: string, content: WsContentItem[], durableId?: string) => {
+    const targetId = durableId || conversationIdRef.current;
+    if (isDraft || !targetId || transcript.continues || transcript.pendingUser) return false;
+    dispatch({
+      type: "pending_user",
+      clientKey: `pending-${Date.now()}`,
+      text: contentItemsToText(content),
+      now: Date.now(),
+    });
+    setError(null);
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !targetConversationId) return;
-    interruptConversation(ws, targetConversationId);
+    if (!ws || ws.readyState !== WebSocket.OPEN || !wsReady) {
+      pendingRef.current = { actorId, content, conversationId: targetId };
+      return true;
+    }
+    sendConversation(ws, actorId, content, targetId);
+    return true;
+  }, [isDraft, transcript.continues, transcript.pendingUser, wsReady]);
+
+  const interrupt = useCallback((targetId: string) => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN && targetId) interruptConversation(ws, targetId);
   }, []);
 
-  const displayItems = transcriptDisplayItems(transcript);
-  const waitingForResponse = transcript.phase === "sending" && transcript.liveBlocks.length === 0;
+  const liveBlocks = transcriptDisplayItems({ ...transcript, prefix: [] })
+    .flatMap((item) => item.blocks);
+  const phase: ConversationPhase = transcript.pendingUser
+    ? "sending"
+    : transcript.continues
+      ? "streaming"
+      : transcript.phase === "error" ? "error" : "idle";
 
   return {
     wsReady: isDraft ? false : wsReady,
     wsConnectionState: isDraft ? "connecting" as const : wsConnectionState,
-    phase: transcript.phase,
-    liveBlocks: transcript.liveBlocks,
+    phase,
+    liveBlocks,
     error,
     events,
-    activeConversationId,
-    turnKey: transcript.turnKey ?? "",
-    displayItems,
-    waitingForResponse,
+    activeConversationId: isDraft ? "" : conversationId,
+    turnKey: "",
+    displayItems: transcriptDisplayItems(transcript),
+    waitingForResponse: phase === "sending" && liveBlocks.length === 0,
     send,
     interrupt,
-    markRemoteTurnActive,
   };
 }
 
 function parseFrame(raw: string): WsFrame | null {
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" ? (parsed as WsFrame) : null;
+    return parsed && typeof parsed === "object" ? parsed as WsFrame : null;
   } catch {
     return null;
   }
 }
 
-function parseHistoryItem(value: unknown): HistoryItem | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const item = value as Record<string, unknown>;
-  if (typeof item.seq !== "number" || typeof item.kind !== "string") {
-    return null;
-  }
+function parseHistoryItems(value: unknown): HistoryItem[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.seq !== "number" || typeof record.kind !== "string") return [];
+    return [{
+      seq: record.seq,
+      kind: record.kind,
+      payload: record.payload && typeof record.payload === "object"
+        ? record.payload as Record<string, unknown>
+        : {},
+      created_at: typeof record.created_at === "string" ? record.created_at : null,
+    }];
+  });
+}
+
+function parseStreamChunks(value: unknown): StreamEventFrame[] {
+  return Array.isArray(value)
+    ? value.flatMap((chunk) => parseStreamChunk(chunk) ?? [])
+    : [];
+}
+
+function parseStreamChunk(value: unknown): StreamEventFrame | null {
+  if (!value || typeof value !== "object") return null;
+  const chunk = value as Record<string, unknown>;
+  if (typeof chunk.group_id !== "string" || typeof chunk.kind !== "string") return null;
   return {
-    seq: item.seq,
-    kind: item.kind,
-    payload: item.payload && typeof item.payload === "object"
-      ? (item.payload as Record<string, unknown>)
+    group_id: chunk.group_id,
+    kind: chunk.kind,
+    payload: chunk.payload && typeof chunk.payload === "object"
+      ? chunk.payload as Record<string, unknown>
       : {},
-    created_at: typeof item.created_at === "string" ? item.created_at : null,
   };
 }
 
-function numericPayloadValue(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+function numericVersion(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 export type { ConversationPhase };

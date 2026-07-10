@@ -1,12 +1,24 @@
 import type {
   ConversationCostRecord,
   ConversationHistoryResponse,
+  ConversationSummary,
   HistoryItem,
   ItemsResponse,
 } from "@/shared/types/api";
 import { BASE, request } from "./client";
 
 export const CONVERSATION_HISTORY_PAGE_SIZE = 200;
+
+export function getConversations(): Promise<ConversationSummary[]> {
+  return request<ConversationSummary[]>(`${BASE}/conversations`);
+}
+
+export function createConversation(actorId: string): Promise<{ conversation_id: string }> {
+  return request<{ conversation_id: string }>(`${BASE}/conversations`, {
+    method: "POST",
+    body: JSON.stringify({ actor_id: actorId }),
+  });
+}
 
 export interface ConversationDetail {
   id: string;

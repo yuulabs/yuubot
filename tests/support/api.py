@@ -467,14 +467,10 @@ async def ws_conversation_send(
     def stop(frame: JsonObject, _: list[JsonObject]) -> bool:
         if not wait_for_stop:
             return frame.get("type") == "conversation.send.accepted"
-        if frame.get("type") != "conversation.stream":
-            return False
-        event = cast(JsonObject, frame["payload"])["event"]
-        if cast(JsonObject, event)["kind"] != "stream_stop":
-            return False
-        payload = cast(JsonObject, event).get("payload", {})
-        reason = cast(JsonObject, payload).get("reason") if isinstance(payload, dict) else None
-        return reason in {"stop", "interrupted"}
+        return (
+            frame.get("type") == "conversation.commit"
+            and cast(JsonObject, frame["payload"]).get("continues") is False
+        )
 
     return await recv_ws_frames(
         server,

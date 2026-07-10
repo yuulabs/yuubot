@@ -2,7 +2,8 @@ import msgspec
 import pytest
 
 from yuubot.web.ws_commands import (
-    ConversationHistorySubscribeCommand,
+    ConversationCloseCommand,
+    ConversationOpenCommand,
     ConversationInterruptCommand,
     ConversationSendCommand,
     RuntimeEventsSubscribeCommand,
@@ -33,13 +34,18 @@ def test_decode_runtime_events_subscribe() -> None:
     assert command.payload.kinds == ["notification.delivered"]
 
 
-def test_decode_conversation_history_subscribe() -> None:
+def test_decode_conversation_open_and_close() -> None:
     command = msgspec.json.decode(
-        b'{"type":"conversation.history.subscribe","payload":{"conversation_id":"conv-1"}}',
+        b'{"type":"conversation.open","payload":{"conversation_id":"conv-1"}}',
         type=WSCommand,
     )
-    assert isinstance(command, ConversationHistorySubscribeCommand)
+    assert isinstance(command, ConversationOpenCommand)
     assert command.payload.conversation_id == "conv-1"
+    close = msgspec.json.decode(
+        b'{"type":"conversation.close","payload":{"conversation_id":"conv-1"}}',
+        type=WSCommand,
+    )
+    assert isinstance(close, ConversationCloseCommand)
 
 
 def test_decode_task_subscribe() -> None:
@@ -82,7 +88,7 @@ def test_decode_task_cancel() -> None:
         b'{"type":"task.subscribe","payload":{"task_id":""}}',
         b'{"type":"conversation.send","payload":{"actor_id":"","content":[{"kind":"text","text":"hi"}]}}',
         b'{"type":"task.stdin","payload":{"task_id":"task-1","text":""}}',
-        b'{"type":"conversation.history.subscribe","payload":{"conversation_id":""}}',
+        b'{"type":"conversation.open","payload":{"conversation_id":""}}',
     ],
 )
 def test_rejects_empty_required_strings(payload: bytes) -> None:

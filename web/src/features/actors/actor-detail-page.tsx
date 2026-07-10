@@ -11,7 +11,7 @@ import {
 } from "@/shared/lib/api";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState, Page, ResourceCard, ResourceCardGrid, ResourceMeta, Status } from "@/shared/components";
-import { useBootstrap } from "@/shared/hooks";
+import { useBootstrap, useConversations } from "@/shared/hooks";
 
 export function ActorDetailPage({ id }: { id: string }) {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -19,6 +19,7 @@ export function ActorDetailPage({ id }: { id: string }) {
     return <Outlet />;
   }
   const { data, error, isLoading } = useBootstrap();
+  const conversationQuery = useConversations();
   const actorFromBootstrap = data?.actors.find((item) => item.id === id);
   const actorQuery = useQuery({
     queryKey: ["actor", id],
@@ -33,7 +34,7 @@ export function ActorDetailPage({ id }: { id: string }) {
   if (actorQuery.isError) return <ErrorState error={actorQuery.error} />;
   if (!actor || !data) return <EmptyState>Actor not found.</EmptyState>;
   const routes = data?.routes.filter((route) => route.actor_id === id) ?? [];
-  const conversations = data?.conversations.filter((conversation) => conversation.actor_id === id) ?? [];
+  const conversations = conversationQuery.data?.filter((conversation) => conversation.actor_id === id) ?? [];
   return (
     <Page
       title={actor.name || actor.id}

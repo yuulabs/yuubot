@@ -13,4 +13,5 @@ export function useHealth() {
 
 export { useBootstrap, useRefreshBootstrap, useSetBootstrapSnapshot, useApiMutation, requireBootstrap } from "./use-bootstrap";
 export { useNotificationListener } from "./use-notification-listener";
+export { useConversations, conversationsQueryKey } from "./use-conversations";
 export { useSidebar } from "./use-sidebar";

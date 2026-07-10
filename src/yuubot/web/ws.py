@@ -14,14 +14,14 @@ import msgspec
 from ..app import Yuubot
 from ..runtime.tasks import TaskNotRunningError
 from ..chat import ConversationBlocked, ConversationBusy
-from ..domain.stream import StreamEvent, StreamStopPayload
 from ..domain.messages import InputMessage
 from ..chat.listener import WsListener
 from .errors import internal_error_detail, internal_error_message, log_internal_error
 from .types import WSCommandSend
 from .ws_commands import (
-    ConversationHistorySubscribeCommand,
-    ConversationHistorySubscribePayload,
+    ConversationCloseCommand,
+    ConversationOpenCommand,
+    ConversationOpenPayload,
     ConversationInterruptCommand,
     ConversationSendCommand,
     ConversationSendPayload,
@@ -55,8 +55,18 @@ async def handle_ws_command(
             return await _start_conversation_send(app, send, ws_listener, command_id, payload)
         case RuntimeEventsSubscribeCommand(id=command_id, payload=payload):
             return asyncio.create_task(_runtime_events_subscribe(send, ws_listener, command_id, payload))
-        case ConversationHistorySubscribeCommand(id=command_id, payload=payload):
-            return asyncio.create_task(_history_subscribe(app, ws_listener, command_id, payload))
+        case ConversationOpenCommand(id=command_id, payload=payload):
+            return asyncio.create_task(_conversation_open(app, send, ws_listener, command_id, payload))
+        case ConversationCloseCommand(id=command_id, payload=payload):
+            ws_listener.close_conversation(payload.conversation_id)
+            await send(
+                {
+                    "id": command_id,
+                    "type": "conversation.close.result",
+                    "payload": {"conversation_id": payload.conversation_id},
+                }
+            )
+            return None
         case TaskSubscribeCommand(id=command_id, payload=payload):
             return asyncio.create_task(_task_subscribe(app, send, ws_listener, command_id, payload))
         case TaskStdinCommand(id=command_id, payload=payload):
@@ -106,7 +116,8 @@ async def _start_conversation_send(
         await send_error(send, command_id, "conversation_busy", "conversation is already running")
         return None
     await send({"id": command_id, "type": "conversation.send.accepted", "payload": {"conversation_id": conversation.id}})
-    ws_listener.track_send(command_id, conversation.id, direct_stream=True)
+    if not ws_listener.has_conversation(conversation.id):
+        await ws_listener.open_conversation(conversation)
     message = InputMessage("user", actor_id, normalized_content)
     task = asyncio.create_task(
         _conversation_send(
@@ -137,29 +148,7 @@ async def _conversation_send(
     development: bool,
 ) -> None:
     try:
-        async def push_stream(event: StreamEvent) -> None:
-            try:
-                await send(
-                    {
-                        "id": command_id,
-                        "type": "conversation.stream",
-                        "payload": {
-                            "conversation_id": conversation_id,
-                            "event": msgspec.to_builtins(event),
-                        },
-                    }
-                )
-            except Exception:
-                _log.debug(
-                    "conversation.stream frame dropped command_id=%s conversation_id=%s",
-                    command_id,
-                    conversation_id,
-                    exc_info=True,
-                )
-            if _is_terminal_stream_stop(event):
-                ws_listener.complete_send(command_id, conversation_id)
-
-        await app.run_user_message(actor_id, message, conversation_id, on_event=push_stream)
+        await app.run_user_message(actor_id, message, conversation_id)
     except ConversationBusy:
         await _send_error_if_connected(send, command_id, "conversation_busy", "conversation is already running")
     except ConversationBlocked as exc:
@@ -173,6 +162,7 @@ async def _conversation_send(
     except Exception as exc:
         log_context = f"conversation.send actor={actor_id} conversation={conversation_id}"
         log_internal_error(_log, exc, log_context)
+        await ws_listener.on_error(conversation_id, internal_error_message(exc, development))
         await _send_error_if_connected(
             send,
             command_id,
@@ -193,19 +183,24 @@ async def _runtime_events_subscribe(
     await send({"id": command_id, "type": "runtime.events.subscribe.result", "payload": {"kinds": sorted(kinds)}})
 
 
-async def _history_subscribe(
+async def _conversation_open(
     app: Yuubot,
+    send: WSCommandSend,
     ws_listener: WsListener,
     command_id: str | None,
-    payload: ConversationHistorySubscribePayload,
+    payload: ConversationOpenPayload,
 ) -> None:
     conversation_id = payload.conversation_id
-    await ws_listener.track_history_with_replay(
-        command_id,
-        conversation_id,
-        app.runtime.conversations.live_replay_payloads(conversation_id),
-        app.runtime.conversations.running(conversation_id),
-    )
+    row = await app.runtime.state.get_conversation(conversation_id)
+    if row is None:
+        await send_error(send, command_id, "not_found", "conversation not found")
+        return
+    actor = app.actors.get(row.actor_id)
+    if actor is None:
+        await send_error(send, command_id, "not_found", "conversation actor not found")
+        return
+    conversation = await app.runtime.conversations.get_or_load(actor, conversation_id)
+    await ws_listener.open_conversation(conversation)
 
 
 async def _task_subscribe(
@@ -287,10 +282,3 @@ def _log_background_task_result(task: asyncio.Task[None]) -> None:
         _log.debug("detached conversation.send task cancelled")
     except Exception:
         _log.exception("detached conversation.send task failed")
-
-
-def _is_terminal_stream_stop(event: StreamEvent) -> bool:
-    if event.kind != "stream_stop":
-        return False
-    payload = event.payload
-    return isinstance(payload, StreamStopPayload) and payload.reason not in {"tool_calls", "function_call"}

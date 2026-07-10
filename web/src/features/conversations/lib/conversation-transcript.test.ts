@@ -511,9 +511,7 @@ test("transcript reducer renders durable append-only history from an empty conve
       created_at: null,
     },
   ];
-  for (const item of history) {
-    state = transcriptReducer(state, { type: "history_append", item });
-  }
+  state = transcriptReducer(state, { type: "commit", append: history, continues: false, version: 1 });
 
   const items = transcriptDisplayItems(state);
 
@@ -607,7 +605,7 @@ test("buildDisplayItems preserves first actor turn while streaming second reply"
   assert.equal(items[3]?.blocks[0]?.content, "The user is asking");
 });
 
-test("buildDisplayItems prefers persisted partial history over overlapping live stream", () => {
+test("buildDisplayItems prefers longer live stream over shorter persisted reasoning", () => {
   const history: HistoryItem[] = [
     {
       seq: 0,
@@ -643,8 +641,135 @@ test("buildDisplayItems prefers persisted partial history over overlapping live 
   });
 
   assert.equal(items.length, 4);
-  assert.equal(items[3]?.blocks[0]?.content, "The user is");
-  assert.equal(items[3]?.blocks[0]?.content.includes("TheThe"), false);
+  assert.equal(items[3]?.blocks[0]?.content, "The user is asking");
+});
+
+test("buildDisplayItems keeps durable superset reasoning over shorter live replay chunk", () => {
+  const history: HistoryItem[] = [
+    {
+      seq: 0,
+      kind: "input",
+      payload: { role: "user", name: "user", content: [{ kind: "text", text: "hello" }] },
+      created_at: null,
+    },
+    {
+      seq: 1,
+      kind: "gen_reasoning",
+      payload: { text: "The user is asking for help" },
+      created_at: null,
+    },
+  ];
+
+  const items = buildDisplayItems({
+    history,
+    liveBlocks: [{ key: "live:thinking", type: "thinking", content: "The user is" }],
+    phase: "streaming",
+    turnKey: "turn-0",
+  });
+
+  assert.equal(items[1]?.blocks[0]?.content, "The user is asking for help");
+});
+
+test("buildDisplayItems resumes post-tool thinking after refresh replay", () => {
+  const history: HistoryItem[] = [
+    {
+      seq: 0,
+      kind: "input",
+      payload: { role: "user", name: "user", content: [{ kind: "text", text: "check files" }] },
+      created_at: null,
+    },
+    {
+      seq: 1,
+      kind: "gen_tool_call",
+      payload: { id: "call-1", name: "bash", arguments: JSON.stringify({ command: "ls" }) },
+      created_at: null,
+    },
+    {
+      seq: 2,
+      kind: "tool_result",
+      payload: { tool_call_id: "call-1", content: [{ kind: "text", text: "README.md\n" }] },
+      created_at: null,
+    },
+  ];
+  const liveToolBlock: RenderBlock = {
+    key: "live:tool:call-1:group",
+    type: "tool_group",
+    content: "bash",
+    toolArgs: JSON.stringify({ command: "ls" }),
+    toolCallId: "call-1",
+    toolName: "bash",
+    toolResult: "README.md\n",
+    toolStatus: "completed",
+  };
+
+  const items = buildDisplayItems({
+    history,
+    liveBlocks: [
+      liveToolBlock,
+      { key: "live:thinking", type: "thinking", content: "The listing shows README.md." },
+    ],
+    phase: "streaming",
+    turnKey: "turn-live",
+  });
+
+  assert.equal(items.length, 2);
+  assert.equal(items[1]?.blocks[0]?.toolName, "bash");
+  assert.equal(items[1]?.blocks[1]?.type, "thinking");
+  assert.equal(items[1]?.blocks[1]?.content, "The listing shows README.md.");
+});
+
+test("buildDisplayItems resumes thinking after tools when durable has earlier reasoning", () => {
+  const history: HistoryItem[] = [
+    {
+      seq: 0,
+      kind: "input",
+      payload: { role: "user", name: "user", content: [{ kind: "text", text: "run tool" }] },
+      created_at: null,
+    },
+    {
+      seq: 1,
+      kind: "gen_reasoning",
+      payload: { text: "Need to" },
+      created_at: null,
+    },
+    {
+      seq: 2,
+      kind: "gen_tool_call",
+      payload: { id: "call-1", name: "bash", arguments: JSON.stringify({ command: "ls" }) },
+      created_at: null,
+    },
+    {
+      seq: 3,
+      kind: "tool_result",
+      payload: { tool_call_id: "call-1", content: [{ kind: "text", text: "README.md\n" }] },
+      created_at: null,
+    },
+  ];
+
+  const items = buildDisplayItems({
+    history,
+    liveBlocks: [
+      { key: "live:thinking-1", type: "thinking", content: "Need to inspect files" },
+      {
+        key: "live:tool:call-1:group",
+        type: "tool_group",
+        content: "bash",
+        toolArgs: JSON.stringify({ command: "ls" }),
+        toolCallId: "call-1",
+        toolName: "bash",
+        toolResult: "README.md\n",
+        toolStatus: "completed",
+      },
+      { key: "live:thinking-2", type: "thinking", content: "README.md is present." },
+    ],
+    phase: "streaming",
+    turnKey: "turn-live",
+  });
+
+  assert.equal(items[1]?.blocks[0]?.content, "Need to inspect files");
+  assert.equal(items[1]?.blocks[1]?.toolName, "bash");
+  assert.equal(items[1]?.blocks[2]?.type, "thinking");
+  assert.equal(items[1]?.blocks[2]?.content, "README.md is present.");
 });
 
 test("buildDisplayItems deduplicates repeated persisted history", () => {
@@ -857,34 +982,38 @@ test("live text after durable tool result stays visible in the same turn", () =>
   assert.equal(items[1]?.blocks[1]?.content, "I found README.md.");
 });
 
-test("transcript reducer replaces live preview with durable history without changing turn key", () => {
+test("transcript reducer replaces living chunks with committed history", () => {
   let state = createTranscriptState();
-  state = transcriptReducer(state, { type: "begin_turn", turnKey: "turn-live", now: 1 });
   state = transcriptReducer(state, {
-    type: "history_append",
-    item: {
+    type: "snapshot",
+    prefix: [{
       seq: 0,
       kind: "input",
       payload: { role: "user", name: "user", content: [{ kind: "text", text: "hi" }] },
       created_at: null,
-    },
+    }],
+    livingChunks: [],
+    version: 0,
   });
   state = transcriptReducer(state, {
-    type: "append_blocks",
-    blocks: [{ key: "live:text", type: "text", content: "partial" }],
+    type: "delta",
+    chunk: { group_id: "text", kind: "text_delta", payload: { text: "partial" } },
+    version: 1,
   });
   const liveItems = transcriptDisplayItems(state);
   assert.equal(liveItems[1]?.key, "turn:0:actor");
   assert.equal(liveItems[1]?.blocks[0]?.content, "partial");
 
   state = transcriptReducer(state, {
-    type: "history_append",
-    item: {
+    type: "commit",
+    append: [{
       seq: 1,
       kind: "gen_text",
       payload: { text: "persisted" },
       created_at: null,
-    },
+    }],
+    continues: false,
+    version: 2,
   });
 
   const durableItems = transcriptDisplayItems(state);
@@ -907,13 +1036,15 @@ test("pending user message appears until durable user input arrives", () => {
   assert.equal(pendingItems[0]?.blocks[0]?.content, "hello");
 
   state = transcriptReducer(state, {
-    type: "history_append",
-    item: {
+    type: "commit",
+    append: [{
       seq: 0,
       kind: "input",
       payload: { role: "user", name: "amy", content: [{ kind: "text", text: "hello" }] },
       created_at: null,
-    },
+    }],
+    continues: true,
+    version: 1,
   });
 
   const durableItems = transcriptDisplayItems(state);

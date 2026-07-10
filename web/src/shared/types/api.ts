@@ -135,7 +135,6 @@ export interface BootstrapSnapshot {
   actors: ActorSnapshot[];
   integrations: IntegrationSnapshot[];
   routes: RouteRecord[];
-  conversations: ConversationSummary[];
 }
 
 export interface ModelCard {

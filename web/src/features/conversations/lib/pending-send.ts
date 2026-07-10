@@ -11,10 +11,6 @@ declare module "@tanstack/react-router" {
   }
 }
 
-export function newConversationId(): string {
-  return crypto.randomUUID().replace(/-/g, "");
-}
-
 export function parsePendingSend(state: unknown): ConversationPendingSend | null {
   if (!state || typeof state !== "object") {
     return null;

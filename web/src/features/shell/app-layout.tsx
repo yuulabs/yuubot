@@ -25,7 +25,8 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { logout } from "@/shared/lib/api";
-import { useBootstrap, useNotificationListener, useRefreshBootstrap, useSidebar } from "@/shared/hooks";
+import { useBootstrap, useConversations, useNotificationListener, useRefreshBootstrap, useSidebar } from "@/shared/hooks";
+import type { ConversationSummary } from "@/shared/types/api";
 
 interface TopbarActionsContextValue {
   setActions: (node: ReactNode | null) => void;
@@ -72,6 +73,7 @@ export function AppLayout() {
 
 function ShellLayout({ pathname }: { pathname: string }) {
   const { data } = useBootstrap();
+  const conversations = useConversations();
   const refresh = useRefreshBootstrap();
   useNotificationListener();
   const { collapsed, mobileOpen, isMobile, toggleDesktop, toggleMobile, closeMobile } = useSidebar();
@@ -79,7 +81,7 @@ function ShellLayout({ pathname }: { pathname: string }) {
   const topbarActionsValue = useMemo(() => ({ setActions: setTopbarActions }), []);
   const current = navItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
   const sidebarCollapsed = collapsed && !isMobile;
-  const conversationTitle = getConversationTitle(pathname, data);
+  const conversationTitle = getConversationTitle(pathname, data, conversations.data ?? []);
   const showLogout = data?.auth?.mode === "builtin";
 
   useEffect(() => {
@@ -201,6 +203,7 @@ async function handleLogout(): Promise<void> {
 function getConversationTitle(
   pathname: string,
   data: ReturnType<typeof useBootstrap>["data"],
+  conversations: ConversationSummary[],
 ): string {
   const match = pathname.match(/^\/admin\/conversations\/([^/]+)$/);
   if (!match) return "";
@@ -212,7 +215,7 @@ function getConversationTitle(
     const actorName = actor?.name || actorId || "Conversation";
     return `${actorName} / New conversation`;
   }
-  const summary = data?.conversations.find((item) => item.id === conversationId);
+  const summary = conversations.find((item) => item.id === conversationId);
   if (summary?.title) return summary.title;
   const actorId = summary?.actor_id ?? "";
   const actor = data?.actors.find((item) => item.id === actorId);

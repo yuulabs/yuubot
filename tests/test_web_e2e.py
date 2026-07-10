@@ -95,7 +95,8 @@ async def test_http_bootstrap_history_and_delete(test_context: SharedTestContext
     assert await http_json("GET", f"{base_url(test_context.server)}/healthz") == {"status": "ok"}
     snapshot = await bootstrap(test_context.server)
     assert any(actor["id"] == actor_id for actor in cast(list[JsonObject], snapshot["actors"]))
-    conversation = next(item for item in cast(list[JsonObject], snapshot["conversations"]) if item["id"] == conversation_id)
+    conversations = await http_json("GET", f"{base_url(test_context.server)}/api/conversations")
+    conversation = next(item for item in cast(list[JsonObject], conversations) if item["id"] == conversation_id)
     assert conversation["message_count"] == 2
 
     detail = await http_json("GET", f"{base_url(test_context.server)}/api/conversations/{conversation_id}")
@@ -110,7 +111,8 @@ async def test_http_bootstrap_history_and_delete(test_context: SharedTestContext
         "id": conversation_id,
         "deleted": True,
     }
-    assert not any(item["id"] == conversation_id for item in cast(list[JsonObject], (await bootstrap(test_context.server))["conversations"]))
+    conversations = await http_json("GET", f"{base_url(test_context.server)}/api/conversations")
+    assert not any(item["id"] == conversation_id for item in cast(list[JsonObject], conversations))
     await http_json(
         "GET",
         f"{base_url(test_context.server)}/api/conversations/{conversation_id}/history",
@@ -477,8 +479,8 @@ async def test_ws_conversation_send(test_context: SharedTestContext) -> None:
         [{"kind": "text", "text": "hello", "mime": "text/plain"}],
     )
     assert frames[0] == {"id": "m1", "type": "conversation.send.accepted", "payload": {"conversation_id": conversation_id}}
-    assert frames[1]["type"] == "conversation.stream"
-    assert cast(JsonObject, cast(JsonObject, frames[1]["payload"])["event"])["kind"] == "text_delta"
+    delta = next(frame for frame in frames if frame["type"] == "conversation.delta")
+    assert cast(JsonObject, cast(JsonObject, delta["payload"])["chunk"])["kind"] == "text_delta"
     assert (await conversation_history(test_context.server, conversation_id))[-1]["kind"] == "gen_text"
 
 
@@ -598,10 +600,8 @@ async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frame
         while True:
             frame = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=30)))
             frames.append(frame)
-            if frame.get("type") == "conversation.stream":
-                event = cast(JsonObject, cast(JsonObject, frame["payload"])["event"])
-                if event.get("kind") == "stream_stop":
-                    break
+            if frame.get("type") == "conversation.commit" and cast(JsonObject, frame["payload"])["continues"] is False:
+                break
 
         await ws.send(
             json.dumps(
@@ -620,22 +620,20 @@ async def test_ws_second_send_on_same_connection_does_not_duplicate_stream_frame
         while True:
             frame = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=30)))
             second_turn_frames.append(frame)
-            if frame.get("type") == "conversation.stream":
-                event = cast(JsonObject, cast(JsonObject, frame["payload"])["event"])
-                if event.get("kind") == "stream_stop":
-                    break
+            if frame.get("type") == "conversation.commit" and cast(JsonObject, frame["payload"])["continues"] is False:
+                break
 
     text_delta_frames = [
         frame
         for frame in second_turn_frames
-        if frame.get("type") == "conversation.stream"
-        and cast(JsonObject, cast(JsonObject, frame["payload"])["event"])["kind"] == "text_delta"
+        if frame.get("type") == "conversation.delta"
+        and cast(JsonObject, cast(JsonObject, frame["payload"])["chunk"])["kind"] == "text_delta"
     ]
     assert len(text_delta_frames) == 2
     texts: list[str] = []
     for frame in text_delta_frames:
         payload = cast(JsonObject, frame["payload"])
-        event = cast(JsonObject, payload["event"])
+        event = cast(JsonObject, payload["chunk"])
         event_payload = cast(JsonObject, event["payload"])
         texts.append(cast(str, event_payload["text"]))
     assert texts == ["hel", "lo"]
@@ -671,9 +669,9 @@ async def test_ws_direct_stream_survives_runtime_eventbus_noisy_backpressure(
 
     texts: list[str] = []
     for frame in frames:
-        if frame.get("type") != "conversation.stream":
+        if frame.get("type") != "conversation.delta":
             continue
-        event = cast(JsonObject, cast(JsonObject, frame["payload"])["event"])
+        event = cast(JsonObject, cast(JsonObject, frame["payload"])["chunk"])
         if event.get("kind") != "text_delta":
             continue
         payload = cast(JsonObject, event["payload"])
@@ -747,18 +745,14 @@ async def test_ws_interrupts_running_conversation(test_context: SharedTestContex
                         }
                     )
                 )
-            if frame["type"] == "conversation.stream":
-                payload = cast(JsonObject, frame["payload"])
-                event = cast(JsonObject, payload.get("event", {}))
-                if event.get("kind") == "stream_stop":
-                    break
+            if frame["type"] == "conversation.commit" and cast(JsonObject, frame["payload"])["continues"] is False:
+                break
 
     assert any(
         frame["type"] == "conversation.interrupt.result" and cast(JsonObject, frame["payload"])["interrupted"] is True
         for frame in frames
     )
-    final_event = cast(JsonObject, cast(JsonObject, frames[-1]["payload"])["event"])
-    assert cast(JsonObject, final_event["payload"])["reason"] == "interrupted"
+    assert cast(JsonObject, frames[-1]["payload"])["continues"] is False
 
 
 async def test_ws_subscribes_runtime_events(test_context: SharedTestContext) -> None:
@@ -790,7 +784,7 @@ async def test_ws_subscribes_runtime_events(test_context: SharedTestContext) -> 
                 break
 
 
-async def test_ws_subscribes_conversation_history_append(test_context: SharedTestContext) -> None:
+async def test_ws_subscribes_conversation_commits(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(scripted_reply("hi"))
     conversation_id = test_context.conversation_id("history-ws")
     appended: JsonObject | None = None
@@ -798,36 +792,28 @@ async def test_ws_subscribes_conversation_history_append(test_context: SharedTes
         await ws.send(
             json.dumps(
                 {
-                    "id": "h1",
-                    "type": "conversation.history.subscribe",
-                    "payload": {"conversation_id": conversation_id},
+                    "id": "m1",
+                    "type": "conversation.send",
+                    "payload": {
+                        "actor_id": actor_id,
+                        "conversation_id": conversation_id,
+                        "content": [{"kind": "text", "text": "hello"}],
+                    },
                 }
             )
         )
         while True:
             frame = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))
-            if frame["type"] == "conversation.history.subscribe.result":
-                await ws.send(
-                    json.dumps(
-                        {
-                            "id": "m1",
-                            "type": "conversation.send",
-                            "payload": {
-                                "actor_id": actor_id,
-                                "conversation_id": conversation_id,
-                                "content": [{"kind": "text", "text": "hello"}],
-                            },
-                        }
-                    )
-                )
+            if frame["type"] == "error":
+                raise AssertionError(frame)
             payload = cast(JsonObject, frame["payload"])
-            item = cast(JsonObject, payload.get("item", {}))
-            if frame["type"] == "conversation.history.append" and item.get("kind") == "gen_text":
+            append = cast(list[JsonObject], payload.get("append", []))
+            if frame["type"] == "conversation.commit" and any(item.get("kind") == "gen_text" for item in append):
                 appended = frame
                 break
 
     assert appended is not None
-    item = cast(JsonObject, cast(JsonObject, appended["payload"])["item"])
+    item = cast(list[JsonObject], cast(JsonObject, appended["payload"])["append"])[0]
     assert item["kind"] == "gen_text"
     assert item["payload"] == {"text": "hi"}
 
