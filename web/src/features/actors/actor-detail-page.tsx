@@ -8,6 +8,8 @@ import {
   getActorKv,
   putActorKv,
   sendActorInbound,
+  listActorSkills,
+  setActorSkillLoaded,
 } from "@/shared/lib/api";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState, LoadingState, Page, ResourceCard, ResourceCardGrid, ResourceMeta, Status } from "@/shared/components";
@@ -29,6 +31,11 @@ export function ActorDetailPage({ id }: { id: string }) {
   });
   const actor = actorFromBootstrap ?? actorQuery.data;
   const runtime = actorFromBootstrap;
+  const skillsQuery = useQuery({ queryKey: ["actor-skills", id], queryFn: () => listActorSkills(id) });
+  const skillMutation = useMutation({
+    mutationFn: ({ skillId, loaded }: { skillId: string; loaded: boolean }) => setActorSkillLoaded(id, skillId, loaded),
+    onSuccess: () => skillsQuery.refetch(),
+  });
 
   if (isLoading || (!actor && actorQuery.isLoading)) return <LoadingState />;
   if (error) return <ErrorState error={error} />;
@@ -42,13 +49,24 @@ export function ActorDetailPage({ id }: { id: string }) {
       sub={actor.description || "Actor detail"}
       actions={
         <div className="flex flex-wrap gap-2">
-          <Button asChild><Link to="/admin/conversations/new" search={{ actor: id }}>Start conversation</Link></Button>
+          <Button asChild><Link to="/admin/conversations/new" search={{ actor: id, prompt: "" }}>Start conversation</Link></Button>
           <Button variant="outline" asChild><a href={`/workspace?actor=${encodeURIComponent(id)}`} target="_blank" rel="noreferrer">Workspace</a></Button>
           <Button variant="outline" asChild><Link to="/actors/$id/edit" params={{ id }}>Edit</Link></Button>
         </div>
       }
     >
       <div className="grid gap-3">
+        {runtime?.loaded_skills_warning && (
+          <ResourceCard variant="actor" title="Skills need整理" subtitle={`当前加载 ${runtime.loaded_skill_count} 个 skills，建议不超过 ${runtime.max_loaded_skills_warning} 个`}>
+            <Button variant="outline" asChild><Link to="/admin/conversations/new" search={{ actor: id, prompt: "请整理当前 Actor 的 skills：创建一个元 skill，列出下层 skill、适用场景和读取方式，并 ban 低频 skills。" }}>新建整理会话</Link></Button>
+          </ResourceCard>
+        )}
+        <ResourceCard variant="actor" title="Workspace skills" subtitle={`${skillsQuery.data?.items.length ?? 0} installed for this Actor`}>
+          <div className="grid gap-2">
+            {skillsQuery.data?.items.map((skill) => <div key={skill.id} className="flex items-center justify-between gap-3"><span><strong>{skill.name}</strong> <small>{skill.description}</small></span><Button size="sm" variant="outline" disabled={skillMutation.isPending} onClick={() => skillMutation.mutate({ skillId: skill.id, loaded: !skill.loaded })}>{skill.loaded ? "Ban from prompt" : "Load in prompt"}</Button></div>)}
+            {!skillsQuery.data?.items.length && <p className="page-sub">No workspace skills.</p>}
+          </div>
+        </ResourceCard>
         <ResourceCard
           variant="actor"
           label={actor.id}

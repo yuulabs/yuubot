@@ -27,6 +27,7 @@ export function ActorForm({
   const [persona, setPersona] = useState(initial.persona ?? "");
   const [model, setModel] = useState<ModelSelector>(initial.model);
   const [contextCompressionTokens, setContextCompressionTokens] = useState(initial.context_compression_tokens ?? DEFAULT_CONTEXT_COMPRESSION_TOKENS);
+  const [maxLoadedSkillsWarning, setMaxLoadedSkillsWarning] = useState(initial.max_loaded_skills_warning ?? 10);
   const [message, setMessage] = useState("");
   const [saveError, setSaveError] = useState("");
   const gateway = useQuery({ queryKey: ["gateway"], queryFn: getGateway });
@@ -60,6 +61,7 @@ export function ActorForm({
           </div>
         )}
         <label className="mt-3 grid max-w-xs gap-1"><span className="text-sm font-medium">Compression threshold</span><input className="input" type="number" min="1" step="1" value={contextCompressionTokens} onChange={(event) => setContextCompressionTokens(Number(event.target.value))} /></label>
+        <label className="mt-3 grid max-w-xs gap-1"><span className="text-sm font-medium">Loaded skills warning</span><input className="input" type="number" min="0" step="1" value={maxLoadedSkillsWarning} onChange={(event) => setMaxLoadedSkillsWarning(Number(event.target.value))} /><span className="text-xs text-muted-foreground">0 disables the warning.</span></label>
         {gateway.error && <p className="text-sm text-destructive">{describeApiError(gateway.error)}</p>}
       </DenseSection>
 
@@ -71,7 +73,7 @@ export function ActorForm({
         <Button disabled={!validModel || !id.trim() || !name.trim()} onClick={async () => {
           try {
             setMessage(""); setSaveError("");
-            await onSave(id, { name, description, workspace, persona, model, context_compression_tokens: contextCompressionTokens });
+            await onSave(id, { name, description, workspace, persona, model, context_compression_tokens: contextCompressionTokens, max_loaded_skills_warning: maxLoadedSkillsWarning });
             setMessage("Saved");
           } catch (error) { setSaveError(describeApiError(error)); }
         }}>{saveLabel}</Button>

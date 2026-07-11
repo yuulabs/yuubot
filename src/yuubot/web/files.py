@@ -1,5 +1,8 @@
 import mimetypes
+import hashlib
+import os
 import shutil
+import tempfile
 import zipfile
 from io import BytesIO
 from datetime import UTC, datetime
@@ -44,6 +47,8 @@ _PLAIN_TEXT_SUFFIXES = {
     ".md", ".py", ".sh", ".toml", ".ts", ".tsx", ".yaml", ".yml",
 }
 
+MAX_EDITABLE_FILE_BYTES = 10 * 1024 * 1024
+
 
 def workspace_media_type(path: Path) -> str:
     guessed = mimetypes.guess_type(path.name)[0]
@@ -52,6 +57,46 @@ def workspace_media_type(path: Path) -> str:
     if path.suffix.lower() in _PLAIN_TEXT_SUFFIXES or _is_utf8_text(path):
         return "text/plain"
     return "application/octet-stream"
+
+
+def workspace_file_etag(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(128 * 1024), b""):
+            digest.update(chunk)
+    return f'"{digest.hexdigest()}"'
+
+
+def replace_workspace_text(path: Path, content: bytes, expected_etag: str | None) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise FileNotFoundError("file not found")
+    if len(content) > MAX_EDITABLE_FILE_BYTES:
+        raise ValueError("file is too large to edit")
+    try:
+        content.decode("utf-8")
+        path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("only UTF-8 text files can be edited") from exc
+    current_etag = workspace_file_etag(path)
+    if expected_etag is None:
+        raise PermissionError("If-Match header is required")
+    if expected_etag != current_etag:
+        raise FileExistsError("file changed since it was loaded")
+
+    mode = path.stat().st_mode
+    temporary_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as temporary:
+            temporary_name = temporary.name
+            temporary.write(content)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.chmod(temporary_name, mode)
+        os.replace(temporary_name, path)
+    finally:
+        if temporary_name and os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+    return workspace_file_etag(path)
 
 
 def workspace_zip(workspace: Path, paths: list[str]) -> bytes:
@@ -95,6 +140,16 @@ def actor_workspace(app: Yuubot, actor_id: str) -> Path | None:
 
 def workspace_path(workspace: Path, value: str) -> Path:
     return safe_workspace_path(workspace, value, True)
+
+
+def editable_workspace_path(workspace: Path, value: str) -> Path:
+    raw = unquote(value).lstrip("/")
+    candidate = workspace
+    for part in Path(raw).parts:
+        candidate /= part
+        if candidate.is_symlink():
+            raise ValueError("symbolic links cannot be edited")
+    return workspace_path(workspace, value)
 
 
 async def save_uploads(workspace: Path, uploads: list[UploadFile], destination: str | None = None) -> list[UploadFileInfo]:

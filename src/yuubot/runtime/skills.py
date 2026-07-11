@@ -65,6 +65,27 @@ class SkillSummary(msgspec.Struct, frozen=True, kw_only=True):
     error: str = ""
 
 
+class WorkspaceSkillSummary(msgspec.Struct, frozen=True, kw_only=True):
+    id: str
+    name: str
+    description: str
+    loaded: bool
+    path: str
+
+
+class WorkspaceSkillLoadedBody(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
+    loaded: bool
+
+
+class SkillSearchResult(msgspec.Struct, frozen=True, kw_only=True):
+    id: str
+    name: str
+    description: str
+    source: str
+    loaded: bool | None
+    inspect_hint: str
+
+
 class SkillCopyFile(msgspec.Struct, frozen=True):
     path: str
     status: Literal["added", "deleted", "modified", "unchanged"]
@@ -352,16 +373,98 @@ def copy_skill(record: SkillRecord, actor_id: str, workspace: Path, replace: boo
     return skill_copy_preview(record, actor_id, workspace)
 
 
+def workspace_skills(workspace: Path) -> list[WorkspaceSkillSummary]:
+    root = workspace.resolve() / ".agents" / "skills"
+    items: list[WorkspaceSkillSummary] = []
+    for path in sorted(root.glob("*/SKILL.md")):
+        body = path.read_text(encoding="utf-8")
+        metadata = _frontmatter(body)
+        skill_id = path.parent.name
+        items.append(
+            WorkspaceSkillSummary(
+                id=skill_id,
+                name=metadata.get("name") or skill_id,
+                description=metadata.get("description") or _description_from_body(body),
+                loaded=metadata.get("loaded", "true").strip().lower() not in {"false", "no", "0"},
+                path=str(path),
+            )
+        )
+    return items
+
+
+def set_workspace_skill_loaded(workspace: Path, skill_id: str, loaded: bool) -> WorkspaceSkillSummary:
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        raise ValueError("invalid skill id")
+    path = workspace.resolve() / ".agents" / "skills" / skill_id / "SKILL.md"
+    if not path.is_file() or path.is_symlink():
+        raise FileNotFoundError(skill_id)
+    body = path.read_text(encoding="utf-8")
+    path.write_text(_set_loaded_text(body, loaded), encoding="utf-8")
+    return next(item for item in workspace_skills(workspace) if item.id == skill_id)
+
+
+def search_skills(
+    query: str, limit: int, catalog: list[SkillRecord], workspace: Path | None = None
+) -> list[SkillSearchResult]:
+    terms = [term.casefold() for term in query.split() if term]
+    if not terms:
+        return []
+    candidates: list[tuple[tuple[int, int, str], SkillSearchResult]] = []
+    for record in catalog:
+        fields = (record.id, record.name, record.description, record.body)
+        score = _skill_search_score(terms, fields)
+        if score is not None:
+            candidates.append(((*score, record.id), SkillSearchResult(
+                id=record.id, name=record.name, description=record.description or _description_from_body(record.body),
+                source="global", loaded=None, inspect_hint=f"await yb.skills.read({record.id!r}); copy it to the Actor workspace to load it in the prompt",
+            )))
+    if workspace is not None:
+        for item in workspace_skills(workspace):
+            body = Path(item.path).read_text(encoding="utf-8")
+            score = _skill_search_score(terms, (item.id, item.name, item.description, body))
+            if score is not None:
+                candidates.append(((*score, item.id), SkillSearchResult(
+                    id=item.id, name=item.name, description=item.description, source="workspace", loaded=item.loaded,
+                    inspect_hint=f"Use the read tool on `{item.path}`",
+                )))
+    candidates.sort(key=lambda pair: pair[0])
+    return [item for _, item in candidates[:max(1, min(limit, 10))]]
+
+
+def _skill_search_score(terms: list[str], fields: tuple[str, str, str, str]) -> tuple[int, int] | None:
+    lowered = tuple(field.casefold() for field in fields)
+    ranks = [next((index for index, field in enumerate(lowered) if term in field), 99) for term in terms]
+    if 99 in ranks:
+        return None
+    return max(ranks), sum(ranks)
+
+
 def _source_files(record: SkillRecord) -> dict[str, bytes]:
     if record.source_path:
         files = _tree_files(Path(record.source_path))
-        if record.source == "builtin":
-            files["SKILL.md"] = (record.body.rstrip() + "\n").encode()
+        skill_body = record.body if record.source == "builtin" else files.get("SKILL.md", record.body.encode()).decode("utf-8")
+        files["SKILL.md"] = (_set_loaded_text(skill_body, True).rstrip() + "\n").encode()
         return files
     body = record.body
     if not body.startswith("---\n"):
         body = f"---\nname: {record.name}\ndescription: {record.description}\n---\n{body}"
-    return {"SKILL.md": (body.rstrip() + "\n").encode()}
+    return {"SKILL.md": (_set_loaded_text(body, True).rstrip() + "\n").encode()}
+
+
+def _set_loaded_text(body: str, loaded: bool) -> str:
+    lines = body.splitlines(keepends=True)
+    value = f"loaded: {'true' if loaded else 'false'}\n"
+    if lines and lines[0].strip() == "---":
+        end = next((index for index, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+        if end is None:
+            raise ValueError("skill frontmatter is not closed")
+        found = next((index for index in range(1, end) if lines[index].partition(":")[0].strip() == "loaded"), None)
+        if found is None:
+            lines.insert(end, value)
+        else:
+            lines[found] = value
+        return "".join(lines)
+    return f"---\nloaded: {'true' if loaded else 'false'}\n---\n" + body
 
 
 def _tree_files(root: Path) -> dict[str, bytes]:
@@ -429,6 +532,6 @@ def _frontmatter(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in text[4:end].splitlines():
         key, separator, value = line.partition(":")
-        if separator and key.strip() in {"name", "description"} and value.strip():
+        if separator and key.strip() in {"name", "description", "loaded"} and value.strip():
             values[key.strip()] = value.strip().strip('"').strip("'")
     return values

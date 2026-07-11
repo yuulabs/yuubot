@@ -1,5 +1,6 @@
 """Read-only view builders merging durable records with runtime state."""
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import msgspec
@@ -39,6 +40,8 @@ from ..runtime.event_payloads import (
 from ..integrations import IntegrationRecord, integration_health
 from ..integrations.registry import IntegrationSpec
 from ..actor.lifecycle import Actor
+from ..actor.workspace import resolve_workspace_path
+from ..runtime.skills import workspace_skills
 
 from ..runtime.host_stats import HostStats, collect_host_stats
 from ..runtime.events import RuntimeEvent
@@ -65,6 +68,10 @@ class ActorSnapshot(msgspec.Struct, frozen=True):
     workspace: str
     model: ModelSelector | str | None
     context_compression_tokens: int
+    max_loaded_skills_warning: int = 10
+    loaded_skill_count: int = 0
+    workspace_skill_count: int = 0
+    loaded_skills_warning: bool = False
     last_error: LifecycleError | None = None
 
 
@@ -149,7 +156,7 @@ async def actor_snapshot(app: "Yuubot", actor_id: str) -> ActorSnapshot | None:
     statuses = await app.runtime.state.actor_statuses()
     record = app.actor_records.get(actor_id)
     if record is not None:
-        return _actor_snapshot(record, app.actors.get(actor_id), statuses.get(actor_id))
+        return _actor_snapshot(record, app.actors.get(actor_id), statuses.get(actor_id), app.runtime.workspace_dir)
     live = app.actors.get(actor_id)
     if live is None:
         return None
@@ -169,7 +176,7 @@ async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
     statuses = await app.runtime.state.actor_statuses()
     snapshots: list[ActorSnapshot] = []
     for record in app.actor_records.values():
-        snapshots.append(_actor_snapshot(record, app.actors.get(record.id), statuses.get(record.id)))
+        snapshots.append(_actor_snapshot(record, app.actors.get(record.id), statuses.get(record.id), app.runtime.workspace_dir))
     for actor_id, actor in app.actors.items():
         if actor_id in app.actor_records:
             continue
@@ -188,7 +195,11 @@ async def actor_snapshots(app: "Yuubot") -> list[ActorSnapshot]:
     return snapshots
 
 
-def _actor_snapshot(record: ActorRecord, live: Actor | None, status: ActorStatus | None) -> ActorSnapshot:
+def _actor_snapshot(record: ActorRecord, live: Actor | None, status: ActorStatus | None, workspace_dir: Path) -> ActorSnapshot:
+    workspace_path = Path(live.config.workspace) if live is not None else resolve_workspace_path(record.workspace, workspace_dir, record.id)
+    skills = workspace_skills(workspace_path)
+    loaded_count = sum(item.loaded for item in skills)
+    threshold = record.max_loaded_skills_warning
     return ActorSnapshot(
         record.id,
         record.name,
@@ -199,6 +210,10 @@ def _actor_snapshot(record: ActorRecord, live: Actor | None, status: ActorStatus
         workspace=record.workspace or record.id,
         model=record.model,
         context_compression_tokens=record.context_compression_tokens,
+        max_loaded_skills_warning=threshold,
+        loaded_skill_count=loaded_count,
+        workspace_skill_count=len(skills),
+        loaded_skills_warning=threshold > 0 and loaded_count > threshold,
     )
 
 

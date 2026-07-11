@@ -1199,6 +1199,12 @@ class Yuubot:
                 "context compression token threshold must be greater than zero",
                 {"context_compression_tokens": body.context_compression_tokens},
             )
+        if body.max_loaded_skills_warning < 0:
+            raise ActorConfigError(
+                "max_loaded_skills_warning_invalid",
+                "loaded skills warning threshold must be zero or greater",
+                {"max_loaded_skills_warning": body.max_loaded_skills_warning},
+            )
         self._validate_actor_model(body.model)
         record = ActorRecord(
             id=actor_id,
@@ -1208,6 +1214,7 @@ class Yuubot:
             persona=body.persona,
             model=body.model,
             context_compression_tokens=body.context_compression_tokens,
+            max_loaded_skills_warning=body.max_loaded_skills_warning,
         )
         await self.update_actor(record)
         return record

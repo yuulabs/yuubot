@@ -27,9 +27,11 @@ import { sumConversationTokens } from "./lib/transcript";
 export function ConversationDetailPage({
   conversationId,
   draftActorId = "",
+  draftPrompt = "",
 }: {
   conversationId: string;
   draftActorId?: string;
+  draftPrompt?: string;
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -48,7 +50,7 @@ export function ConversationDetailPage({
   }, [conversationId]);
   const [actorId, setActorId] = useState(draftActorId);
   const [segments, setSegments] = useState<ComposerSegment[]>([]);
-  const [draftText, setDraftText] = useState("");
+  const [draftText, setDraftText] = useState(draftPrompt);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
 
@@ -71,8 +73,8 @@ export function ConversationDetailPage({
 
   useEffect(() => {
     setSegments([]);
-    setDraftText("");
-  }, [conversationId, selectedActor]);
+    setDraftText(isDraft ? draftPrompt : "");
+  }, [conversationId, draftPrompt, isDraft, selectedActor]);
 
   const usage = useQuery({
     queryKey: ["conversation-usage", conversationId],
@@ -183,6 +185,7 @@ export function ConversationDetailPage({
       railOpen={historyOpen}
       main={
         <ChatMain>
+          {selectedActorSnapshot?.loaded_skills_warning && <p className="chat__error">当前加载 {selectedActorSnapshot.loaded_skill_count} 个 skills，建议不超过 {selectedActorSnapshot.max_loaded_skills_warning} 个。请前往 Actor 页面管理。</p>}
           {session.error && <p className="chat__error">{session.error}</p>}
           {showPersistedError && (
             <p className="chat__error">

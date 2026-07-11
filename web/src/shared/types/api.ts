@@ -20,6 +20,10 @@ export interface ActorSnapshot {
   workspace: string;
   model: ModelSelector | null;
   context_compression_tokens: number;
+  max_loaded_skills_warning: number;
+  loaded_skill_count: number;
+  workspace_skill_count: number;
+  loaded_skills_warning: boolean;
 }
 
 export interface IntegrationSnapshot {
@@ -101,6 +105,15 @@ export interface ActorRecord {
   persona?: string;
   model: ModelSelector;
   context_compression_tokens?: number;
+  max_loaded_skills_warning?: number;
+}
+
+export interface WorkspaceSkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  loaded: boolean;
+  path: string;
 }
 
 export type ActorInput = Omit<ActorRecord, "id">;
@@ -142,6 +155,15 @@ export interface WorkspaceFileContent {
   mime: string;
   size: number;
   mtime: string;
+  etag: string | null;
+}
+
+export interface WorkspaceFileMetadata {
+  path?: string;
+  size: number;
+  mime: string;
+  mtime: string;
+  etag: string | null;
 }
 
 export interface UploadResponse {

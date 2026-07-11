@@ -9,11 +9,11 @@ from support.api import base_url, running_server
 from yuubot import Yuubot
 from yuubot.actor.prompt import developer_prompt
 from yuubot.domain.records import ActorRecord
-from yuubot.runtime.skills import SkillCreateInput, SkillRecord, _package_command
+from yuubot.runtime.skills import SkillCreateInput, SkillRecord, _package_command, search_skills, set_workspace_skill_loaded, workspace_skills
 
 
 @pytest.mark.asyncio
-async def test_global_skill_prompt_lists_summary_not_body(tmp_path: Path) -> None:
+async def test_global_skill_is_not_added_to_actor_prompt(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
     record = await app.create_skill(
         SkillCreateInput(
@@ -24,17 +24,10 @@ async def test_global_skill_prompt_lists_summary_not_body(tmp_path: Path) -> Non
         )
     )
 
-    prompt = developer_prompt(
-        "",
-        tmp_path,
-        [],
-        has_python=True,
-        global_skills=app.runtime.skill_summaries(),
-    )
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
 
-    assert record.id in prompt
-    assert "Plan research work." in prompt
-    assert "await yb.skills.read('research-plan')" in prompt
+    assert record.id not in prompt
+    assert "Plan research work." not in prompt
     assert "Never put this full private instruction" not in prompt
 
 
@@ -138,7 +131,7 @@ async def test_deleting_global_skill_preserves_workspace_copy(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_package_skill_is_in_prompt_and_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_package_skill_is_not_in_prompt_and_is_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import yb.skills
 
     app = await Yuubot.create(tmp_path / "data")
@@ -150,12 +143,12 @@ async def test_package_skill_is_in_prompt_and_readable(tmp_path: Path, monkeypat
         SkillRecord("package-ops", "Package Ops", "Package procedure.", body, source="package", source_path=str(root))
     ]
 
-    prompt = developer_prompt("", tmp_path, [], has_python=True, global_skills=app.skill_summaries())
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
     async with running_server(app) as server:
         monkeypatch.setenv("YUUBOT_DAEMON_URL", base_url(server))
         loaded = await yb.skills.read("package-ops")
 
-    assert "package-ops" in prompt
+    assert "package-ops" not in prompt
     assert loaded == body
 
 
@@ -168,7 +161,7 @@ async def test_duplicate_id_is_visible_but_excluded_from_prompt_and_read(tmp_pat
     ]
 
     entries = [item for item in app.skill_catalog() if item.id == "duplicate"]
-    prompt = developer_prompt("", tmp_path, [], has_python=True, global_skills=app.skill_summaries())
+    prompt = developer_prompt("", tmp_path, [], has_python=True)
 
     assert custom.id == "duplicate"
     assert len(entries) == 2
@@ -177,6 +170,33 @@ async def test_duplicate_id_is_visible_but_excluded_from_prompt_and_read(tmp_pat
     assert "Package duplicate" not in prompt
     with pytest.raises(KeyError):
         app.runtime.skill_record("duplicate")
+
+
+def test_workspace_skill_loaded_state_preserves_document(tmp_path: Path) -> None:
+    path = tmp_path / ".agents/skills/explain/SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nname: Explain\ndescription: Keep this.\ncustom: value\n---\n# Body\nSteps.\n")
+
+    assert "Keep this." in developer_prompt("", tmp_path, [], has_python=True)
+    set_workspace_skill_loaded(tmp_path, "explain", False)
+    assert "Keep this." not in developer_prompt("", tmp_path, [], has_python=True)
+    assert "custom: value" in path.read_text()
+    assert "# Body\nSteps." in path.read_text()
+    set_workspace_skill_loaded(tmp_path, "explain", True)
+    assert workspace_skills(tmp_path)[0].loaded is True
+
+
+def test_skill_search_includes_global_and_banned_workspace_without_bodies(tmp_path: Path) -> None:
+    path = tmp_path / ".agents/skills/local/SKILL.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\nname: Local Research\ndescription: Local summary.\nloaded: false\n---\nSECRET BODY research\n")
+    global_record = SkillRecord("global-research", "Global Research", "Global summary.", "SECRET global research")
+
+    results = search_skills("research", 5, [global_record], tmp_path)
+
+    assert {item.source for item in results} == {"global", "workspace"}
+    assert next(item for item in results if item.source == "workspace").loaded is False
+    assert all("SECRET" not in repr(item) for item in results)
 
 
 @pytest.mark.asyncio
@@ -212,7 +232,9 @@ async def test_edited_builtin_body_is_used_when_copying(tmp_path: Path) -> None:
     app.copy_skill("explain", "amy", False)
 
     assert original.source == "builtin"
-    assert (workspace / ".agents/skills/explain/SKILL.md").read_text() == "# Edited body\n"
+    copied = (workspace / ".agents/skills/explain/SKILL.md").read_text()
+    assert "loaded: true" in copied
+    assert copied.endswith("# Edited body\n")
 
 
 def test_package_add_command_has_global_yes_and_options() -> None:

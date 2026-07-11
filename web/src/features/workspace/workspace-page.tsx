@@ -1,4 +1,4 @@
-import { useNavigate } from "@tanstack/react-router";
+import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 
 import { Page, EmptyState, ErrorState, LoadingState } from "@/shared/components";
 import { useBootstrap } from "@/shared/hooks";
@@ -6,6 +6,15 @@ import { WorkspaceBrowser } from "./workspace-browser";
 import { Route } from "@/routes/workspace";
 
 export function WorkspacePage() {
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  if (pathname !== "/workspace" && pathname !== "/workspace/") {
+    return <Outlet />;
+  }
+
+  return <WorkspaceIndex />;
+}
+
+function WorkspaceIndex() {
   const { data, error, isLoading } = useBootstrap();
   const search = Route.useSearch();
   const navigate = useNavigate({ from: "/workspace" });

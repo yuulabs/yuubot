@@ -6,6 +6,7 @@ from .stream import Usage
 from .models import ModelSelector
 
 DEFAULT_CONTEXT_COMPRESSION_TOKENS = 262144
+DEFAULT_MAX_LOADED_SKILLS_WARNING = 10
 
 
 class LifecycleError(msgspec.Struct, frozen=True):
@@ -50,6 +51,7 @@ class ActorRecord(msgspec.Struct, frozen=True, kw_only=True):
     persona: str = ""
     model: ModelSelector | None = None
     context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
+    max_loaded_skills_warning: int = DEFAULT_MAX_LOADED_SKILLS_WARNING
 
 
 class ActorInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
@@ -59,6 +61,7 @@ class ActorInput(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_field
     persona: str = ""
     model: ModelSelector
     context_compression_tokens: int = DEFAULT_CONTEXT_COMPRESSION_TOKENS
+    max_loaded_skills_warning: int = DEFAULT_MAX_LOADED_SKILLS_WARNING
     tools: dict[str, object] = msgspec.field(default_factory=dict)
 
 

@@ -15,7 +15,7 @@ export function NewConversationLink({
     <Link
       className={className}
       to="/admin/conversations/new"
-      search={{ actor: actorId }}
+      search={{ actor: actorId, prompt: "" }}
       title="New conversation"
       aria-label="New conversation"
     >

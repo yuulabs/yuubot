@@ -84,7 +84,7 @@ export function WorkspaceBrowser({ actorId, path, onPathChange }: { actorId: str
       setLargeFile(entry);
       return;
     }
-    window.open(fileOpenUrl(actorId, entry.path), "_blank", "noopener,noreferrer");
+    window.open(fileOpenUrl(actorId, entry.path, entry.mime), "_blank", "noopener,noreferrer");
   }
 
   function download(entry: WorkspaceEntry) {
@@ -380,7 +380,7 @@ export function WorkspaceBrowser({ actorId, path, onPathChange }: { actorId: str
           <DialogFooter>
             <DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose>
             <Button variant="outline" onClick={() => { if (largeFile) download(largeFile); setLargeFile(null); }}><Download size={14} /> Download</Button>
-            <Button onClick={() => { if (largeFile) window.open(fileOpenUrl(actorId, largeFile.path), "_blank", "noopener,noreferrer"); setLargeFile(null); }}>Open anyway</Button>
+            <Button onClick={() => { if (largeFile) window.open(fileOpenUrl(actorId, largeFile.path, largeFile.mime), "_blank", "noopener,noreferrer"); setLargeFile(null); }}>Open anyway</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -467,8 +467,14 @@ function isMarkdownPath(path: string): boolean {
   return /\.(?:md|markdown)$/i.test(path);
 }
 
-function fileOpenUrl(actorId: string, path: string): string {
-  return isMarkdownPath(path) ? workspaceFilePreviewUrl(actorId, path) : getActorFileUrl(actorId, path);
+function fileOpenUrl(actorId: string, path: string, mime = ""): string {
+  return isMarkdownPath(path) || isEditableTextPath(path, mime) ? workspaceFilePreviewUrl(actorId, path) : getActorFileUrl(actorId, path);
+}
+
+function isEditableTextPath(path: string, mime: string): boolean {
+  if (mime.startsWith("text/")) return true;
+  if (["application/json", "application/javascript", "application/xml", "application/yaml", "application/toml"].some((value) => mime.startsWith(value))) return true;
+  return /\.(?:cfg|conf|css|env|ini|js|json|jsx|lock|log|md|markdown|py|sh|toml|ts|tsx|txt|xml|yaml|yml)$/i.test(path);
 }
 
 function FileVisual({ entry, size }: { entry: WorkspaceEntry; size: number }) {

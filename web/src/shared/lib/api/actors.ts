@@ -10,6 +10,8 @@ import type {
   UploadResponse,
   WorkspaceDirectorySnapshot,
   WorkspaceFileContent,
+  WorkspaceFileMetadata,
+  WorkspaceSkillSummary,
 } from "@/shared/types/api";
 import { authenticatedFetch, BASE, request } from "./client";
 import { getBootstrap } from "./bootstrap";
@@ -26,6 +28,16 @@ export function putActor(actorId: string, input: ActorInput): Promise<ActorSnaps
   return request<ActorSnapshot>(`${BASE}/actors/${encodeURIComponent(actorId)}`, {
     method: "PUT",
     body: JSON.stringify(input),
+  });
+}
+
+export function listActorSkills(actorId: string): Promise<{ items: WorkspaceSkillSummary[] }> {
+  return request(`${BASE}/actors/${encodeURIComponent(actorId)}/skills`);
+}
+
+export function setActorSkillLoaded(actorId: string, skillId: string, loaded: boolean): Promise<WorkspaceSkillSummary> {
+  return request(`${BASE}/actors/${encodeURIComponent(actorId)}/skills/${encodeURIComponent(skillId)}/loaded`, {
+    method: "PUT", body: JSON.stringify({ loaded }),
   });
 }
 
@@ -55,10 +67,15 @@ export function getActorFileDownloadUrl(actorId: string, path: string): string {
   return `${getActorFileUrl(actorId, path)}?download=true`;
 }
 
-export async function getActorFileMetadata(actorId: string, path: string): Promise<{ size: number; mime: string }> {
+export async function getActorFileMetadata(actorId: string, path: string): Promise<WorkspaceFileMetadata> {
   const response = await authenticatedFetch(getActorFileUrl(actorId, path), { method: "HEAD" });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return { size: Number(response.headers.get("Content-Length") ?? 0), mime: response.headers.get("Content-Type") ?? "" };
+  return {
+    size: Number(response.headers.get("Content-Length") ?? 0),
+    mime: response.headers.get("Content-Type") ?? "",
+    mtime: response.headers.get("Last-Modified") ?? "",
+    etag: response.headers.get("ETag"),
+  };
 }
 
 export async function downloadWorkspaceEntries(actorId: string, paths: string[]): Promise<void> {
@@ -92,7 +109,29 @@ export async function getActorFileContent(actorId: string, path: string): Promis
     mime: response.headers.get("Content-Type") ?? "text/plain",
     size: Number(response.headers.get("Content-Length") ?? 0),
     mtime: response.headers.get("Last-Modified") ?? "",
+    etag: response.headers.get("ETag"),
   };
+}
+
+export async function putActorFileContent(
+  actorId: string,
+  path: string,
+  content: string,
+  etag: string,
+): Promise<WorkspaceFileMetadata> {
+  const response = await authenticatedFetch(getActorFileUrl(actorId, path), {
+    method: "PUT",
+    headers: { "Content-Type": "text/plain; charset=utf-8", "If-Match": etag },
+    body: content,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : null;
+    const message = typeof error?.message === "string" ? error.message : response.statusText;
+    throw new Error(response.status === 412 ? `Conflict: ${message}` : `${response.status} ${message}`);
+  }
+  const data = await response.json() as Omit<WorkspaceFileMetadata, "etag">;
+  return { ...data, etag: response.headers.get("ETag") };
 }
 
 export async function uploadActorFile(actorId: string, files: File[], path?: string): Promise<UploadResponse> {

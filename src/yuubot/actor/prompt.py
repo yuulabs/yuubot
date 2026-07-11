@@ -6,7 +6,7 @@ from typing import Literal
 
 from ..domain.messages import ContentItem, InputMessage
 from ..integrations.registry import Integration
-from ..runtime.skills import SkillSummary
+from ..runtime.skills import workspace_skills
 from .prompt_docs import ADMIN_PAGES
 
 _RUNTIME_FACADE_PACKAGES = ("yb.fixer", "yb.tasks", "yb.tasks.cron", "yb.mcps", "yb.skills")
@@ -23,7 +23,6 @@ def developer_prompt(
     *,
     actor_id: str = "",
     has_python: bool,
-    global_skills: list[SkillSummary] | None = None,
 ) -> str:
     sections = [
         "# Persona\n" + (persona.strip() or "You are a yuubot actor."),
@@ -36,7 +35,7 @@ def developer_prompt(
     integration_docs = _integration_docs(integrations, extra_packages)
     if integration_docs:
         sections.append("# Integration SDKs\n" + integration_docs)
-    sections.append("# Skills\n" + _skills(workspace, global_skills or []))
+    sections.append("# Skills\n" + _skills(workspace))
     sections.append("# AGENTS.md\n" + _agents_context(workspace))
     sections.append("# Real-Time Data\n" + _real_time_data())
     return "\n\n".join(sections)
@@ -137,39 +136,15 @@ def _integration_docs(integrations: list[Integration], extra_packages: tuple[str
     return "\n\n".join(parts)
 
 
-def _skills(workspace: Path, global_skills: list[SkillSummary]) -> str:
-    skills_dir = workspace / ".agents" / "skills"
+def _skills(workspace: Path) -> str:
     entries: list[str] = []
-    for skill in global_skills:
-        description = skill.description or "No description provided."
-        entries.append(f"- {skill.name} ({skill.id}): {description}. Inspect full instructions via {skill.inspect_hint}.")
-    for skill_path in sorted(skills_dir.glob("*/SKILL.md")):
-        text = skill_path.read_text(encoding="utf-8")
-        entries.append(f"- {skill_path.parent.name}: {_skill_description(text)}. Inspect full instructions with the read tool at `{skill_path}`.")
+    for skill in workspace_skills(workspace):
+        if skill.loaded:
+            label = skill.name if skill.name == skill.id else f"{skill.name} ({skill.id})"
+            entries.append(f"- {label}: {skill.description}. Inspect full instructions with the read tool at `{skill.path}`.")
     if not entries:
         return "No workspace skills are currently installed."
     return "The following skills are summaries only; inspect full instructions on demand:\n" + "\n".join(entries)
-
-
-def _skill_description(text: str) -> str:
-    lines = text.splitlines()
-    if lines and lines[0].strip() == "---":
-        for line in lines[1:]:
-            if line.strip() == "---":
-                break
-            key, separator, value = line.partition(":")
-            if separator and key.strip() == "description" and value.strip():
-                return value.strip().strip('"').strip("'")
-    inside_frontmatter = bool(lines and lines[0].strip() == "---")
-    for line in lines[1:] if inside_frontmatter else lines:
-        stripped = line.strip()
-        if inside_frontmatter:
-            if stripped == "---":
-                inside_frontmatter = False
-            continue
-        if stripped and not stripped.startswith("#"):
-            return stripped
-    return "No description provided."
 
 
 def _agents_context(workspace: Path) -> str:

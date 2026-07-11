@@ -133,7 +133,6 @@ class Actor:
             list(self.runtime.integrations.values()),
             actor_id=context.actor,
             has_python=self._has_python,
-            global_skills=self.runtime.skill_summaries(),
         )
         history = await HistoryHelper.load(
             self.runtime.history,

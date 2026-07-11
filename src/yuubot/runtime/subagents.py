@@ -146,7 +146,6 @@ def _agent_coro_factory(
             list(runtime.integrations.values()),
             actor_id=context.actor,
             has_python=any(config.type == "execute_python" for config in configs.values()),
-            global_skills=runtime.skill_summaries(),
         )
         history = HistoryHelper(
             [

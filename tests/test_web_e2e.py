@@ -302,6 +302,76 @@ async def test_http_serves_actor_workspace_files_with_containment(test_context: 
             assert response.status_code in {400, 404}
 
 
+async def test_http_edits_utf8_workspace_file_with_etag_conflict_protection(test_context: SharedTestContext) -> None:
+    workspace = test_context.workspace
+    workspace.mkdir(exist_ok=True)
+    target = workspace / "memo.md"
+    target.write_text("first", encoding="utf-8")
+    actor_id = await test_context.setup_actor(ScriptedStream([]))
+    url = base_url(test_context.server)
+
+    async with httpx.AsyncClient() as client:
+        loaded = await client.get(f"{url}/api/actors/{actor_id}/files/memo.md")
+        assert loaded.status_code == 200
+        etag = loaded.headers["etag"]
+
+        saved = await client.put(
+            f"{url}/api/actors/{actor_id}/files/memo.md",
+            content="second",
+            headers={"Content-Type": "text/plain; charset=utf-8", "If-Match": etag},
+        )
+        assert saved.status_code == 200
+        assert saved.headers["etag"] != etag
+        assert target.read_text(encoding="utf-8") == "second"
+
+        conflict = await client.put(
+            f"{url}/api/actors/{actor_id}/files/memo.md",
+            content="stale",
+            headers={"Content-Type": "text/plain; charset=utf-8", "If-Match": etag},
+        )
+        assert conflict.status_code == 412
+        assert target.read_text(encoding="utf-8") == "second"
+
+
+async def test_http_rejects_non_utf8_workspace_file_edit(test_context: SharedTestContext) -> None:
+    workspace = test_context.workspace
+    workspace.mkdir(exist_ok=True)
+    target = workspace / "binary.dat"
+    target.write_bytes(b"\xff\x00")
+    actor_id = await test_context.setup_actor(ScriptedStream([]))
+    url = base_url(test_context.server)
+
+    async with httpx.AsyncClient() as client:
+        loaded = await client.get(f"{url}/api/actors/{actor_id}/files/binary.dat")
+        response = await client.put(
+            f"{url}/api/actors/{actor_id}/files/binary.dat",
+            content="text",
+            headers={"Content-Type": "text/plain; charset=utf-8", "If-Match": loaded.headers["etag"]},
+        )
+    assert response.status_code == 400
+    assert target.read_bytes() == b"\xff\x00"
+
+
+async def test_http_rejects_workspace_file_edit_through_symlink(test_context: SharedTestContext) -> None:
+    workspace = test_context.workspace
+    workspace.mkdir(exist_ok=True)
+    target = workspace / "target.txt"
+    target.write_text("original", encoding="utf-8")
+    (workspace / "alias.txt").symlink_to(target)
+    actor_id = await test_context.setup_actor(ScriptedStream([]))
+    url = base_url(test_context.server)
+
+    async with httpx.AsyncClient() as client:
+        loaded = await client.get(f"{url}/api/actors/{actor_id}/files/target.txt")
+        response = await client.put(
+            f"{url}/api/actors/{actor_id}/files/alias.txt",
+            content="changed",
+            headers={"Content-Type": "text/plain; charset=utf-8", "If-Match": loaded.headers["etag"]},
+        )
+    assert response.status_code == 400
+    assert target.read_text(encoding="utf-8") == "original"
+
+
 async def test_http_uploads_actor_workspace_files(test_context: SharedTestContext) -> None:
     actor_id = await test_context.setup_actor(ScriptedStream([]))
     url = base_url(test_context.server)

@@ -60,6 +60,9 @@ export const navItems = [
 
 export function AppLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  if (/^\/workspace\/[^/]+\/file\//.test(pathname)) {
+    return <Outlet />;
+  }
   if (pathname === "/login") {
     return (
       <>

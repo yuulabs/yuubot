@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from ...app import Yuubot
-from ...runtime.skills import SkillCopyBody, SkillCreateInput, SkillInput, SkillPackageBody, skill_summary
+from ...runtime.skills import SkillCopyBody, SkillCreateInput, SkillInput, SkillPackageBody, search_skills, skill_summary
 from ..request import bad_request, read_json
 from ..responses import error_response, json_response
 
@@ -23,6 +23,14 @@ def register_skill_routes(api: FastAPI, app: Yuubot) -> None:
     async def api_refresh_skills() -> Response:
         warning = await app.refresh_package_skills()
         return json_response({"items": app.skill_catalog(), "warning": warning})
+
+    @api.get("/api/skills/search")
+    async def api_search_skills(query: str, limit: int = 5, actor_id: str = "") -> Response:
+        workspace = app.actor_workspace_path(actor_id) if actor_id else None
+        if actor_id and workspace is None:
+            return error_response(404, "not_found", "actor not found")
+        records = [*app.runtime.skills.values(), *app.runtime.package_skills]
+        return json_response({"items": search_skills(query, limit, records, workspace)})
 
     @api.post("/api/skills")
     async def api_create_skill(request: Request) -> Response:

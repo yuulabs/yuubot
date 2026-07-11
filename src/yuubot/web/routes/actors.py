@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
+from email.utils import format_datetime
 
 import msgspec
 from fastapi import FastAPI, File, Request, UploadFile
@@ -12,8 +14,9 @@ from ...app import Yuubot
 from ...domain.messages import ActorMessage
 from ...domain.records import ActorConfigError, ActorInput
 from ...runtime.inbound import MailboxUnavailableError
+from ...runtime.skills import WorkspaceSkillLoadedBody, set_workspace_skill_loaded, workspace_skills
 from ..errors import internal_error_detail, internal_error_message, log_internal_error
-from ..files import actor_workspace, delete_entries, directory_snapshot, make_directory, move_entries, rename_entry, save_uploads, workspace_media_type, workspace_path, workspace_zip
+from ..files import actor_workspace, delete_entries, directory_snapshot, editable_workspace_path, make_directory, move_entries, rename_entry, replace_workspace_text, save_uploads, workspace_file_etag, workspace_media_type, workspace_path, workspace_zip
 from ..request import bad_request, read_json
 from ..responses import error_response, json_response
 from .bodies import WorkspaceDeleteBody, WorkspaceDownloadBody, WorkspaceMkdirBody, WorkspaceMoveBody, WorkspaceRenameBody
@@ -42,6 +45,26 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
         if record is None:
             return error_response(404, "not_found", "actor not found")
         return json_response(msgspec.to_builtins(record))
+
+    @api.get("/api/actors/{actor_id}/skills")
+    async def api_actor_skills(actor_id: str) -> Response:
+        workspace = actor_workspace(app, actor_id)
+        if workspace is None:
+            return error_response(404, "not_found", "actor not found")
+        return json_response({"items": workspace_skills(workspace)})
+
+    @api.put("/api/actors/{actor_id}/skills/{skill_id}/loaded")
+    async def api_actor_skill_loaded(actor_id: str, skill_id: str, request: Request) -> Response:
+        workspace = actor_workspace(app, actor_id)
+        if workspace is None:
+            return error_response(404, "not_found", "actor not found")
+        try:
+            body = await read_json(request, WorkspaceSkillLoadedBody)
+            return json_response(set_workspace_skill_loaded(workspace, skill_id, body.loaded))
+        except FileNotFoundError:
+            return error_response(404, "not_found", "workspace skill not found")
+        except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
+            return bad_request(exc)
 
     @api.post("/api/actors/{actor_id}/enable")
     async def api_enable_actor(actor_id: str) -> Response:
@@ -101,6 +124,35 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             media_type=workspace_media_type(target),
             content_disposition_type=disposition,
             filename=target.name,
+            headers={"ETag": workspace_file_etag(target)},
+        )
+
+    @api.put("/api/actors/{actor_id}/files/{file_path:path}")
+    async def api_put_actor_file(actor_id: str, file_path: str, request: Request) -> Response:
+        workspace = actor_workspace(app, actor_id)
+        if workspace is None:
+            return error_response(404, "not_found", "actor not found")
+        try:
+            target = editable_workspace_path(workspace, file_path)
+            etag = replace_workspace_text(target, await request.body(), request.headers.get("if-match"))
+        except FileNotFoundError:
+            return error_response(404, "not_found", "file not found")
+        except PermissionError as exc:
+            return error_response(428, "precondition_required", str(exc))
+        except FileExistsError as exc:
+            return error_response(412, "precondition_failed", str(exc))
+        except ValueError as exc:
+            return bad_request(exc)
+        stat = target.stat()
+        return Response(
+            content=msgspec.json.encode({
+                "path": file_path,
+                "size": stat.st_size,
+                "mime": workspace_media_type(target),
+                "mtime": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+            }),
+            media_type="application/json",
+            headers={"ETag": etag},
         )
 
     @api.head("/api/actors/{actor_id}/files/{file_path:path}")
@@ -115,7 +167,7 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
         if not target.is_file():
             return error_response(404, "not_found", "file not found")
         stat = target.stat()
-        return Response(headers={"Content-Length": str(stat.st_size), "Content-Type": workspace_media_type(target)})
+        return Response(headers={"Content-Length": str(stat.st_size), "Content-Type": workspace_media_type(target), "ETag": workspace_file_etag(target), "Last-Modified": format_datetime(datetime.fromtimestamp(stat.st_mtime, tz=UTC), usegmt=True)})
 
     @api.post("/api/actors/{actor_id}/workspace/download")
     async def api_download_workspace_entries(actor_id: str, request: Request) -> Response:

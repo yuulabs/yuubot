@@ -53,7 +53,7 @@ export function ActorsListPage() {
               actions={
                 <>
                   <Button variant="outline" size="sm" asChild>
-                    <Link to="/admin/conversations/new" search={{ actor: actor.id }}>Chat</Link>
+                    <Link to="/admin/conversations/new" search={{ actor: actor.id, prompt: "" }}>Chat</Link>
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => (actor.enabled ? disable.mutate(actor.id) : enable.mutate(actor.id))}>
                     {actor.enabled ? "Disable" : "Enable"}
