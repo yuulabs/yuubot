@@ -1,8 +1,10 @@
-"""Global skill facade for execute_python.
+"""Skill facade for execute_python.
 
-Use ``await list_skills()`` to see global skill summaries and
-``await read(skill_id)`` to load full instructions only when needed. Skills are
-workflow instructions, not data sources or credentials.
+Use ``await list_skills()`` to see global skill summaries, ``await search(query,
+limit=5)`` to find matching global or current Actor workspace skills, and
+``await read(skill_id)`` to load full instructions only when needed. Search
+results do not load full skill bodies. Skills are workflow instructions, not
+data sources or credentials.
 """
 
 from __future__ import annotations

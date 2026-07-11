@@ -23,6 +23,8 @@ DESCRIPTION = """Run Python code in a persistent IPython session for the current
 
 The working directory is the actor workspace. Standard output and standard error are captured and returned as text. An empty capture returns `ok`. The session supports native top-level `await`.
 
+Output is capped at 1 MiB per call. When this limit is reached, the returned text ends with an explicit truncation notice; write large results to workspace files and inspect them with `read` in pages instead of printing them all.
+
 Enabled integrations inject credentials into the process environment for `yext` facades, for example `await yext.web.search(query)` and `repo = yext.github.repo(); await repo.issues.list_recent()`.
 
 The session resets after each user turn. Variables, imports, and in-memory side effects do not survive; a developer notice appears when a prior session is gone.
@@ -31,7 +33,7 @@ The runtime is headless: `plt.show()` does not reach the user. Save generated fi
 
 After `uv add` or `uv remove`, call `restart_kernel` before expecting new imports.
 
-Runtime facades (`yb.fixer`, `yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions. `yb.fixer.ask_gemini` and `ask_grok` each allow one provider-completed request per user turn and return any citations supplied by the provider; include related subquestions in one prompt. `yext.web.search` provides three successful searches per turn, while `read` and `download` remain available for inspecting sources."""
+Runtime facades (`yb.fixer`, `yb.conversations`, `yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions. `yb.fixer.ask_gemini` and `ask_grok` each allow one provider-completed request per user turn and return any citations supplied by the provider; include related subquestions in one prompt. `yb.conversations.list_recents()` reads your own recent user-visible conversation history for preference/context recall. `yext.web.search` provides three successful searches per turn, while `read` and `download` remain available for inspecting sources."""
 
 
 class ExecutePythonPayload(msgspec.Struct, frozen=True):
@@ -127,6 +129,7 @@ def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime)
     if isinstance(daemon_url, str) and daemon_url:
         env["YUUBOT_DAEMON_URL"] = daemon_url
     env["YUUBOT_TASK_OWNER"] = make_owner(context.actor, context.conversation_id)
+    env["YUUBOT_ACTOR_ID"] = context.actor
     turn_token = context.rpc.get("turn_token")
     if isinstance(turn_token, str) and turn_token:
         env["YUUBOT_TURN_TOKEN"] = turn_token

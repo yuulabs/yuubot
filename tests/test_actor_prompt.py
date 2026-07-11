@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import getdoc
 from pathlib import Path
 
 from yuubot.actor.prompt import (
@@ -10,6 +11,8 @@ from yuubot.actor.prompt import (
 )
 from yuubot.actor.prompt_docs import ADMIN_PAGES_INTRO, ADMIN_PAGES_SUBMIT_FLOW
 from yuubot.domain.messages import ContentItem, InputMessage, text_content
+from yb.tasks import cron
+from yext import github, web
 
 
 def test_developer_prompt_documents_cron_facade(tmp_path: Path) -> None:
@@ -20,6 +23,23 @@ def test_developer_prompt_documents_cron_facade(tmp_path: Path) -> None:
     assert "actor_message" in prompt
     assert "conversation_callback" in prompt
     assert "+1m" in prompt
+    assert "exactly one schedule" in prompt
+    assert '"kind": "conversation_callback"' in prompt
+    assert "await pause(job_id)" in prompt
+
+
+def test_facade_prompt_docs_explain_actionable_api() -> None:
+    cron_doc = getdoc(cron) or ""
+    github_doc = getdoc(github) or ""
+    web_doc = getdoc(web) or ""
+
+    assert "await add(name, timezone=..., cron=..., action=...)" in cron_doc
+    assert "await client" not in cron_doc
+    assert "repo.issues.list_recent()" in github_doc
+    assert "repo.files.read(path, ref=\"\")" in github_doc
+    assert "DownloadResult(path, url, content_type, bytes, sha256)" in web_doc
+    assert "max_results" in web_doc
+    assert "must be 1–20" in web_doc
 
 
 def test_developer_prompt_documents_turn_limited_research_facades(tmp_path: Path) -> None:

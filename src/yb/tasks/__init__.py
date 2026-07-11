@@ -6,13 +6,16 @@ after the current ``execute_python`` tool call ends.
 
 Delivery modes:
 - ``manual``: poll with ``task.output()`` / ``task.status()`` yourself; no wakeup
-  is sent. Requires ``ttl_s`` no greater than 3600 seconds.
+  is sent. Requires ``ttl_s`` greater than 0 and no greater than 3600 seconds.
 - ``conversation``: completion appends a developer message and continues the
   owner conversation.
 - ``actor``: completion goes to the actor mailbox without binding to a conversation.
 
 Task output is an expiring offload buffer, not durable storage. For long jobs,
 write resumable workspace scripts that persist their own state and artifacts.
+``task.output(max_bytes=...)`` returns at most 1 MiB from the retained stdout
+tail; ``max_bytes`` may request less, but cannot recover output beyond the
+retained tail.
 
 For commands that may prompt or need interactive stdin, use the ``bash`` tool.
 
@@ -83,7 +86,7 @@ class Task:
         await self.refresh()
         return self._status
 
-    async def output(self, max_bytes: int = 65536) -> str:
+    async def output(self, max_bytes: int = 1024 * 1024) -> str:
         wire = msgspec.convert(await request_json("GET", f"{self._base_url}/api/tasks/{self.id}"), _TaskWire)
         self._status = _task_status(wire.status)
         return wire.stdout_tail[:max_bytes]

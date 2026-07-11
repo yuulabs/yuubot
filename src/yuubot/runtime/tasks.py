@@ -38,6 +38,7 @@ DEFAULT_MANUAL_TASK_TTL_S = MAX_MANUAL_TASK_TTL_S
 DELIVERED_TASK_MIN_RETENTION_S = 60.0
 PENDING_DELIVERY_TASK_RETENTION_S = 3600.0
 DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S = 3600.0
+TASK_OUTPUT_MAX_BYTES = 1024 * 1024
 
 
 def make_owner(actor_id: str, conversation_id: str) -> str:
@@ -470,7 +471,7 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
         model_tier = str(record.metadata.get("model_tier", "same"))
         lines = [f"Subagent task {record.id} {record.status}.", f"subagent: {subagent}", f"model_tier: {model_tier}"]
         if record.status == "done":
-            result = record.result if isinstance(record.result, str) else record.stdout.tail(max_bytes=65536)
+            result = record.result if isinstance(record.result, str) else record.stdout.tail(max_bytes=TASK_OUTPUT_MAX_BYTES)
             lines.extend(["result:", _truncate_agent_notice(result)])
         elif record.error:
             lines.append(f"error: {record.error}")
@@ -480,7 +481,7 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
         lines.append(record.intro)
     if record.error:
         lines.append(f"Error: {record.error}")
-    output = filter_tool_output(record.stdout.tail(max_bytes=65536))
+    output = filter_tool_output(record.stdout.tail(max_bytes=TASK_OUTPUT_MAX_BYTES))
     if output:
         lines.append("Output:")
         lines.append(output)
@@ -489,7 +490,7 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
     return "\n".join(lines)
 
 
-def _truncate_agent_notice(text: str, max_bytes: int = 65536) -> str:
+def _truncate_agent_notice(text: str, max_bytes: int = TASK_OUTPUT_MAX_BYTES) -> str:
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text
@@ -656,7 +657,7 @@ def task_record_snapshot(record: RuntimeTaskRecord, include_stdout: bool = False
         record.delivery,
         record.delivery_state,
         record.interactive,
-        filter_tool_output(record.stdout.tail(max_bytes=65536)) if include_stdout else "",
+        filter_tool_output(record.stdout.tail(max_bytes=TASK_OUTPUT_MAX_BYTES)) if include_stdout else "",
         record.created_at,
         record.started_at,
         record.finished_at,

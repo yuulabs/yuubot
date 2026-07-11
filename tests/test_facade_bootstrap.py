@@ -20,6 +20,7 @@ def test_facade_package_and_bootstrap_generation_are_consistent(tmp_path: Path) 
     assert "yext.web" in ALL_FACADE_PACKAGES
     assert "yb.tasks" in ALL_FACADE_PACKAGES
     assert "yb.fixer" in ALL_FACADE_PACKAGES
+    assert "yb.conversations" in ALL_FACADE_PACKAGES
     assert "yb.mcps" in ALL_FACADE_PACKAGES
     assert "yb.skills" in ALL_FACADE_PACKAGES
     assert "yb.office.pdf" in ALL_FACADE_PACKAGES

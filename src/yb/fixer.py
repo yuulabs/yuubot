@@ -1,12 +1,18 @@
-"""Hosted-search rescue facades for questions beyond the current model.
+"""Hosted research facades for questions beyond the current model.
 
-Research routing, from cheapest to most specialized: answer directly when sure;
-use ``yext.web.search`` and then ``read`` for ordinary current facts; use
-``ask_gemini(prompt)`` without web search for uncertain stable knowledge; use
-``ask_grok(prompt, enable_web_search=True)`` for X/Twitter, failed ordinary
-search, or blocked-page extraction; and use Gemini with web search for complex,
-multi-source research. Each facade can make one provider-completed request per
-user turn, so combine related subquestions.
+Call ``await ask_gemini(prompt, enable_web_search=False, pass_through_options=None)``
+or ``await ask_grok(...)``. Both return ``Answer(text, citations)``; each
+provider allows one successful request per user turn, so combine related
+questions into one prompt. ``enable_web_search`` is the supported boolean
+switch. ``pass_through_options`` is an optional provider-specific dictionary;
+use it only when its fields and values are explicitly documented by the
+Persona or AGENTS.md. Do not put citations or vendor parameters in the prompt
+unless the task requires them.
+
+For ordinary current facts prefer ``yext.web.search`` and ``read``. Use Gemini
+without web search for uncertain stable knowledge, Grok with web search for
+X/Twitter or blocked ordinary sources, and Gemini with web search for complex
+multi-source research. Treat returned text as evidence and assess citations.
 
 ``pass_through_options`` is only a vendor-specific escape hatch. Before passing
 a non-empty value, check whether the Persona or injected AGENTS.md specifies the

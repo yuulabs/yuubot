@@ -1,12 +1,22 @@
-"""Cron scheduling facade for execute_python.
+"""Durable cron-job facade for ``execute_python``.
 
-Use ``await add(...)`` to register durable cron jobs with explicit IANA timezones.
-For one-shot schedules, pass either a timezone-naive local ISO datetime
-(``YYYY-MM-DDTHH:MM:SS``) or a short relative delay such as ``+1m``.
-Use ``{"kind": "actor_message", "text": "..."}`` for standalone scheduled
-actor work, and ``{"kind": "conversation_callback", "text": "..."}`` when the
-scheduled message should continue the owner conversation.
-Query and control jobs only through this facade.
+Create a job with ``await add(name, timezone=..., cron=..., action=...)`` or
+``await add(name, timezone=..., at=..., once=True, action=...)``. ``timezone``
+must be an IANA name such as ``Asia/Shanghai``. Supply exactly one schedule:
+``cron`` is a cron expression, while ``at`` is either a timezone-naive local
+ISO datetime (``YYYY-MM-DDTHH:MM:SS``) or a relative delay such as ``+1m``.
+
+Actions are dictionaries with exactly the fields needed by their kind:
+``{"kind": "actor_message", "text": "..."}`` sends standalone work to the
+actor mailbox; ``{"kind": "conversation_callback", "text": "..."}``
+continues the owner conversation. ``once=True`` is normally used with ``at``.
+
+Use ``await list_jobs(name_glob="...", status="active")`` to list this
+actor's jobs, ``await find(job_id)`` to fetch one, ``await pause(job_id)`` or
+``await resume(job_id)`` to control it, and ``await delete(job_id)`` to remove
+it. These functions return ``CronJob`` objects except ``delete``. A
+``CronJob`` exposes ``id``, ``name``, ``status``, ``schedule``, ``action``,
+``next_run_at``, ``last_run_at``, and ``once``.
 """
 
 from __future__ import annotations

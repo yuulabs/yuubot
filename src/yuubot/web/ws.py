@@ -218,7 +218,7 @@ async def _task_subscribe(
     await send({"id": command_id, "type": "task.subscribe.result", "payload": {"task_id": task_id}})
     await send({
         "type": "task.event",
-        "payload": {"task_id": task_id, "status": task.status, "stdout": task.stdout.tail(max_bytes=65536)},
+        "payload": {"task_id": task_id, "status": task.status, "stdout": task.stdout.tail(max_bytes=1024 * 1024)},
     })
     ws_listener.start_task_stdout(task_id, task.stdout, task.status)
     try:
@@ -226,7 +226,7 @@ async def _task_subscribe(
             await task.wait_terminal()
         except asyncio.CancelledError:
             pass
-        await ws_listener.send_task_terminal(task_id, task.status, task.stdout.tail(max_bytes=65536))
+        await ws_listener.send_task_terminal(task_id, task.status, task.stdout.tail(max_bytes=1024 * 1024))
     finally:
         ws_listener.stop_task_stdout()
 

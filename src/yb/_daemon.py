@@ -30,6 +30,19 @@ async def request_json(
     json: dict[str, object] | None = None,
     timeout_s: float = 30.0,
 ) -> dict[str, object]:
+    body = await request_json_value(method, url, params, json, timeout_s)
+    if not isinstance(body, dict):
+        raise RuntimeError("unexpected daemon API response")
+    return body
+
+
+async def request_json_value(
+    method: str,
+    url: str,
+    params: dict[str, str] | None = None,
+    json: dict[str, object] | None = None,
+    timeout_s: float = 30.0,
+) -> object:
     headers: dict[str, str] = {}
     turn_token = os.getenv("YUUBOT_TURN_TOKEN")
     if turn_token:
@@ -42,6 +55,4 @@ async def request_json(
                 error = body["error"]
                 raise RuntimeError(f"{error.get('code', 'daemon_error')}: {error.get('message', 'daemon request failed')}")
             response.raise_for_status()
-    if not isinstance(body, dict):
-        raise RuntimeError("unexpected daemon API response")
     return body

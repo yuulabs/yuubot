@@ -5,7 +5,7 @@ from support.assertions import tool_result_text
 from support.llm_rules import all_of, call_tool, has_tool_spec, has_tool_specs, messages_contain_tool_result, reply_text, user_message_contains
 from support.prompt_conditioned_llm import PromptConditionedProvider
 from yuubot.domain import ContentItem
-from yuubot.tools.read import ReadPayload, _execute_read
+from yuubot.tools.read import MAX_READ_BYTES, ReadPayload, _execute_read
 
 
 async def test_http_read_tool_reads_requested_slice(test_context: SharedTestContext) -> None:
@@ -55,3 +55,17 @@ async def test_read_tool_returns_image_content_with_workspace_relative_path(test
     assert result == [
         ContentItem("image", path="uploads/image-png/cat.png", mime="image/png"),
     ]
+
+
+async def test_read_tool_keeps_byte_truncation_on_complete_lines(test_context: SharedTestContext) -> None:
+    workspace = test_context.workspace
+    path = workspace / "large.txt"
+    path.write_text("".join("x" * 500 + "\n" for _ in range(3000)), encoding="utf-8")
+
+    result = await _execute_read(workspace, ReadPayload("large.txt"), "gpt-test", False)
+
+    assert isinstance(result, str)
+    body, marker = result.rsplit("\n[truncated:", 1)
+    assert len(body.encode("utf-8")) <= MAX_READ_BYTES
+    assert all(line == "x" * 500 for line in body.splitlines())
+    assert marker.startswith(" lines 0-")

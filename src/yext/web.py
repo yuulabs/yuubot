@@ -1,9 +1,14 @@
 """Async web facade.
 
-Use await search(query), await read(url), and await download(url) for web search,
-reader extraction, and HTTP downloads. A user turn provides three successful
-search calls. Combine related questions into focused queries; read and download
-remain available for inspecting the returned sources.
+Use ``await search(query, max_results=5)`` for web search, ``await read(url,
+max_chars=None)`` for reader extraction, and ``await download(url, filename="",
+max_bytes=0)`` to save an HTTP response under the workspace ``downloads/``
+directory. Search returns ``SearchResult(title, url, content)``; download
+returns ``DownloadResult(path, url, content_type, bytes, sha256)``. A user turn
+provides three successful search calls, and ``max_results`` must be 1–20.
+Combine related questions into focused queries. ``read`` returns at most
+12,000 characters by default (or the explicit ``max_chars`` value); request a
+focused extraction or split the source into multiple reads when truncated.
 """
 
 from __future__ import annotations

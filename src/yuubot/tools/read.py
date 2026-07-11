@@ -8,14 +8,14 @@ from ..domain.messages import ContentItem
 from .base import workspace_tool
 from .paths import workspace_path
 
-MAX_READ_LINES: Final[int] = 300
-MAX_READ_BYTES: Final[int] = 64 * 1024
+MAX_READ_LINES: Final[int] = 2_000
+MAX_READ_BYTES: Final[int] = 1024 * 1024
 
 DESCRIPTION = """Read a file inside the actor workspace.
 
 Paths are relative to the workspace root and cannot escape the workspace boundary.
 
-Text files are decoded as UTF-8 with replacement characters for invalid bytes. Use `start_lo` (0-based line index) and `end_lo` (exclusive line index, or -1 for end of file) to page through large files. Full-file reads are capped at 300 lines and 64 KiB; when output is truncated, the result includes the final line position.
+Text files are decoded as UTF-8 with replacement characters for invalid bytes. Use `start_lo` (0-based line index) and `end_lo` (exclusive line index, or -1 for end of file) to page through large files. Full-file reads return at most 2,000 complete lines and 1 MiB; when output is truncated or paged, the result includes the final line position. The byte limit is applied on a complete-line boundary whenever possible, so the tool does not normally cut a line in half.
 
 Image files are handled differently: when the current model supports vision, the result contains image content for multimodal inspection. When the model does not support vision, the tool returns a clear text message instead of image bytes.
 
@@ -44,15 +44,29 @@ async def _execute_read(root: Path, payload: msgspec.Struct, model: str, support
     start = max(data.start_lo, 0)
     end = len(lines) if data.end_lo < 0 else min(data.end_lo, len(lines))
     start = min(start, end)
-    selected = lines[start:end]
-    truncated_by_lines = len(selected) > MAX_READ_LINES
-    if truncated_by_lines:
-        selected = selected[:MAX_READ_LINES]
+    selected = lines[start : min(end, start + MAX_READ_LINES)]
+    truncated_by_lines = end > start + len(selected)
     text = "\n".join(selected)
-    raw = text.encode("utf-8")
-    truncated_by_bytes = len(raw) > MAX_READ_BYTES
-    if truncated_by_bytes:
-        text = raw[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
+    if len(text.encode("utf-8")) > MAX_READ_BYTES:
+        fitting: list[str] = []
+        size = 0
+        for line in selected:
+            line_size = len(line.encode("utf-8")) + (1 if fitting else 0)
+            if fitting and size + line_size > MAX_READ_BYTES:
+                break
+            if not fitting and line_size > MAX_READ_BYTES:
+                # A single unusually long line cannot be represented without
+                # splitting it; keep a UTF-8-safe prefix as the last resort.
+                text = line.encode("utf-8")[:MAX_READ_BYTES].decode("utf-8", errors="ignore")
+                fitting = [text]
+                break
+            fitting.append(line)
+            size += line_size
+        truncated_by_bytes = len(fitting) < len(selected) or (bool(fitting) and fitting[0] != selected[0])
+        selected = fitting
+        text = "\n".join(selected)
+    else:
+        truncated_by_bytes = False
     final_lo = start + len(selected)
     if truncated_by_lines or truncated_by_bytes or start > 0 or end < len(lines):
         text += f"\n[truncated: lines {start}-{final_lo} of {len(lines)}]"

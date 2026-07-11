@@ -9,7 +9,7 @@ from ..integrations.registry import Integration
 from ..runtime.skills import workspace_skills
 from .prompt_docs import ADMIN_PAGES
 
-_RUNTIME_FACADE_PACKAGES = ("yb.fixer", "yb.tasks", "yb.tasks.cron", "yb.mcps", "yb.skills")
+_RUNTIME_FACADE_PACKAGES = ("yb.fixer", "yb.conversations", "yb.tasks", "yb.tasks.cron", "yb.mcps", "yb.skills")
 
 SessionMode = Literal["conversation", "actor"]
 REAL_TIME_CONTEXT_MARKER = "[yuubot-real-time-context]"
@@ -107,6 +107,7 @@ for r in results:
             "Register background shell work with `await yb.tasks.submit(name, shell, intro, delivery=...)`. `manual` — poll with `task.output()` / `task.status()` yourself (`ttl_s <= 3600`). `conversation` — completion wakes this chat. `actor` — completion goes to the actor mailbox.",
             "Task output is an expiring offload buffer. For long jobs, write resumable workspace scripts that persist their own state and artifacts.",
             "MCP data sources: use `yb.mcps` (see Integration SDKs). Durable schedules: use `yb.tasks.cron`.",
+            "Use `await yb.conversations.list_recents()` to inspect your own recent conversations when you need a more accurate understanding of the user's preferences and context; it returns only user-visible user/text history and can help prevent preference drift.",
             "Research routing is cost-sensitive and ordered: (1) when confident, answer directly without search or fixer; (2) for ordinary current facts, first use `yext.web.search`, then `yext.web.read` only when full text is needed; (3) for uncertain but stable knowledge such as mathematics, scientific principles, classic anime, or literature, use `await yb.fixer.ask_gemini(prompt)` with its default `enable_web_search=False`; (4) for X/Twitter questions, or after ordinary search has no useful result or a page blocks `read`, use `await yb.fixer.ask_grok(prompt, enable_web_search=True)`—X/Twitter may go directly to Grok, and blocked-page extraction prompts must include the URL and the information sought; (5) for heavyweight multi-source synthesis, deep research, or complex fact-checking, directly use `ask_gemini(prompt, enable_web_search=True)` without spending the one call on a no-search preflight. Treat fixer output as evidence to assess, not guaranteed success, and mark remaining uncertainty.",
             "Each enabled Gemini and Grok fixer allows only one provider-completed request per user turn, so include all related subquestions in one prompt. Ordinary web search is cheaper: when `yext.web` appears in Integration SDKs, `yext.web.search` provides up to three successful searches per user turn; `read` and `download` remain available for source inspection and files.",
             "`pass_through_options` on fixer calls is a vendor-specific escape hatch whose fields the framework does not interpret. Before sending a non-empty object, inspect the current system prompt: the Persona must provide the field and value rules, or the injected AGENTS.md must record the configuration. If neither source does, its instructions are incomplete, or the sources conflict, ask the user; never guess a handle, date, plugin ID, or other vendor value. Example vendor values show structure only and must never be reused. `enable_web_search` is a separately supported framework parameter and requires no user confirmation.",

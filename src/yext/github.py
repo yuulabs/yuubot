@@ -1,6 +1,11 @@
 """GitHub facade.
 
-Use repo(owner="", name="") to access issues and repository files with the configured PAT.
+Call ``repo(owner="", name="")`` to access issues and repository files with
+the configured GitHub token. Empty owner/name values use the configured
+defaults; otherwise both values are required. Use ``repo.issues.list_recent()``
+and ``repo.issues.read(number)`` for issues, or ``repo.files.read(path, ref="")``
+for text files. Reads are truncated to 4,000 characters for issues and 8,000
+characters for files by default.
 """
 
 from __future__ import annotations

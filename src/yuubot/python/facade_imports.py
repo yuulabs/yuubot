@@ -6,6 +6,7 @@ from ..integrations.registry import default_registry
 
 _RUNTIME_FACADE_PACKAGES = (
     "yb.fixer",
+    "yb.conversations",
     "yb.tasks",
     "yb.tasks.cron",
     "yb.mcps",
