@@ -13,7 +13,7 @@ from yuubot.python.worker import KernelWorker
 from yuubot.python.workspace import ensure_workspace_venv, prepare_kernel_workspace
 
 
-def test_all_facade_packages_include_registered_integrations_and_runtime_facades() -> None:
+def test_facade_package_and_bootstrap_generation_are_consistent(tmp_path: Path) -> None:
     assert "yext.opencode" in ALL_FACADE_PACKAGES
     assert "yext.codex" in ALL_FACADE_PACKAGES
     assert "yext.github" in ALL_FACADE_PACKAGES
@@ -23,15 +23,10 @@ def test_all_facade_packages_include_registered_integrations_and_runtime_facades
     assert "yb.mcps" in ALL_FACADE_PACKAGES
     assert "yb.skills" in ALL_FACADE_PACKAGES
     assert "yb.office.pdf" in ALL_FACADE_PACKAGES
-
-
-def test_facade_bootstrap_code_imports_every_package() -> None:
     code = facade_bootstrap_code()
     for package in ALL_FACADE_PACKAGES:
         assert f"import {package}\n" in code
 
-
-def test_prepare_kernel_workspace_writes_facade_bootstrap_module(tmp_path: Path) -> None:
     prepare_kernel_workspace(tmp_path)
     source = (tmp_path / ".yuubot" / "facade_bootstrap.py").read_text(encoding="utf-8")
     assert source == facade_bootstrap_module_source()

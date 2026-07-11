@@ -15,7 +15,7 @@ from support.api import (
     setup_amy,
     ws_conversation_send,
 )
-from support.assertions import interaction_kinds, tool_result_text
+from support.assertions import interaction_kinds, runtime_developer_notice_count, tool_result_text
 from support.llm_rules import (
     all_of,
     call_tool,
@@ -91,6 +91,7 @@ async def test_http_resume_keeps_conversation_usable(exec_py_context: ExecPyModu
     history = await conversation_history(exec_py_context.server, conversation_id)
     assert history[-1]["payload"] == {"text": "continued"}
     assert interaction_kinds(history).count("gen_tool_call") == 1
+    assert runtime_developer_notice_count(history, "previous execute_python session has been reset") == 1
 
 
 async def test_http_llm_rounds_append_usage_records(test_context: SharedTestContext) -> None:

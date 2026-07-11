@@ -37,7 +37,7 @@ async def test_terminal_session_runs_command_with_real_pty(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_terminal_websocket_opens_admin_pty(tmp_path: Path) -> None:
+async def test_terminal_websocket_protocol_and_admin_pty(tmp_path: Path) -> None:
     app = await boot_app(tmp_path / "data")
     async with running_server(app) as server:
         uri = f"{base_url(server).replace('http://', 'ws://')}/api/terminal/ws"
@@ -53,16 +53,6 @@ async def test_terminal_websocket_opens_admin_pty(tmp_path: Path) -> None:
                 if "ws-terminal-ok" in seen:
                     break
             await ws.send(json.dumps({"type": "terminal.close", "payload": {}}))
-
-    assert "terminal.opened" in seen
-    assert "ws-terminal-ok" in seen
-
-
-@pytest.mark.asyncio
-async def test_terminal_websocket_rejects_invalid_command_payload(tmp_path: Path) -> None:
-    app = await boot_app(tmp_path / "data")
-    async with running_server(app) as server:
-        uri = f"{base_url(server).replace('http://', 'ws://')}/api/terminal/ws"
         async with websockets.connect(uri, open_timeout=5) as ws:
             await ws.send(json.dumps({
                 "type": "terminal.open",
@@ -71,13 +61,6 @@ async def test_terminal_websocket_rejects_invalid_command_payload(tmp_path: Path
             frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
             assert frame["type"] == "terminal.error"
             assert "rows" in frame["payload"]["message"].lower()
-
-
-@pytest.mark.asyncio
-async def test_terminal_websocket_rejects_empty_input(tmp_path: Path) -> None:
-    app = await boot_app(tmp_path / "data")
-    async with running_server(app) as server:
-        uri = f"{base_url(server).replace('http://', 'ws://')}/api/terminal/ws"
         async with websockets.connect(uri, open_timeout=5) as ws:
             await ws.send(json.dumps({
                 "type": "terminal.open",
@@ -94,6 +77,9 @@ async def test_terminal_websocket_rejects_empty_input(tmp_path: Path) -> None:
             frame = json.loads(await asyncio.wait_for(ws.recv(), timeout=2))
             assert frame["type"] == "terminal.error"
             assert "data" in frame["payload"]["message"].lower()
+
+    assert "terminal.opened" in seen
+    assert "ws-terminal-ok" in seen
 
 
 @pytest.mark.asyncio

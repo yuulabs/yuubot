@@ -25,6 +25,7 @@ from support.api import (
     bootstrap,
     conversation_history,
     disable_actor,
+    enable_integration,
     enable_actor,
     http_json,
     multipart_body,
@@ -161,6 +162,51 @@ async def test_http_config_mutations_return_resource_snapshots_without_yaml(tmp_
         github = await http_json("POST", f"{url}/api/integrations/github/disable", {})
         assert github["type"] == "github"
         assert github["enabled"] is False
+
+        decoded = await put_integration(server, "github", name="GitHub", config={"access_token": "secret"})
+        assert decoded["type"] == "github"
+        assert decoded["name"] == "GitHub"
+
+        invalid = await http_json(
+            "PUT",
+            f"{url}/api/integrations/github/config",
+            {"name": "GitHub", "config": "not-an-object"},
+            expected_status=400,
+        )
+        assert invalid["error"]["code"] == "bad_request"
+
+        web = await put_integration(
+            server,
+            "web",
+            name="web",
+            config={"tavily_api_key": "tvly-secret", "jina_api_key": "jina-secret"},
+        )
+        assert web["config"] == {
+            "tavily_api_key": "***",
+            "jina_api_key": "***",
+            "read_backends": ["jina", "tavily", "httpx"],
+            "tavily_base_url": "https://api.tavily.com",
+            "jina_base_url": "https://r.jina.ai",
+            "timeout_s": 30.0,
+            "jina_timeout_s": 30.0,
+            "user_agent": "yuubot/0.1",
+            "max_read_bytes": 1048576,
+            "max_read_chars": 12000,
+            "max_download_bytes": 104857600,
+            "tavily_extract_depth": "basic",
+            "tavily_extract_format": "markdown",
+        }
+        enabled_web = await enable_integration(server, "web")
+        assert enabled_web["enabled"] is True
+
+        invalid_integer = await http_json(
+            "PUT",
+            f"{url}/api/integrations/web/config",
+            {"name": "web", "config": {"tavily_api_key": "secret", "max_read_bytes": "1048576"}},
+            expected_status=400,
+        )
+        assert invalid_integer["error"]["code"] == "bad_request"
+        assert "max_read_bytes" in str(invalid_integer["error"])
         assert not (tmp_path / "data" / "config.yaml").exists()
 
         deleted = await http_json("DELETE", f"{url}/api/actors/amy")

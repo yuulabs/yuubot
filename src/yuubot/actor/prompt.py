@@ -171,7 +171,8 @@ def _real_time_data(actor_id: str = "", daemon_url: str = "") -> str:
             [
                 "## Actor inbound endpoint",
                 f"Your actor mailbox can receive POST callbacks at `{daemon_url}/api/actors/{actor_id}/inbound`.",
-                "Body: JSON with `{\"text\": \"...\", \"conversation_id\": \"optional-existing-id\"}`.",
+                "Body: JSON with `{\"text\": \"...\", \"conversation_id\": \"optional-id\"}`.",
+                "If `conversation_id` is provided, the message is delivered to that conversation. If the ID does not exist yet, it creates a new conversation with that exact ID; it does not fail with not-found. Use a distinct ID when the sender wants an isolated conversation or independent thread.",
                 "Access scope: this is an admin endpoint. In the default `loopback_bypass` auth mode it is reachable without extra credentials from the same machine (127.0.0.1 / localhost / ::1). Do not expose it to the public internet; other auth modes require the deployment's admin credentials.",
                 "Common use case: run a multi-hour training script on a remote host over SSH, forward a local port to the remote with `ssh -R`, and have the script POST to this endpoint when the experiment finishes. Your actor receives the callback, acts on the result, and can stop the cron job or close the tunnel.",
                 "",

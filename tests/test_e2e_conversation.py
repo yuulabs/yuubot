@@ -16,7 +16,14 @@ from support.api import (
     ws_conversation_send,
 )
 from support.assertions import interaction_kinds, payload as history_payload, text_content, tool_result_text
-from support.llm_rules import all_of, call_tool, has_tool_spec, messages_contain_tool_result, reply_text, user_message_contains
+from support.llm_rules import (
+    all_of,
+    call_tool,
+    has_tool_spec,
+    messages_contain_tool_result,
+    reply_text,
+    user_message_contains,
+)
 from support.llm_fakes import scripted_reply
 from support.exec_py import ExecPyModuleContext
 from support.prompt_conditioned_llm import PromptConditionedProvider
@@ -170,7 +177,10 @@ async def test_http_execute_python_receives_enabled_integration_context(exec_py_
     await exec_py_context.activate(
         PromptConditionedProvider(
             [
-                (messages_contain_tool_result("execute_python"), reply_text("done")),
+                (
+                    all_of(messages_contain_tool_result("execute_python"), user_message_contains("inspect github context")),
+                    reply_text("done"),
+                ),
                 (
                     all_of(has_tool_spec("execute_python"), user_message_contains("inspect github context")),
                     call_tool("execute_python", {"code": code}),

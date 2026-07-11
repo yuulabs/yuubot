@@ -33,8 +33,13 @@ from yuubot.web.server import UvicornServer, make_server
 
 
 @contextlib.asynccontextmanager
-async def surface_server(app: Yuubot, deployment: DeploymentConfig) -> AsyncIterator[UvicornServer]:
+async def surface_server(
+    app: Yuubot,
+    deployment: DeploymentConfig,
+    manage_lifecycle: bool = True,
+) -> AsyncIterator[UvicornServer]:
     server = make_server(app, port=0, deployment=deployment)
+    server._manage_lifecycle = manage_lifecycle  # noqa: SLF001
     ready = asyncio.Event()
     serve_task = asyncio.create_task(server.serve())
 
@@ -58,34 +63,50 @@ async def surface_server(app: Yuubot, deployment: DeploymentConfig) -> AsyncIter
 @pytest.mark.asyncio
 async def test_public_surface_exposes_public_routes_only(tmp_path: Path) -> None:
     app = await Yuubot.create(tmp_path / "data")
-    deployment = DeploymentConfig(surface="public")
+    await app.startup()
+    try:
+        async with surface_server(app, DeploymentConfig(surface="public"), manage_lifecycle=False) as server:
+            async with httpx.AsyncClient(base_url=base_url(server)) as client:
+                api = await client.get("/api/bootstrap")
+                oauth_callback = await client.get("/api/mcp-oauth/missing/callback?code=code-1")
+                spa = await client.get("/")
+                missing_share = await client.get("/s/missing")
 
-    async with surface_server(app, deployment) as server:
-        async with httpx.AsyncClient(base_url=base_url(server)) as client:
-            api = await client.get("/api/bootstrap")
-            oauth_callback = await client.get("/api/mcp-oauth/missing/callback?code=code-1")
-            spa = await client.get("/")
-            missing_share = await client.get("/s/missing")
+        assert api.status_code == 404
+        assert oauth_callback.status_code == 404
+        assert "Authorization attempt not found" in oauth_callback.text
+        assert spa.status_code == 404
+        assert missing_share.status_code == 404
 
-    assert api.status_code == 404
-    assert oauth_callback.status_code == 404
-    assert "Authorization attempt not found" in oauth_callback.text
-    assert spa.status_code == 404
-    assert missing_share.status_code == 404
+        async with surface_server(
+            app,
+            DeploymentConfig(surface="local_admin", public_url_base="https://public.example.com"),
+            manage_lifecycle=False,
+        ) as server:
+            async with httpx.AsyncClient(base_url=base_url(server)) as client:
+                response = await client.get("/api/bootstrap")
 
+        assert response.status_code == 200
+        assert response.json()["auth"]["mode"] == "none"
+        assert response.json()["public_url_base"] == "https://public.example.com"
 
-@pytest.mark.asyncio
-async def test_local_admin_surface_does_not_require_login(tmp_path: Path) -> None:
-    app = await Yuubot.create(tmp_path / "data")
-    deployment = DeploymentConfig(surface="local_admin", public_url_base="https://public.example.com")
+        async with surface_server(
+            app,
+            DeploymentConfig(
+                surface="trusted_admin",
+                admin_auth=AdminAuthConfig("proxy", proxy=AdminAuthProxyConfig("X-Forwarded-User")),
+            ),
+            manage_lifecycle=False,
+        ) as server:
+            async with httpx.AsyncClient(base_url=base_url(server)) as client:
+                rejected = await client.get("/api/bootstrap")
+                accepted = await client.get("/api/bootstrap", headers={"X-Forwarded-User": "alice"})
 
-    async with surface_server(app, deployment) as server:
-        async with httpx.AsyncClient(base_url=base_url(server)) as client:
-            response = await client.get("/api/bootstrap")
-
-    assert response.status_code == 200
-    assert response.json()["auth"]["mode"] == "none"
-    assert response.json()["public_url_base"] == "https://public.example.com"
+        assert rejected.status_code == 401
+        assert accepted.status_code == 200
+        assert accepted.json()["auth"]["method"] == "proxy"
+    finally:
+        await app.shutdown()
 
 
 @pytest.mark.asyncio
@@ -191,24 +212,6 @@ async def test_trusted_admin_exposes_mcp_oauth_callback_without_admin_auth(tmp_p
     assert start.status_code == 202
     assert callback.status_code == 200
     assert current["status"] == "succeeded"
-
-
-@pytest.mark.asyncio
-async def test_trusted_proxy_requires_proxy_user_header(tmp_path: Path) -> None:
-    app = await Yuubot.create(tmp_path / "data")
-    deployment = DeploymentConfig(
-        surface="trusted_admin",
-        admin_auth=AdminAuthConfig("proxy", proxy=AdminAuthProxyConfig("X-Forwarded-User")),
-    )
-
-    async with surface_server(app, deployment) as server:
-        async with httpx.AsyncClient(base_url=base_url(server)) as client:
-            rejected = await client.get("/api/bootstrap")
-            accepted = await client.get("/api/bootstrap", headers={"X-Forwarded-User": "alice"})
-
-    assert rejected.status_code == 401
-    assert accepted.status_code == 200
-    assert accepted.json()["auth"]["method"] == "proxy"
 
 
 def test_builtin_session_expires_after_seven_idle_days() -> None:
