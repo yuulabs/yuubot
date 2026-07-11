@@ -9,7 +9,7 @@ from yuubot.actor.prompt import (
     user_visible_text,
 )
 from yuubot.actor.prompt_docs import ADMIN_PAGES_INTRO, ADMIN_PAGES_SUBMIT_FLOW
-from yuubot.domain.messages import InputMessage, text_content
+from yuubot.domain.messages import ContentItem, InputMessage, text_content
 
 
 def test_developer_prompt_documents_cron_facade(tmp_path: Path) -> None:
@@ -125,10 +125,28 @@ def test_developer_prompt_real_time_data_is_static(tmp_path: Path) -> None:
     assert "## Session modes" in real_time
     assert "Conversation (User):" in real_time
     assert "Actor:" in real_time
-    assert "Per-turn `mode` and `now`" in real_time
+    assert "Per-turn `mode`, `now`, and `source`" in real_time
     assert "\nnow:" not in real_time
     assert "\nmode: conversation" not in real_time
     assert "\nmode: actor" not in real_time
+
+
+def test_developer_prompt_documents_actor_inbound_endpoint(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], actor_id="amy", has_python=False, daemon_url="http://127.0.0.1:8765")
+    real_time = prompt.split("# Real-Time Data\n", 1)[1]
+
+    assert "## Actor inbound endpoint" in real_time
+    assert "http://127.0.0.1:8765/api/actors/amy/inbound" in real_time
+    assert "127.0.0.1" in real_time
+    assert "localhost" in real_time
+    assert "ssh -R" in real_time
+
+
+def test_developer_prompt_omits_inbound_endpoint_without_actor_or_url(tmp_path: Path) -> None:
+    prompt = developer_prompt("", tmp_path, [], actor_id="", has_python=False, daemon_url="")
+    real_time = prompt.split("# Real-Time Data\n", 1)[1]
+
+    assert "## Actor inbound endpoint" not in real_time
 
 
 def test_augment_user_message_round_trip() -> None:
@@ -138,4 +156,19 @@ def test_augment_user_message_round_trip() -> None:
     assert augmented.content[0].text.startswith(REAL_TIME_CONTEXT_MARKER)
     assert "mode: actor" in augmented.content[0].text
     assert "now:" in augmented.content[0].text
+    assert user_visible_text(augmented) == "hello"
+
+
+def test_augment_user_message_includes_source_metadata() -> None:
+    message = InputMessage(
+        "user",
+        "amy",
+        [ContentItem("text", "hello", meta={"inbound_kind": "actor_inbound", "cron_job_id": "cj-abc", "cron_job_name": "poll"})],
+    )
+    augmented = augment_user_message(message, "actor")
+
+    assert "source:" in augmented.content[0].text
+    assert "inbound_kind: actor_inbound" in augmented.content[0].text
+    assert "cron_job_id: cj-abc" in augmented.content[0].text
+    assert "cron_job_name: poll" in augmented.content[0].text
     assert user_visible_text(augmented) == "hello"

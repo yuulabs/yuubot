@@ -23,6 +23,7 @@ def developer_prompt(
     *,
     actor_id: str = "",
     has_python: bool,
+    daemon_url: str = "",
 ) -> str:
     sections = [
         "# Persona\n" + (persona.strip() or "You are a yuubot actor."),
@@ -37,7 +38,7 @@ def developer_prompt(
         sections.append("# Integration SDKs\n" + integration_docs)
     sections.append("# Skills\n" + _skills(workspace))
     sections.append("# AGENTS.md\n" + _agents_context(workspace))
-    sections.append("# Real-Time Data\n" + _real_time_data())
+    sections.append("# Real-Time Data\n" + _real_time_data(actor_id, daemon_url))
     return "\n\n".join(sections)
 
 
@@ -154,35 +155,50 @@ def _agents_context(workspace: Path) -> str:
     return agents.read_text(encoding="utf-8")
 
 
-def _real_time_data() -> str:
+def _real_time_data(actor_id: str = "", daemon_url: str = "") -> str:
     tz = datetime.now().astimezone().tzname() or "local"
-    return "\n".join(
-        [
-            "platform: local",
-            f"timezone: {tz}",
-            "",
-            "## Session modes",
-            "Conversation (User): The user message is from a real person in this chat. Reply in this conversation; the user sees your responses here.",
-            "Actor: The user message may come from any source (webhook, schedule, inbound API, etc.). For each outbound action, decide whether it belongs in this Conversation (visible in this thread) or to Actor (your future self: workspace notes, cron actor_message, inbound without binding to this conversation, KV, and similar durable channels).",
-            "",
-            "Per-turn `mode` and `now` are appended to each incoming user message; do not expect them in this section.",
-        ]
-    )
+    lines = [
+        "platform: local",
+        f"timezone: {tz}",
+        "",
+        "## Session modes",
+        "Conversation (User): The user message is from a real person in this chat. Reply in this conversation; the user sees your responses here.",
+        "Actor: The user message may come from any source (webhook, schedule, inbound API, etc.). Source metadata (inbound_kind, cron_job_id, cron_job_name, task_id, etc.) is appended under `source:` in the per-turn real-time context. Use it to know why you were woken up. For each outbound action, decide whether it belongs in this Conversation (visible in this thread) or to Actor (your future self: workspace notes, cron actor_message, inbound without binding to this conversation, KV, and similar durable channels).",
+        "",
+    ]
+    if actor_id and daemon_url:
+        lines.extend(
+            [
+                "## Actor inbound endpoint",
+                f"Your actor mailbox can receive POST callbacks at `{daemon_url}/api/actors/{actor_id}/inbound`.",
+                "Body: JSON with `{\"text\": \"...\", \"conversation_id\": \"optional-existing-id\"}`.",
+                "Access scope: this is an admin endpoint. In the default `loopback_bypass` auth mode it is reachable without extra credentials from the same machine (127.0.0.1 / localhost / ::1). Do not expose it to the public internet; other auth modes require the deployment's admin credentials.",
+                "Common use case: run a multi-hour training script on a remote host over SSH, forward a local port to the remote with `ssh -R`, and have the script POST to this endpoint when the experiment finishes. Your actor receives the callback, acts on the result, and can stop the cron job or close the tunnel.",
+                "",
+            ]
+        )
+    lines.append("Per-turn `mode`, `now`, and `source` (when the message carries metadata) are appended to each incoming user message; do not expect them in this section.")
+    return "\n".join(lines)
 
 
-def real_time_turn_context(mode: SessionMode) -> str:
+def real_time_turn_context(mode: SessionMode, source: dict[str, object] | None = None) -> str:
     now = datetime.now().astimezone()
-    return "\n".join(
-        [
-            REAL_TIME_CONTEXT_MARKER,
-            f"mode: {mode}",
-            f"now: {now.isoformat()}",
-        ]
-    )
+    lines = [
+        REAL_TIME_CONTEXT_MARKER,
+        f"mode: {mode}",
+        f"now: {now.isoformat()}",
+    ]
+    if source:
+        lines.append("source:")
+        for key in sorted(source):
+            lines.append(f"  {key}: {source[key]}")
+    return "\n".join(lines)
 
 
 def augment_user_message(message: InputMessage, mode: SessionMode) -> InputMessage:
-    prefix = real_time_turn_context(mode) + _REAL_TIME_CONTEXT_SEPARATOR
+    first_text = next((item for item in message.content if item.kind == "text"), None)
+    source = dict(first_text.meta) if first_text is not None and first_text.meta else None
+    prefix = real_time_turn_context(mode, source) + _REAL_TIME_CONTEXT_SEPARATOR
     content: list[ContentItem] = []
     for item in message.content:
         if item.kind == "text" and item.text and not content:

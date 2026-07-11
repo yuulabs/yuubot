@@ -15,7 +15,7 @@ from ..chat import Conversation, ConversationBlocked, ConversationBusy
 from ..chat.harness import HarnessConfig
 from ..chat.history import HistoryHelper
 from ..llm.gateway import StreamClient
-from ..domain.messages import ActorMessage, ConversationContext, GenReasoning, GenText, InputMessage, text_content
+from ..domain.messages import ActorMessage, ContentItem, ConversationContext, GenReasoning, GenText, InputMessage, text_content
 from ..domain.models import ModelSelector
 from ..domain.records import DEFAULT_CONTEXT_COMPRESSION_TOKENS
 from ..python import KernelPool
@@ -133,6 +133,7 @@ class Actor:
             list(self.runtime.integrations.values()),
             actor_id=context.actor,
             has_python=self._has_python,
+            daemon_url=str(context.rpc.get("daemon_url", "")),
         )
         history = await HistoryHelper.load(
             self.runtime.history,
@@ -183,7 +184,11 @@ class Actor:
             if inbound_kind in {"task_delivery", "conversation_callback"}:
                 outputs = await conversation.append_developer_notice(message.text)
             else:
-                input_message = InputMessage("user", self.config.id, text_content(message.text))
+                input_message = InputMessage(
+                    "user",
+                    self.config.id,
+                    [ContentItem("text", message.text, meta=dict(message.source))],
+                )
                 outputs = await conversation.run_loop(input_message, session_mode="actor")
         except ConversationBusy:
             task_id = message.source.get("task_id")

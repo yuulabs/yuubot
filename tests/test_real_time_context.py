@@ -78,9 +78,48 @@ async def test_mailbox_user_message_includes_actor_mode_context(real_time_app: t
     assert user_text.startswith(REAL_TIME_CONTEXT_MARKER)
     assert "mode: actor" in user_text
     assert "now:" in user_text
+    assert "source:" in user_text
+    assert "inbound_kind: app_webhook" in user_text
     assert "webhook ping" in user_text
     assert "## Session modes" in system_prompt
+    assert "## Actor inbound endpoint" in system_prompt
+    assert "http://127.0.0.1:8765/api/actors/amy/inbound" in system_prompt
     assert "\nnow:" not in system_prompt.split("# Real-Time Data\n", 1)[1]
+
+
+@pytest.mark.asyncio
+async def test_mailbox_user_message_preserves_cron_source_metadata(real_time_app: tuple[Yuubot, Path]) -> None:
+    app, workspace = real_time_app
+    actor = app.create_actor(
+        ActorConfig(
+            id="amy",
+            name="Amy",
+            workspace=str(workspace),
+            model="fake",
+        ),
+        scripted_reply("ok"),
+    )
+    await actor.handle_mailbox_message(
+        ActorMessage(
+            "poll long task",
+            source={
+                "inbound_kind": "actor_inbound",
+                "cron_job_id": "cj-abc123",
+                "cron_job_name": "hourly poll",
+                "cron_delivery": "actor_message",
+            },
+        )
+    )
+    conversation_id = actor._mailbox_conversation
+    assert conversation_id is not None
+    items = await app.runtime.history.load_wrapped(conversation_id)
+    user_text = _user_text(items)
+
+    assert "source:" in user_text
+    assert "cron_job_id: cj-abc123" in user_text
+    assert "cron_job_name: hourly poll" in user_text
+    assert "inbound_kind: actor_inbound" in user_text
+    assert "poll long task" in user_text
 
 
 @pytest.mark.asyncio
