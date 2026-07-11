@@ -136,6 +136,14 @@ export interface WorkspaceDirectorySnapshot {
   entries: WorkspaceEntry[];
 }
 
+export interface WorkspaceFileContent {
+  path: string;
+  content: string;
+  mime: string;
+  size: number;
+  mtime: string;
+}
+
 export interface UploadResponse {
   files: Array<Record<string, unknown>>;
 }

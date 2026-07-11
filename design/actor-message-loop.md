@@ -1,3 +1,8 @@
+# Actor Message Loop
+
+> 本文是 [`system-design.md`](system-design.md) 的消息循环专题补充；系统整体设计与外部
+> facade 以该文档为准。
+
 尽管Actor可以任意选择如何消费消息。
 
 但这里给出一个default示例：

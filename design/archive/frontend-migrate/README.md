@@ -1,3 +1,6 @@
+> **已过时**：这是历史迁移计划，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Frontend Migration Plan
 
 本目录拆分当前管理面前端能力补全计划。目标不是复刻旧 UI 代码，而是在新后端 contract 下恢复可用的管理工作流，并把 JSON-only 页面逐步替换为字段化、可验证、可测试的页面。
@@ -41,7 +44,7 @@ Relevant source anchors:
 | Phase | File | Outcome |
 | --- | --- | --- |
 | 1 | [01-contract-and-navigation.md](01-contract-and-navigation.md) | Frontend API/types/nav match the backend surface; broken route labels and upload field mismatch are tracked/fixed first. |
-| 2 | [LiteLLM Gateway、受控搜索与 Subagents](../../task-sub-vendors.md) | LiteLLM Gateway replaces the former local LLM control plane; hosted search, delegate tasks, and workspace skills become first-class capabilities. |
+| 2 | LiteLLM Gateway、受控搜索与 Subagents（原文档已移除） | LiteLLM Gateway replaces the former local LLM control plane; hosted search, delegate tasks, and workspace skills become first-class capabilities. |
 | 4 | [04-conversation-workflow.md](04-conversation-workflow.md) | Actor-to-conversation workflow becomes usable: draft flow, id reconciliation, attachments, transcript rendering, costs, and controls. |
 | 5 | [05-resources-routes-integrations-capabilities.md](05-resources-routes-integrations-capabilities.md) | Routes, integrations, and capability/tool grouping get full CRUD-level UI and a clear decision for the missing capability sets model. |
 | 6 | [06-workspace-kv-tasks-runtime.md](06-workspace-kv-tasks-runtime.md) | Workspace browser/upload, actor KV, tasks, runtime, and shares become a coherent operations surface. |

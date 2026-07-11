@@ -31,7 +31,7 @@ The runtime is headless: `plt.show()` does not reach the user. Save generated fi
 
 After `uv add` or `uv remove`, call `restart_kernel` before expecting new imports.
 
-Runtime facades (`yb.fixer`, `yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions. `yb.fixer.ask_gemini` and `ask_grok` each provide one successful cited hosted-search answer per user turn; include related subquestions in one prompt. `yext.web.search` provides three successful searches per turn, while `read` and `download` remain available for inspecting sources."""
+Runtime facades (`yb.fixer`, `yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions. `yb.fixer.ask_gemini` and `ask_grok` each allow one provider-completed request per user turn and return any citations supplied by the provider; include related subquestions in one prompt. `yext.web.search` provides three successful searches per turn, while `read` and `download` remain available for inspecting sources."""
 
 
 class ExecutePythonPayload(msgspec.Struct, frozen=True):

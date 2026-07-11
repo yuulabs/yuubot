@@ -1,3 +1,6 @@
+> **已过时**：这是历史迁移计划，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Phase 6: Workspace, KV, Tasks, and Runtime Operations
 
 ## Goal
@@ -116,4 +119,3 @@ The UI should make this workflow discoverable through concrete controls, not exp
 - A user can read/write/delete a known KV key and recover from ETag conflict.
 - A user can inspect and cancel runtime tasks.
 - Shares are reachable under a correct label and can be created from workspace paths.
-

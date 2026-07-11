@@ -49,6 +49,24 @@ from ..util.stream import stream_stop_event
 _log = logging.getLogger(__name__)
 
 PRESET_HOSTED_SEARCH_ALIASES = ("ask-gemini", "ask-grok")
+_FIXER_RESERVED_OPTIONS = {
+    "model", "messages", "stream", "stream_options", "tools", "tool_choice",
+    "metadata", "web_search_options",
+}
+
+
+def _fixer_extra_body(
+    metadata: dict[str, str],
+    pass_through_options: dict[str, object] | None,
+) -> dict[str, object]:
+    options = pass_through_options or {}
+    reserved = sorted(options.keys() & _FIXER_RESERVED_OPTIONS)
+    if reserved:
+        raise GatewayError(
+            "bad_request",
+            f"pass_through_options contains reserved fields: {', '.join(reserved)}",
+        )
+    return {**options, "metadata": metadata}
 
 # ---------------------------------------------------------------------------
 # Config
@@ -509,8 +527,15 @@ class EndpointClient:
         model: str,
         prompt: str,
         metadata: dict[str, str],
+        enable_web_search: bool = False,
+        pass_through_options: dict[str, object] | None = None,
     ) -> HostedSearchResult:
         started = time.perf_counter()
+        options: dict[str, Any] = {
+            "extra_body": _fixer_extra_body(metadata, pass_through_options),
+        }
+        if enable_web_search:
+            options["web_search_options"] = {"search_context_size": "medium"}
         try:
             response = await self._sdk_client().chat.completions.create(
                 model=model,
@@ -518,18 +543,12 @@ class EndpointClient:
                     {"role": "system", "content": _FIXER_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                web_search_options={"search_context_size": "medium"},
-                extra_body={"metadata": metadata},
+                **options,
             )
         except Exception as exc:
             raise _map_openai_error(exc) from exc
         raw = response.model_dump(mode="json")
         citations = _normalize_citations(raw)
-        if not citations:
-            raise GatewayError(
-                "hosted_search_unavailable",
-                "hosted search returned no verifiable citations",
-            )
         text = response.choices[0].message.content if response.choices else ""
         if not isinstance(text, str) or not text.strip():
             raise GatewayError("gateway_request_failed", "gateway returned an empty answer")
@@ -590,9 +609,9 @@ class EndpointClient:
         return sorted({model.id for model in page.data})
 
     async def _probe_hosted_search(self, model: str) -> bool:
-        """Verify that a hosted-search alias returns structured source data."""
+        """Verify that a hosted-search alias accepts a search-enabled request."""
         try:
-            response = await self._sdk_client().chat.completions.create(
+            await self._sdk_client().chat.completions.create(
                 model=model,
                 messages=[
                     {
@@ -605,7 +624,10 @@ class EndpointClient:
         except Exception:
             _log.debug("hosted search probe failed model=%s", model, exc_info=True)
             return False
-        return _contains_verifiable_source(response.model_dump(mode="json"))
+        # A provider may legitimately answer a simple question without invoking
+        # search. A completed response proves the capability is usable even when
+        # it contains no citations.
+        return True
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -732,6 +754,8 @@ class GatewayClient:
         alias_id: str,
         prompt: str,
         metadata: dict[str, str],
+        enable_web_search: bool = False,
+        pass_through_options: dict[str, object] | None = None,
     ) -> HostedSearchResult:
         alias = self.aliases.get(alias_id)
         if alias is None:
@@ -745,7 +769,13 @@ class GatewayClient:
             if client is None:
                 continue
             try:
-                result = await client.hosted_search(target.model, prompt, metadata)
+                result = await client.hosted_search(
+                    target.model,
+                    prompt,
+                    metadata,
+                    enable_web_search,
+                    pass_through_options,
+                )
             except GatewayError as exc:
                 if exc.code not in _FALLBACK_ERROR_CODES:
                     raise
@@ -800,30 +830,6 @@ def _input_modalities(input: LLMInput) -> set[InputModality]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _contains_verifiable_source(value: object) -> bool:
-    """Accept only structured citation/search fields containing an HTTP URL."""
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if (
-                key in {"url", "uri"}
-                and isinstance(child, str)
-                and child.startswith(("https://", "http://"))
-            ):
-                return True
-            if key in {
-                "annotations",
-                "citations",
-                "sources",
-                "search_results",
-            } and _contains_verifiable_source(child):
-                return True
-            if isinstance(child, (dict, list)) and _contains_verifiable_source(child):
-                return True
-    elif isinstance(value, list):
-        return any(_contains_verifiable_source(item) for item in value)
-    return False
 
 
 _FIXER_SYSTEM_PROMPT = """Answer every subquestion in the user's prompt in one self-contained response. Distinguish sourced facts, reasonable inference, and unknowns. Use hosted web search and ground material conclusions in the returned sources. Prefer primary and current sources. The API transports citations separately, so write a clear synthesis without vendor-specific JSON."""

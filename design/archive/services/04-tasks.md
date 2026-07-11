@@ -1,3 +1,6 @@
+> **已过时**：这是历史服务设计，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Design: Runtime Tasks and Task Delivery
 
 **实现顺序：4**（依赖 [01-runtime-events.md](01-runtime-events.md)；**不依赖**

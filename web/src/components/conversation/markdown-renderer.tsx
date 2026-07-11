@@ -24,11 +24,11 @@ function markdownLinkProps(href: string | undefined): AnchorHTMLAttributes<HTMLA
   };
 }
 
-function markdownImageComponents(actorId: string): Components {
+function markdownImageComponents(actorId: string, workspacePath: string): Components {
   return {
     img: ({ src, alt }: ImgHTMLAttributes<HTMLImageElement>) => {
       const resolved = typeof src === "string"
-        ? resolveMarkdownImageSrc(actorId, src, getActorFileUrl)
+        ? resolveMarkdownImageSrc(actorId, src, getActorFileUrl, workspacePath)
         : "";
       if (!resolved) return null;
       return (
@@ -78,14 +78,14 @@ const tableComponents: Components = {
 export function MarkdownRenderer({
   content,
   actorId = "",
-  workspacePath: _workspacePath,
+  workspacePath = "",
 }: {
   content: string;
   actorId?: string;
   workspacePath?: string | null;
 }) {
   const segments = parseWorkspaceRefs(content);
-  const imageComponents = markdownImageComponents(actorId);
+  const imageComponents = markdownImageComponents(actorId, workspacePath ?? "");
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none break-words whitespace-normal leading-[1.6] [&>:first-child]:mt-0 [&>:last-child]:mb-0 [&_blockquote]:my-2 [&_h1]:mt-4 [&_h1]:mb-2 [&_h2]:mt-4 [&_h2]:mb-2 [&_h3]:mt-3 [&_h3]:mb-2 [&_li]:my-1 [&_ol]:my-2 [&_p]:my-2 [&_pre]:whitespace-pre-wrap [&_ul]:my-2">
       {segments.map((segment, index) => segment.type === "text" ? (

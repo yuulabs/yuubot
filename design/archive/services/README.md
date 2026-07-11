@@ -1,3 +1,6 @@
+> **已过时**：这是历史服务设计序列，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Services Design — Implementation Order
 
 按实现顺序阅读与落地。后序文档可引用前序能力，但前序不依赖后序。
@@ -51,5 +54,5 @@ Runtime owns:
 - 部署级 URL 公式、反代示意、磁盘根路径见
   [deployment-design.md](../deployment/deployment-design.md)。
 - **Wire contract 权威来源**：本目录各服务文档 + [02-admin-boundary.md](02-admin-boundary.md)
-  的 HTTP/WS 信封与认证。[archive/service-surface.md](../archive/service-surface.md) 仅为历史
+  的 HTTP/WS 信封与认证。[service-surface.md](../service-surface.md) 仅为历史
   参考，含 legacy path（如 `POST /api/inbound/{integration_type}`），不得作为 implementation 依据。

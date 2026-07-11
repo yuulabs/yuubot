@@ -56,13 +56,16 @@ async def test_loopback_fixer_guard_keeps_facades_independent_and_records_usage(
         model: str,
         prompt: str,
         metadata: dict[str, str],
+        enable_web_search: bool = False,
+        pass_through_options: dict[str, object] | None = None,
     ) -> HostedSearchResult:
+        del enable_web_search, pass_through_options
         calls.append(model)
         assert prompt == "one combined question"
         assert metadata["purpose"] == "fixer"
         return HostedSearchResult(
             f"answer from {model}",
-            [HostedSearchCitation("https://example.com/source", "Source")],
+            [] if model == "ask-gemini" else [HostedSearchCitation("https://example.com/source", "Source")],
             Usage(10, 1, 0, 4),
             {"model": model, "gateway_latency_ms": 12.5},
         )
@@ -83,7 +86,7 @@ async def test_loopback_fixer_guard_keeps_facades_independent_and_records_usage(
                 usage_rows = await app.runtime.state.load_usage("c1")
 
         assert gemini.status_code == 200
-        assert gemini.json()["citations"] == [{"url": "https://example.com/source", "title": "Source"}]
+        assert gemini.json()["citations"] == []
         assert gemini_again.status_code == 429
         assert gemini_again.json()["error"]["code"] == "fixer_limit_reached"
         assert grok.status_code == 200

@@ -1,3 +1,6 @@
+> **已过时**：这是未完全实现的历史服务设计，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Design: Observability — Tracing, LLM Timing, and Cost Aggregation
 
 **实现顺序：9**（依赖 [01-runtime-events.md](01-runtime-events.md)、[02-admin-boundary.md](02-admin-boundary.md)、[08-python-kernel.md](08-python-kernel.md)）
@@ -324,6 +327,6 @@ Exporter 失败：drop + log。BatchSpanProcessor 不阻塞 hot path。
 ## Related
 
 - [01-runtime-events.md](01-runtime-events.md)、[02-admin-boundary.md](02-admin-boundary.md)
-- [`src/yuubot/chat/loop.py`](../../src/yuubot/chat/loop.py)、[`src/yuubot/runtime/store.py`](../../src/yuubot/runtime/store.py)
-- Monitor UI：[`web/src/features/monitor/`](../../web/src/features/monitor/)
-- ISSUE-0009：[`roadmap/issues/ISSUE-0009-monitor-llm-timing-bug.md`](../../roadmap/issues/ISSUE-0009-monitor-llm-timing-bug.md)
+- [`src/yuubot/chat/loop.py`](../../../src/yuubot/chat/loop.py)、历史 `runtime/store.py`（已移除）
+- 历史 Monitor UI（已移除）
+- 历史 ISSUE-0009（原 roadmap 文档已移除）

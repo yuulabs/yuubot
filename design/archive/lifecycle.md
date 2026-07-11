@@ -1,3 +1,6 @@
+> **已过时**：这是历史生命周期设计，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../system-design.md)。
+
 # Lifecycle Design: yuubot Core Backend
 
 本文补充 `design.md` 的生命周期部分：配置进入系统、数据库状态迁移、运行态资源构造、

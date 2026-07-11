@@ -1,6 +1,8 @@
 # Convention: Python Execution Environment
 
-> 术语 + pseudocode 风格约定。权威 wire doc：[08-python-kernel.md](../services/08-python-kernel.md)。
+> 本文是 [`../system-design.md`](../system-design.md) 的 Python 执行环境专题补充；系统整体
+> 设计与外部 facade 以该文档为准。历史 kernel 设计已移至
+> [`../archive/services/08-python-kernel.md`](../archive/services/08-python-kernel.md)。
 
 ## 1. 术语
 

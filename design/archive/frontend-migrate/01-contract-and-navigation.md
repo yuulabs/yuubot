@@ -1,3 +1,6 @@
+> **已过时**：这是历史迁移计划，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Phase 1: Contract and Navigation Baseline
 
 ## Goal
@@ -77,4 +80,3 @@ The frontend upload helper must append each file under `file`, not `files`.
 - No large visual redesign.
 - No field-based provider or actor forms yet.
 - No attempt to recreate old `capability-sets` backend contract in frontend only.
-

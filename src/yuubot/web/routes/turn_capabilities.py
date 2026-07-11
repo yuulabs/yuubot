@@ -20,6 +20,8 @@ from ..responses import error_response, json_response
 
 class FixerBody(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
     prompt: str
+    enable_web_search: bool = False
+    pass_through_options: dict[str, object] | None = None
 
 
 class WebSearchBody(msgspec.Struct, frozen=True, forbid_unknown_fields=True):
@@ -67,6 +69,8 @@ def register_turn_capability_routes(
                     identity.conversation_id,
                     "fixer",
                 ).to_dict(),
+                body.enable_web_search,
+                body.pass_through_options,
             )
 
         result, limit_error = await _run_limited(

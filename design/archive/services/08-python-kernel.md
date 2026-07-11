@@ -1,3 +1,6 @@
+> **已过时**：这是历史服务设计，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Design: Python Kernel Workers
 
 **实现顺序：8**（可观测性 [09-observability.md](09-observability.md) 的前置依赖）
@@ -116,6 +119,6 @@ disable_actor / shutdown → actor_pool.shutdown()
 
 ## Related
 
-- [python-execution-env.md](../conventions/python-execution-env.md)
-- [`src/yuubot/python/`](../../src/yuubot/python/)
+- [python-execution-env.md](../../conventions/python-execution-env.md)
+- [`src/yuubot/python/`](../../../src/yuubot/python/)
 - [09-observability.md](09-observability.md)

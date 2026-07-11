@@ -33,6 +33,7 @@ import { Route as ActorsIdRouteImport } from './routes/actors.$id'
 import { Route as AdminConversationsNewRouteImport } from './routes/admin.conversations.new'
 import { Route as AdminConversationsConversationIdRouteImport } from './routes/admin.conversations.$conversationId'
 import { Route as ActorsIdEditRouteImport } from './routes/actors.$id.edit'
+import { Route as WorkspaceActorIdFileSplatRouteImport } from './routes/workspace.$actorId.file.$'
 
 const WorkspaceRoute = WorkspaceRouteImport.update({
   id: '/workspace',
@@ -155,6 +156,12 @@ const ActorsIdEditRoute = ActorsIdEditRouteImport.update({
   path: '/edit',
   getParentRoute: () => ActorsIdRoute,
 } as any)
+const WorkspaceActorIdFileSplatRoute =
+  WorkspaceActorIdFileSplatRouteImport.update({
+    id: '/$actorId/file/$',
+    path: '/$actorId/file/$',
+    getParentRoute: () => WorkspaceRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -171,7 +178,7 @@ export interface FileRoutesByFullPath {
   '/shares': typeof SharesRoute
   '/skills': typeof SkillsRoute
   '/terminal': typeof TerminalRoute
-  '/workspace': typeof WorkspaceRoute
+  '/workspace': typeof WorkspaceRouteWithChildren
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
@@ -181,6 +188,7 @@ export interface FileRoutesByFullPath {
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
   '/admin/conversations/new': typeof AdminConversationsNewRoute
+  '/workspace/$actorId/file/$': typeof WorkspaceActorIdFileSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -197,7 +205,7 @@ export interface FileRoutesByTo {
   '/shares': typeof SharesRoute
   '/skills': typeof SkillsRoute
   '/terminal': typeof TerminalRoute
-  '/workspace': typeof WorkspaceRoute
+  '/workspace': typeof WorkspaceRouteWithChildren
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
@@ -207,6 +215,7 @@ export interface FileRoutesByTo {
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
   '/admin/conversations/new': typeof AdminConversationsNewRoute
+  '/workspace/$actorId/file/$': typeof WorkspaceActorIdFileSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -224,7 +233,7 @@ export interface FileRoutesById {
   '/shares': typeof SharesRoute
   '/skills': typeof SkillsRoute
   '/terminal': typeof TerminalRoute
-  '/workspace': typeof WorkspaceRoute
+  '/workspace': typeof WorkspaceRouteWithChildren
   '/actors/$id': typeof ActorsIdRouteWithChildren
   '/actors/new': typeof ActorsNewRoute
   '/admin/conversations': typeof AdminConversationsRouteWithChildren
@@ -234,6 +243,7 @@ export interface FileRoutesById {
   '/actors/$id/edit': typeof ActorsIdEditRoute
   '/admin/conversations/$conversationId': typeof AdminConversationsConversationIdRoute
   '/admin/conversations/new': typeof AdminConversationsNewRoute
+  '/workspace/$actorId/file/$': typeof WorkspaceActorIdFileSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -262,6 +272,7 @@ export interface FileRouteTypes {
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
     | '/admin/conversations/new'
+    | '/workspace/$actorId/file/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -288,6 +299,7 @@ export interface FileRouteTypes {
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
     | '/admin/conversations/new'
+    | '/workspace/$actorId/file/$'
   id:
     | '__root__'
     | '/'
@@ -314,6 +326,7 @@ export interface FileRouteTypes {
     | '/actors/$id/edit'
     | '/admin/conversations/$conversationId'
     | '/admin/conversations/new'
+    | '/workspace/$actorId/file/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -331,7 +344,7 @@ export interface RootRouteChildren {
   SharesRoute: typeof SharesRoute
   SkillsRoute: typeof SkillsRoute
   TerminalRoute: typeof TerminalRoute
-  WorkspaceRoute: typeof WorkspaceRoute
+  WorkspaceRoute: typeof WorkspaceRouteWithChildren
   AdminConversationsRoute: typeof AdminConversationsRouteWithChildren
 }
 
@@ -505,6 +518,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ActorsIdEditRouteImport
       parentRoute: typeof ActorsIdRoute
     }
+    '/workspace/$actorId/file/$': {
+      id: '/workspace/$actorId/file/$'
+      path: '/$actorId/file/$'
+      fullPath: '/workspace/$actorId/file/$'
+      preLoaderRoute: typeof WorkspaceActorIdFileSplatRouteImport
+      parentRoute: typeof WorkspaceRoute
+    }
   }
 }
 
@@ -557,6 +577,18 @@ const IntegrationsRouteWithChildren = IntegrationsRoute._addFileChildren(
   IntegrationsRouteChildren,
 )
 
+interface WorkspaceRouteChildren {
+  WorkspaceActorIdFileSplatRoute: typeof WorkspaceActorIdFileSplatRoute
+}
+
+const WorkspaceRouteChildren: WorkspaceRouteChildren = {
+  WorkspaceActorIdFileSplatRoute: WorkspaceActorIdFileSplatRoute,
+}
+
+const WorkspaceRouteWithChildren = WorkspaceRoute._addFileChildren(
+  WorkspaceRouteChildren,
+)
+
 interface AdminConversationsRouteChildren {
   AdminConversationsConversationIdRoute: typeof AdminConversationsConversationIdRoute
   AdminConversationsNewRoute: typeof AdminConversationsNewRoute
@@ -585,7 +617,7 @@ const rootRouteChildren: RootRouteChildren = {
   SharesRoute: SharesRoute,
   SkillsRoute: SkillsRoute,
   TerminalRoute: TerminalRoute,
-  WorkspaceRoute: WorkspaceRoute,
+  WorkspaceRoute: WorkspaceRouteWithChildren,
   AdminConversationsRoute: AdminConversationsRouteWithChildren,
 }
 export const routeTree = rootRouteImport

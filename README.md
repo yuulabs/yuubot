@@ -106,4 +106,6 @@ uv run pytest -q
 cd web && pnpm run check && pnpm run build
 ```
 
-架构说明见 `design/` 和 `AGENTS.md`。
+系统核心流程、扩展点与全部外部 facade 见
+[`design/system-design.md`](design/system-design.md)。`AGENTS.md` 保存开发约束，其他
+`design/` 文档是专题补充；`design/archive/` 只用于历史追溯。

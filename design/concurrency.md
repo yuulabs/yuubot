@@ -1,5 +1,8 @@
 # Data Concurrency Principles
 
+> 本文是 [`system-design.md`](system-design.md) 的并发专题补充；系统整体设计与外部 facade
+> 以该文档为准。
+
 Yuubot has several async boundaries: HTTP/WebSocket requests, actor mailboxes,
 conversation loops, background tasks, event listeners, and SQLite persistence.
 Correctness depends on each mutable datum having one owner.

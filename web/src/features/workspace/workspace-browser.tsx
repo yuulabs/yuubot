@@ -280,7 +280,7 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
                   ) : (
                     <a
                       className="inline-flex items-center gap-2 text-left font-medium underline-offset-4 hover:underline"
-                      href={getActorFileUrl(actorId, entry.path)}
+                      href={isMarkdownPath(entry.path) ? workspaceFilePreviewUrl(actorId, entry.path) : getActorFileUrl(actorId, entry.path)}
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -384,6 +384,15 @@ function Breadcrumb({ path, onChange }: { path: string; onChange: (path: string)
 
 function joinPath(parent: string, child: string): string {
   return [parent, child].filter(Boolean).join("/");
+}
+
+function isMarkdownPath(path: string): boolean {
+  return /\.(?:md|markdown)$/i.test(path);
+}
+
+function workspaceFilePreviewUrl(actorId: string, path: string): string {
+  const encodedPath = path.split("/").map((part) => encodeURIComponent(part)).join("/");
+  return `/workspace/${encodeURIComponent(actorId)}/file/${encodedPath}`;
 }
 
 function formatSize(size: number | undefined): string {

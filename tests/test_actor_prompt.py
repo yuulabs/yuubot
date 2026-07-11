@@ -27,8 +27,8 @@ def test_developer_prompt_documents_turn_limited_research_facades(tmp_path: Path
 
     assert "yb.fixer.ask_gemini" in prompt
     assert "ask_grok" in prompt
-    assert "one successful answer per user turn" in prompt
-    assert "verified citations" in prompt
+    assert "one provider-completed request per user turn" in prompt
+    assert "not guaranteed success" in prompt
     assert "yext.web.search` provides up to three successful searches per user turn" in prompt
     assert "include all related subquestions in one prompt" in prompt
 

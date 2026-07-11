@@ -21,6 +21,7 @@ from yuubot.domain.models import AliasModelSelector, ExactModelSelector
 from yuubot.llm.gateway import (
     AliasRecord,
     AliasTarget,
+    EndpointClient,
     EndpointRecord,
     EndpointStatus,
     GatewayClient,
@@ -98,6 +99,87 @@ def test_hosted_search_aliases_can_start_unconfigured() -> None:
     validate_alias(AliasRecord("ask-grok", ["text"], []))
     with pytest.raises(ValueError, match="at least one target"):
         validate_alias(AliasRecord("custom", ["text"], []))
+
+
+@pytest.mark.asyncio
+async def test_hosted_search_accepts_provider_answer_without_citations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Message:
+        content = "A simple answer"
+
+    class Choice:
+        message = Message()
+
+    class Response:
+        choices = [Choice()]
+        usage = None
+        model = "gemini"
+        id = "response-1"
+
+        def model_dump(self, mode: str) -> dict[str, object]:
+            assert mode == "json"
+            return {"choices": [{"message": {"content": self.choices[0].message.content}}]}
+
+    class Completions:
+        async def create(self, **kwargs: object) -> Response:
+            assert "web_search_options" not in kwargs
+            assert kwargs["extra_body"] == {"metadata": {}}
+            return Response()
+
+    class Chat:
+        completions = Completions()
+
+    class SDK:
+        chat = Chat()
+
+    endpoint = EndpointClient(EndpointRecord("test", "Test", "https://gateway.test/v1"))
+    monkeypatch.setattr(EndpointClient, "_sdk_client", lambda _self: SDK())
+
+    result = await endpoint.hosted_search("gemini", "What is 2 + 2?", {})
+
+    assert result.text == "A simple answer"
+    assert result.citations == []
+
+
+@pytest.mark.asyncio
+async def test_hosted_search_web_and_pass_through_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Message:
+        content = "Extracted"
+
+    class Response:
+        choices = [type("Choice", (), {"message": Message()})()]
+        usage = None
+        model = "grok"
+        id = "response-2"
+
+        def model_dump(self, mode: str) -> dict[str, object]:
+            return {}
+
+    class Completions:
+        async def create(self, **kwargs: object) -> Response:
+            assert kwargs["web_search_options"] == {"search_context_size": "medium"}
+            assert kwargs["extra_body"] == {
+                "vendor": {"ids": [1, 2]},
+                "metadata": {"trace_id": "trace"},
+            }
+            return Response()
+
+    sdk = type("SDK", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
+    endpoint = EndpointClient(EndpointRecord("test", "Test", "https://gateway.test/v1"))
+    monkeypatch.setattr(EndpointClient, "_sdk_client", lambda _self: sdk)
+    result = await endpoint.hosted_search(
+        "grok", "Extract https://example.com", {"trace_id": "trace"}, True,
+        {"vendor": {"ids": [1, 2]}},
+    )
+    assert result.text == "Extracted"
+
+
+@pytest.mark.asyncio
+async def test_hosted_search_rejects_reserved_pass_through_option() -> None:
+    endpoint = EndpointClient(EndpointRecord("test", "Test", "https://gateway.test/v1"))
+    with pytest.raises(GatewayError, match="reserved fields: model"):
+        await endpoint.hosted_search("grok", "prompt", {}, False, {"model": "override"})
 
 
 async def test_alias_rejects_input_outside_admin_declaration(tmp_path: Path) -> None:

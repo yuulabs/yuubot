@@ -71,3 +71,15 @@ test("resolveMarkdownImageSrc leaves absolute and data URLs alone", () => {
     "/api/actors/amy/files/artifacts/x.png",
   );
 });
+
+test("resolveMarkdownImageSrc resolves relative paths from a Markdown document", () => {
+  const toUrl = (actorId: string, path: string) => `/api/actors/${actorId}/files/${path}`;
+  assert.equal(
+    resolveMarkdownImageSrc("amy", "images/chart.png", toUrl, "reports/week-one/summary.md"),
+    "/api/actors/amy/files/reports/week-one/images/chart.png",
+  );
+  assert.equal(
+    resolveMarkdownImageSrc("amy", "../shared/logo.png", toUrl, "reports/week-one/summary.md"),
+    "/api/actors/amy/files/reports/shared/logo.png",
+  );
+});

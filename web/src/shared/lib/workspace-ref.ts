@@ -54,6 +54,7 @@ export function resolveMarkdownImageSrc(
   actorId: string,
   src: string,
   toActorFileUrl: (actorId: string, path: string) => string,
+  workspacePath = "",
 ): string {
   const trimmed = src.trim();
   if (!trimmed) return trimmed;
@@ -61,5 +62,18 @@ export function resolveMarkdownImageSrc(
     return trimmed;
   }
   if (!actorId) return trimmed;
-  return toActorFileUrl(actorId, trimmed);
+  return toActorFileUrl(actorId, resolveWorkspaceRelativePath(workspacePath, trimmed));
+}
+
+function resolveWorkspaceRelativePath(workspacePath: string, path: string): string {
+  const parts = workspacePath.split("/").filter(Boolean).slice(0, -1);
+  for (const part of path.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  return parts.join("/");
 }

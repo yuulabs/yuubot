@@ -1,3 +1,6 @@
+> **已过时**：这是历史迁移计划，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Phase 5: Routes, Integrations, and Capability Model
 
 ## Goal
@@ -104,4 +107,3 @@ Pages to implement:
 - Integration config can be edited without raw JSON for common schemas.
 - The UI no longer has a false Capability Sets page.
 - Capability/tool selection has a backend-backed durable story.
-

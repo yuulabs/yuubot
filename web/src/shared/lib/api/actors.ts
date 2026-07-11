@@ -9,6 +9,7 @@ import type {
   KvPutBody,
   UploadResponse,
   WorkspaceDirectorySnapshot,
+  WorkspaceFileContent,
 } from "@/shared/types/api";
 import { authenticatedFetch, BASE, request } from "./client";
 import { getBootstrap } from "./bootstrap";
@@ -48,6 +49,22 @@ export function browseActor(actorId: string, path = ""): Promise<WorkspaceDirect
 export function getActorFileUrl(actorId: string, path: string): string {
   const encodedPath = path.split("/").map((part) => encodeURIComponent(part)).join("/");
   return `${BASE}/actors/${encodeURIComponent(actorId)}/files/${encodedPath}`;
+}
+
+export async function getActorFileContent(actorId: string, path: string): Promise<WorkspaceFileContent> {
+  const response = await authenticatedFetch(getActorFileUrl(actorId, path));
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const message = typeof body.detail === "string" ? body.detail : response.statusText;
+    throw new Error(`${response.status} ${message}`);
+  }
+  return {
+    path,
+    content: await response.text(),
+    mime: response.headers.get("Content-Type") ?? "text/plain",
+    size: Number(response.headers.get("Content-Length") ?? 0),
+    mtime: response.headers.get("Last-Modified") ?? "",
+  };
 }
 
 export async function uploadActorFile(actorId: string, files: File[], path?: string): Promise<UploadResponse> {

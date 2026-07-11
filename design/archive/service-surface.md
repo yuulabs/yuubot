@@ -1,3 +1,6 @@
+> **已过时**：这是历史 ASGI 设计，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../system-design.md)。
+
 # Design: yuubot ASGI Service Surface
 
 ## Problem / Goal
@@ -1419,11 +1422,11 @@ Compatibility: 可扩展 shutdown grace 参数；interrupt 不支持删除 histo
 [`deployment/deployment-design.md`](deployment/deployment-design.md)。
 Admin 边界、Inbound、Tasks、Share、KV 见
 [`services/README.md`](services/README.md) 及
-[`01-admin-boundary.md`](services/01-admin-boundary.md)、
-[`02-inbound.md`](services/02-inbound.md)、
-[`03-tasks.md`](services/03-tasks.md)、
-[`04-share.md`](services/04-share.md)、
-[`05-kv.md`](services/05-kv.md)。
+[`02-admin-boundary.md`](services/02-admin-boundary.md)、
+[`03-inbound.md`](services/03-inbound.md)、
+[`04-tasks.md`](services/04-tasks.md)、
+[`05-share.md`](services/05-share.md)、
+[`06-kv.md`](services/06-kv.md)。
 
 yuubot 的服务面需要区分三类入口：
 

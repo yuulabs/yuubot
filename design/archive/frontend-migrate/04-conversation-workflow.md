@@ -1,3 +1,6 @@
+> **已过时**：这是历史迁移计划，仅供追溯，不得作为当前实现依据。当前权威设计见
+> [`design/system-design.md`](../../system-design.md)。
+
 # Phase 4: Conversation Workflow
 
 ## Goal
