@@ -103,7 +103,7 @@ export interface ActorRecord {
   description?: string;
   workspace?: string;
   persona?: string;
-  model: ModelSelector;
+  model: ModelSelector | null;
   context_compression_tokens?: number;
   max_loaded_skills_warning?: number;
 }

@@ -25,7 +25,7 @@ export function ActorForm({
   const [description, setDescription] = useState(initial.description ?? "");
   const [workspace, setWorkspace] = useState(initial.workspace ?? "");
   const [persona, setPersona] = useState(initial.persona ?? "");
-  const [model, setModel] = useState<ModelSelector>(initial.model);
+  const [model, setModel] = useState<ModelSelector>(initial.model ?? { type: "alias", alias: "" });
   const [contextCompressionTokens, setContextCompressionTokens] = useState(initial.context_compression_tokens ?? DEFAULT_CONTEXT_COMPRESSION_TOKENS);
   const [maxLoadedSkillsWarning, setMaxLoadedSkillsWarning] = useState(initial.max_loaded_skills_warning ?? 10);
   const [message, setMessage] = useState("");

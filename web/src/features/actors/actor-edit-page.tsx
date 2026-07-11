@@ -7,6 +7,7 @@ import { EmptyState, ErrorState, LoadingState, Page } from "@/shared/components"
 import { useBootstrap, useRefreshBootstrap } from "@/shared/hooks";
 import type { ActorRecord } from "@/shared/types/api";
 import { ActorForm } from "./actor-form";
+import { ActorSkillsPanel } from "./actor-skills-panel";
 
 export function ActorEditPage({ id }: { id: string }) {
   const navigate = useNavigate();
@@ -51,6 +52,9 @@ export function ActorEditPage({ id }: { id: string }) {
           await navigate({ to: "/actors/$id", params: { id: actorId } });
         }}
       />
+      <div className="mt-4">
+        <ActorSkillsPanel actorId={id} />
+      </div>
     </Page>
   );
 }
