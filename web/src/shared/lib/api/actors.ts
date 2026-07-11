@@ -51,6 +51,34 @@ export function getActorFileUrl(actorId: string, path: string): string {
   return `${BASE}/actors/${encodeURIComponent(actorId)}/files/${encodedPath}`;
 }
 
+export function getActorFileDownloadUrl(actorId: string, path: string): string {
+  return `${getActorFileUrl(actorId, path)}?download=true`;
+}
+
+export async function getActorFileMetadata(actorId: string, path: string): Promise<{ size: number; mime: string }> {
+  const response = await authenticatedFetch(getActorFileUrl(actorId, path), { method: "HEAD" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return { size: Number(response.headers.get("Content-Length") ?? 0), mime: response.headers.get("Content-Type") ?? "" };
+}
+
+export async function downloadWorkspaceEntries(actorId: string, paths: string[]): Promise<void> {
+  const response = await authenticatedFetch(`${BASE}/actors/${encodeURIComponent(actorId)}/workspace/download`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(`${response.status} ${body.detail ?? response.statusText}`);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "workspace.zip";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function getActorFileContent(actorId: string, path: string): Promise<WorkspaceFileContent> {
   const response = await authenticatedFetch(getActorFileUrl(actorId, path));
   if (!response.ok) {

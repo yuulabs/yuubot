@@ -658,11 +658,13 @@ class GatewayClient:
         text_aliases = {
             alias.id for alias in self.aliases.values() if "text" in alias.modalities
         }
+        gemini = self.aliases.get("ask-gemini")
+        grok = self.aliases.get("ask-grok")
         return GatewayStatus(
             endpoints=[client.status for client in self.endpoints.values()],
             aliases=list(self.aliases.values()),
-            fixer_gemini_enabled="ask-gemini" in self._search_enabled,
-            fixer_grok_enabled="ask-grok" in self._search_enabled,
+            fixer_gemini_enabled=bool(gemini and gemini.targets),
+            fixer_grok_enabled=bool(grok and grok.targets),
             fast_delegate_enabled="fast" in text_aliases,
             intelligent_delegate_enabled="intelligent" in text_aliases,
         )

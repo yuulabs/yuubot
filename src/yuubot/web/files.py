@@ -1,5 +1,7 @@
 import mimetypes
 import shutil
+import zipfile
+from io import BytesIO
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import unquote
@@ -35,6 +37,56 @@ class DirectoryEntry(msgspec.Struct, frozen=True):
 class DirectorySnapshot(msgspec.Struct, frozen=True):
     path: str
     entries: list[DirectoryEntry]
+
+
+_PLAIN_TEXT_SUFFIXES = {
+    ".cfg", ".conf", ".css", ".env", ".ini", ".js", ".json", ".lock", ".log",
+    ".md", ".py", ".sh", ".toml", ".ts", ".tsx", ".yaml", ".yml",
+}
+
+
+def workspace_media_type(path: Path) -> str:
+    guessed = mimetypes.guess_type(path.name)[0]
+    if guessed:
+        return guessed
+    if path.suffix.lower() in _PLAIN_TEXT_SUFFIXES or _is_utf8_text(path):
+        return "text/plain"
+    return "application/octet-stream"
+
+
+def workspace_zip(workspace: Path, paths: list[str]) -> bytes:
+    if not paths:
+        raise ValueError("paths are required")
+    targets = [(path, workspace_path(workspace, path)) for path in paths]
+    for path, target in targets:
+        if target == workspace or not target.exists():
+            raise FileNotFoundError(f"entry not found: {path}")
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        added: set[str] = set()
+        for _, target in targets:
+            files = target.rglob("*") if target.is_dir() else (target,)
+            if target.is_dir() and not any(target.iterdir()):
+                name = target.relative_to(workspace).as_posix().rstrip("/") + "/"
+                archive.writestr(name, b"")
+            for child in files:
+                if not child.is_file():
+                    continue
+                _ensure_contained(workspace, child.resolve())
+                name = child.relative_to(workspace).as_posix()
+                if name not in added:
+                    archive.write(child, name)
+                    added.add(name)
+    return output.getvalue()
+
+
+def _is_utf8_text(path: Path) -> bool:
+    try:
+        sample = path.open("rb").read(8192)
+        sample.decode("utf-8")
+        return b"\x00" not in sample
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def actor_workspace(app: Yuubot, actor_id: str) -> Path | None:
@@ -113,7 +165,7 @@ def directory_snapshot(workspace: Path, target: Path) -> DirectorySnapshot:
         relative = child.relative_to(workspace).as_posix()
         mime = ""
         if child.is_file():
-            mime = mimetypes.guess_type(child.name)[0] or "application/octet-stream"
+            mime = workspace_media_type(child)
         entries.append(
             DirectoryEntry(
                 child.name,

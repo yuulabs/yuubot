@@ -44,7 +44,6 @@ async def test_loopback_fixer_guard_keeps_facades_independent_and_records_usage(
             name: AliasRecord(name, ["text"], [AliasTarget("test", name)])
             for name in ("main", "ask-gemini", "ask-grok")
         },
-        search_enabled={"ask-gemini", "ask-grok"},
     )
     app.gateway_client = gateway
     app.runtime.gateway_client = gateway

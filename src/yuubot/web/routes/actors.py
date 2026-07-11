@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import mimetypes
 import logging
 
 import msgspec
@@ -14,10 +13,10 @@ from ...domain.messages import ActorMessage
 from ...domain.records import ActorConfigError, ActorInput
 from ...runtime.inbound import MailboxUnavailableError
 from ..errors import internal_error_detail, internal_error_message, log_internal_error
-from ..files import actor_workspace, delete_entries, directory_snapshot, make_directory, move_entries, rename_entry, save_uploads, workspace_path
+from ..files import actor_workspace, delete_entries, directory_snapshot, make_directory, move_entries, rename_entry, save_uploads, workspace_media_type, workspace_path, workspace_zip
 from ..request import bad_request, read_json
 from ..responses import error_response, json_response
-from .bodies import WorkspaceDeleteBody, WorkspaceMkdirBody, WorkspaceMoveBody, WorkspaceRenameBody
+from .bodies import WorkspaceDeleteBody, WorkspaceDownloadBody, WorkspaceMkdirBody, WorkspaceMoveBody, WorkspaceRenameBody
 
 _log = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
         return json_response(directory_snapshot(workspace, target))
 
     @api.get("/api/actors/{actor_id}/files/{file_path:path}")
-    async def api_actor_file(actor_id: str, file_path: str) -> Response:
+    async def api_actor_file(actor_id: str, file_path: str, download: bool = False) -> Response:
         workspace = actor_workspace(app, actor_id)
         if workspace is None:
             return error_response(404, "not_found", "actor not found")
@@ -96,7 +95,45 @@ def register_actor_routes(api: FastAPI, app: Yuubot) -> None:
             return bad_request(exc)
         if not target.is_file():
             return error_response(404, "not_found", "file not found")
-        return FileResponse(target, media_type=mimetypes.guess_type(target)[0] or "application/octet-stream")
+        disposition = "attachment" if download else "inline"
+        return FileResponse(
+            target,
+            media_type=workspace_media_type(target),
+            content_disposition_type=disposition,
+            filename=target.name,
+        )
+
+    @api.head("/api/actors/{actor_id}/files/{file_path:path}")
+    async def api_actor_file_metadata(actor_id: str, file_path: str) -> Response:
+        workspace = actor_workspace(app, actor_id)
+        if workspace is None:
+            return error_response(404, "not_found", "actor not found")
+        try:
+            target = workspace_path(workspace, file_path)
+        except ValueError as exc:
+            return bad_request(exc)
+        if not target.is_file():
+            return error_response(404, "not_found", "file not found")
+        stat = target.stat()
+        return Response(headers={"Content-Length": str(stat.st_size), "Content-Type": workspace_media_type(target)})
+
+    @api.post("/api/actors/{actor_id}/workspace/download")
+    async def api_download_workspace_entries(actor_id: str, request: Request) -> Response:
+        workspace = actor_workspace(app, actor_id)
+        if workspace is None:
+            return error_response(404, "not_found", "actor not found")
+        try:
+            body = await read_json(request, WorkspaceDownloadBody)
+            content = workspace_zip(workspace, body.paths)
+        except FileNotFoundError as exc:
+            return error_response(404, "not_found", str(exc))
+        except (msgspec.DecodeError, msgspec.ValidationError, ValueError) as exc:
+            return bad_request(exc)
+        return Response(
+            content,
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="workspace.zip"'},
+        )
 
     @api.post("/api/actors/{actor_id}/uploads")
     async def api_upload_actor(actor_id: str, file: list[UploadFile] = File(...), path: str | None = None) -> Response:

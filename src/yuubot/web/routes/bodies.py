@@ -57,6 +57,10 @@ class WorkspaceDeleteBody(msgspec.Struct, frozen=True):
     paths: list[str]
 
 
+class WorkspaceDownloadBody(msgspec.Struct, frozen=True):
+    paths: list[str]
+
+
 class WorkspaceRenameBody(msgspec.Struct, frozen=True):
     path: str
     name: str

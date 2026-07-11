@@ -288,8 +288,11 @@ async def test_http_serves_actor_workspace_files_with_containment(test_context: 
 
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{url}/api/actors/{actor_id}/files/notes/memo.txt", timeout=10.0)
+        downloaded = await client.get(f"{url}/api/actors/{actor_id}/files/notes/memo.txt?download=true", timeout=10.0)
         partial = await client.get(f"{url}/api/actors/{actor_id}/files/notes/memo.txt", headers={"Range": "bytes=1-3"}, timeout=10.0)
         assert response.text == "hello"
+        assert response.headers["content-disposition"].startswith("inline;")
+        assert downloaded.headers["content-disposition"].startswith("attachment;")
         assert partial.status_code == 206
         assert partial.text == "ell"
 

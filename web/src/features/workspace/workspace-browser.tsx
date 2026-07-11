@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, FileIcon, Folder, FolderPlus, MoveRight, Pencil, Share2, Trash2, Upload } from "lucide-react";
+import { Archive, Check, Code2, Download, File, FileCog, FileIcon, FileText, Folder, FolderPlus, Grid2X2, Image, List, MoveRight, Pencil, Share2, Trash2, Upload } from "lucide-react";
 
 import type { ShareGrant, WorkspaceEntry } from "@/shared/types/api";
 import {
@@ -8,7 +8,9 @@ import {
   createShare,
   createWorkspaceDirectory,
   deleteWorkspaceEntries,
+  downloadWorkspaceEntries,
   getActorFileUrl,
+  getActorFileDownloadUrl,
   moveWorkspaceEntries,
   renameWorkspaceEntry,
   uploadActorFile,
@@ -29,6 +31,8 @@ type ShareTtlPreset = "1h" | "24h" | "7d" | "never";
 type Feedback = { title: string; body: string; copyText?: string };
 
 const DEFAULT_SHARE_TTL: ShareTtlPreset = "24h";
+const LARGE_FILE_BYTES = 10 * 1024 * 1024;
+type ViewMode = "list" | "grid";
 const SHARE_TTL_OPTIONS: Array<{ value: ShareTtlPreset; label: string; ms: number | null }> = [
   { value: "1h", label: "1 hour", ms: 60 * 60 * 1000 },
   { value: "24h", label: "24 hours", ms: 24 * 60 * 60 * 1000 },
@@ -36,10 +40,12 @@ const SHARE_TTL_OPTIONS: Array<{ value: ShareTtlPreset; label: string; ms: numbe
   { value: "never", label: "Never", ms: null },
 ];
 
-export function WorkspaceBrowser({ actorId }: { actorId: string }) {
+export function WorkspaceBrowser({ actorId, path, onPathChange }: { actorId: string; path: string; onPathChange: (path: string) => void }) {
   const client = useQueryClient();
-  const [path, setPath] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [view, setView] = useState<ViewMode>(() => (localStorage.getItem("workspace-view") as ViewMode | null) ?? "list");
+  const [largeFile, setLargeFile] = useState<WorkspaceEntry | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -55,17 +61,46 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
   const selectedPaths = useMemo(() => Array.from(selected), [selected]);
 
   useEffect(() => {
-    setPath("");
     setSelected(new Set());
     setFeedback(null);
     setCopiedFeedback(false);
     setPendingShare(null);
     setShareTtl(DEFAULT_SHARE_TTL);
-  }, [actorId]);
+  }, [actorId, path]);
 
   function changePath(nextPath: string) {
-    setPath(nextPath);
     setSelected(new Set());
+    setSelectionMode(false);
+    onPathChange(nextPath);
+  }
+
+  function changeView(next: ViewMode) {
+    setView(next);
+    localStorage.setItem("workspace-view", next);
+  }
+
+  function openFile(entry: WorkspaceEntry) {
+    if ((entry.size ?? 0) > LARGE_FILE_BYTES) {
+      setLargeFile(entry);
+      return;
+    }
+    window.open(fileOpenUrl(actorId, entry.path), "_blank", "noopener,noreferrer");
+  }
+
+  function download(entry: WorkspaceEntry) {
+    const link = document.createElement("a");
+    link.href = getActorFileDownloadUrl(actorId, entry.path);
+    link.download = entry.name;
+    link.click();
+  }
+
+  function downloadSelected() {
+    const chosen = visibleEntries.filter((entry) => selected.has(entry.path));
+    if (chosen.length === 1 && chosen[0].kind === "file") {
+      download(chosen[0]);
+      return;
+    }
+    void runAction("Download prepared", () => downloadWorkspaceEntries(actorId, selectedPaths));
   }
 
   async function refreshWorkspace() {
@@ -217,6 +252,10 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
                 <input type="checkbox" checked={showHidden} onChange={(event) => setShowHidden(event.target.checked)} />
                 Show hidden
               </label>
+              <div className="inline-flex rounded-md border p-0.5">
+                <Button variant={view === "list" ? "secondary" : "ghost"} size="xs" onClick={() => changeView("list")} aria-label="List view"><List size={14} /></Button>
+                <Button variant={view === "grid" ? "secondary" : "ghost"} size="xs" onClick={() => changeView("grid")} aria-label="Card view"><Grid2X2 size={14} /></Button>
+              </div>
               <Button variant="outline" size="sm" onClick={createDirectory} disabled={busy}>
                 <FolderPlus size={14} /> New folder
               </Button>
@@ -234,25 +273,30 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
                   <Upload size={14} /> Upload
                 </span>
               </label>
-              <Button variant="outline" size="sm" onClick={moveSelected} disabled={busy || !selected.size}>
-                <MoveRight size={14} /> Move
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => remove(selectedPaths)} disabled={busy || !selected.size}>
-                <Trash2 size={14} /> Delete
+              <Button variant={selectionMode ? "secondary" : "outline"} size="sm" onClick={() => { setSelectionMode(!selectionMode); setSelected(new Set()); }}>
+                <Check size={14} /> {selectionMode ? "Exit selection" : "Select"}
               </Button>
             </div>
           </div>
+
+          {selectionMode && (
+            <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
+              <Button variant="ghost" size="sm" onClick={selectAll}>{selected.size === visibleEntries.length ? "Clear all" : "Select all"}</Button>
+              <span className="mr-auto text-sm text-muted-foreground">{selected.size} selected</span>
+              <Button variant="outline" size="sm" onClick={downloadSelected} disabled={busy || !selected.size}><Download size={14} /> Download</Button>
+              <Button variant="outline" size="sm" onClick={moveSelected} disabled={busy || !selected.size}><MoveRight size={14} /> Move</Button>
+              <Button variant="outline" size="sm" onClick={() => remove(selectedPaths)} disabled={busy || !selected.size}><Trash2 size={14} /> Delete</Button>
+            </div>
+          )}
 
           {!entries.length ? (
             <EmptyState>Drop files here or create a folder to start this workspace.</EmptyState>
           ) : !visibleEntries.length ? (
             <EmptyState>No visible files. Check Show hidden to reveal dot-prefixed entries.</EmptyState>
-          ) : (
+          ) : view === "list" ? (
             <div className="data-table">
-              <div className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_210px] gap-3 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground">
-                <button className="text-left" type="button" onClick={selectAll} aria-label="Toggle all entries">
-                  {visibleEntries.length > 0 && visibleEntries.every((entry) => selected.has(entry.path)) ? "All" : "Any"}
-                </button>
+              <div className={`grid ${selectionMode ? "grid-cols-[32px_minmax(180px,1fr)_100px_170px_152px]" : "grid-cols-[minmax(180px,1fr)_100px_170px_152px]"} gap-3 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground`}>
+                {selectionMode && <span />}
                 <span>Name</span>
                 <span>Size</span>
                 <span>Modified</span>
@@ -261,45 +305,68 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
               {visibleEntries.map((entry) => (
                 <div
                   key={entry.path}
-                  className="grid grid-cols-[32px_minmax(180px,1fr)_120px_190px_210px] items-center gap-3 border-t px-3 py-2"
+                  className={`grid ${selectionMode ? "grid-cols-[32px_minmax(180px,1fr)_100px_170px_152px]" : "grid-cols-[minmax(180px,1fr)_100px_170px_152px]"} items-center gap-3 border-t px-3 py-2`}
                   draggable
                   onDragStart={(event) => dragStart(event, entry)}
                   onDragOver={(event) => entry.kind === "directory" && event.preventDefault()}
                   onDrop={(event) => dropOnDirectory(event, entry)}
                 >
-                  <input type="checkbox" checked={selected.has(entry.path)} onChange={() => toggle(entry.path)} />
+                  {selectionMode && <input type="checkbox" checked={selected.has(entry.path)} onChange={() => toggle(entry.path)} />}
                   {entry.kind === "directory" ? (
                     <button
                       className="inline-flex cursor-pointer items-center gap-2 text-left font-medium underline-offset-4 hover:underline"
                       type="button"
                       onClick={() => changePath(entry.path)}
                     >
-                      <Folder size={16} />
+                      <FileVisual entry={entry} size={16} />
                       <span>{entry.name}/</span>
                     </button>
                   ) : (
-                    <a
+                    <button
                       className="inline-flex items-center gap-2 text-left font-medium underline-offset-4 hover:underline"
-                      href={isMarkdownPath(entry.path) ? workspaceFilePreviewUrl(actorId, entry.path) : getActorFileUrl(actorId, entry.path)}
-                      target="_blank"
-                      rel="noreferrer"
+                      type="button"
+                      onClick={() => openFile(entry)}
                     >
-                      <FileIcon size={16} />
+                      <FileVisual entry={entry} size={16} />
                       <span>{entry.name}</span>
-                    </a>
+                    </button>
                   )}
                   <span className="page-sub">{entry.kind === "file" ? formatSize(entry.size) : "folder"}</span>
                   <span className="page-sub">{formatDate(entry.mtime)}</span>
                   <div className="flex flex-wrap gap-2">
-                    <Button variant="outline" size="xs" onClick={() => share(entry)} disabled={busy}>
-                      <Share2 size={12} /> Share
+                    {entry.kind === "file" && <Button variant="outline" size="icon-xs" onClick={() => download(entry)} disabled={busy} aria-label={`Download ${entry.name}`} title="Download"><Download size={12} /></Button>}
+                    <Button variant="outline" size="icon-xs" onClick={() => share(entry)} disabled={busy} aria-label={`Share ${entry.name}`} title="Share">
+                      <Share2 size={12} />
                     </Button>
-                    <Button variant="outline" size="xs" onClick={() => rename(entry)} disabled={busy}>
-                      <Pencil size={12} /> Rename
+                    <Button variant="outline" size="icon-xs" onClick={() => rename(entry)} disabled={busy} aria-label={`Rename ${entry.name}`} title="Rename">
+                      <Pencil size={12} />
                     </Button>
-                    <Button variant="outline" size="xs" onClick={() => remove([entry.path])} disabled={busy}>
-                      <Trash2 size={12} /> Delete
+                    <Button variant="outline" size="icon-xs" onClick={() => remove([entry.path])} disabled={busy} aria-label={`Delete ${entry.name}`} title="Delete">
+                      <Trash2 size={12} />
                     </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+              {visibleEntries.map((entry) => (
+                <div key={entry.path} className={`group relative grid min-h-44 content-between rounded-md border p-3 hover:bg-accent/40 ${selected.has(entry.path) ? "ring-2 ring-primary" : ""}`}>
+                  {selectionMode && <input className="absolute left-3 top-3 z-10" type="checkbox" checked={selected.has(entry.path)} onChange={() => toggle(entry.path)} />}
+                  <button className="grid min-w-0 gap-3 text-left" type="button" onClick={() => entry.kind === "directory" ? changePath(entry.path) : openFile(entry)}>
+                    <div className="flex h-24 items-center justify-center overflow-hidden rounded-md bg-muted/50">
+                      {entry.kind === "file" && entry.mime?.startsWith("image/") ? <img className="h-full w-full object-cover" src={getActorFileUrl(actorId, entry.path)} alt="" loading="lazy" /> : <FileVisual entry={entry} size={48} />}
+                    </div>
+                    <span className="truncate text-sm font-medium" title={entry.name}>{entry.name}{entry.kind === "directory" ? "/" : ""}</span>
+                  </button>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span>{entry.kind === "file" ? formatSize(entry.size) : "folder"}</span>
+                    <div className="flex items-center">
+                      {entry.kind === "file" && <Button variant="ghost" size="icon-xs" onClick={() => download(entry)} aria-label={`Download ${entry.name}`} title="Download"><Download size={12} /></Button>}
+                      <Button variant="ghost" size="icon-xs" onClick={() => share(entry)} aria-label={`Share ${entry.name}`} title="Share"><Share2 size={12} /></Button>
+                      <Button variant="ghost" size="icon-xs" onClick={() => rename(entry)} aria-label={`Rename ${entry.name}`} title="Rename"><Pencil size={12} /></Button>
+                      <Button variant="ghost" size="icon-xs" onClick={() => remove([entry.path])} aria-label={`Delete ${entry.name}`} title="Delete"><Trash2 size={12} /></Button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -307,6 +374,16 @@ export function WorkspaceBrowser({ actorId }: { actorId: string }) {
           )}
         </div>
       </Panel>
+      <Dialog open={largeFile !== null} onOpenChange={(open) => !open && setLargeFile(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Open large file?</DialogTitle><DialogDescription>{largeFile?.name} is {formatSize(largeFile?.size)}. Opening it may use significant memory or bandwidth.</DialogDescription></DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild><Button variant="outline">Cancel</Button></DialogClose>
+            <Button variant="outline" onClick={() => { if (largeFile) download(largeFile); setLargeFile(null); }}><Download size={14} /> Download</Button>
+            <Button onClick={() => { if (largeFile) window.open(fileOpenUrl(actorId, largeFile.path), "_blank", "noopener,noreferrer"); setLargeFile(null); }}>Open anyway</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={pendingShare !== null} onOpenChange={(open) => !open && !busy && setPendingShare(null)}>
         <DialogContent>
           <DialogHeader>
@@ -388,6 +465,24 @@ function joinPath(parent: string, child: string): string {
 
 function isMarkdownPath(path: string): boolean {
   return /\.(?:md|markdown)$/i.test(path);
+}
+
+function fileOpenUrl(actorId: string, path: string): string {
+  return isMarkdownPath(path) ? workspaceFilePreviewUrl(actorId, path) : getActorFileUrl(actorId, path);
+}
+
+function FileVisual({ entry, size }: { entry: WorkspaceEntry; size: number }) {
+  const common = { size, strokeWidth: 1.7 };
+  if (entry.kind === "directory") return <Folder {...common} className="text-sky-600 dark:text-sky-400" />;
+  const suffix = entry.name.toLowerCase().split(".").pop() ?? "";
+  if (isMarkdownPath(entry.path)) return <FileText {...common} className="text-violet-600 dark:text-violet-400" />;
+  if (entry.mime?.startsWith("image/")) return <Image {...common} className="text-emerald-600 dark:text-emerald-400" />;
+  if (entry.mime === "application/pdf") return <FileText {...common} className="text-rose-600 dark:text-rose-400" />;
+  if (["zip", "gz", "tgz", "rar", "7z", "tar"].includes(suffix)) return <Archive {...common} className="text-amber-600 dark:text-amber-400" />;
+  if (["py", "js", "jsx", "ts", "tsx", "css", "html", "sh", "rs", "go"].includes(suffix)) return <Code2 {...common} className="text-blue-600 dark:text-blue-400" />;
+  if (["json", "yaml", "yml", "toml", "ini", "cfg", "conf", "env", "lock"].includes(suffix)) return <FileCog {...common} className="text-orange-600 dark:text-orange-400" />;
+  if (entry.mime?.startsWith("text/")) return <FileIcon {...common} className="text-slate-600 dark:text-slate-300" />;
+  return <File {...common} className="text-muted-foreground" />;
 }
 
 function workspaceFilePreviewUrl(actorId: string, path: string): string {

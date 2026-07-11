@@ -1,29 +1,23 @@
-import { useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 
 import { Page, EmptyState, ErrorState, LoadingState } from "@/shared/components";
 import { useBootstrap } from "@/shared/hooks";
 import { WorkspaceBrowser } from "./workspace-browser";
+import { Route } from "@/routes/workspace";
 
 export function WorkspacePage() {
   const { data, error, isLoading } = useBootstrap();
-  const [actorId, setActorId] = useState(() => {
-    if (typeof window === "undefined") {
-      return "";
-    }
-    return new URLSearchParams(window.location.search).get("actor") ?? "";
-  });
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: "/workspace" });
 
   if (isLoading) return <LoadingState />;
   if (error) return <ErrorState error={error} />;
 
   const actors = data?.actors ?? [];
-  const selectedActor = actors.find((actor) => actor.id === actorId) ?? actors[0];
+  const selectedActor = actors.find((actor) => actor.id === search.actor) ?? actors[0];
 
   function selectActor(nextActorId: string) {
-    setActorId(nextActorId);
-    const url = new URL(window.location.href);
-    url.searchParams.set("actor", nextActorId);
-    window.history.replaceState(null, "", url);
+    void navigate({ search: { actor: nextActorId, path: "" } });
   }
 
   return (
@@ -46,7 +40,11 @@ export function WorkspacePage() {
       {!selectedActor ? (
         <EmptyState>No actors have been configured.</EmptyState>
       ) : (
-        <WorkspaceBrowser actorId={selectedActor.id} />
+        <WorkspaceBrowser
+          actorId={selectedActor.id}
+          path={search.path}
+          onPathChange={(path) => void navigate({ search: { actor: selectedActor.id, path } })}
+        />
       )}
     </Page>
   );
