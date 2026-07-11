@@ -42,6 +42,11 @@ const EMPTY_ENDPOINT: EndpointInput = {
 const EMPTY_ALIAS: AliasInput = { modalities: ["text"], targets: [] };
 const MODALITIES: InputModality[] = ["text", "image", "audio", "video"];
 
+const HOSTED_SEARCH_ALIAS_INFO = [
+  { id: "ask-gemini", functionName: "ask_gemini", description: "Gemini-style hosted web research" },
+  { id: "ask-grok", functionName: "ask_grok", description: "Grok-style current web/X research" },
+] as const;
+
 export function GatewayPage() {
   const queryClient = useQueryClient();
   const gateway = useQuery({ queryKey: ["gateway"], queryFn: getGateway, refetchInterval: 30_000 });
@@ -86,6 +91,16 @@ export function GatewayPage() {
             <Plus /> Add Alias
           </Button>
         </div>
+
+        {HOSTED_SEARCH_ALIAS_INFO.filter(({ id }) => {
+          const alias = data.aliases.find((item) => item.id === id);
+          return !alias?.targets.some((target) => target.endpoint_id && target.model.trim() && data.endpoints.some((endpoint) => endpoint.id === target.endpoint_id));
+        }).map(({ id, functionName, description }) => (
+          <div key={id} className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            <p className="font-medium">Configure {id} to use yb.fixer.{functionName}()</p>
+            <p className="mt-1 text-amber-800">{description} is unavailable until this Alias has an endpoint and model target.</p>
+          </div>
+        ))}
 
         {data.aliases.map((alias) => (
           <AliasEditor key={alias.id} alias={alias} endpoints={data.endpoints} onChanged={invalidate} />
@@ -404,7 +419,7 @@ function AliasEditor({ alias, endpoints, onChanged }: { alias: GatewayAlias; end
       <div className="mt-3 flex items-center justify-between border-t pt-3">
         <Button variant="outline" size="sm" onClick={() => setDraft({ ...draft, targets: [...draft.targets, { endpoint_id: endpoints[0]?.id ?? "", model: "" }] })}><Plus /> Target</Button>
         <div className="flex gap-2">
-          <Button variant="outline" size="icon-sm" title="Delete alias" disabled={remove.isPending} onClick={() => remove.mutate()}><Trash2 /></Button>
+          <Button variant="outline" size="icon-sm" title={HOSTED_SEARCH_ALIAS_INFO.some((item) => item.id === alias.id) ? "Built-in alias cannot be deleted" : "Delete alias"} disabled={HOSTED_SEARCH_ALIAS_INFO.some((item) => item.id === alias.id) || remove.isPending} onClick={() => remove.mutate()}><Trash2 /></Button>
           <Button size="sm" disabled={!draft.targets.length || draft.targets.some((item) => !item.endpoint_id || !item.model.trim()) || save.isPending} onClick={() => save.mutate()}><Save /> Save</Button>
         </div>
       </div>

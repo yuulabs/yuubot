@@ -48,6 +48,7 @@ from ..llm.gateway import (
     EndpointRecord,
     GatewayClient,
     GatewayStatus,
+    PRESET_HOSTED_SEARCH_ALIASES,
     StreamClient,
     alias_record_from_input,
     endpoint_record_from_input,
@@ -411,6 +412,12 @@ class Yuubot:
     async def _load_gateway_connection(self) -> None:
         endpoints = await self.runtime.state.list_gateway_endpoints()
         aliases = await self.runtime.state.list_gateway_aliases()
+        aliases_by_id = {alias.id: alias for alias in aliases}
+        for alias_id in PRESET_HOSTED_SEARCH_ALIASES:
+            if alias_id not in aliases_by_id:
+                alias = AliasRecord(alias_id, ["text"], [])
+                await self.runtime.state.put_gateway_alias(alias)
+                aliases.append(alias)
         clients: dict[str, EndpointClient] = {}
         for endpoint in endpoints:
             secret = await self.runtime.credentials.secret_payload(
@@ -549,6 +556,8 @@ class Yuubot:
         return record
 
     async def delete_gateway_alias(self, alias_id: str) -> bool:
+        if alias_id in PRESET_HOSTED_SEARCH_ALIASES:
+            raise ValueError(f'alias "{alias_id}" is a built-in hosted-search alias')
         used_by = [
             record.id
             for record in self.actor_records.values()

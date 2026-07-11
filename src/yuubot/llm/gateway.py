@@ -48,6 +48,8 @@ from ..util.stream import stream_stop_event
 
 _log = logging.getLogger(__name__)
 
+PRESET_HOSTED_SEARCH_ALIASES = ("ask-gemini", "ask-grok")
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -132,7 +134,7 @@ def validate_alias(alias: AliasRecord) -> None:
         raise ValueError("alias id is required")
     if "text" not in alias.modalities:
         raise ValueError("alias modalities must include text")
-    if not alias.targets:
+    if not alias.targets and alias.id not in PRESET_HOSTED_SEARCH_ALIASES:
         raise ValueError("alias must contain at least one target")
     for target in alias.targets:
         if not target.endpoint_id.strip() or not target.model.strip():

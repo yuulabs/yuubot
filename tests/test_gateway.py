@@ -26,6 +26,7 @@ from yuubot.llm.gateway import (
     GatewayClient,
     GatewayError,
     _usage_from_chunk,
+    validate_alias,
 )
 from yuubot.runtime.cache import CachePool
 from yuubot.app import Yuubot
@@ -90,6 +91,13 @@ async def test_alias_uses_declared_modalities_and_ordered_fallback(tmp_path: Pat
         "model": "m2",
         "fallback_path": ["first/m1", "second/m2"],
     }
+
+
+def test_hosted_search_aliases_can_start_unconfigured() -> None:
+    validate_alias(AliasRecord("ask-gemini", ["text"], []))
+    validate_alias(AliasRecord("ask-grok", ["text"], []))
+    with pytest.raises(ValueError, match="at least one target"):
+        validate_alias(AliasRecord("custom", ["text"], []))
 
 
 async def test_alias_rejects_input_outside_admin_declaration(tmp_path: Path) -> None:
