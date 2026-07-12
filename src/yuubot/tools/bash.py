@@ -20,14 +20,13 @@ from ..runtime.tasks import (
 from .base import ToolConfig, ToolSpec
 from .progress import current_progress
 
-TAIL_LINES: Final[int] = 50
 MAX_OUTPUT_BYTES: Final[int] = 1024 * 1024
 DEFAULT_IDLE_TIMEOUT_S: Final[float] = 10.0
 HARD_TIMEOUT_S: Final[float] = 235.0
 
 DESCRIPTION = """Run a bash command with the actor workspace as the working directory.
 
-The command runs as `bash -lc <command>` in a PTY-backed shell task. Output streams to the tool progress channel. Fast commands return synchronously with exit code and stdout. Returned stdout is capped at 1 MiB and, when it has more than 50 lines, only the last 50 lines are included. When stdout is silent for `idle_timeout_s` (default 10) or the hard ceiling (~235s) is reached, the task detaches and continues under Runtime; the result includes `task_id` and current output.
+The command runs as `bash -lc <command>` in a PTY-backed shell task. Output streams to the tool progress channel. Fast commands return synchronously with exit code and stdout. Returned stdout is capped at 1 MiB. When stdout is silent for `idle_timeout_s` (default 10) or the hard ceiling (~235s) is reached, the task detaches and continues under Runtime; the result includes `task_id` and current output.
 
 Query detached tasks with `await yb.tasks.find(task_id)`, `await task.output()`, `await task.write(text)`, and `await task.cancel()` (see Integration SDKs).
 
@@ -39,18 +38,11 @@ class BashPayload(msgspec.Struct, frozen=True):
     idle_timeout_s: float | None = None
 
 
-def _tail(text: str) -> str:
-    lines = text.splitlines()
-    if len(lines) <= TAIL_LINES:
-        return text.rstrip()
-    return "\n".join([f"[truncated: showing last {TAIL_LINES} of {len(lines)} lines)", *lines[-TAIL_LINES:]])
-
-
 def _format_sync_result(record: object) -> str:
     from ..runtime.tasks import RuntimeTaskRecord
 
     task = cast(RuntimeTaskRecord, record)
-    output = _tail(filter_tool_output(task.stdout.tail(max_bytes=MAX_OUTPUT_BYTES)))
+    output = filter_tool_output(task.stdout.tail(max_bytes=MAX_OUTPUT_BYTES)).rstrip()
     lines = [f"exit_code: {task.exit_code if task.exit_code is not None else 0}"]
     if output:
         lines.extend(["stdout:", output])
@@ -61,7 +53,7 @@ def _format_detach_result(record: object, reason: Literal["idle", "timeout"]) ->
     from ..runtime.tasks import RuntimeTaskRecord
 
     task = cast(RuntimeTaskRecord, record)
-    output = _tail(filter_tool_output(task.stdout.tail(max_bytes=MAX_OUTPUT_BYTES)))
+    output = filter_tool_output(task.stdout.tail(max_bytes=MAX_OUTPUT_BYTES)).rstrip()
     reason_label = "stdout idle" if reason == "idle" else "hard timeout"
     lines = [
         "detached: true",
