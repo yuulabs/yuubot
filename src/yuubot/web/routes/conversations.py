@@ -48,16 +48,22 @@ def register_conversation_routes(api: FastAPI, app: Yuubot) -> None:
     async def api_conversation_history(
         conversation_id: str,
         after_seq: int | None = Query(default=None),
+        before_seq: int | None = Query(default=None),
         limit: int | None = Query(default=None),
     ) -> Response:
         if after_seq is not None and after_seq < 0:
             return bad_request(ValueError("after_seq must be non-negative"))
+        if before_seq is not None and before_seq < 0:
+            return bad_request(ValueError("before_seq must be non-negative"))
+        if after_seq is not None and before_seq is not None:
+            return bad_request(ValueError("after_seq and before_seq are mutually exclusive"))
         if limit is not None and limit <= 0:
             return bad_request(ValueError("limit must be positive"))
         items, has_more = await app.conversation_history(
             conversation_id,
             after_seq,
             limit,
+            before_seq,
         )
         if (
             not items

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -29,6 +30,8 @@ from ..runtime.event_payloads import (
 from ..tools import all_tool_configs, tool_specs
 from .prompt import developer_prompt
 from .workspace import prepare_workspace
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..runtime import Mailbox, Runtime
@@ -87,6 +90,7 @@ async def build_conversation_context(
         workspace=Path(actor_config.workspace).resolve(),
         rpc={"daemon_url": _daemon_url(runtime)},
         model_supports_vision=actor_config.model_supports_vision,
+        response_state=await runtime.state.get_response_state(conversation_id),
     )
 
 
@@ -254,13 +258,41 @@ class Actor:
 
         old_conversation_id = conversation.id
         trigger_input_tokens = conversation.last_stop.usage.input_tokens if conversation.last_stop is not None else 0
-        summary = await self._summarize_for_context_compaction(conversation)
         compacted = await self.runtime.conversations.get_or_create(self)
-        await compacted.append_items(
-            [
-                InputMessage("developer", "yuubot", text_content(summary)),
-            ]
-        )
+        compact_state: dict[str, object] | None = None
+        compact = getattr(self.stream_client, "compact", None)
+        if callable(compact):
+            try:
+                compact_state = await compact(
+                    conversation.history.to_llm_input(),
+                    conversation.context.model,
+                    conversation.context,
+                )
+            except Exception:
+                _log.warning(
+                    "Responses compaction failed for conversation %s; using local summary",
+                    conversation.id,
+                    exc_info=True,
+                )
+        if compact_state:
+            compacted.context.response_state.update(compact_state)
+            await self.runtime.state.put_response_state(
+                compacted.id, compacted.context.response_state
+            )
+            await compacted.append_items(
+                [
+                    InputMessage(
+                        "developer",
+                        "yuubot",
+                        text_content("The previous context was compacted by the Responses API."),
+                    )
+                ]
+            )
+        else:
+            summary = await self._summarize_for_context_compaction(conversation)
+            await compacted.append_items(
+                [InputMessage("developer", "yuubot", text_content(summary))]
+            )
         self._mailbox_conversation = compacted.id
         self._mailbox_conversation_touched_at = time.time()
         self._mailbox_context_compactions = 1

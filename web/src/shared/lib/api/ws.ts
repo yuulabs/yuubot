@@ -35,6 +35,32 @@ export function sendConversation(
   return commandId;
 }
 
+export interface AskUserAnswerInput {
+  id: string;
+  answer: string;
+}
+
+export function answerConversation(
+  ws: WebSocket,
+  conversationId: string,
+  toolCallId: string,
+  answers: AskUserAnswerInput[],
+  skipped = false,
+  commandId = `answer-${Date.now()}`,
+): string {
+  ws.send(JSON.stringify({
+    id: commandId,
+    type: "conversation.answer",
+    payload: {
+      conversation_id: conversationId,
+      tool_call_id: toolCallId,
+      answers,
+      skipped,
+    },
+  }));
+  return commandId;
+}
+
 export function interruptConversation(ws: WebSocket, conversationId: string, commandId = `interrupt-${Date.now()}`) {
   ws.send(
     JSON.stringify({

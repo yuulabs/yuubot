@@ -199,6 +199,10 @@ export function ConversationDetailPage({
             phase={session.phase}
             scrollResetKey={activeConversationId}
             waitingForResponse={session.waitingForResponse || awaitingFirstSend}
+            onAnswerQuestion={session.answerQuestion}
+            hasOlder={session.hasOlder}
+            loadingOlder={session.loadingOlder}
+            onLoadOlder={session.loadOlder}
           />
           <ChatComposer
             actors={actors}
@@ -220,8 +224,8 @@ export function ConversationDetailPage({
             totalTokens={totalTokens}
             contextUsageLabel={contextUsageLabel}
             canInterrupt={Boolean(interruptTarget)}
-            disabled={Boolean(disabledReason) || upload.isPending}
-            disabledReason={disabledReason}
+            disabled={Boolean(disabledReason) || upload.isPending || session.awaitingInput}
+            disabledReason={session.awaitingInput ? "Answer the pending questions to continue." : disabledReason}
             wsReady={isDraft || session.wsReady}
             wsConnectionState={session.wsConnectionState}
           />

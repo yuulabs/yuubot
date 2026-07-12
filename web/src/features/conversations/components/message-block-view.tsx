@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import {
   BookOpen,
@@ -24,8 +24,146 @@ import {
 } from "@/shared/lib/tool-renderers";
 import type { RenderBlock } from "../lib/conversation-transcript";
 import { toolDisplay } from "../lib/conversation-transcript";
+import { parseJsonMaybe } from "../lib/conversation-transcript";
+import type { AskUserAnswerInput } from "@/shared/lib/api";
 
 type ToolRenderer = (block: RenderBlock) => ReactElement;
+const TOOL_PREVIEW_CHARS = 16_000;
+
+function BoundedPre({ value, className = "msg__tool-pre" }: { value: string; className?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const truncated = value.length > TOOL_PREVIEW_CHARS;
+  const shown = truncated && !expanded
+    ? `${value.slice(0, TOOL_PREVIEW_CHARS)}\n\n… ${value.length - TOOL_PREVIEW_CHARS} more characters`
+    : value;
+  return (
+    <div className="msg__bounded-output">
+      <pre className={className}>{shown}</pre>
+      {truncated && (
+        <button className="button" type="button" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? "Collapse" : "Show full output"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+interface AskUserQuestionView {
+  id: string;
+  header: string;
+  question: string;
+  options: Array<{ label: string; description: string }>;
+}
+
+function askUserQuestions(args: string | undefined): AskUserQuestionView[] {
+  const parsed = parseJsonMaybe(args ?? "{}");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  const questions = (parsed as Record<string, unknown>).questions;
+  if (!Array.isArray(questions)) return [];
+  return questions.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const item = value as Record<string, unknown>;
+    const id = typeof item.id === "string" ? item.id : "";
+    const question = typeof item.question === "string" ? item.question : "";
+    if (!id || !question) return [];
+    const options = Array.isArray(item.options) ? item.options.flatMap((option) => {
+      if (!option || typeof option !== "object" || Array.isArray(option)) return [];
+      const record = option as Record<string, unknown>;
+      if (typeof record.label !== "string" || !record.label) return [];
+      return [{
+        label: record.label,
+        description: typeof record.description === "string" ? record.description : "",
+      }];
+    }) : [];
+    return [{
+      id,
+      question,
+      header: typeof item.header === "string" ? item.header : "",
+      options,
+    }];
+  });
+}
+
+function AskUserRenderer({
+  block,
+  onAnswerQuestion,
+}: {
+  block: RenderBlock;
+  onAnswerQuestion: (toolCallId: string, answers: AskUserAnswerInput[], skipped?: boolean) => boolean;
+}): ReactElement {
+  const questions = askUserQuestions(block.toolArgs);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const completed = block.toolStatus === "completed";
+  const canSubmit = questions.length > 0 && questions.every((question) => answers[question.id]?.trim());
+
+  if (completed) {
+    const result = parseJsonMaybe(block.toolResult ?? "");
+    const skipped = Boolean(result && typeof result === "object" && !Array.isArray(result)
+      && (result as Record<string, unknown>).status === "skipped");
+    return (
+      <div className="msg__ask-user msg__ask-user--completed">
+        <div className="msg__ask-user-title">{skipped ? "Questions skipped" : "Questions answered"}</div>
+        {!skipped && <pre className="msg__tool-pre">{block.toolResult}</pre>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="msg__ask-user">
+      <div className="msg__ask-user-title">The assistant needs your input</div>
+      {questions.map((question) => (
+        <fieldset key={question.id} className="msg__ask-question" disabled={submitting}>
+          {question.header && <legend>{question.header}</legend>}
+          <label htmlFor={`ask-${block.toolCallId}-${question.id}`}>{question.question}</label>
+          {question.options.length > 0 && (
+            <div className="msg__ask-options">
+              {question.options.map((option) => (
+                <button
+                  key={option.label}
+                  type="button"
+                  className={answers[question.id] === option.label ? "button is-selected" : "button"}
+                  title={option.description}
+                  onClick={() => setAnswers((current) => ({ ...current, [question.id]: option.label }))}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <input
+            id={`ask-${block.toolCallId}-${question.id}`}
+            className="input"
+            value={answers[question.id] ?? ""}
+            placeholder="Type your answer"
+            onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+          />
+        </fieldset>
+      ))}
+      <div className="msg__ask-actions">
+        <button
+          type="button"
+          className="button"
+          disabled={submitting}
+          onClick={() => {
+            if (!block.toolCallId || !onAnswerQuestion(block.toolCallId, [], true)) return;
+            setSubmitting(true);
+          }}
+        >Skip</button>
+        <button
+          type="button"
+          className="button button--primary"
+          disabled={submitting || !canSubmit}
+          onClick={() => {
+            if (!block.toolCallId) return;
+            const values = questions.map((question) => ({ id: question.id, answer: answers[question.id].trim() }));
+            if (onAnswerQuestion(block.toolCallId, values)) setSubmitting(true);
+          }}
+        >{submitting ? "Submitting…" : "Submit answers"}</button>
+      </div>
+    </div>
+  );
+}
 
 function pythonHighlightedSegments(line: string): Array<{ text: string; kind: string }> {
   const commentIndex = line.indexOf("#");
@@ -186,7 +324,7 @@ function BashRenderer(block: RenderBlock): ReactElement {
             <SquareTerminal size={14} />
             <span>command</span>
           </div>
-          <pre className="msg__tool-pre">{command}</pre>
+          <BoundedPre value={command} />
         </div>
         <div className="msg__tool-panel msg__tool-panel--result">
           <div className="msg__tool-panel-head">
@@ -195,7 +333,7 @@ function BashRenderer(block: RenderBlock): ReactElement {
           </div>
           {result === null
             ? <PendingToolBanner toolName={display.name} />
-            : <pre className="msg__tool-pre">{result}</pre>}
+            : <BoundedPre value={result} />}
         </div>
       </div>
     </div>
@@ -249,7 +387,7 @@ function ReadRenderer(block: RenderBlock): ReactElement {
       {path && <div className="msg__tool-path" title={path}>{path}</div>}
       {isRunning
         ? <PendingToolBanner toolName="read" />
-        : <pre className="msg__tool-output">{result}</pre>}
+        : <BoundedPre className="msg__tool-output" value={result ?? ""} />}
     </div>
   );
 }
@@ -270,10 +408,10 @@ function WriteRenderer(block: RenderBlock): ReactElement {
         )}
       </div>
       {path && <div className="msg__tool-path" title={path}>{path}</div>}
-      <pre className="msg__tool-pre">{content}</pre>
+      <BoundedPre value={content} />
       {isRunning
         ? <PendingToolBanner toolName="write" />
-        : <pre className="msg__tool-output">{result}</pre>}
+        : <BoundedPre className="msg__tool-output" value={result ?? ""} />}
     </div>
   );
 }
@@ -289,10 +427,12 @@ export function MessageBlockView({
   actorId,
   block,
   isStreaming,
+  onAnswerQuestion,
 }: {
   actorId: string;
   block: RenderBlock;
   isStreaming: boolean;
+  onAnswerQuestion: (toolCallId: string, answers: AskUserAnswerInput[], skipped?: boolean) => boolean;
 }) {
   if (block.type === "thinking") {
     return <ThinkingBlock content={block.content} isStreaming={isStreaming} />;
@@ -300,6 +440,9 @@ export function MessageBlockView({
 
   if (block.type === "tool_group") {
     const display = toolDisplay(block);
+    if (display.name === "ask_user") {
+      return <AskUserRenderer block={block} onAnswerQuestion={onAnswerQuestion} />;
+    }
     const isExecutePython = display.name === "execute_python" || display.name.endsWith(".execute_python");
     const isRunning = isToolRunning(block);
 
@@ -325,7 +468,7 @@ export function MessageBlockView({
                 <PendingToolBanner toolName={display.name} />
               </div>
             ) : (
-              <pre className="msg__tool-output">{formatToolOutput(block.toolResult ?? "")}</pre>
+              <BoundedPre className="msg__tool-output" value={formatToolOutput(block.toolResult ?? "")} />
             )}
           </div>
         </div>
@@ -353,7 +496,7 @@ export function MessageBlockView({
               <SquareTerminal size={14} />
               <span>tool call</span>
             </div>
-            <pre className="msg__tool-pre">{display.argsText}</pre>
+            <BoundedPre value={display.argsText} />
           </div>
           <div className="msg__tool-panel msg__tool-panel--result">
             <div className="msg__tool-panel-head">
@@ -362,7 +505,7 @@ export function MessageBlockView({
             </div>
             {isRunning
               ? <PendingToolBanner toolName={display.name} />
-              : <pre className="msg__tool-pre">{block.toolResult ?? "pending"}</pre>}
+              : <BoundedPre value={block.toolResult ?? "pending"} />}
           </div>
         </div>
       </div>
@@ -373,13 +516,13 @@ export function MessageBlockView({
     return (
       <div className="msg__tool-inline msg__tool-inline--call">
         <div className="msg__tool-inline-title">{block.content}</div>
-        {block.toolArgs && <pre className="msg__tool-pre">{block.toolArgs}</pre>}
+        {block.toolArgs && <BoundedPre value={block.toolArgs} />}
       </div>
     );
   }
 
   if (block.type === "tool_result") {
-    return <pre className="msg__tool-inline msg__tool-inline--result">{block.content}</pre>;
+    return <BoundedPre className="msg__tool-inline msg__tool-inline--result" value={block.content} />;
   }
 
   if (block.type === "error") {

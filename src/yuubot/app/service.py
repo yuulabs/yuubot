@@ -1551,11 +1551,13 @@ class Yuubot:
         conversation_id: str,
         after_seq: int | None = None,
         limit: int | None = None,
+        before_seq: int | None = None,
     ) -> tuple[list[dict[str, object]], bool]:
         return await self.runtime.history.load_interaction_wrapped(
             conversation_id,
             after_seq,
             limit,
+            before_seq,
         )
 
     async def integration_snapshot(

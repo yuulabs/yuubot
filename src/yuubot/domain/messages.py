@@ -89,6 +89,7 @@ class ConversationContext(msgspec.Struct, frozen=True):
     otel: dict[str, object] = msgspec.field(default_factory=dict)
     rpc: dict[str, object] = msgspec.field(default_factory=dict)
     model_supports_vision: bool = False
+    response_state: dict[str, object] = msgspec.field(default_factory=dict)
 
 
 class LLMInput(msgspec.Struct, frozen=True):

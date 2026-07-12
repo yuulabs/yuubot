@@ -11,6 +11,9 @@
 }
 .chat--history-collapsed { grid-template-columns: 42px 1fr; }
 .chat--history-hidden { grid-template-columns: minmax(0, 1fr); }
+.chat__load-older { align-self: center; margin: 0 auto 12px; min-width: 176px; }
+.msg__bounded-output { min-width: 0; }
+.msg__bounded-output > .button { margin-top: 6px; }
 
 /* left rail */
 .chat__rail {
@@ -218,6 +221,29 @@
   color: var(--text-3);
   font-size: 13px;
 }
+
+.msg__ask-user {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.msg__ask-user-title { font-weight: 600; }
+.msg__ask-question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 0;
+  border: 0;
+}
+.msg__ask-question legend { margin-bottom: var(--sp-1); color: var(--text-3); font-size: 12px; }
+.msg__ask-options, .msg__ask-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.msg__ask-actions { justify-content: flex-end; }
+.msg__ask-options .is-selected { border-color: var(--navy); color: var(--navy); }
+.msg__ask-user--completed { color: var(--text-3); }
 .msg--user .msg__bubble {
   --msg-text: #ffffff;
   --msg-muted: rgba(255, 255, 255, 0.72);

@@ -37,6 +37,14 @@ async def test_http_conversation_history_pagination_metadata(test_context: Share
     assert tail_items == full_items[-2:]
     assert all(item["seq"] >= tail["first_seq"] for item in tail_items)
 
+    older = await http_json(
+        "GET",
+        f"{url}/api/conversations/{conversation_id}/history?before_seq={tail['first_seq']}&limit=2",
+    )
+    older_items = cast(list[JsonObject], older["items"])
+    assert older_items == [item for item in full_items if item["seq"] < tail["first_seq"]][-2:]
+    assert all(item["seq"] < tail["first_seq"] for item in older_items)
+
     forward = await http_json(
         "GET",
         f"{url}/api/conversations/{conversation_id}/history?after_seq={tail['last_seq']}",
@@ -47,6 +55,11 @@ async def test_http_conversation_history_pagination_metadata(test_context: Share
     await http_json(
         "GET",
         f"{url}/api/conversations/{conversation_id}/history?after_seq=-1",
+        expected_status=400,
+    )
+    await http_json(
+        "GET",
+        f"{url}/api/conversations/{conversation_id}/history?after_seq=1&before_seq=2",
         expected_status=400,
     )
     await http_json(

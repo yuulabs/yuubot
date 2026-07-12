@@ -32,6 +32,7 @@ export interface ConversationDetail {
 
 export interface ConversationHistoryQuery {
   after_seq?: number;
+  before_seq?: number;
   limit?: number;
 }
 
@@ -46,6 +47,9 @@ export function getConversationHistory(
   const params = new URLSearchParams();
   if (query.after_seq !== undefined) {
     params.set("after_seq", String(query.after_seq));
+  }
+  if (query.before_seq !== undefined) {
+    params.set("before_seq", String(query.before_seq));
   }
   if (query.limit !== undefined) {
     params.set("limit", String(query.limit));

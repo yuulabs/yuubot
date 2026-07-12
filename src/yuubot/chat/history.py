@@ -42,7 +42,9 @@ _TYPES: Final[dict[str, type[HistoryItem]]] = {
     "tool_result": ToolResult,
 }
 
-_KINDS: Final[dict[type[HistoryItem], str]] = {type_: kind for kind, type_ in _TYPES.items()}
+_KINDS: Final[dict[type[HistoryItem], str]] = {
+    type_: kind for kind, type_ in _TYPES.items()
+}
 
 PREFIX_KINDS: Final[frozenset[str]] = frozenset({"tool_specs", "system_prompt"})
 _INTERACTION_KIND_FILTER = "kind not in ('tool_specs', 'system_prompt')"
@@ -63,10 +65,14 @@ class HistoryStore:
     def path(self) -> Path:
         return self._db.path
 
-    async def append(self, conversation_id: str, item: HistoryItem) -> dict[str, object]:
+    async def append(
+        self, conversation_id: str, item: HistoryItem
+    ) -> dict[str, object]:
         return (await self.extend(conversation_id, [item]))[0]
 
-    async def extend(self, conversation_id: str, items: Sequence[HistoryItem]) -> list[dict[str, object]]:
+    async def extend(
+        self, conversation_id: str, items: Sequence[HistoryItem]
+    ) -> list[dict[str, object]]:
         if not items:
             return []
         created_at = utc_now_iso()
@@ -80,13 +86,24 @@ class HistoryStore:
             assert row is not None
             seq = int(row[0])
             for item in items:
-                rows.append((conversation_id, seq, _kind(item), msgspec.json.encode(item), created_at))
+                rows.append(
+                    (
+                        conversation_id,
+                        seq,
+                        _kind(item),
+                        msgspec.json.encode(item),
+                        created_at,
+                    )
+                )
                 seq += 1
             await self._db.executemany(
                 "insert into history (conversation_id, seq, kind, payload, created_at) values (?, ?, ?, ?, ?)",
                 rows,
             )
-        return [_wrapped(seq, kind, payload, created_at) for _, seq, kind, payload, created_at in rows]
+        return [
+            _wrapped(seq, kind, payload, created_at)
+            for _, seq, kind, payload, created_at in rows
+        ]
 
     async def load(self, conversation_id: str) -> list[HistoryItem]:
         cursor = await self._db.execute(
@@ -94,9 +111,13 @@ class HistoryStore:
             (conversation_id,),
         )
         rows = await cursor.fetchall()
-        return [msgspec.json.decode(payload, type=_TYPES[kind]) for kind, payload in rows]
+        return [
+            msgspec.json.decode(payload, type=_TYPES[kind]) for kind, payload in rows
+        ]
 
-    async def conversation_meta(self, conversation_id: str) -> ConversationHistoryMeta | None:
+    async def conversation_meta(
+        self, conversation_id: str
+    ) -> ConversationHistoryMeta | None:
         cursor = await self._db.execute(
             """
             select sum(case when kind in ('tool_specs', 'system_prompt') then 0 else 1 end),
@@ -147,14 +168,20 @@ class HistoryStore:
             (conversation_id,),
         )
         rows = await cursor.fetchall()
-        return [_wrapped(seq, kind, payload, created_at) for seq, kind, payload, created_at in rows]
+        return [
+            _wrapped(seq, kind, payload, created_at)
+            for seq, kind, payload, created_at in rows
+        ]
 
     async def load_interaction_wrapped(
         self,
         conversation_id: str,
         after_seq: int | None = None,
         limit: int | None = None,
+        before_seq: int | None = None,
     ) -> tuple[list[dict[str, object]], bool]:
+        if after_seq is not None and before_seq is not None:
+            raise ValueError("after_seq and before_seq are mutually exclusive")
         if after_seq is None and limit is None:
             items = await self._load_interaction_rows(conversation_id)
             return items, False
@@ -169,6 +196,18 @@ class HistoryStore:
             if limit is not None and len(rows) == limit:
                 last_seq = cast(int, rows[-1]["seq"])
                 has_more = await self._has_interaction_after(conversation_id, last_seq)
+            return rows, has_more
+        if before_seq is not None:
+            rows = await self._load_interaction_rows(
+                conversation_id,
+                before_seq=before_seq,
+                limit=limit,
+                descending=True,
+            )
+            rows.reverse()
+            has_more = bool(rows) and await self._has_interaction_before(
+                conversation_id, cast(int, rows[0]["seq"])
+            )
             return rows, has_more
         rows = await self._load_interaction_rows(
             conversation_id,
@@ -186,6 +225,7 @@ class HistoryStore:
         self,
         conversation_id: str,
         after_seq: int | None = None,
+        before_seq: int | None = None,
         limit: int | None = None,
         descending: bool = False,
     ) -> list[dict[str, object]]:
@@ -197,13 +237,19 @@ class HistoryStore:
         if after_seq is not None:
             query += " and seq > ?"
             params.append(after_seq)
+        if before_seq is not None:
+            query += " and seq < ?"
+            params.append(before_seq)
         query += " order by seq desc" if descending else " order by seq asc"
         if limit is not None:
             query += " limit ?"
             params.append(limit)
         cursor = await self._db.execute(query, tuple(params))
         rows = await cursor.fetchall()
-        return [_wrapped(seq, kind, payload, created_at) for seq, kind, payload, created_at in rows]
+        return [
+            _wrapped(seq, kind, payload, created_at)
+            for seq, kind, payload, created_at in rows
+        ]
 
     async def _has_interaction_before(self, conversation_id: str, seq: int) -> bool:
         cursor = await self._db.execute(
@@ -230,7 +276,9 @@ class HistoryStore:
         return await cursor.fetchone() is not None
 
     async def delete(self, conversation_id: str) -> bool:
-        cursor = await self._db.execute("delete from history where conversation_id = ?", (conversation_id,))
+        cursor = await self._db.execute(
+            "delete from history where conversation_id = ?", (conversation_id,)
+        )
         await self._db.commit()
         return cursor.rowcount > 0
 
@@ -269,9 +317,15 @@ class HistoryHelper:
         self.items.extend(items)
 
     def interaction_items(self) -> list[HistoryItem]:
-        return [item for item in self.items if not isinstance(item, (HistoryToolSpecs, SystemPrompt))]
+        return [
+            item
+            for item in self.items
+            if not isinstance(item, (HistoryToolSpecs, SystemPrompt))
+        ]
 
-    def to_llm_input(self) -> LLMInput:
+    def to_llm_input(
+        self, extra_tool_specs: list[dict[str, object]] | None = None
+    ) -> LLMInput:
         specs: list[dict[str, object]] = []
         messages: list[HistoryItem] = []
         for item in self.items:
@@ -279,14 +333,18 @@ class HistoryHelper:
                 specs = item.specs
             elif isinstance(item, SystemPrompt):
                 messages.append(
-                    InputMessage("developer", "yuubot", [ContentItem("text", item.text)])
+                    InputMessage(
+                        "developer", "yuubot", [ContentItem("text", item.text)]
+                    )
                 )
             else:
                 messages.append(item)
-        return LLMInput(specs, messages)
+        return LLMInput([*specs, *(extra_tool_specs or [])], messages)
 
 
-def _with_current_tool_specs(items: list[HistoryItem], specs: list[dict[str, object]]) -> list[HistoryItem]:
+def _with_current_tool_specs(
+    items: list[HistoryItem], specs: list[dict[str, object]]
+) -> list[HistoryItem]:
     current = HistoryToolSpecs(specs)
     replaced = False
     result: list[HistoryItem] = []

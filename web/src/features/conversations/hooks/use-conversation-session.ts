@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
   connectWs,
+  CONVERSATION_HISTORY_PAGE_SIZE,
+  getConversationHistory,
+  answerConversation,
   interruptConversation,
   openConversation,
   sendConversation,
   type WsContentItem,
+  type AskUserAnswerInput,
 } from "@/shared/lib/api";
 import { describeWsError } from "@/shared/lib/api-errors";
 import type { HistoryItem } from "@/shared/types/api";
@@ -62,6 +66,7 @@ export function useConversationSession({
   const [wsConnectionState, setWsConnectionState] = useState<WsConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [events, setEvents] = useState<string[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   conversationIdRef.current = conversationId;
   onTurnCompleteRef.current = onTurnComplete;
@@ -93,7 +98,7 @@ export function useConversationSession({
       const frame = parseFrame(message.data);
       if (!frame) return;
       if (development) {
-        setEvents((current) => [...current.slice(-99), JSON.stringify(frame, null, 2)]);
+        setEvents((current) => [...current.slice(-99), summarizeFrame(frame, message.data.length)]);
       }
       const payload = frame.payload;
       if (payload?.conversation_id !== conversationIdRef.current) {
@@ -105,12 +110,19 @@ export function useConversationSession({
       }
 
       if (frame.type === "conversation.snapshot") {
-        const prefix = parseHistoryItems(payload.prefix);
+        const prefix = parseHistoryItems(payload.history);
         const livingChunks = parseStreamChunks(payload.living_chunks);
         const version = numericVersion(payload.version);
         localVersionRef.current = version;
         resubscribingRef.current = false;
-        dispatch({ type: "snapshot", prefix, livingChunks, version });
+        dispatch({
+          type: "snapshot",
+          prefix,
+          livingChunks,
+          version,
+          hasOlder: payload.has_older === true,
+          firstSeq: typeof payload.first_seq === "number" ? payload.first_seq : null,
+        });
         setWsReady(true);
         setError(null);
         const ws = wsRef.current;
@@ -215,8 +227,36 @@ export function useConversationSession({
     if (ws?.readyState === WebSocket.OPEN && targetId) interruptConversation(ws, targetId);
   }, []);
 
+  const answerQuestion = useCallback((toolCallId: string, answers: AskUserAnswerInput[], skipped = false) => {
+    const ws = wsRef.current;
+    const targetId = conversationIdRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !wsReady || !targetId) return false;
+    setError(null);
+    answerConversation(ws, targetId, toolCallId, answers, skipped);
+    return true;
+  }, [wsReady]);
+
+  const loadOlder = useCallback(async () => {
+    const targetId = conversationIdRef.current;
+    if (!targetId || transcript.firstSeq === null || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await getConversationHistory(targetId, {
+        before_seq: transcript.firstSeq,
+        limit: CONVERSATION_HISTORY_PAGE_SIZE,
+      });
+      dispatch({ type: "prepend", items: page.items, hasOlder: page.has_more, firstSeq: page.first_seq });
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [loadingOlder, transcript.firstSeq]);
+
   const liveBlocks = transcriptDisplayItems({ ...transcript, prefix: [] })
     .flatMap((item) => item.blocks);
+  const displayItems = useMemo(() => transcriptDisplayItems(transcript), [transcript]);
+  const awaitingInput = displayItems.some((item) => item.blocks.some(
+    (block) => block.toolName === "ask_user" && block.toolStatus !== "completed",
+  ));
   const phase: ConversationPhase = transcript.pendingUser
     ? "sending"
     : transcript.continues
@@ -232,11 +272,25 @@ export function useConversationSession({
     events,
     activeConversationId: isDraft ? "" : conversationId,
     turnKey: "",
-    displayItems: transcriptDisplayItems(transcript),
+    displayItems,
+    hasOlder: transcript.hasOlder,
+    loadingOlder,
+    loadOlder,
+    awaitingInput,
     waitingForResponse: phase === "sending" && liveBlocks.length === 0,
     send,
     interrupt,
+    answerQuestion,
   };
+}
+
+function summarizeFrame(frame: WsFrame, bytes: number): string {
+  const payload = frame.payload ?? {};
+  const version = typeof payload.version === "number" ? ` v${payload.version}` : "";
+  const count = Array.isArray(payload.history)
+    ? ` history=${payload.history.length}`
+    : Array.isArray(payload.append) ? ` append=${payload.append.length}` : "";
+  return `${frame.type ?? "unknown"}${version}${count} (${bytes} bytes)`;
 }
 
 function parseFrame(raw: string): WsFrame | null {

@@ -269,26 +269,27 @@ def _request_debug_summary(
     tool_specs: list[dict[str, object]],
 ) -> dict[str, object]:
     """Return safe request shape diagnostics without prompt or secret contents."""
-    return {
-        "message_count": len(messages),
-        "messages": [
+    message_summaries: list[dict[str, object]] = []
+    for message in messages:
+        content = message.get("content")
+        tool_calls = message.get("tool_calls")
+        message_summaries.append(
             {
                 "role": message.get("role"),
-                "content_type": type(message.get("content")).__name__,
-                "content_length": len(message.get("content") or "")
-                if isinstance(message.get("content"), str)
-                else None,
-                "tool_call_count": len(message.get("tool_calls") or [])
-                if isinstance(message.get("tool_calls"), list)
-                else 0,
+                "content_type": type(content).__name__,
+                "content_length": len(content) if isinstance(content, str) else None,
+                "tool_call_count": len(tool_calls) if isinstance(tool_calls, list) else 0,
             }
-            for message in messages
-        ],
+        )
+    names: list[str] = []
+    for tool in tool_specs:
+        function = tool.get("function")
+        names.append(str(function.get("name", "")) if isinstance(function, dict) else "")
+    return {
+        "message_count": len(messages),
+        "messages": message_summaries,
         "tool_count": len(tool_specs),
-        "tool_names": [
-            str((tool.get("function") or {}).get("name", ""))
-            for tool in tool_specs
-        ],
+        "tool_names": names,
     }
 
 
@@ -444,25 +445,42 @@ class EndpointClient:
                 "interrupted", usage, _with_gateway_latency({}, started)
             )
             return
+        emitted = False
+        try:
+            async for event in self._responses_events(
+                input, model, context, metadata, stop_event, started
+            ):
+                emitted = True
+                yield event
+            return
+        except Exception as exc:
+            mapped = exc if isinstance(exc, GatewayError) else _map_openai_error(exc)
+            if emitted or mapped.code not in _RESPONSES_FALLBACK_ERROR_CODES:
+                raise mapped from exc
+            _log.info(
+                "Responses API unavailable; falling back to Chat Completions "
+                "endpoint=%s model=%s error=%s",
+                self.config.id,
+                model,
+                mapped.code,
+            )
+            context.response_state.clear()
+
         try:
             upstream = await self._completion_stream(
                 input, model, context, cache, metadata
             )
-        except GatewayError:
-            raise
         except Exception as exc:
             raise _map_openai_error(exc) from exc
 
         tool_state = ToolStreamState()
         finish_reason: StopReason = "stop"
-        account: dict[str, object] = {}
+        account: dict[str, object] = {"protocol": "chat"}
         try:
             async for chunk in upstream:
                 if stop_event.is_set():
                     yield stream_stop_event(
-                        "interrupted",
-                        usage,
-                        _with_gateway_latency(account, started),
+                        "interrupted", usage, _with_gateway_latency(account, started)
                     )
                     return
                 for event in _events_from_chunk(chunk, tool_state):
@@ -482,10 +500,192 @@ class EndpointClient:
             yield StreamEvent(f"tool-{index}", "tool_arguments_end")
 
         yield stream_stop_event(
-            finish_reason,
-            usage,
-            _with_gateway_latency(account, started),
+            finish_reason, usage, _with_gateway_latency(account, started)
         )
+
+    async def _responses_events(
+        self,
+        input: LLMInput,
+        model: str,
+        context: ConversationContext,
+        metadata: dict[str, str] | None,
+        stop_event: asyncio.Event,
+        started: float,
+    ) -> AsyncIterator[StreamEvent]:
+        state = context.response_state
+        if (
+            state.get("endpoint_id") not in (None, self.config.id)
+            or state.get("model") not in (None, model)
+        ):
+            state.clear()
+        cursor_value = state.get("history_cursor", 0)
+        cursor = int(cursor_value) if isinstance(cursor_value, (int, str)) else 0
+        response_id = str(state.get("response_id", ""))
+        if response_id and cursor <= len(input.messages):
+            messages = _response_delta(input.messages, cursor, context.workspace, CachePool())
+        else:
+            messages = _response_items(input.messages, context.workspace, CachePool())
+            compacted = state.get("compacted_input")
+            if isinstance(compacted, list):
+                messages = [*compacted, *messages]
+
+        options: dict[str, Any] = {
+            "model": model,
+            "input": messages,
+            "stream": True,
+            "store": True,
+        }
+        if response_id:
+            options["previous_response_id"] = response_id
+        if input.tool_specs:
+            options["tools"] = _response_tools(input.tool_specs)
+        if metadata:
+            options["metadata"] = metadata
+        response_stream = await self._sdk_client().responses.create(**options)
+        if not hasattr(response_stream, "__aiter__"):
+            raise GatewayError("gateway_request_failed", "Responses API returned a non-stream")
+
+        tool_names: dict[str, str] = {}
+        tool_groups: dict[str, str] = {}
+        tool_arguments: dict[str, str] = {}
+        account: dict[str, object] = {"protocol": "responses"}
+        usage = Usage()
+        finish_reason: StopReason = "stop"
+
+        async for event in response_stream:
+            event_type = str(getattr(event, "type", ""))
+            if stop_event.is_set():
+                yield stream_stop_event(
+                    "interrupted", usage, _with_gateway_latency(account, started)
+                )
+                return
+            if event_type == "response.output_text.delta":
+                text = getattr(event, "delta", "")
+                if text:
+                    yield StreamEvent("text-0", "text_delta", TextDeltaPayload(text))
+            elif event_type in {
+                "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
+            }:
+                text = getattr(event, "delta", "")
+                if text:
+                    yield StreamEvent(
+                        "reasoning-0", "reasoning_delta", ReasoningDeltaPayload(text)
+                    )
+            elif event_type == "response.output_item.added":
+                item = getattr(event, "item", None)
+                if getattr(item, "type", "") == "function_call":
+                    call_id = str(getattr(item, "call_id", "") or getattr(item, "id", ""))
+                    name = str(getattr(item, "name", ""))
+                    group = f"tool-{getattr(event, 'output_index', 0)}"
+                    tool_groups[call_id] = group
+                    tool_names[call_id] = name
+                    if name:
+                        yield StreamEvent(
+                            group,
+                            "tool_name",
+                            ToolNamePayload(id=call_id, name=name),
+                        )
+            elif event_type == "response.function_call_arguments.delta":
+                call_id = str(getattr(event, "call_id", "") or getattr(event, "item_id", ""))
+                group = tool_groups.setdefault(
+                    call_id, f"tool-{getattr(event, 'output_index', 0)}"
+                )
+                delta = str(getattr(event, "delta", "") or "")
+                if delta:
+                    tool_arguments[call_id] = tool_arguments.get(call_id, "") + delta
+                    yield StreamEvent(
+                        group, "tool_arguments_delta", ToolArgumentsDeltaPayload(delta)
+                    )
+            elif event_type == "response.function_call_arguments.done":
+                call_id = str(getattr(event, "call_id", "") or getattr(event, "item_id", ""))
+                group = tool_groups.setdefault(
+                    call_id, f"tool-{getattr(event, 'output_index', 0)}"
+                )
+                arguments = str(getattr(event, "arguments", "") or "")
+                if arguments and not tool_arguments.get(call_id):
+                    yield StreamEvent(
+                        group,
+                        "tool_arguments_delta",
+                        ToolArgumentsDeltaPayload(arguments),
+                    )
+                yield StreamEvent(group, "tool_arguments_end")
+            elif event_type == "response.completed":
+                response = getattr(event, "response", None)
+                if response is not None:
+                    response_id_value = str(getattr(response, "id", "") or "")
+                    if response_id_value:
+                        state.update(
+                            endpoint_id=self.config.id,
+                            model=model,
+                            protocol="responses",
+                            response_id=response_id_value,
+                            history_cursor=len(input.messages),
+                        )
+                        account["response_id"] = response_id_value
+                    response_model = getattr(response, "model", None)
+                    if response_model:
+                        account["model"] = response_model
+                    raw_usage = getattr(response, "usage", None)
+                    if raw_usage is not None:
+                        usage = _usage_from_chunk(raw_usage)
+                    output = getattr(response, "output", []) or []
+                    for item in output:
+                        if getattr(item, "type", "") == "function_call":
+                            finish_reason = "tool_calls"
+                            call_id = str(
+                                getattr(item, "call_id", "") or getattr(item, "id", "")
+                            )
+                            if call_id not in tool_groups:
+                                group = f"tool-{len(tool_groups)}"
+                                tool_groups[call_id] = group
+                                yield StreamEvent(
+                                    group,
+                                    "tool_name",
+                                    ToolNamePayload(
+                                        id=call_id, name=str(getattr(item, "name", ""))
+                                    ),
+                                )
+                                arguments = str(getattr(item, "arguments", "") or "")
+                                if arguments:
+                                    yield StreamEvent(
+                                        group,
+                                        "tool_arguments_delta",
+                                        ToolArgumentsDeltaPayload(arguments),
+                                    )
+                                yield StreamEvent(group, "tool_arguments_end")
+                yield stream_stop_event(
+                    finish_reason, usage, _with_gateway_latency(account, started)
+                )
+                return
+            elif event_type in {"response.failed", "response.incomplete"}:
+                raise GatewayError("gateway_request_failed", f"Responses API {event_type}")
+        raise GatewayError("gateway_request_failed", "Responses API stream ended without completion")
+
+    async def compact(
+        self, input: LLMInput, model: str, context: ConversationContext
+    ) -> dict[str, object]:
+        options: dict[str, object] = {
+            "model": model,
+            "input": _response_items(input.messages, context.workspace, CachePool()),
+        }
+        try:
+            compacted = await cast(Any, self._sdk_client().responses.compact)(**options)
+        except Exception as exc:
+            raise _map_openai_error(exc) from exc
+        raw = compacted.model_dump(mode="json")
+        output = raw.get("output")
+        if not isinstance(output, list) or not output:
+            raise GatewayError("gateway_request_failed", "Responses compact returned no items")
+        return {
+            "protocol": "responses",
+            "endpoint_id": self.config.id,
+            "model": model,
+            "response_id": "",
+            "history_cursor": 0,
+            "compacted_input": output,
+            "compact_supported": True,
+        }
 
     async def _completion_stream(
         self,
@@ -520,7 +720,7 @@ class EndpointClient:
                     _request_debug_summary(messages, input.tool_specs),
                 )
             raise
-        return completion
+        return cast(AsyncStream[ChatCompletionChunk], completion)
 
     async def hosted_search(
         self,
@@ -643,6 +843,7 @@ _FALLBACK_ERROR_CODES = {
     "gateway_temporarily_unavailable",
     "gateway_unreachable",
 }
+_RESPONSES_FALLBACK_ERROR_CODES = _FALLBACK_ERROR_CODES | {"gateway_request_failed"}
 
 
 @define
@@ -726,6 +927,28 @@ class GatewayClient:
         if last_error is not None:
             raise last_error
         raise GatewayError("gateway_model_unavailable", "no Gateway target is available")
+
+    async def compact(
+        self,
+        input: LLMInput,
+        model: ModelSelector | str,
+        context: ConversationContext,
+    ) -> dict[str, object]:
+        endpoint_id = context.response_state.get("endpoint_id")
+        target: AliasTarget | None = None
+        if isinstance(endpoint_id, str) and endpoint_id:
+            selected_model = context.response_state.get("model")
+            if isinstance(selected_model, str) and selected_model:
+                target = AliasTarget(endpoint_id, selected_model)
+        if target is None:
+            targets = self._targets(model, _input_modalities(input))
+            if not targets:
+                raise GatewayError("gateway_model_unavailable", "no Gateway target is available")
+            target = targets[0]
+        client = self.endpoints.get(target.endpoint_id)
+        if client is None:
+            raise GatewayError("gateway_model_unavailable", "endpoint is unavailable")
+        return await client.compact(input, target.model, context)
 
     def _targets(
         self,
@@ -875,10 +1098,20 @@ def _normalize_citations(value: object) -> list[HostedSearchCitation]:
 
 
 def _usage_from_chunk(usage: object) -> Usage:
-    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-    input_details = _numeric_details(getattr(usage, "prompt_tokens_details", None))
-    output_details = _numeric_details(getattr(usage, "completion_tokens_details", None))
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    if prompt_tokens is None:
+        prompt_tokens = getattr(usage, "input_tokens", 0)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if completion_tokens is None:
+        completion_tokens = getattr(usage, "output_tokens", 0)
+    input_details = _numeric_details(
+        getattr(usage, "prompt_tokens_details", None)
+        or getattr(usage, "input_tokens_details", None)
+    )
+    output_details = _numeric_details(
+        getattr(usage, "completion_tokens_details", None)
+        or getattr(usage, "output_tokens_details", None)
+    )
     cached = int(input_details.get("cached_tokens", 0))
     cache_write = int(
         input_details.get("cache_write_tokens", 0)
@@ -886,10 +1119,10 @@ def _usage_from_chunk(usage: object) -> Usage:
         or input_details.get("cache_creation_input_tokens", 0)
     )
     return Usage(
-        int(prompt_tokens),
+        int(prompt_tokens or 0),
         int(cached),
         cache_write,
-        int(completion_tokens),
+        int(completion_tokens or 0),
         input_details,
         output_details,
     )
@@ -1004,6 +1237,94 @@ def _messages(
             )
     flush_assistant()
     return cast(list[ChatCompletionMessageParam], messages)
+
+
+def _response_delta(
+    history: list[HistoryItem],
+    cursor: int,
+    workspace: Path,
+    cache: CachePool,
+) -> list[dict[str, object]]:
+    """Encode only new user/tool input after a stored Responses response."""
+    return _response_items(
+        [
+            item
+            for item in history[cursor:]
+            if isinstance(item, (InputMessage, ToolResult))
+        ],
+        workspace,
+        cache,
+    )
+
+
+def _response_items(
+    history: list[HistoryItem], workspace: Path, cache: CachePool
+) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for item in history:
+        if isinstance(item, InputMessage):
+            items.append(
+                {
+                    "role": item.role,
+                    "content": _response_content(item.content, workspace, cache),
+                }
+            )
+        elif isinstance(item, ToolResult):
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": item.tool_call_id,
+                    "output": _content_text(item.content),
+                }
+            )
+    return items
+
+
+def _response_content(
+    content: list[ContentItem],
+    workspace: Path,
+    cache: CachePool,
+) -> str | list[dict[str, object]]:
+    parts: list[dict[str, object]] = []
+    for item in content:
+        if item.kind == "text" and item.text:
+            parts.append({"type": "input_text", "text": item.text})
+        elif item.kind == "image" and item.url:
+            parts.append({"type": "input_image", "image_url": item.url})
+        elif item.kind == "image" and item.path:
+            parts.append(
+                {
+                    "type": "input_image",
+                    "image_url": _image_data_url(item, workspace, cache),
+                }
+            )
+    if not parts:
+        return ""
+    if len(parts) == 1 and parts[0]["type"] == "input_text":
+        return cast(str, parts[0]["text"])
+    return parts
+
+
+def _content_text(content: list[ContentItem]) -> str:
+    return "\n".join(item.text for item in content if item.kind == "text")
+
+
+def _response_tools(tool_specs: list[dict[str, object]]) -> list[dict[str, object]]:
+    tools: list[dict[str, object]] = []
+    for tool in tool_specs:
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        response_tool: dict[str, object] = {
+            "type": "function",
+            "name": function.get("name", ""),
+            "description": function.get("description", ""),
+            "parameters": function.get("parameters", {}),
+        }
+        if "strict" in function:
+            response_tool["strict"] = function["strict"]
+        tools.append(response_tool)
+    return tools
 
 
 def _input_content(

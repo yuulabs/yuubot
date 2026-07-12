@@ -47,6 +47,30 @@ async def test_conversation_frames_preserve_snapshot_delta_commit_order() -> Non
 
 
 @pytest.mark.asyncio
+async def test_conversation_snapshot_sends_bounded_history_tail() -> None:
+    sent: list[dict[str, object]] = []
+
+    async def send(payload: dict[str, object]) -> None:
+        sent.append(payload)
+
+    listener = WsListener(send)
+    listener._ensure_conversation_worker()
+    history = [{"seq": seq, "kind": "gen_text", "payload": {"text": str(seq)}} for seq in range(250)]
+    await listener.on_snapshot("conv-1", ConversationSnapshot(history, [], 7))
+    await asyncio.sleep(0)
+
+    payload = cast(dict[str, object], sent[0]["payload"])
+    tail = cast(list[dict[str, object]], payload["history"])
+    assert len(tail) == 200
+    assert tail[0]["seq"] == 50
+    assert payload["has_older"] is True
+    assert payload["first_seq"] == 50
+    assert payload["last_seq"] == 249
+    assert "prefix" not in payload
+    await listener.close()
+
+
+@pytest.mark.asyncio
 async def test_conversation_queue_overflow_retains_newest_version_for_gap_recovery() -> None:
     sent: list[dict[str, object]] = []
 

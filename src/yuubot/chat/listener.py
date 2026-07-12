@@ -14,6 +14,7 @@ from ..runtime.events import RuntimeEvent
 
 WSCommandSend = Callable[[dict[str, object]], Awaitable[None]]
 CONVERSATION_QUEUE_SIZE = 256
+SNAPSHOT_HISTORY_LIMIT = 200
 
 
 def _wire_event_payload(payload: object) -> dict[str, object]:
@@ -56,14 +57,18 @@ class WsListener:
             conversation.unsubscribe(self)
 
     async def on_snapshot(self, conversation_id: str, snapshot: ConversationSnapshot) -> None:
+        prefix = snapshot.prefix[-SNAPSHOT_HISTORY_LIMIT:]
         self._enqueue_conversation_frame(
             {
                 "type": "conversation.snapshot",
                 "payload": {
                     "conversation_id": conversation_id,
-                    "prefix": snapshot.prefix,
+                    "history": prefix,
                     "living_chunks": [msgspec.to_builtins(chunk) for chunk in snapshot.living_chunks],
                     "version": snapshot.version,
+                    "has_older": len(snapshot.prefix) > len(prefix),
+                    "first_seq": prefix[0].get("seq") if prefix else None,
+                    "last_seq": prefix[-1].get("seq") if prefix else None,
                 },
             },
             reset=True,

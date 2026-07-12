@@ -3,6 +3,7 @@ import pytest
 
 from yuubot.web.ws_commands import (
     ConversationCloseCommand,
+    ConversationAnswerCommand,
     ConversationOpenCommand,
     ConversationInterruptCommand,
     ConversationSendCommand,
@@ -23,6 +24,15 @@ def test_decode_conversation_send() -> None:
     assert command.id == "cmd-1"
     assert command.payload.actor_id == "amy"
     assert command.payload.content[0].text == "hi"
+
+
+def test_decode_conversation_answer() -> None:
+    command = msgspec.json.decode(
+        b'{"type":"conversation.answer","id":"a1","payload":{"conversation_id":"c1","tool_call_id":"t1","answers":[{"id":"q1","answer":"yes"}]}}',
+        type=WSCommand,
+    )
+    assert isinstance(command, ConversationAnswerCommand)
+    assert command.id == "a1"
 
 
 def test_decode_runtime_events_subscribe() -> None:

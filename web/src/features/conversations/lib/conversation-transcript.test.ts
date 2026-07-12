@@ -1001,6 +1001,8 @@ test("transcript reducer replaces living chunks with committed history", () => {
     version: 1,
   });
   const liveItems = transcriptDisplayItems(state);
+  assert.equal("livingChunks" in state, false);
+  assert.equal(state.liveBlocks.length, 1);
   assert.equal(liveItems[1]?.key, "turn:0:actor");
   assert.equal(liveItems[1]?.blocks[0]?.content, "partial");
 

@@ -461,6 +461,31 @@ class ApplicationStateStore:
         await self._db.commit()
         return conversation.rowcount > 0 or usage.rowcount > 0
 
+    async def get_response_state(self, conversation_id: str) -> dict[str, object]:
+        cursor = await self._db.execute(
+            "select payload from app_conversation_response_state where conversation_id = ?",
+            (conversation_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return {}
+        return dict(msgspec.json.decode(row[0], type=dict[str, object]))
+
+    async def put_response_state(
+        self, conversation_id: str, state: dict[str, object]
+    ) -> None:
+        await self._db.execute(
+            """
+            insert into app_conversation_response_state (conversation_id, payload, updated_at)
+            values (?, ?, ?)
+            on conflict(conversation_id) do update set
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (conversation_id, msgspec.json.encode(state), utc_now_iso()),
+        )
+        await self._db.commit()
+
     # --- usage -------------------------------------------------------------------
 
     async def append_usage(self, conversation_id: str, usage: Usage, account: dict[str, object]) -> UsageRow:

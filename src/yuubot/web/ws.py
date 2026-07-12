@@ -13,13 +13,21 @@ import msgspec
 
 from ..app import Yuubot
 from ..runtime.tasks import TaskNotRunningError
-from ..chat import ConversationBlocked, ConversationBusy
-from ..domain.messages import InputMessage
+from ..chat import (
+    ConversationBlocked,
+    ConversationBusy,
+    Conversation,
+    InvalidQuestionAnswers,
+    QuestionNotPending,
+)
+from ..domain.messages import InputMessage, ToolResult
 from ..chat.listener import WsListener
 from .errors import internal_error_detail, internal_error_message, log_internal_error
 from .types import WSCommandSend
 from .ws_commands import (
     ConversationCloseCommand,
+    ConversationAnswerCommand,
+    ConversationAnswerPayload,
     ConversationOpenCommand,
     ConversationOpenPayload,
     ConversationInterruptCommand,
@@ -52,11 +60,21 @@ async def handle_ws_command(
         return None
     match command:
         case ConversationSendCommand(id=command_id, payload=payload):
-            return await _start_conversation_send(app, send, ws_listener, command_id, payload)
+            return await _start_conversation_send(
+                app, send, ws_listener, command_id, payload
+            )
+        case ConversationAnswerCommand(id=command_id, payload=payload):
+            return await _start_conversation_answer(
+                app, send, ws_listener, command_id, payload
+            )
         case RuntimeEventsSubscribeCommand(id=command_id, payload=payload):
-            return asyncio.create_task(_runtime_events_subscribe(send, ws_listener, command_id, payload))
+            return asyncio.create_task(
+                _runtime_events_subscribe(send, ws_listener, command_id, payload)
+            )
         case ConversationOpenCommand(id=command_id, payload=payload):
-            return asyncio.create_task(_conversation_open(app, send, ws_listener, command_id, payload))
+            return asyncio.create_task(
+                _conversation_open(app, send, ws_listener, command_id, payload)
+            )
         case ConversationCloseCommand(id=command_id, payload=payload):
             ws_listener.close_conversation(payload.conversation_id)
             await send(
@@ -68,7 +86,9 @@ async def handle_ws_command(
             )
             return None
         case TaskSubscribeCommand(id=command_id, payload=payload):
-            return asyncio.create_task(_task_subscribe(app, send, ws_listener, command_id, payload))
+            return asyncio.create_task(
+                _task_subscribe(app, send, ws_listener, command_id, payload)
+            )
         case TaskStdinCommand(id=command_id, payload=payload):
             return asyncio.create_task(_task_stdin(app, send, command_id, payload))
         case ConversationInterruptCommand(id=command_id, payload=payload):
@@ -77,7 +97,10 @@ async def handle_ws_command(
                 {
                     "id": command_id,
                     "type": "conversation.interrupt.result",
-                    "payload": {"conversation_id": conversation_id, "interrupted": app.interrupt(conversation_id)},
+                    "payload": {
+                        "conversation_id": conversation_id,
+                        "interrupted": app.interrupt(conversation_id),
+                    },
                 }
             )
             return None
@@ -87,8 +110,15 @@ async def handle_ws_command(
                 await send_error(send, command_id, "not_found", "task not found")
                 return None
             app.runtime.cancel_runtime_task(task_id)
-            await send({"id": command_id, "type": "task.cancel.result", "payload": app.task_snapshot(task_id)})
+            await send(
+                {
+                    "id": command_id,
+                    "type": "task.cancel.result",
+                    "payload": app.task_snapshot(task_id),
+                }
+            )
             return None
+    return None
 
 
 async def _start_conversation_send(
@@ -104,18 +134,40 @@ async def _start_conversation_send(
         await send_error(send, command_id, "not_found", "actor not found")
         return None
     if not payload.content:
-        await send_error(send, command_id, "bad_request", "at least one content item is required")
+        await send_error(
+            send, command_id, "bad_request", "at least one content item is required"
+        )
         return None
     normalized_content = normalize_conversation_content(payload.content)
     if not normalized_content:
-        await send_error(send, command_id, "bad_request", "at least one content item is required")
+        await send_error(
+            send, command_id, "bad_request", "at least one content item is required"
+        )
         return None
 
-    conversation = await app.runtime.conversations.get_or_create(actor, payload.conversation_id)
-    if conversation.running:
-        await send_error(send, command_id, "conversation_busy", "conversation is already running")
+    conversation = await app.runtime.conversations.get_or_create(
+        actor, payload.conversation_id
+    )
+    if conversation.pending_question() is not None:
+        await send_error(
+            send,
+            command_id,
+            "conversation_awaiting_input",
+            "conversation is waiting for an answer",
+        )
         return None
-    await send({"id": command_id, "type": "conversation.send.accepted", "payload": {"conversation_id": conversation.id}})
+    if conversation.running:
+        await send_error(
+            send, command_id, "conversation_busy", "conversation is already running"
+        )
+        return None
+    await send(
+        {
+            "id": command_id,
+            "type": "conversation.send.accepted",
+            "payload": {"conversation_id": conversation.id},
+        }
+    )
     if not ws_listener.has_conversation(conversation.id):
         await ws_listener.open_conversation(conversation)
     message = InputMessage("user", actor_id, normalized_content)
@@ -137,6 +189,96 @@ async def _start_conversation_send(
     return None
 
 
+async def _start_conversation_answer(
+    app: Yuubot,
+    send: WSCommandSend,
+    ws_listener: WsListener,
+    command_id: str | None,
+    payload: ConversationAnswerPayload,
+) -> asyncio.Task[None] | None:
+    row = await app.runtime.state.get_conversation(payload.conversation_id)
+    if row is None:
+        await send_error(send, command_id, "not_found", "conversation not found")
+        return None
+    actor = app.actors.get(row.actor_id)
+    if actor is None:
+        await send_error(send, command_id, "not_found", "conversation actor not found")
+        return None
+    conversation = await app.runtime.conversations.get_or_load(
+        actor, payload.conversation_id
+    )
+    try:
+        result = conversation.claim_question_answer(
+            payload.tool_call_id, payload.answers, payload.skipped
+        )
+        try:
+            await send(
+                {
+                    "id": command_id,
+                    "type": "conversation.answer.accepted",
+                    "payload": {
+                        "conversation_id": conversation.id,
+                        "tool_call_id": payload.tool_call_id,
+                    },
+                }
+            )
+        except BaseException:
+            conversation.release_question_answer()
+            raise
+        if not ws_listener.has_conversation(conversation.id):
+            await ws_listener.open_conversation(conversation)
+        task = asyncio.create_task(
+            _conversation_answer(
+                send, ws_listener, command_id, conversation, payload, result
+            ),
+            name="conversation_answer",
+        )
+        app.runtime.track_detached_task(task)
+        task.add_done_callback(_log_background_task_result)
+    except QuestionNotPending:
+        await send_error(
+            send, command_id, "question_not_pending", "question is not pending"
+        )
+    except ConversationBusy:
+        await send_error(
+            send, command_id, "conversation_busy", "conversation is already running"
+        )
+    except InvalidQuestionAnswers as exc:
+        await send_error(send, command_id, "invalid_question_answers", str(exc))
+    return None
+
+
+async def _conversation_answer(
+    send: WSCommandSend,
+    ws_listener: WsListener,
+    command_id: str | None,
+    conversation: Conversation,
+    payload: ConversationAnswerPayload,
+    result: ToolResult,
+) -> None:
+    try:
+        await conversation.run_claimed_answer(result)
+    except InvalidQuestionAnswers as exc:
+        await _send_error_if_connected(
+            send, command_id, "invalid_question_answers", str(exc)
+        )
+    except QuestionNotPending:
+        await _send_error_if_connected(
+            send, command_id, "question_not_pending", "question is not pending"
+        )
+    except ConversationBusy:
+        await _send_error_if_connected(
+            send, command_id, "conversation_busy", "conversation is already running"
+        )
+    except Exception as exc:
+        await ws_listener.on_error(
+            payload.conversation_id, internal_error_message(exc, False)
+        )
+        await _send_error_if_connected(
+            send, command_id, "internal_error", internal_error_message(exc, False)
+        )
+
+
 async def _conversation_send(
     send: WSCommandSend,
     ws_listener: WsListener,
@@ -150,7 +292,9 @@ async def _conversation_send(
     try:
         await app.run_user_message(actor_id, message, conversation_id)
     except ConversationBusy:
-        await _send_error_if_connected(send, command_id, "conversation_busy", "conversation is already running")
+        await _send_error_if_connected(
+            send, command_id, "conversation_busy", "conversation is already running"
+        )
     except ConversationBlocked as exc:
         await _send_error_if_connected(
             send,
@@ -160,9 +304,13 @@ async def _conversation_send(
             {"reason": str(exc)},
         )
     except Exception as exc:
-        log_context = f"conversation.send actor={actor_id} conversation={conversation_id}"
+        log_context = (
+            f"conversation.send actor={actor_id} conversation={conversation_id}"
+        )
         log_internal_error(_log, exc, log_context)
-        await ws_listener.on_error(conversation_id, internal_error_message(exc, development))
+        await ws_listener.on_error(
+            conversation_id, internal_error_message(exc, development)
+        )
         await _send_error_if_connected(
             send,
             command_id,
@@ -180,7 +328,13 @@ async def _runtime_events_subscribe(
 ) -> None:
     kinds = set(payload.kinds)
     ws_listener.track_events(kinds)
-    await send({"id": command_id, "type": "runtime.events.subscribe.result", "payload": {"kinds": sorted(kinds)}})
+    await send(
+        {
+            "id": command_id,
+            "type": "runtime.events.subscribe.result",
+            "payload": {"kinds": sorted(kinds)},
+        }
+    )
 
 
 async def _conversation_open(
@@ -215,18 +369,32 @@ async def _task_subscribe(
         await send_error(send, command_id, "not_found", "task not found")
         return
     task = app.runtime.tasks.get(task_id)
-    await send({"id": command_id, "type": "task.subscribe.result", "payload": {"task_id": task_id}})
-    await send({
-        "type": "task.event",
-        "payload": {"task_id": task_id, "status": task.status, "stdout": task.stdout.tail(max_bytes=1024 * 1024)},
-    })
+    await send(
+        {
+            "id": command_id,
+            "type": "task.subscribe.result",
+            "payload": {"task_id": task_id},
+        }
+    )
+    await send(
+        {
+            "type": "task.event",
+            "payload": {
+                "task_id": task_id,
+                "status": task.status,
+                "stdout": task.stdout.tail(max_bytes=1024 * 1024),
+            },
+        }
+    )
     ws_listener.start_task_stdout(task_id, task.stdout, task.status)
     try:
         try:
             await task.wait_terminal()
         except asyncio.CancelledError:
             pass
-        await ws_listener.send_task_terminal(task_id, task.status, task.stdout.tail(max_bytes=1024 * 1024))
+        await ws_listener.send_task_terminal(
+            task_id, task.status, task.stdout.tail(max_bytes=1024 * 1024)
+        )
     finally:
         ws_listener.stop_task_stdout()
 
@@ -246,7 +414,13 @@ async def _task_stdin(
     except TaskNotRunningError as exc:
         await send_error(send, command_id, "conflict", str(exc))
         return
-    await send({"id": command_id, "type": "task.stdin.result", "payload": msgspec.to_builtins(snapshot)})
+    await send(
+        {
+            "id": command_id,
+            "type": "task.stdin.result",
+            "payload": msgspec.to_builtins(snapshot),
+        }
+    )
 
 
 async def send_error(
@@ -272,7 +446,12 @@ async def _send_error_if_connected(
     try:
         await send_error(send, command_id, code, message, detail)
     except Exception:
-        _log.debug("conversation.send error frame dropped command_id=%s code=%s", command_id, code, exc_info=True)
+        _log.debug(
+            "conversation.send error frame dropped command_id=%s code=%s",
+            command_id,
+            code,
+            exc_info=True,
+        )
 
 
 def _log_background_task_result(task: asyncio.Task[None]) -> None:

@@ -51,7 +51,7 @@ async def test_gateway_migration_preserves_actor_selector_and_token_usage(
         )
         await db.commit()
 
-        assert await migrate(db) == 13
+        assert await migrate(db) == 14
         tables = await _table_names(db)
         assert "app_gateway_endpoints" in tables
         assert "app_gateway_aliases" in tables

@@ -26,6 +26,14 @@ from attrs import define, field
 
 from .harness import Harness, HarnessConfig
 from .history import PREFIX_KINDS, HistoryHelper
+from .ask_user import (
+    ASK_USER_NAME,
+    ASK_USER_TOOL_SPEC,
+    AskUserAnswer,
+    answer_result,
+    decode_questions,
+    pending_ask_user,
+)
 from .titles import title_from_user_message
 from ..actor.prompt import SessionMode, augment_user_message
 from ..llm.gateway import RequestMetadata, StreamClient
@@ -36,9 +44,10 @@ from ..domain.messages import (
     GenToolCall,
     HistoryItem,
     InputMessage,
+    ToolResult,
     text_content,
 )
-from ..domain.stream import StreamEvent, StreamStop, extract_tool_calls, merge
+from ..domain.stream import StreamEvent, StreamStop, ToolCall, extract_tool_calls, merge
 from ..runtime.event_payloads import (
     ConversationUsagePayload,
     ConversationInputPayload,
@@ -62,6 +71,18 @@ class ConversationBusy(RuntimeError):
     """A run_loop is already active for this conversation."""
 
 
+class ConversationAwaitingInput(RuntimeError):
+    """The conversation is paused at an ask_user call."""
+
+
+class QuestionNotPending(RuntimeError):
+    """The requested ask_user call is not the current pause point."""
+
+
+class InvalidQuestionAnswers(ValueError):
+    """Answers do not cover the pending ask_user questions."""
+
+
 StreamCallback = Callable[[StreamEvent], Awaitable[None]]
 
 PYTHON_RESET_NOTICE = (
@@ -78,9 +99,13 @@ class ConversationSnapshot:
 
 
 class ConversationSubscriber(Protocol):
-    async def on_snapshot(self, conversation_id: str, snapshot: ConversationSnapshot) -> None: ...
+    async def on_snapshot(
+        self, conversation_id: str, snapshot: ConversationSnapshot
+    ) -> None: ...
 
-    async def on_delta(self, conversation_id: str, chunk: StreamEvent, version: int) -> None: ...
+    async def on_delta(
+        self, conversation_id: str, chunk: StreamEvent, version: int
+    ) -> None: ...
 
     async def on_commit(
         self,
@@ -106,6 +131,7 @@ class Conversation:
     version: int = field(default=0, init=False)
     stop_event: asyncio.Event = field(factory=asyncio.Event)
     _running: bool = field(default=False, init=False)
+    _answer_claimed: bool = field(default=False, init=False)
     _pending_task_deliveries: list[str] = field(factory=list, init=False)
     _task_delivery_suppressed_until: float | None = field(default=None, init=False)
     _subscribers: set[ConversationSubscriber] = field(factory=set, init=False)
@@ -123,6 +149,8 @@ class Conversation:
         on_event: StreamCallback | None = None,
         session_mode: SessionMode | None = None,
     ) -> list[GenOutput]:
+        if self.pending_question() is not None:
+            raise ConversationAwaitingInput(self.id)
         self._enter_run()
         turn_token = ""
         try:
@@ -148,14 +176,20 @@ class Conversation:
                 )
             if self._needs_python_reset_notice():
                 await self._emit_commit(
-                    [InputMessage("developer", "yuubot", [ContentItem("text", PYTHON_RESET_NOTICE)])],
+                    [
+                        InputMessage(
+                            "developer",
+                            "yuubot",
+                            [ContentItem("text", PYTHON_RESET_NOTICE)],
+                        )
+                    ],
                     True,
                 )
             await self._emit_commit([input], True)
             self.runtime.emit(
                 ConversationInputPayload(self.id, msgspec.to_builtins(input.content))
             )
-            return await self._run_loop(on_event)
+            return await self._run_loop(on_event, session_mode == "conversation")
         except asyncio.CancelledError:
             await self._mark_status("interrupted")
             raise
@@ -166,11 +200,13 @@ class Conversation:
                 self.context.rpc.pop("turn_token", None)
             await self._exit_run()
 
-    async def run_continuation(self, on_event: StreamCallback | None = None) -> list[GenOutput]:
+    async def run_continuation(
+        self, on_event: StreamCallback | None = None
+    ) -> list[GenOutput]:
         self._enter_run()
         try:
             await self._mark_status("active")
-            return await self._run_loop(on_event)
+            return await self._run_loop(on_event, False)
         finally:
             await self._exit_run()
 
@@ -183,8 +219,10 @@ class Conversation:
         self._enter_run()
         try:
             await self._mark_status("active")
-            await self._emit_commit([InputMessage("developer", name, text_content(text))], True)
-            return await self._run_loop(on_event)
+            await self._emit_commit(
+                [InputMessage("developer", name, text_content(text))], True
+            )
+            return await self._run_loop(on_event, False)
         finally:
             await self._exit_run()
 
@@ -192,6 +230,64 @@ class Conversation:
         if self._running:
             raise ConversationBusy(self.id)
         await self._emit_commit(items, False)
+
+    def pending_question(self) -> GenToolCall | None:
+        return pending_ask_user(self.history.interaction_items())
+
+    async def answer_question(
+        self,
+        tool_call_id: str,
+        answers: list[AskUserAnswer],
+        skipped: bool,
+        on_event: StreamCallback | None = None,
+    ) -> list[GenOutput]:
+        result = self.claim_question_answer(tool_call_id, answers, skipped)
+        return await self.run_claimed_answer(result, on_event)
+
+    def claim_question_answer(
+        self,
+        tool_call_id: str,
+        answers: list[AskUserAnswer],
+        skipped: bool,
+    ) -> ToolResult:
+        if self._running or self._answer_claimed:
+            raise ConversationBusy(self.id)
+        call = self.pending_question()
+        if call is None or call.id != tool_call_id:
+            raise QuestionNotPending(tool_call_id)
+        payload = decode_questions(call)
+        if skipped:
+            if answers:
+                raise InvalidQuestionAnswers("skipped answers must be empty")
+        else:
+            expected = {question.id for question in payload.questions}
+            actual = {answer.id for answer in answers}
+            if len(actual) != len(answers) or actual != expected:
+                raise InvalidQuestionAnswers(
+                    "answers must cover every question id exactly once"
+                )
+            if any(not answer.answer.strip() for answer in answers):
+                raise InvalidQuestionAnswers("answers must be non-empty")
+
+        self._answer_claimed = True
+        return answer_result(call, answers, skipped)
+
+    async def run_claimed_answer(
+        self,
+        result: ToolResult,
+        on_event: StreamCallback | None = None,
+    ) -> list[GenOutput]:
+        self._enter_run()
+        try:
+            await self._mark_status("active")
+            await self._emit_commit([result], True)
+            return await self._run_loop(on_event, True)
+        finally:
+            self._answer_claimed = False
+            await self._exit_run()
+
+    def release_question_answer(self) -> None:
+        self._answer_claimed = False
 
     def interrupt(self) -> bool:
         if not self._running:
@@ -202,16 +298,21 @@ class Conversation:
 
     async def snapshot(self) -> ConversationSnapshot:
         async with self._state_lock:
-            return ConversationSnapshot(list(self.prefix), list(self.living_chunks), self.version)
+            return ConversationSnapshot(
+                list(self.prefix), list(self.living_chunks), self.version
+            )
 
     async def subscribe(self, subscriber: ConversationSubscriber) -> None:
         async with self._state_lock:
             self._subscribers.add(subscriber)
-            await subscriber.on_snapshot(self.id, ConversationSnapshot(
-                list(self.prefix),
-                list(self.living_chunks),
-                self.version,
-            ))
+            await subscriber.on_snapshot(
+                self.id,
+                ConversationSnapshot(
+                    list(self.prefix),
+                    list(self.living_chunks),
+                    self.version,
+                ),
+            )
 
     def unsubscribe(self, subscriber: ConversationSubscriber) -> None:
         self._subscribers.discard(subscriber)
@@ -253,7 +354,9 @@ class Conversation:
         return True
 
     async def close(self) -> None:
-        skip_conversation_task_deliveries(self.runtime, self.id, self.pop_task_deliveries())
+        skip_conversation_task_deliveries(
+            self.runtime, self.id, self.pop_task_deliveries()
+        )
         self.stop_event.set()
 
     def _enter_run(self) -> None:
@@ -270,7 +373,9 @@ class Conversation:
             self._running = False
             self.runtime.conversations.mark_idle(self.id)
 
-    async def _run_loop(self, on_event: StreamCallback | None) -> list[GenOutput]:
+    async def _run_loop(
+        self, on_event: StreamCallback | None, interactive: bool
+    ) -> list[GenOutput]:
         harness = Harness.from_config(self.harness_config, self.context, self.runtime)
         harness_closed = False
 
@@ -281,14 +386,18 @@ class Conversation:
             try:
                 await harness.close()
             except Exception:
-                _log.warning("harness cleanup failed for conversation %s", self.id, exc_info=True)
+                _log.warning(
+                    "harness cleanup failed for conversation %s", self.id, exc_info=True
+                )
             harness_closed = True
 
         try:
             while True:
                 stop_chunk: StreamEvent | None = None
                 async for chunk in self.stream_client.stream(
-                    self.history.to_llm_input(),
+                    self.history.to_llm_input(
+                        [ASK_USER_TOOL_SPEC] if interactive else None
+                    ),
                     model=self.context.model,
                     context=self.context,
                     cache=self.runtime.cache,
@@ -312,15 +421,31 @@ class Conversation:
                 outputs, stop = merge(merge_chunks)
                 self.last_stop = stop
                 continues = stop.reason in {"tool_calls", "function_call"}
+                calls = extract_tool_calls(outputs) if continues else []
+                ask_calls = [call for call in calls if call.name == ASK_USER_NAME]
+                pause_call = (
+                    ask_calls[0] if len(calls) == 1 and len(ask_calls) == 1 else None
+                )
+                pause_valid = False
+                if pause_call is not None:
+                    try:
+                        decode_questions(pause_call)
+                        pause_valid = True
+                    except msgspec.DecodeError, msgspec.ValidationError, ValueError:
+                        pause_valid = False
                 terminal_append: list[dict[str, object]] | None = None
-                if continues:
+                if pause_valid:
+                    await self._emit_commit(outputs, False)
+                elif continues:
                     await self._emit_commit(outputs, True)
                 else:
                     terminal_append = await self._extend(outputs)
                 await self._record_usage(stop)
                 if stop.reason in {"stop", "interrupted"}:
                     await close_harness()
-                    await self._mark_status("interrupted" if stop.reason == "interrupted" else "closed")
+                    await self._mark_status(
+                        "interrupted" if stop.reason == "interrupted" else "closed"
+                    )
                     await self._publish_commit(terminal_append or [], False)
                 # The stream_stop frame is sent after history persistence and,
                 # for terminal turns, after tool resources have been released
@@ -331,11 +456,18 @@ class Conversation:
 
                 if stop.reason in {"stop", "interrupted"}:
                     return outputs
+                if pause_valid:
+                    await close_harness()
+                    await self._mark_status("awaiting_input")
+                    return outputs
                 if stop.reason not in {"tool_calls", "function_call"}:
                     await self._mark_status("blocked", reason=stop.reason)
                     raise ConversationBlocked(stop.reason)
 
-                results = await harness.gather(extract_tool_calls(outputs), self.stop_event)
+                if ask_calls:
+                    results = _rejected_ask_user_results(calls, pause_call is not None)
+                else:
+                    results = await harness.gather(calls, self.stop_event)
                 await self._flush_pending_deltas()
                 await self._emit_commit(results, True)
                 if self.stop_event.is_set():
@@ -355,7 +487,11 @@ class Conversation:
 
     def _needs_python_reset_notice(self) -> bool:
         for item in reversed(self.history.interaction_items()):
-            if isinstance(item, InputMessage) and item.role == "developer" and item.name == "yuubot":
+            if (
+                isinstance(item, InputMessage)
+                and item.role == "developer"
+                and item.name == "yuubot"
+            ):
                 return False
             if isinstance(item, GenToolCall) and item.name == "execute_python":
                 return True
@@ -379,7 +515,9 @@ class Conversation:
         append = await self._extend(items)
         await self._publish_commit(append, continues)
 
-    async def _publish_commit(self, append: list[dict[str, object]], continues: bool) -> None:
+    async def _publish_commit(
+        self, append: list[dict[str, object]], continues: bool
+    ) -> None:
         async with self._state_lock:
             self.prefix.extend(append)
             self.living_chunks.clear()
@@ -400,6 +538,9 @@ class Conversation:
 
     async def _record_usage(self, stop: StreamStop) -> None:
         await self.runtime.state.append_usage(self.id, stop.usage, stop.account)
+        await self.runtime.state.put_response_state(
+            self.id, self.context.response_state
+        )
         self.runtime.emit(
             ConversationUsagePayload(
                 self.id,
@@ -419,8 +560,26 @@ class Conversation:
             last_error=dict(last_error) if last_error else None,
         )
 
+
+def _rejected_ask_user_results(
+    calls: list[ToolCall], sole_ask: bool
+) -> list[ToolResult]:
+    results: list[ToolResult] = []
+    for call in calls:
+        if sole_ask:
+            message = "[system] invalid ask_user payload; correct the questions and call ask_user again by itself."
+        elif call.name == ASK_USER_NAME:
+            message = "[system] ask_user must be called by itself; no tools in this group were executed."
+        else:
+            message = "[system] tool not executed because ask_user was called in the same group; retry separately."
+        results.append(ToolResult(tool_call_id=call.id, content=text_content(message)))
+    return results
+
+
 class ConversationCreator(Protocol):
-    async def spawn_conversation(self, conversation_id: str | None = None) -> Conversation: ...
+    async def spawn_conversation(
+        self, conversation_id: str | None = None
+    ) -> Conversation: ...
 
 
 @define
@@ -436,7 +595,9 @@ class ConversationManager:
     _create_lock: asyncio.Lock = field(factory=asyncio.Lock, init=False)
     _sweeper: BackgroundSweeper = field(factory=BackgroundSweeper, init=False)
 
-    async def get_or_create(self, creator: ConversationCreator, conversation_id: str | None = None) -> Conversation:
+    async def get_or_create(
+        self, creator: ConversationCreator, conversation_id: str | None = None
+    ) -> Conversation:
         async with self._create_lock:
             if conversation_id and conversation_id in self._items:
                 return self._items[conversation_id]
@@ -445,7 +606,9 @@ class ConversationManager:
             self._idle_since[conversation.id] = time.time()
             return conversation
 
-    async def get_or_load(self, creator: ConversationCreator, conversation_id: str) -> Conversation:
+    async def get_or_load(
+        self, creator: ConversationCreator, conversation_id: str
+    ) -> Conversation:
         async with self._create_lock:
             existing = self._items.get(conversation_id)
             if existing is not None:
@@ -505,7 +668,9 @@ class ConversationManager:
         return True
 
     async def close_for_actor(self, actor_id: str) -> None:
-        for conversation_id in [cid for cid, conv in self._items.items() if conv.context.actor == actor_id]:
+        for conversation_id in [
+            cid for cid, conv in self._items.items() if conv.context.actor == actor_id
+        ]:
             await self.discard(conversation_id)
 
     async def close_all(self) -> None:
@@ -514,7 +679,11 @@ class ConversationManager:
 
     async def sweep(self) -> None:
         now = time.time()
-        for conversation_id in [cid for cid, idle_since in self._idle_since.items() if now - idle_since > self.ttl_s]:
+        for conversation_id in [
+            cid
+            for cid, idle_since in self._idle_since.items()
+            if now - idle_since > self.ttl_s
+        ]:
             await self.discard(conversation_id)
 
     async def start_background_cleanup(self, interval_s: float = 60) -> None:

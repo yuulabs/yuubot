@@ -675,7 +675,10 @@ export interface PendingUserMessage {
 
 export interface TranscriptState {
   prefix: HistoryItem[];
-  livingChunks: StreamEventFrame[];
+  liveBlocks: RenderBlock[];
+  nextLiveBlockIndex: number;
+  hasOlder: boolean;
+  firstSeq: number | null;
   version: number;
   phase: "idle" | "subscribing" | "synced" | "error";
   continues: boolean;
@@ -684,9 +687,10 @@ export interface TranscriptState {
 }
 
 export type TranscriptAction =
-  | { type: "snapshot"; prefix: HistoryItem[]; livingChunks: StreamEventFrame[]; version: number }
+  | { type: "snapshot"; prefix: HistoryItem[]; livingChunks: StreamEventFrame[]; version: number; hasOlder?: boolean; firstSeq?: number | null }
   | { type: "delta"; chunk: StreamEventFrame; version: number }
   | { type: "commit"; append: HistoryItem[]; continues: boolean; version: number }
+  | { type: "prepend"; items: HistoryItem[]; hasOlder: boolean; firstSeq: number | null }
   | { type: "gap" }
   | { type: "pending_user"; clientKey: string; text: string; now: number }
   | { type: "error" };
@@ -694,7 +698,10 @@ export type TranscriptAction =
 export function createTranscriptState(): TranscriptState {
   return {
     prefix: [],
-    livingChunks: [],
+    liveBlocks: [],
+    nextLiveBlockIndex: 0,
+    hasOlder: false,
+    firstSeq: null,
     version: 0,
     phase: "subscribing",
     continues: false,
@@ -709,12 +716,23 @@ function isUserInputItem(item: HistoryItem): boolean {
 
 export function transcriptReducer(state: TranscriptState, action: TranscriptAction): TranscriptState {
   if (action.type === "snapshot") {
+    let nextLiveBlockIndex = 0;
+    const liveBlocks = action.livingChunks.reduce<RenderBlock[]>(
+      (blocks, chunk) => appendRenderBlocks(
+        blocks,
+        renderBlocksFromStreamEvent(chunk, "live", () => nextLiveBlockIndex++),
+      ),
+      [],
+    );
     return {
       prefix: action.prefix,
-      livingChunks: action.livingChunks,
+      liveBlocks,
+      nextLiveBlockIndex,
+      hasOlder: action.hasOlder ?? false,
+      firstSeq: action.firstSeq ?? action.prefix[0]?.seq ?? null,
       version: action.version,
       phase: "synced",
-      continues: action.livingChunks.length > 0,
+      continues: liveBlocks.length > 0,
       previewStartedAt: state.previewStartedAt,
       pendingUser: null,
     };
@@ -730,9 +748,12 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
     };
   }
   if (action.type === "delta") {
+    let nextLiveBlockIndex = state.nextLiveBlockIndex;
+    const incoming = renderBlocksFromStreamEvent(action.chunk, "live", () => nextLiveBlockIndex++);
     return {
       ...state,
-      livingChunks: [...state.livingChunks, action.chunk],
+      liveBlocks: appendRenderBlocks(state.liveBlocks, incoming),
+      nextLiveBlockIndex,
       version: action.version,
       phase: "synced",
       continues: true,
@@ -743,11 +764,22 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
     return {
       ...state,
       prefix: [...state.prefix, ...action.append],
-      livingChunks: [],
+      liveBlocks: [],
+      nextLiveBlockIndex: 0,
       version: action.version,
       phase: "synced",
       continues: action.continues,
       pendingUser: appendedUser ? null : state.pendingUser,
+    };
+  }
+  if (action.type === "prepend") {
+    const existing = new Set(state.prefix.map((item) => item.seq));
+    const added = action.items.filter((item) => !existing.has(item.seq));
+    return {
+      ...state,
+      prefix: [...added, ...state.prefix],
+      hasOlder: action.hasOlder,
+      firstSeq: action.firstSeq ?? state.firstSeq,
     };
   }
   if (action.type === "gap") {
@@ -760,18 +792,7 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
 }
 
 export function transcriptDisplayItems(state: TranscriptState): DisplayItem[] {
-  let blockIndex = 0;
-  const nextHistorySeq = state.prefix.reduce((max, item) => Math.max(max, item.seq), -1) + 1;
-  const liveBlocks = state.livingChunks.reduce<RenderBlock[]>(
-    (blocks, chunk) => appendRenderBlocks(
-      blocks,
-      renderBlocksFromStreamEvent(chunk, "live", () => blockIndex++),
-    ),
-    [],
-  ).map((block, index) => ({
-    ...block,
-    key: `history-${nextHistorySeq + index}${block.type === "tool_group" ? ":group" : ""}`,
-  }));
+  const liveBlocks = state.liveBlocks;
   const displayPhase: ConversationPhase = state.continues
     ? liveBlocks.length > 0 ? "streaming" : "sending"
     : "idle";

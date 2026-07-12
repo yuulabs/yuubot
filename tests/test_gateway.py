@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from support.api import base_url, http_json, running_server
@@ -180,6 +181,98 @@ async def test_hosted_search_rejects_reserved_pass_through_option() -> None:
     endpoint = EndpointClient(EndpointRecord("test", "Test", "https://gateway.test/v1"))
     with pytest.raises(GatewayError, match="reserved fields: model"):
         await endpoint.hosted_search("grok", "prompt", {}, False, {"model": "override"})
+
+
+@pytest.mark.asyncio
+async def test_endpoint_prefers_responses_and_maps_stream_events(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class ResponseStream:
+        def __aiter__(self):
+            async def events():
+                yield SimpleNamespace(type="response.output_text.delta", delta="hello")
+                yield SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        id="resp_1",
+                        model="gpt-test",
+                        usage=SimpleNamespace(input_tokens=4, output_tokens=2),
+                        output=[],
+                    ),
+                )
+
+            return events()
+
+    class Responses:
+        async def create(self, **kwargs: object) -> ResponseStream:
+            assert kwargs["stream"] is True
+            assert kwargs["input"] == [{"role": "user", "content": "hello"}]
+            return ResponseStream()
+
+    sdk = SimpleNamespace(responses=Responses())
+    endpoint = EndpointClient(EndpointRecord("test", "Test", "https://gateway.test/v1"))
+    monkeypatch.setattr(EndpointClient, "_sdk_client", lambda _self: sdk)
+    events = [
+        event
+        async for event in endpoint.stream(
+            _input(), "gpt-test", _context(tmp_path), CachePool(), asyncio.Event()
+        )
+    ]
+
+    assert [event.kind for event in events] == ["text_delta", "stream_stop"]
+    assert events[-1].payload.account["protocol"] == "responses"
+    assert events[-1].payload.account["response_id"] == "resp_1"
+
+
+@pytest.mark.asyncio
+async def test_endpoint_falls_back_to_chat_when_responses_fails_before_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class ChatStream:
+        def __aiter__(self):
+            async def chunks():
+                yield SimpleNamespace(
+                    id="chat_1",
+                    model="gpt-test",
+                    system_fingerprint=None,
+                    usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1),
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content="fallback", reasoning_content=None,
+                                function_call=None, tool_calls=[],
+                            ),
+                            finish_reason="stop",
+                        )
+                    ],
+                )
+
+            return chunks()
+
+        async def close(self) -> None:
+            return None
+
+    class Responses:
+        async def create(self, **kwargs: object) -> object:
+            raise RuntimeError("responses endpoint is unavailable")
+
+    class Completions:
+        async def create(self, **kwargs: object) -> ChatStream:
+            assert kwargs["stream"] is True
+            return ChatStream()
+
+    sdk = SimpleNamespace(responses=Responses(), chat=SimpleNamespace(completions=Completions()))
+    endpoint = EndpointClient(EndpointRecord("test", "Test", "https://gateway.test/v1"))
+    monkeypatch.setattr(EndpointClient, "_sdk_client", lambda _self: sdk)
+    events = [
+        event
+        async for event in endpoint.stream(
+            _input(), "gpt-test", _context(tmp_path), CachePool(), asyncio.Event()
+        )
+    ]
+
+    assert [event.kind for event in events] == ["text_delta", "stream_stop"]
+    assert events[-1].payload.account["protocol"] == "chat"
 
 
 async def test_alias_rejects_input_outside_admin_declaration(tmp_path: Path) -> None:
