@@ -2,9 +2,12 @@
 
 Use ``await search(query, max_results=5)`` for web search, ``await read(url,
 max_chars=None)`` for reader extraction, and ``await download(url, filename="",
-max_bytes=0)`` to save an HTTP response under the workspace ``downloads/``
-directory. Search returns ``SearchResult(title, url, content)``; download
-returns ``DownloadResult(path, url, content_type, bytes, sha256)``. A user turn
+max_bytes=0)`` to save an HTTP response. With no ``filename``, it saves under
+the workspace ``downloads/`` directory. A supplied ``filename`` is a path
+relative to the workspace, so ``artifacts/report.png`` is allowed; paths that
+would escape the workspace are rejected. Search returns ``SearchResult(title,
+url, content)``; download returns ``DownloadResult(path, url, content_type,
+bytes, sha256)``. A user turn
 provides three successful search calls, and ``max_results`` must be 1–20.
 Combine related questions into focused queries. ``read`` returns at most
 12,000 characters by default (or the explicit ``max_chars`` value); request a
@@ -21,12 +24,20 @@ from typing import Final, cast
 
 import httpx
 import msgspec
+from cachetools import TTLCache
 
 from yb._daemon import daemon_url, request_json
 from yb._turn_guard import run as run_turn_limited
 
 DEFAULT_BASE_URL: Final[str] = "https://api.tavily.com"
 DEFAULT_JINA_BASE_URL: Final[str] = "https://r.jina.ai"
+READ_CACHE_TTL_S: Final[int] = 24 * 60 * 60
+READ_CACHE_MAX_ITEMS: Final[int] = 256
+
+# Reader extraction is relatively expensive and the result is not user-specific.
+# Keep only successful, untruncated extractions so callers can choose their own
+# max_chars without causing another request.
+_read_cache: TTLCache[str, str] = TTLCache(maxsize=READ_CACHE_MAX_ITEMS, ttl=READ_CACHE_TTL_S)
 
 
 class SearchResult(msgspec.Struct, frozen=True):
@@ -99,15 +110,26 @@ async def _search_direct(
 async def read(url: str, max_chars: int | None = None, integration_id: str = "") -> str:
     del integration_id
     limit = max_chars if max_chars is not None else _max_read_chars()
+    try:
+        return _truncate(_read_cache[url], limit)
+    except KeyError:
+        pass
+
     errors: list[str] = []
     for backend in _read_backends():
         try:
             if backend == "jina":
-                return _truncate(_require_text(await _read_with_jina(url)), limit)
+                text = _require_text(await _read_with_jina(url))
+                _read_cache[url] = text
+                return _truncate(text, limit)
             if backend == "tavily":
-                return _truncate(_require_text(await _read_with_tavily_extract(url)), limit)
+                text = _require_text(await _read_with_tavily_extract(url))
+                _read_cache[url] = text
+                return _truncate(text, limit)
             if backend == "httpx":
-                return _truncate(_require_text(await _read_with_httpx(url)), limit)
+                text = _require_text(await _read_with_httpx(url))
+                _read_cache[url] = text
+                return _truncate(text, limit)
             errors.append(f"{backend}=unknown backend")
         except Exception as exc:
             errors.append(f"{backend}={_error_summary(exc)}")
@@ -116,13 +138,24 @@ async def read(url: str, max_chars: int | None = None, integration_id: str = "")
 
 async def download(url: str, filename: str = "", max_bytes: int = 0, integration_id: str = "") -> DownloadResult:
     del integration_id
+    path = _download_path(url, filename)
     data, content_type = await _fetch(url, max_bytes or _max_download_bytes())
-    downloads = Path.cwd() / "downloads"
-    downloads.mkdir(parents=True, exist_ok=True)
-    name = Path(filename).name if filename else Path(urllib.parse.urlparse(url).path).name or "download.bin"
-    path = downloads / name
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
     return DownloadResult(str(path), url, content_type, len(data), hashlib.sha256(data).hexdigest())
+
+
+def _download_path(url: str, filename: str) -> Path:
+    workspace = Path.cwd().resolve()
+    relative = Path(filename) if filename else Path("downloads") / (Path(urllib.parse.urlparse(url).path).name or "download.bin")
+    if relative.is_absolute():
+        raise ValueError("filename must be a relative path inside the workspace")
+    path = (workspace / relative).resolve()
+    try:
+        path.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError("filename must stay inside the workspace") from exc
+    return path
 
 
 async def _fetch(url: str, max_bytes: int) -> tuple[bytes, str]:

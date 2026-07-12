@@ -13,12 +13,15 @@ export { markdownPlugins };
 // (the common LLM output) becomes unreadable — without borders it's unclear
 // which cell belongs to which row. Override the table family with border
 // utilities that work in both light and dark themes.
-function markdownLinkProps(href: string | undefined): AnchorHTMLAttributes<HTMLAnchorElement> {
+function markdownLinkProps(
+  href: string | undefined,
+  resolvedHref = href,
+): AnchorHTMLAttributes<HTMLAnchorElement> {
   if (!href) {
     return {};
   }
   return {
-    href,
+    href: resolvedHref,
     target: "_blank",
     rel: "noopener noreferrer",
   };
@@ -43,16 +46,25 @@ function markdownImageComponents(actorId: string, workspacePath: string): Compon
   };
 }
 
-const markdownComponents: Components = {
-  a: ({ href, children }) => (
+function markdownComponents(actorId: string, workspacePath: string): Components {
+  return {
+  a: ({ href, children, className }) => (
     <a
-      className="text-[var(--msg-link)] decoration-[var(--msg-link-underline)] underline underline-offset-2 hover:text-[var(--msg-link-hover)]"
-      {...markdownLinkProps(href)}
+      className={className === "markdown-gallery__link"
+        ? "markdown-gallery__link"
+        : "text-[var(--msg-link)] decoration-[var(--msg-link-underline)] underline underline-offset-2 hover:text-[var(--msg-link-hover)]"}
+      {...markdownLinkProps(
+        href,
+        className === "markdown-gallery__link" && href
+          ? resolveMarkdownImageSrc(actorId, href, getActorFileUrl, workspacePath)
+          : href,
+      )}
     >
       {children}
     </a>
   ),
-};
+  };
+}
 
 const tableComponents: Components = {
   table: ({ children }) => (
@@ -93,7 +105,7 @@ export function MarkdownRenderer({
           key={index}
           remarkPlugins={markdownPlugins.remark}
           rehypePlugins={markdownPlugins.rehype}
-          components={{ ...markdownComponents, ...tableComponents, ...imageComponents }}
+          components={{ ...markdownComponents(actorId, workspacePath ?? ""), ...tableComponents, ...imageComponents }}
         >
           {segment.value}
         </ReactMarkdown>

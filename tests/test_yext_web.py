@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import yext.web as web
+
+
+@pytest.fixture(autouse=True)
+def clear_read_cache() -> None:
+    web._read_cache.clear()
 
 
 @pytest.mark.asyncio
@@ -23,6 +30,23 @@ async def test_read_returns_jina_result_without_fallback(monkeypatch: pytest.Mon
 
     assert await web.read("https://example.com") == "jina page"
     assert calls == ["jina:https://example.com"]
+
+
+@pytest.mark.asyncio
+async def test_read_caches_successful_extraction_and_applies_each_call_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = 0
+
+    async def read_jina(url: str) -> str:
+        nonlocal calls
+        calls += 1
+        return "cached page"
+
+    monkeypatch.setenv("YEXT_WEB_READ_BACKENDS", "jina")
+    monkeypatch.setattr(web, "_read_with_jina", read_jina)
+
+    assert await web.read("https://example.com", max_chars=6) == "cached"
+    assert await web.read("https://example.com", max_chars=11) == "cached page"
+    assert calls == 1
 
 
 @pytest.mark.asyncio
@@ -104,3 +128,35 @@ def test_tavily_extract_text_accepts_raw_content() -> None:
     body = {"results": [{"raw_content": "markdown", "content": "fallback"}]}
 
     assert web._tavily_extract_text(body) == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_download_saves_relative_filename_under_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fetch(url: str, max_bytes: int) -> tuple[bytes, str]:
+        assert url == "https://example.com/logo.png"
+        return b"image", "image/png"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(web, "_fetch", fetch)
+
+    result = await web.download("https://example.com/logo.png", "artifacts/shiori-game-images/logo.png")
+
+    assert result.path == str(tmp_path / "artifacts" / "shiori-game-images" / "logo.png")
+    assert (tmp_path / "artifacts" / "shiori-game-images" / "logo.png").read_bytes() == b"image"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("filename", ["../outside.png", "/tmp/outside.png"])
+async def test_download_rejects_filename_outside_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, filename: str
+) -> None:
+    async def fetch(url: str, max_bytes: int) -> tuple[bytes, str]:
+        pytest.fail("invalid output path must fail before downloading")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(web, "_fetch", fetch)
+
+    with pytest.raises(ValueError, match="inside the workspace|stay inside the workspace"):
+        await web.download("https://example.com/logo.png", filename)

@@ -89,6 +89,7 @@ def _workspace_instructions(workspace: Path, actor_id: str = "") -> str:
             "- `.agents/skills/`: skill files you may inspect with the read tool.",
             "- User and assistant messages may reference workspace files as `[[ relative/path ]]`; use the read tool to inspect referenced files before relying on their contents.",
             "- Show images with Markdown: `![short alt](relative/path)` or `![short alt](https://...)`. Prefer an external URL when the image is already online.",
+            "- For related images, you may use `:::gallery`, with optional `layout=strip|collage|grid` and `columns=1..6`; keep each item as a standard Markdown image on its own line.",
             "- Reference non-image workspace files as `[[ relative/path ]]`. Do not nest `[[...]]` inside Markdown image or link URLs.",
             "- Use `uv` to manage python dependencies and run shell commmands(uv run) instead of raw python."
         ]
