@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, Save, X } from "lucide-react";
+import { Download, ExternalLink, Save, X } from "lucide-react";
 
 import { MarkdownRenderer } from "@/components/conversation/markdown-renderer.tsx";
 import { Button } from "@/components/ui/button";
 import { ErrorState, LoadingState } from "@/shared/components";
-import { getActorFileContent, getActorFileDownloadUrl, getActorFileMetadata, putActorFileContent } from "@/shared/lib/api";
+import { getActorFileContent, getActorFileDownloadUrl, getActorFileMetadata, getActorFileUrl, putActorFileContent } from "@/shared/lib/api";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const LARGE_FILE_BYTES = 10 * 1024 * 1024;
@@ -91,6 +91,9 @@ export function WorkspaceFilePage({ actorId, path }: { actorId: string; path: st
           </Button>
           <Button variant={view === "edit" ? "secondary" : "ghost"} size="sm" disabled={metadata.data.size > LARGE_FILE_BYTES} onClick={() => setView("edit")}>
             Edit
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <a href={getActorFileUrl(actorId, path)} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} /> Open in browser</a>
           </Button>
           <Button variant="ghost" size="sm" asChild><a href={getActorFileDownloadUrl(actorId, path)}><Download size={14} /> Download</a></Button>
         </div>
