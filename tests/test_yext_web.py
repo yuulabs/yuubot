@@ -44,7 +44,9 @@ async def test_read_caches_successful_extraction_and_applies_each_call_limit(mon
     monkeypatch.setenv("YEXT_WEB_READ_BACKENDS", "jina")
     monkeypatch.setattr(web, "_read_with_jina", read_jina)
 
-    assert await web.read("https://example.com", max_chars=6) == "cached"
+    assert await web.read("https://example.com", max_chars=6) == (
+        "cached\n[truncated: characters 0-6 of 11; omitted characters 6-11]"
+    )
     assert await web.read("https://example.com", max_chars=11) == "cached page"
     assert calls == 1
 

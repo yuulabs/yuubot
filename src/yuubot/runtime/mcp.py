@@ -205,7 +205,9 @@ def _schema_type(schema: dict[str, object]) -> str:
 
 
 def _truncate(value: str, limit: int) -> str:
-    return value if len(value) <= limit else value[: limit - 1].rstrip() + "..."
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit]}\n[truncated: characters 0-{limit} of {len(value)}]"
 
 
 @define

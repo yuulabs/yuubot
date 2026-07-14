@@ -14,8 +14,9 @@ Delivery modes:
 Task output is an expiring offload buffer, not durable storage. For long jobs,
 write resumable workspace scripts that persist their own state and artifacts.
 ``task.output(max_bytes=...)`` returns at most 1 MiB from the retained stdout
-tail; ``max_bytes`` may request less, but cannot recover output beyond the
-retained tail.
+tail and includes a byte-range truncation notice when output was omitted;
+``max_bytes`` may request less, but cannot recover output beyond the retained
+tail.
 
 For commands that may prompt or need interactive stdin, use the ``bash`` tool.
 
@@ -51,6 +52,7 @@ class _TaskWire(msgspec.Struct, frozen=True):
     status: str = "pending"
     intro: str = ""
     stdout_tail: str = ""
+    stdout_total_bytes: int = 0
     error: str | None = None
     exit_code: int | None = None
 
@@ -89,7 +91,11 @@ class Task:
     async def output(self, max_bytes: int = 1024 * 1024) -> str:
         wire = msgspec.convert(await request_json("GET", f"{self._base_url}/api/tasks/{self.id}"), _TaskWire)
         self._status = _task_status(wire.status)
-        return wire.stdout_tail[:max_bytes]
+        output = wire.stdout_tail[:max_bytes]
+        if wire.stdout_total_bytes > len(output.encode("utf-8")) and len(output) < len(wire.stdout_tail):
+            shown = len(output.encode("utf-8"))
+            output += f"\n[truncated: bytes {wire.stdout_total_bytes - shown}-{wire.stdout_total_bytes} of {wire.stdout_total_bytes}; omitted earlier bytes]"
+        return output
 
     async def error(self) -> str | None:
         wire = msgspec.convert(await request_json("GET", f"{self._base_url}/api/tasks/{self.id}"), _TaskWire)

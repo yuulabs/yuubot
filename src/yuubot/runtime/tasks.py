@@ -75,6 +75,7 @@ class TaskSnapshot(msgspec.Struct, frozen=True):
     delivery_state: str
     interactive: bool = True
     stdout_tail: str = ""
+    stdout_total_bytes: int = 0
     created_at: str = ""
     started_at: str | None = None
     finished_at: str | None = None
@@ -481,7 +482,7 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
         lines.append(record.intro)
     if record.error:
         lines.append(f"Error: {record.error}")
-    output = filter_tool_output(record.stdout.tail(max_bytes=TASK_OUTPUT_MAX_BYTES))
+    output = filter_tool_output(record.stdout.tail_with_notice(TASK_OUTPUT_MAX_BYTES))
     if output:
         lines.append("Output:")
         lines.append(output)
@@ -494,7 +495,10 @@ def _truncate_agent_notice(text: str, max_bytes: int = TASK_OUTPUT_MAX_BYTES) ->
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text
-    return encoded[:max_bytes].decode("utf-8", errors="replace") + "\n[Result truncated; query the Task API for the full output.]"
+    return encoded[:max_bytes].decode("utf-8", errors="replace") + (
+        f"\n[truncated: bytes 0-{max_bytes} of {len(encoded)}; "
+        "query the Task API for the full output]"
+    )
 
 
 async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> None:
@@ -657,7 +661,8 @@ def task_record_snapshot(record: RuntimeTaskRecord, include_stdout: bool = False
         record.delivery,
         record.delivery_state,
         record.interactive,
-        filter_tool_output(record.stdout.tail(max_bytes=TASK_OUTPUT_MAX_BYTES)) if include_stdout else "",
+        filter_tool_output(record.stdout.tail_with_notice(TASK_OUTPUT_MAX_BYTES)) if include_stdout else "",
+        record.stdout.total_bytes,
         record.created_at,
         record.started_at,
         record.finished_at,

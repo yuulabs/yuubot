@@ -63,18 +63,31 @@ async def models(
         env=env(settings),
     )
     timeout = settings.timeout_s if timeout_s is None else timeout_s
+    stderr_tail: deque[bytes] = deque()
+    stderr_task = asyncio.create_task(_drain_stderr(process, stderr_tail))
+    discovery_task = asyncio.create_task(
+        _list_models(process, include_hidden, stderr_tail)
+    )
     try:
-        return await asyncio.wait_for(_list_models(process, include_hidden), timeout)
+        return await asyncio.wait_for(asyncio.shield(discovery_task), timeout)
     except TimeoutError:
         raise RuntimeError(
             f"codex model discovery timed out after {timeout:g}s"
         ) from None
     finally:
         await _stop(process)
+        if not discovery_task.done():
+            discovery_task.cancel()
+        await asyncio.gather(discovery_task, return_exceptions=True)
+        if not stderr_task.done():
+            stderr_task.cancel()
+        await asyncio.gather(stderr_task, return_exceptions=True)
 
 
 async def _list_models(
-    process: asyncio.subprocess.Process, include_hidden: bool
+    process: asyncio.subprocess.Process,
+    include_hidden: bool,
+    stderr_tail: deque[bytes],
 ) -> tuple[ModelInfo, ...]:
     await _send(
         process,
@@ -84,7 +97,7 @@ async def _list_models(
             "params": {"clientInfo": {"name": "yuubot", "version": "1"}},
         },
     )
-    await _response(process, 1, "initialize")
+    await _response(process, 1, "initialize", stderr_tail)
     await _send(process, {"method": "initialized"})
     found: list[ModelInfo] = []
     cursor: str | None = None
@@ -96,7 +109,7 @@ async def _list_models(
         await _send(
             process, {"id": request_id, "method": "model/list", "params": params}
         )
-        result = await _response(process, request_id, "model/list")
+        result = await _response(process, request_id, "model/list", stderr_tail)
         data = result.get("data")
         if not isinstance(data, list):
             raise RuntimeError("codex returned an invalid model list")
@@ -117,10 +130,15 @@ def open_session(
     reasoning: str | None = None,
     profile: str | None = None,
     cwd: str | Path | None = None,
-    sandbox: str = "read-only",
+    sandbox: str = "workspace-write",
     skip_git_repo_check: bool = False,
     timeout_s: float | None = None,
 ) -> Session:
+    """Create a lazy session; Codex starts on the first ``session.ask()``.
+
+    ``session.id`` is ``None`` until that first ask receives ``thread.started``.
+    If supplied, ``profile`` must name a profile configured in Codex.
+    """
     return Session(
         None,
         model,
@@ -139,7 +157,7 @@ def resume_session(
     reasoning: str | None = None,
     profile: str | None = None,
     cwd: str | Path | None = None,
-    sandbox: str = "read-only",
+    sandbox: str = "workspace-write",
     skip_git_repo_check: bool = False,
     timeout_s: float | None = None,
 ) -> Session:
@@ -301,11 +319,24 @@ async def _send(
 
 
 async def _response(
-    process: asyncio.subprocess.Process, request_id: int, operation: str
+    process: asyncio.subprocess.Process,
+    request_id: int,
+    operation: str,
+    stderr_tail: deque[bytes],
 ) -> dict[str, Any]:
     if process.stdout is None:
         raise RuntimeError("codex output is unavailable")
-    while line := await process.stdout.readline():
+    while True:
+        try:
+            line = await asyncio.wait_for(process.stdout.readline(), 0.1)
+        except TimeoutError:
+            if process.returncode is not None:
+                raise RuntimeError(_process_error(process.returncode, stderr_tail))
+            continue
+        if not line:
+            if process.returncode is None:
+                await process.wait()
+            raise RuntimeError(_process_error(process.returncode, stderr_tail))
         try:
             message = json.loads(line)
         except json.JSONDecodeError, UnicodeDecodeError:
@@ -320,8 +351,6 @@ async def _response(
         if not isinstance(result, dict):
             raise RuntimeError(f"codex returned an invalid {operation} response")
         return result
-    stderr = await process.stderr.read() if process.stderr is not None else b""
-    raise RuntimeError(_process_error(process.returncode, deque((stderr,))))
 
 
 def _model_info(item: dict[str, Any]) -> ModelInfo:
@@ -379,4 +408,10 @@ async def _drain_stderr(
 async def _stop(process: asyncio.subprocess.Process) -> None:
     if process.returncode is None:
         process.kill()
-        await process.wait()
+    try:
+        await asyncio.wait_for(process.wait(), 1)
+    except TimeoutError:
+        # A broken app-server must not hold the caller past its own timeout.
+        # SIGKILL has already been sent; the child watcher may be slow to reap
+        # a process whose descendants still hold one of its pipes open.
+        pass

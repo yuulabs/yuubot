@@ -22,10 +22,12 @@ class TextStream:
     _subscribers: set[asyncio.Queue[str]] = field(factory=set)
     updated_at: float = field(factory=time.monotonic)
     _wait_event: asyncio.Event = field(factory=asyncio.Event, init=False)
+    _total_bytes: int = field(default=0, init=False)
 
     def write(self, text: str) -> None:
         if not text:
             return
+        self._total_bytes += len(text.encode())
         self.chunks.append(text)
         self._trim()
         self.updated_at = time.monotonic()
@@ -45,6 +47,20 @@ class TextStream:
         if len(encoded) <= max_bytes:
             return "".join(self.chunks)
         return encoded[-max_bytes:].decode("utf-8", errors="replace")
+
+    def tail_with_notice(self, max_bytes: int) -> str:
+        """Return the tail and identify the omitted byte range, if any."""
+        encoded = b"".join(chunk.encode() for chunk in self.chunks)
+        shown = encoded if len(encoded) <= max_bytes else encoded[-max_bytes:]
+        text = shown.decode("utf-8", errors="replace")
+        if self._total_bytes <= len(shown):
+            return text
+        start = self._total_bytes - len(shown)
+        return f"{text}\n[truncated: bytes {start}-{self._total_bytes} of {self._total_bytes}; omitted bytes 0-{start}]"
+
+    @property
+    def total_bytes(self) -> int:
+        return self._total_bytes
 
     async def subscribe(self, replay: bool = False) -> AsyncIterator[str]:
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=max(1, self.subscriber_queue_size))

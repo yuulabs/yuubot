@@ -32,7 +32,7 @@ def test_yext_codex_sessions_apply_profile_to_start_and_resume() -> None:
         "-c",
         'approval_policy="never"',
         "-s",
-        "read-only",
+        "workspace-write",
         "--profile",
         "minimal-skills",
         "start",
@@ -224,6 +224,7 @@ print("startup warning", file=sys.stderr)
         monkeypatch.setenv(key, value)
 
     session = yext.codex.open_session(cwd=tmp_path, skip_git_repo_check=True)
+    assert session.id is None
     events = [event async for event in session.ask("coding-ok")]
 
     assert [event["type"] for event in events] == [
@@ -352,6 +353,26 @@ for line in sys.stdin:
 
 
 @pytest.mark.asyncio
+async def test_yext_codex_model_discovery_reports_early_exit_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yext.codex
+
+    cli = tmp_path / "fake-codex"
+    cli.write_text(
+        "#!/bin/sh\necho 'cannot write ~/.codex state' >&2\nexit 1\n",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+    integration = CodexIntegration("codex", CodexConfig(str(cli), ()))
+    for key, value in integration.session_context().items():
+        monkeypatch.setenv(key, value)
+
+    with pytest.raises(RuntimeError, match="cannot write ~/.codex state"):
+        await asyncio.wait_for(yext.codex.models(), 1)
+
+
+@pytest.mark.asyncio
 async def test_yext_opencode_facade_filters_control_sequences(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -413,8 +434,16 @@ def test_coding_cli_prompt_docs_arrive_through_integration_docs(tmp_path: Path) 
     assert "await codex.models()" in prompt
     assert "codex.open_session" in prompt
     assert "codex.resume_session" in prompt
+    assert "open_session() is lazy" in prompt
+    assert "session.id is None" in prompt
+    assert "configured Codex profile name" in prompt
     assert 'profile="lean"' in prompt
     assert "async for event in session.ask" in prompt
+    assert 'sandbox="workspace-write"' in prompt
+    assert "Sandbox options:" in prompt
+    assert "`read-only` permits reads only" in prompt
+    assert "`workspace-write` permits edits" in prompt
+    assert "`danger-full-access` removes the sandbox" in prompt
     assert "item.completed" in prompt
     assert "turn.failed" in prompt
     assert "complete task, relevant paths and context" in prompt

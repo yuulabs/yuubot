@@ -91,7 +91,7 @@ class Issues:
     async def read(self, number: int, max_chars: int = 4000) -> str:
         path = f"/repos/{self.repo.owner}/{self.repo.name}/issues/{number}"
         item = msgspec.convert(await self.repo.request_json(path), _GitHubIssueWire)
-        return f"#{item.number} {item.title}\n\n{item.body}"[:max_chars]
+        return _truncate(f"#{item.number} {item.title}\n\n{item.body}", max_chars)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +103,13 @@ class Files:
         query = f"?ref={urllib.parse.quote(ref)}" if ref else ""
         url_path = f"/repos/{self.repo.owner}/{self.repo.name}/contents/{urllib.parse.quote(path)}{query}"
         item = msgspec.convert(await self.repo.request_json(url_path), _GitHubContentWire)
-        return base64.b64decode(item.content).decode("utf-8", errors="replace")[:max_chars]
+        return _truncate(base64.b64decode(item.content).decode("utf-8", errors="replace"), max_chars)
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}\n[truncated: characters 0-{max_chars} of {len(text)}; omitted characters {max_chars}-{len(text)}]"
 
 
 def repo(owner: str = "", name: str = "", integration_id: str = "") -> GitHubRepo:

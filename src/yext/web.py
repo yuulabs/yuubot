@@ -238,7 +238,10 @@ def _require_text(text: str) -> str:
 
 
 def _truncate(text: str, max_chars: int) -> str:
-    return text[:max(max_chars, 0)]
+    limit = max(max_chars, 0)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n[truncated: characters 0-{limit} of {len(text)}; omitted characters {limit}-{len(text)}]"
 
 
 def _error_summary(exc: Exception) -> str:

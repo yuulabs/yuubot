@@ -29,7 +29,7 @@ The working directory is the actor workspace. Standard output and standard error
 
 Output is capped at 1 MiB per call. When this limit is reached, the returned text ends with an explicit truncation notice; write large results to workspace files and inspect them with `read` in pages instead of printing them all.
 
-Enabled integrations inject credentials into the process environment for `yext` facades, for example `await yext.web.search(query)` and `repo = yext.github.repo(); await repo.issues.list_recent()`.
+Enabled integrations inject credentials into the process environment for `yext` facades, for example `await yext.web.search(query)` and `repo = yext.github.repo(); await repo.issues.list_recent()`. For Codex, use `import yext.codex as codex`, call `await codex.models()` to discover configured models, then consume `async for event in codex.open_session(...).ask(prompt)` to completion. `open_session()` is lazy and its `session.id` remains `None` until the first `thread.started` event; use only profile names configured in Codex.
 
 The session resets after each user turn. Variables, imports, and in-memory side effects do not survive; a developer notice appears when a prior session is gone.
 
