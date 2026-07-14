@@ -66,6 +66,37 @@ async def test_read_tool_returns_image_content_with_workspace_relative_path(test
     ]
 
 
+async def test_read_tool_reads_svg_as_text(test_context: SharedTestContext) -> None:
+    svg_path = test_context.workspace / "diagram.svg"
+    svg_path.write_text("<svg><text>hello</text></svg>\n", encoding="utf-8")
+
+    result = await _execute_read(
+        test_context.workspace,
+        ReadPayload("diagram.svg"),
+        "kimi-k2.7-code",
+        True,
+    )
+
+    assert result == "<svg><text>hello</text></svg>"
+
+
+async def test_read_tool_rejects_unsupported_image_format(test_context: SharedTestContext) -> None:
+    image_path = test_context.workspace / "diagram.bmp"
+    image_path.write_bytes(b"not a real bitmap")
+
+    result = await _execute_read(
+        test_context.workspace,
+        ReadPayload("diagram.bmp"),
+        "kimi-k2.7-code",
+        True,
+    )
+
+    assert result == (
+        "diagram.bmp uses unsupported image format image/bmp; convert it to PNG, "
+        "JPEG, WEBP, or non-animated GIF first."
+    )
+
+
 async def test_read_tool_keeps_byte_truncation_on_complete_lines(test_context: SharedTestContext) -> None:
     workspace = test_context.workspace
     path = workspace / "large.txt"

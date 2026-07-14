@@ -10,6 +10,9 @@ from .paths import workspace_path
 
 MAX_READ_LINES: Final[int] = 2_000
 MAX_READ_BYTES: Final[int] = 1024 * 1024
+VISION_MIME_TYPES: Final[frozenset[str]] = frozenset(
+    {"image/png", "image/jpeg", "image/webp", "image/gif"}
+)
 
 DESCRIPTION = """Read a file inside the actor workspace.
 
@@ -17,7 +20,7 @@ Paths are relative to the workspace root and cannot escape the workspace boundar
 
 Text files are decoded as UTF-8 with replacement characters for invalid bytes. Use `start_lo` (0-based line index) and `end_lo` (exclusive line index, or -1 for end of file) to page through large files. Full-file reads return at most 2,000 complete lines and 1 MiB; when output is truncated or paged, the result includes the final line position. The byte limit is applied on a complete-line boundary whenever possible, so the tool does not normally cut a line in half.
 
-Image files are handled differently: when the current model supports vision, the result contains image content for multimodal inspection. When the model does not support vision, the tool returns a clear text message instead of image bytes.
+PNG, JPEG, WEBP, and non-animated GIF files are handled differently: when the current model supports vision, the result contains image content for multimodal inspection. SVG files are read as text/XML. Other image formats return a clear conversion message instead of image bytes.
 
 Use this tool to inspect workspace files, skill documents, AGENTS.md, and generated artifacts. Prefer `execute_python` for multi-step data processing."""
 
@@ -32,7 +35,16 @@ async def _execute_read(root: Path, payload: msgspec.Struct, model: str, support
     data = cast(ReadPayload, payload)
     path = workspace_path(root, data.path)
     mime, _ = mimetypes.guess_type(path)
-    if (mime or "").startswith("image/"):
+    # SVG is an image media type, but it is also a text/XML source file. Let it
+    # fall through to the text reader. Only pass formats accepted by the
+    # provider's vision input contract as image content.
+    if (mime or "").startswith("image/") and mime != "image/svg+xml":
+        if mime not in VISION_MIME_TYPES:
+            rel_path = path.relative_to(root).as_posix()
+            return (
+                f"{rel_path} uses unsupported image format {mime or 'unknown'}; "
+                "convert it to PNG, JPEG, WEBP, or non-animated GIF first."
+            )
         rel_path = path.relative_to(root).as_posix()
         if not supports_vision:
             return f"{rel_path} is an image, but model {model} does not support vision."
