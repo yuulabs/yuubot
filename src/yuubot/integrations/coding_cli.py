@@ -13,7 +13,9 @@ from attrs import frozen
 
 from ..util.time import utc_now_iso
 
-CodingCliStatus = Literal["disabled", "checking", "ready", "needs_action", "degraded", "error"]
+CodingCliStatus = Literal[
+    "disabled", "checking", "ready", "needs_action", "degraded", "error"
+]
 
 
 class CodingCliSettings(Protocol):
@@ -27,9 +29,6 @@ class CodingCliSettings(Protocol):
     def login_command(self) -> str: ...
 
     @property
-    def run_args_prefix(self) -> tuple[str, ...]: ...
-
-    @property
     def timeout_s(self) -> float: ...
 
 
@@ -37,7 +36,6 @@ class CodexConfig(msgspec.Struct, frozen=True):
     command: str = "codex"
     probe_args: tuple[str, ...] = ("login", "status")
     login_command: str = "codex login"
-    run_args_prefix: tuple[str, ...] = ("exec",)
     timeout_s: float = 600.0
 
 
@@ -71,14 +69,20 @@ class CodingCliIntegration:
     env_prefix: str
 
     def session_context(self) -> dict[str, str]:
-        return {
+        context = {
             f"{self.env_prefix}_COMMAND": self.config.command,
-            f"{self.env_prefix}_PROBE_ARGS": msgspec.json.encode(self.config.probe_args).decode(),
+            f"{self.env_prefix}_PROBE_ARGS": msgspec.json.encode(
+                self.config.probe_args
+            ).decode(),
             f"{self.env_prefix}_LOGIN_COMMAND": self.config.login_command,
-            f"{self.env_prefix}_RUN_ARGS_PREFIX": msgspec.json.encode(self.config.run_args_prefix).decode(),
             f"{self.env_prefix}_TIMEOUT_S": str(self.config.timeout_s),
             f"{self.env_prefix}_PATH": os.pathsep.join(_candidate_path_entries()),
         }
+        if isinstance(self.config, OpenCodeConfig):
+            context[f"{self.env_prefix}_RUN_ARGS_PREFIX"] = msgspec.json.encode(
+                self.config.run_args_prefix
+            ).decode()
+        return context
 
     async def health_check(self) -> dict[str, object]:
         state = await probe_coding_cli(self.config)
@@ -107,6 +111,9 @@ class CodexIntegration(CodingCliIntegration):
     package_path: str = "yext.codex"
     env_prefix: str = "YEXT_CODEX"
 
+    def prompt_doc(self) -> str:
+        return _codex_prompt_doc(self.config.login_command)
+
 
 @frozen
 class OpenCodeIntegration(CodingCliIntegration):
@@ -121,7 +128,9 @@ def make_codex(name: str, config: msgspec.Struct, runtime: object) -> CodexInteg
     return CodexIntegration(name, msgspec.convert(config, CodexConfig))
 
 
-def make_opencode(name: str, config: msgspec.Struct, runtime: object) -> OpenCodeIntegration:
+def make_opencode(
+    name: str, config: msgspec.Struct, runtime: object
+) -> OpenCodeIntegration:
     del runtime
     return OpenCodeIntegration(name, msgspec.convert(config, OpenCodeConfig))
 
@@ -169,7 +178,7 @@ def inspect_coding_cli(settings: CodingCliSettings) -> CodingCliState:
 
 
 async def run_coding_cli(
-    settings: CodingCliSettings,
+    settings: OpenCodeConfig,
     prompt: str,
     extra_args: tuple[str, ...] = (),
     timeout_s: float | None = None,
@@ -200,7 +209,9 @@ async def run_coding_cli(
     )
 
 
-def resolve_coding_cli_command(command: str, env: dict[str, str] | None = None) -> str | None:
+def resolve_coding_cli_command(
+    command: str, env: dict[str, str] | None = None
+) -> str | None:
     resolved_env = env or coding_cli_env()
     expanded = os.path.expanduser(command)
     return shutil.which(expanded, path=resolved_env.get("PATH"))
@@ -274,5 +285,26 @@ def _coding_cli_prompt_doc(command: str, package_path: str, login_command: str) 
             "When unsure: help() -> cli(subcommand, ...) -> read result.stdout.",
             f"Auth is redacted (***). If needs_action, tell admin to run `{login_command}` in Admin Terminal.",
             f"Do not invoke {command} via bash or read credential files.",
+        ]
+    )
+
+
+def _codex_prompt_doc(login_command: str) -> str:
+    return "\n".join(
+        [
+            "Work with Codex through execute_python. Each ask finishes one turn and returns only Codex's final text.",
+            "",
+            "Import:   import yext.codex as codex",
+            "Models:   await codex.models()",
+            'Start:    session = codex.open_session(model="gpt-5.6-sol", reasoning="high", cwd="/workspace", sandbox="read-only", skip_git_repo_check=True)',
+            'Ask:      text = await session.ask("complete task context")',
+            'Continue: text = await session.ask("continue with the remaining work")',
+            'Resume:   session = codex.resume_session(session_id, cwd="/workspace", sandbox="read-only")',
+            "",
+            "In the first ask, provide the complete task, relevant paths and context, constraints, expected deliverables, and verification.",
+            "Tell Codex to make reasonable decisions for non-critical ambiguity and complete the current turn without asking follow-up questions.",
+            "Keep session.id if work may continue in another execute_python kernel. Calls on one session are serialized.",
+            f"If authentication is required, tell the admin to run `{login_command}` in Admin Terminal.",
+            "Do not invoke Codex via bash or read credential files.",
         ]
     )

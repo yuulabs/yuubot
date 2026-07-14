@@ -813,8 +813,30 @@
   color: var(--text-2);
 }
 
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.terminal-toolbar__tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.terminal-font-size {
+  min-width: 38px;
+  color: var(--text-2);
+  font-family: var(--ff-mono);
+  font-size: 11px;
+}
+
+.terminal-shell { position: relative; }
+
 .terminal-frame {
-  min-height: min(66dvh, 620px);
+  height: clamp(360px, 66dvh, 720px);
   overflow: hidden;
   padding: var(--sp-2);
   background: #111827;
@@ -823,8 +845,64 @@
   box-shadow: var(--shadow);
 }
 
-.terminal-frame .xterm {
-  min-height: min(64dvh, 596px);
+.terminal-frame .xterm { height: 100%; }
+
+.terminal-search {
+  position: absolute;
+  z-index: 3;
+  top: var(--sp-3);
+  right: var(--sp-3);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px 4px 9px;
+  color: #cbd5e1;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+
+.terminal-search input {
+  width: min(210px, 38vw);
+  padding: 2px 5px;
+  color: #f8fafc;
+  background: transparent;
+  outline: none;
+}
+
+.terminal-search__count { min-width: 42px; color: #94a3b8; font: 11px var(--ff-mono); text-align: right; }
+
+.terminal-context-menu {
+  position: fixed;
+  z-index: 50;
+  display: grid;
+  min-width: 140px;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow);
+}
+
+.terminal-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 9px;
+  color: var(--text);
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  text-align: left;
+}
+
+.terminal-context-menu button:hover:not(:disabled) { background: var(--surface-2); }
+.terminal-context-menu button:disabled { opacity: .4; }
+
+@media (max-width: 640px) {
+  .terminal-frame { height: max(360px, 58dvh); }
+  .terminal-search { left: var(--sp-3); right: var(--sp-3); }
+  .terminal-search input { width: 100%; min-width: 0; }
 }
 
 .skill-install-row {

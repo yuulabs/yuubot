@@ -64,7 +64,7 @@ def register_terminal_routes(api: FastAPI, app: Yuubot) -> None:
                         case TerminalResizeCommand(payload=payload):
                             if session is None:
                                 raise ValueError("terminal session is not open")
-                            await session.resize(rows=payload.rows, cols=payload.cols)
+                            await session.resize(payload.rows, payload.cols)
                         case TerminalCloseCommand():
                             if session is None:
                                 raise ValueError("terminal session is not open")

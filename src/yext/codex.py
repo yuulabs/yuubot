@@ -1,31 +1,343 @@
-"""Codex CLI integration facade."""
+"""Use Codex models through short-lived, resumable sessions."""
 
 from __future__ import annotations
 
-from ._coding_cli import Result, Settings, Status, cli as _cli, help as _help, run as _run, settings as _settings, status as _status
+import asyncio
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, cast
+
+from ._coding_cli import Settings, Status, env, resolve_command, settings as _settings
+from ._coding_cli import status as _status
+from ._coding_cli import _filter_text as _redact
+
+
+@dataclass(frozen=True, slots=True)
+class ReasoningEffortInfo:
+    effort: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceTierInfo:
+    id: str
+    name: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
+class ModelInfo:
+    id: str
+    display_name: str
+    description: str
+    is_default: bool
+    default_reasoning_effort: str
+    supported_reasoning_efforts: tuple[ReasoningEffortInfo, ...]
+    input_modalities: tuple[str, ...]
+    service_tiers: tuple[ServiceTierInfo, ...]
+    default_service_tier: str | None = None
 
 
 def _config() -> Settings:
-    return _settings(
-        "YEXT_CODEX",
-        default_command="codex",
-        default_probe_args=("login", "status"),
-        default_run_args=("exec",),
-        default_login_command="codex login",
-    )
+    return _settings("YEXT_CODEX", "codex", ("login", "status"), (), "codex login")
 
 
 async def status() -> Status:
     return await _status(_config())
 
 
-async def run(prompt: str, extra_args: tuple[str, ...] = (), timeout_s: float | None = None) -> Result:
-    return await _run(_config(), prompt, extra_args=extra_args, timeout_s=timeout_s)
+async def models(
+    include_hidden: bool = False, timeout_s: float | None = None
+) -> tuple[ModelInfo, ...]:
+    """Return models available to the currently authenticated Codex account."""
+    settings = _config()
+    process = await asyncio.create_subprocess_exec(
+        _binary(settings),
+        "app-server",
+        stdout=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env(settings),
+    )
+    timeout = settings.timeout_s if timeout_s is None else timeout_s
+    try:
+        return await asyncio.wait_for(_list_models(process, include_hidden), timeout)
+    except TimeoutError:
+        raise RuntimeError(
+            f"codex model discovery timed out after {timeout:g}s"
+        ) from None
+    finally:
+        await _stop(process)
 
 
-async def cli(*args: str, timeout_s: float | None = None) -> Result:
-    return await _cli(_config(), args, timeout_s=timeout_s)
+async def _list_models(
+    process: asyncio.subprocess.Process, include_hidden: bool
+) -> tuple[ModelInfo, ...]:
+    await _send(
+        process,
+        {
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "yuubot", "version": "1"}},
+        },
+    )
+    await _response(process, 1, "initialize")
+    await _send(process, {"method": "initialized"})
+    found: list[ModelInfo] = []
+    cursor: str | None = None
+    request_id = 2
+    while True:
+        params: dict[str, object] = {"includeHidden": include_hidden}
+        if cursor is not None:
+            params["cursor"] = cursor
+        await _send(
+            process, {"id": request_id, "method": "model/list", "params": params}
+        )
+        result = await _response(process, request_id, "model/list")
+        data = result.get("data")
+        if not isinstance(data, list):
+            raise RuntimeError("codex returned an invalid model list")
+        for item in data:
+            if isinstance(item, dict) and (
+                include_hidden or not item.get("hidden", False)
+            ):
+                found.append(_model_info(item))
+        next_cursor = result.get("nextCursor")
+        if not isinstance(next_cursor, str) or not next_cursor:
+            return tuple(found)
+        cursor = next_cursor
+        request_id += 1
 
 
-async def help(*topics: str, timeout_s: float | None = None) -> Result:
-    return await _help(_config(), *topics, timeout_s=timeout_s)
+def open_session(
+    model: str | None = None,
+    reasoning: str | None = None,
+    cwd: str | Path | None = None,
+    sandbox: str = "read-only",
+    skip_git_repo_check: bool = False,
+    timeout_s: float | None = None,
+) -> Session:
+    return Session(
+        None,
+        model,
+        reasoning,
+        str(cwd) if cwd is not None else None,
+        sandbox,
+        skip_git_repo_check,
+        timeout_s,
+    )
+
+
+def resume_session(
+    session_id: str,
+    model: str | None = None,
+    reasoning: str | None = None,
+    cwd: str | Path | None = None,
+    sandbox: str = "read-only",
+    skip_git_repo_check: bool = False,
+    timeout_s: float | None = None,
+) -> Session:
+    if not session_id.strip():
+        raise ValueError("session_id must not be empty")
+    return Session(
+        session_id,
+        model,
+        reasoning,
+        str(cwd) if cwd is not None else None,
+        sandbox,
+        skip_git_repo_check,
+        timeout_s,
+    )
+
+
+@dataclass(slots=True)
+class Session:
+    _id: str | None
+    model: str | None
+    reasoning: str | None
+    cwd: str | None
+    sandbox: str
+    skip_git_repo_check: bool
+    timeout_s: float | None
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+
+    @property
+    def id(self) -> str | None:
+        return self._id
+
+    async def ask(self, prompt: str, timeout_s: float | None = None) -> str:
+        if not prompt.strip():
+            raise ValueError("prompt must not be empty")
+        async with self._lock:
+            return await self._ask(prompt, timeout_s)
+
+    async def _ask(self, prompt: str, timeout_s: float | None) -> str:
+        settings = _config()
+        process = await asyncio.create_subprocess_exec(
+            *self._command(_binary(settings), prompt),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env(settings),
+        )
+        timeout = timeout_s if timeout_s is not None else self.timeout_s
+        if timeout is None:
+            timeout = settings.timeout_s
+        try:
+            return await asyncio.wait_for(self._read_turn(process), timeout)
+        except TimeoutError:
+            raise RuntimeError(f"codex timed out after {timeout:g}s") from None
+        finally:
+            await _stop(process)
+
+    def _command(self, binary: str, prompt: str) -> tuple[str, ...]:
+        args = [
+            binary,
+            "exec",
+            "--json",
+            "-c",
+            'approval_policy="never"',
+            "-s",
+            self.sandbox,
+        ]
+        if self.cwd is not None:
+            args.extend(("-C", self.cwd))
+        if self.model is not None:
+            args.extend(("-m", self.model))
+        if self.reasoning is not None:
+            args.extend(("-c", f"model_reasoning_effort={json.dumps(self.reasoning)}"))
+        if self.skip_git_repo_check:
+            args.append("--skip-git-repo-check")
+        if self._id is not None:
+            args.extend(("resume", self._id))
+        args.append(prompt)
+        return tuple(args)
+
+    async def _read_turn(self, process: asyncio.subprocess.Process) -> str:
+        if process.stdout is None:
+            raise RuntimeError("codex output is unavailable")
+        final_message: str | None = None
+        completed = False
+        failure: str | None = None
+        async for raw_line in process.stdout:
+            try:
+                event = json.loads(raw_line)
+            except json.JSONDecodeError, UnicodeDecodeError:
+                raise RuntimeError("codex returned invalid event data") from None
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type")
+            if event_type == "thread.started" and isinstance(
+                event.get("thread_id"), str
+            ):
+                self._id = event["thread_id"]
+            elif event_type == "item.completed":
+                item = event.get("item")
+                if (
+                    isinstance(item, dict)
+                    and item.get("type") == "agent_message"
+                    and isinstance(item.get("text"), str)
+                ):
+                    final_message = item["text"]
+            elif event_type == "turn.failed":
+                failure = _error_message(event.get("error"))
+            elif event_type == "turn.completed":
+                completed = True
+        return_code = await process.wait()
+        if failure is not None:
+            raise RuntimeError(f"codex turn failed: {failure}")
+        if return_code != 0:
+            raise RuntimeError(await _process_error(process, return_code))
+        if not completed:
+            raise RuntimeError("codex ended without completing the turn")
+        if final_message is None:
+            raise RuntimeError("codex completed without a final message")
+        return final_message
+
+
+def _binary(settings: Settings) -> str:
+    binary = resolve_command(settings)
+    if binary is None:
+        raise RuntimeError(f"{settings.command} binary was not found on PATH")
+    return binary
+
+
+async def _send(
+    process: asyncio.subprocess.Process, message: dict[str, object]
+) -> None:
+    if process.stdin is None:
+        raise RuntimeError("codex input is unavailable")
+    process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
+    await process.stdin.drain()
+
+
+async def _response(
+    process: asyncio.subprocess.Process, request_id: int, operation: str
+) -> dict[str, Any]:
+    if process.stdout is None:
+        raise RuntimeError("codex output is unavailable")
+    while line := await process.stdout.readline():
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError, UnicodeDecodeError:
+            raise RuntimeError("codex returned invalid protocol data") from None
+        if not isinstance(message, dict) or message.get("id") != request_id:
+            continue
+        if message.get("error") is not None:
+            raise RuntimeError(
+                f"codex {operation} failed: {_error_message(message['error'])}"
+            )
+        result = message.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError(f"codex returned an invalid {operation} response")
+        return result
+    raise RuntimeError(await _process_error(process, process.returncode))
+
+
+def _model_info(item: dict[str, Any]) -> ModelInfo:
+    try:
+        efforts = tuple(
+            ReasoningEffortInfo(option["reasoningEffort"], option["description"])
+            for option in item["supportedReasoningEfforts"]
+        )
+        tiers = tuple(
+            ServiceTierInfo(tier["id"], tier["name"], tier["description"])
+            for tier in item.get("serviceTiers", ())
+        )
+        return ModelInfo(
+            item["id"],
+            item["displayName"],
+            item["description"],
+            item["isDefault"],
+            item["defaultReasoningEffort"],
+            efforts,
+            tuple(item.get("inputModalities", ())),
+            tiers,
+            item.get("defaultServiceTier"),
+        )
+    except KeyError, TypeError:
+        raise RuntimeError("codex returned invalid model metadata") from None
+
+
+def _error_message(error: object) -> str:
+    if isinstance(error, dict):
+        message = cast(dict[str, object], error).get("message")
+        if isinstance(message, str):
+            return _redact(message)[:1000]
+    if isinstance(error, str):
+        return _redact(error)[:1000]
+    return "unknown error"
+
+
+async def _process_error(
+    process: asyncio.subprocess.Process, return_code: int | None
+) -> str:
+    stderr = await process.stderr.read() if process.stderr is not None else b""
+    detail = _redact(stderr.decode(errors="replace")).strip()[-1000:]
+    return f"codex exited with code {return_code}" + (f": {detail}" if detail else "")
+
+
+async def _stop(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        process.kill()
+        await process.wait()

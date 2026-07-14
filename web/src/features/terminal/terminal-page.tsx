@@ -1,130 +1,95 @@
 import { useEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
-import { Plug, PlugZap, SquareTerminal } from "lucide-react";
+import { ChevronDown, ChevronUp, Copy, Minus, Plus, Plug, PlugZap, Search, SquareTerminal, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { DenseSection, Page } from "@/shared/components";
 
-type TerminalStatus = "idle" | "connecting" | "open" | "closed" | "error";
+import { TerminalController, type TerminalStatus } from "./terminal-controller";
 
 export function TerminalPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const terminalRef = useRef<Terminal | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
+  const controllerRef = useRef<TerminalController | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const [status, setStatus] = useState<TerminalStatus>("idle");
+  const [fontSize, setFontSize] = useState(13);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [results, setResults] = useState({ resultIndex: -1, resultCount: 0 });
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
-    const terminal = new Terminal({
-      cursorBlink: true,
-      convertEol: true,
-      rows: 28,
-      cols: 100,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      fontSize: 13,
-      theme: {
-        background: "#111827",
-        foreground: "#e5e7eb",
-        cursor: "#ffffff",
-      },
+    if (!containerRef.current) return;
+    const controller = new TerminalController(containerRef.current, {
+      status: setStatus,
+      search: () => setSearchOpen(true),
+      searchResults: setResults,
+      fontSize: setFontSize,
+      notify: (message) => toast.error(message),
     });
-    terminalRef.current = terminal;
-    if (containerRef.current) {
-      terminal.open(containerRef.current);
-    }
-    terminal.onData((data) => {
-      socketRef.current?.send(JSON.stringify({ type: "terminal.input", payload: { data } }));
-    });
-    return () => {
-      socketRef.current?.close();
-      terminal.dispose();
-    };
+    controllerRef.current = controller;
+    return () => { controller.dispose(); controllerRef.current = null; };
   }, []);
 
-  function openTerminal() {
-    const terminal = terminalRef.current;
-    if (!terminal) return;
-    socketRef.current?.close();
-    terminal.clear();
-    setStatus("connecting");
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/api/terminal/ws`);
-    socketRef.current = socket;
-    socket.addEventListener("open", () => {
-      setStatus("open");
-      socket.send(JSON.stringify({ type: "terminal.open", payload: { command: "", cwd: "~", rows: terminal.rows, cols: terminal.cols } }));
-    });
-    socket.addEventListener("message", (event) => {
-      const frame = parseFrame(event.data);
-      if (!frame) return;
-      if (frame.type === "terminal.output" && typeof frame.payload.data === "string") {
-        terminal.write(frame.payload.data);
-      } else if (frame.type === "terminal.opened") {
-        terminal.writeln("\r\n[terminal opened]");
-      } else if (frame.type === "terminal.exited" || frame.type === "terminal.closed") {
-        setStatus("closed");
-        terminal.writeln(`\r\n[${frame.type}]`);
-      } else if (frame.type === "terminal.error") {
-        setStatus("error");
-        terminal.writeln(`\r\n[terminal error] ${String(frame.payload.message ?? "")}`);
-      }
-    });
-    socket.addEventListener("close", () => {
-      setStatus((current) => current === "error" ? "error" : "closed");
-    });
-    socket.addEventListener("error", () => {
-      setStatus("error");
-    });
+  useEffect(() => { if (searchOpen) requestAnimationFrame(() => searchRef.current?.focus()); }, [searchOpen]);
+
+  function closeSearch() {
+    setSearchOpen(false);
+    controllerRef.current?.closeSearch();
   }
 
-  function closeTerminal() {
-    socketRef.current?.send(JSON.stringify({ type: "terminal.close", payload: {} }));
-    socketRef.current?.close();
-    setStatus("closed");
+  function contextAction(action: "copy" | "paste" | "select" | "search" | "clear") {
+    const controller = controllerRef.current;
+    setMenu(null);
+    if (!controller) return;
+    if (action === "copy") void controller.copy();
+    else if (action === "paste") void controller.paste();
+    else if (action === "select") controller.selectAll();
+    else if (action === "search") setSearchOpen(true);
+    else controller.clear();
   }
 
+  const controller = controllerRef.current;
   return (
     <Page title="Terminal" sub="Server-side admin PTY for native CLI checks and diagnostics.">
-      <div className="dense-stack">
+      <div className="dense-stack" onClick={() => setMenu(null)}>
         <DenseSection
           title="Server terminal"
-          description="Connects to an interactive shell from the home directory."
-          actions={
-            <>
-              <Button onClick={openTerminal} disabled={status === "connecting" || status === "open"}>
-                <PlugZap size={14} />
-                <span>Connect</span>
-              </Button>
-              <Button variant="outline" onClick={closeTerminal} disabled={status !== "open"}>
-                <Plug size={14} />
-                <span>Disconnect</span>
-              </Button>
-            </>
-          }
+          description="Connects to a fresh interactive shell from the home directory."
+          actions={<>
+            <Button onClick={() => controllerRef.current?.connect()} disabled={status === "connecting" || status === "open" || status === "closing"}><PlugZap size={14} />Connect</Button>
+            <Button variant="outline" onClick={() => controllerRef.current?.disconnect()} disabled={status !== "open"}><Plug size={14} />Disconnect</Button>
+          </>}
         >
-          <div className="terminal-status-row">
-            <SquareTerminal size={16} />
-            <span className={`dense-chip${status === "open" ? " dense-chip--ok" : status === "error" ? " dense-chip--danger" : " dense-chip--muted"}`}>
-              {status}
-            </span>
+          <div className="terminal-toolbar">
+            <div className="terminal-status-row"><SquareTerminal size={16} /><span className={`dense-chip${status === "open" ? " dense-chip--ok" : status === "error" ? " dense-chip--danger" : " dense-chip--muted"}`}>{status}</span></div>
+            <div className="terminal-toolbar__tools">
+              <Button size="icon-xs" variant="ghost" aria-label="Search terminal" onClick={() => setSearchOpen(true)}><Search /></Button>
+              <Button size="icon-xs" variant="ghost" aria-label="Decrease font size" onClick={() => controllerRef.current?.zoom(-1)}><Minus /></Button>
+              <button className="terminal-font-size" onClick={() => controllerRef.current?.resetZoom()} title="Reset font size">{fontSize}px</button>
+              <Button size="icon-xs" variant="ghost" aria-label="Increase font size" onClick={() => controllerRef.current?.zoom(1)}><Plus /></Button>
+            </div>
           </div>
         </DenseSection>
-        <div ref={containerRef} className="terminal-frame" />
+        <div className="terminal-shell">
+          {searchOpen && <div className="terminal-search" role="search">
+            <Search size={14} />
+            <input ref={searchRef} value={searchTerm} placeholder="Search terminal" aria-label="Search terminal output" onChange={(event) => { setSearchTerm(event.target.value); controllerRef.current?.search(event.target.value, "next", true); }} onKeyDown={(event) => { if (event.key === "Enter") controllerRef.current?.search(searchTerm, event.shiftKey ? "previous" : "next"); else if (event.key === "Escape") closeSearch(); }} />
+            <span className="terminal-search__count">{results.resultCount ? `${results.resultIndex + 1}/${results.resultCount}` : "0/0"}</span>
+            <Button size="icon-xs" variant="ghost" aria-label="Previous result" onClick={() => controllerRef.current?.search(searchTerm, "previous")}><ChevronUp /></Button>
+            <Button size="icon-xs" variant="ghost" aria-label="Next result" onClick={() => controllerRef.current?.search(searchTerm, "next")}><ChevronDown /></Button>
+            <Button size="icon-xs" variant="ghost" aria-label="Close search" onClick={closeSearch}><X /></Button>
+          </div>}
+          <div ref={containerRef} className="terminal-frame" onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }} />
+          {menu && <div className="terminal-context-menu" style={{ left: menu.x, top: menu.y }} onClick={(event) => event.stopPropagation()} role="menu">
+            <button disabled={!controller?.hasSelection()} onClick={() => contextAction("copy")}><Copy size={13} />Copy</button>
+            <button disabled={!controller?.isOpen()} onClick={() => contextAction("paste")}>Paste</button>
+            <button onClick={() => contextAction("select")}>Select all</button>
+            <button onClick={() => contextAction("search")}>Search</button>
+            <button onClick={() => contextAction("clear")}>Clear screen</button>
+          </div>}
+        </div>
       </div>
     </Page>
   );
-}
-
-function parseFrame(raw: string): { type: string; payload: Record<string, unknown> } | null {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
-    const frame = parsed as Record<string, unknown>;
-    const payload = frame.payload;
-    return {
-      type: typeof frame.type === "string" ? frame.type : "",
-      payload: payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : {},
-    };
-  } catch {
-    return null;
-  }
 }

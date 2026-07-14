@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,32 @@ async def test_terminal_session_runs_command_with_real_pty(tmp_path: Path) -> No
     assert frames[0]["type"] == "terminal.opened"
     assert "terminal-ok" in str(frames)
     assert "terminal.closed" in [frame["type"] for frame in frames]
+
+
+@pytest.mark.asyncio
+async def test_terminal_session_resizes_live_pty_and_releases_process(tmp_path: Path) -> None:
+    frames: list[dict[str, object]] = []
+
+    async def send(frame: dict[str, object]) -> None:
+        frames.append(frame)
+
+    session = TerminalSession(send, "admin", "", str(tmp_path), 24, 80)
+    await session.start()
+    opened = frames[0]
+    pid = int(opened["payload"]["pid"])  # type: ignore[index]
+
+    await session.resize(41, 132)
+    await session.write("stty size\r")
+    for _ in range(100):
+        if "41 132" in "".join(str(frame) for frame in frames):
+            break
+        await asyncio.sleep(0.02)
+
+    await session.close()
+
+    assert "41 132" in "".join(str(frame) for frame in frames)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 @pytest.mark.asyncio

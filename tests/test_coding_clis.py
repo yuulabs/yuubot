@@ -7,7 +7,13 @@ import pytest
 from yuubot.actor.prompt import developer_prompt
 from yuubot import Yuubot
 from yuubot.integrations import IntegrationRecord
-from yuubot.integrations.coding_cli import CodexConfig, CodexIntegration, OpenCodeConfig, OpenCodeIntegration, probe_coding_cli
+from yuubot.integrations.coding_cli import (
+    CodexConfig,
+    CodexIntegration,
+    OpenCodeConfig,
+    OpenCodeIntegration,
+    probe_coding_cli,
+)
 from yuubot.integrations.registry import default_registry
 
 
@@ -31,7 +37,9 @@ async def test_coding_cli_missing_binary_returns_recovery_action() -> None:
 
 
 @pytest.mark.asyncio
-async def test_coding_cli_probe_uses_user_bin_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_coding_cli_probe_uses_user_bin_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bin_dir = tmp_path / ".nvm" / "versions" / "node" / "v99.0.0" / "bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "fake-runtime").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -73,7 +81,9 @@ async def test_codex_can_enable_without_saved_config(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_required_config_integrations_still_require_saved_config(tmp_path: Path) -> None:
+async def test_required_config_integrations_still_require_saved_config(
+    tmp_path: Path,
+) -> None:
     app = await Yuubot.create(tmp_path / "data")
 
     integration = await app.enable_configured_integration("github")
@@ -89,7 +99,10 @@ async def test_enable_records_missing_binary_health(tmp_path: Path) -> None:
             "codex",
             "codex",
             "codex",
-            {"command": "definitely-not-installed-yuubot-cli", "login_command": "missing login"},
+            {
+                "command": "definitely-not-installed-yuubot-cli",
+                "login_command": "missing login",
+            },
         )
     )
 
@@ -101,7 +114,10 @@ async def test_enable_records_missing_binary_health(tmp_path: Path) -> None:
     assert codex.enabled is True
     assert codex.health_status == "error"
     assert codex.last_error is not None
-    assert codex.last_error.message == "definitely-not-installed-yuubot-cli binary was not found on PATH"
+    assert (
+        codex.last_error.message
+        == "definitely-not-installed-yuubot-cli binary was not found on PATH"
+    )
     assert codex.action_hint == {
         "kind": "open_pty",
         "title": "Check definitely-not-installed-yuubot-cli",
@@ -111,7 +127,9 @@ async def test_enable_records_missing_binary_health(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_enable_records_probe_auth_health(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_enable_records_probe_auth_health(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     cli = bin_dir / "fake-cli"
@@ -128,7 +146,6 @@ async def test_enable_records_probe_auth_health(tmp_path: Path, monkeypatch: pyt
                 "command": "fake-cli",
                 "probe_args": ["auth", "status"],
                 "login_command": "fake-cli login",
-                "run_args_prefix": [],
             },
         )
     )
@@ -151,26 +168,88 @@ async def test_enable_records_probe_auth_health(tmp_path: Path, monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_yext_codex_facade_runs_from_integration_context(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_yext_codex_session_returns_only_final_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import yext.codex
 
+    cli = tmp_path / "fake-codex"
+    cli.write_text(
+        """#!/usr/bin/env python3
+import json, sys
+print(json.dumps({"type":"thread.started","thread_id":"thread-1"}))
+print(json.dumps({"type":"item.completed","item":{"type":"reasoning","text":"secret thought"}}))
+print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"draft"}}))
+print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"final answer"}}))
+print(json.dumps({"type":"turn.completed","usage":{"input_tokens":10}}))
+print("startup warning", file=sys.stderr)
+""",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
     integration = CodexIntegration(
         "codex",
-        CodexConfig("printf", (), run_args_prefix=()),
+        CodexConfig(str(cli), ()),
     )
     for key, value in integration.session_context().items():
         monkeypatch.setenv(key, value)
 
-    state = await yext.codex.status()
-    result = await yext.codex.run("coding-ok")
+    session = yext.codex.open_session(cwd=tmp_path, skip_git_repo_check=True)
+    result = await session.ask("coding-ok")
 
-    assert state.status == "ready"
-    assert result.exit_code == 0
-    assert result.stdout == "coding-ok"
+    assert result == "final answer"
+    assert session.id == "thread-1"
+    assert not hasattr(yext.codex, "run")
+    assert not hasattr(yext.codex, "cli")
+    assert not hasattr(yext.codex, "help")
 
 
 @pytest.mark.asyncio
-async def test_yext_opencode_facade_filters_control_sequences(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_yext_codex_discovers_paginated_models(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yext.codex
+
+    cli = tmp_path / "fake-codex"
+    cli.write_text(
+        """#!/usr/bin/env python3
+import json, sys
+def model(id, hidden=False):
+    return {"id":id,"model":id,"displayName":id.upper(),"description":"desc","hidden":hidden,
+      "isDefault":id=="one","defaultReasoningEffort":"medium",
+      "supportedReasoningEfforts":[{"reasoningEffort":"medium","description":"balanced"}],
+      "inputModalities":["text","image"],
+      "serviceTiers":[{"id":"fast","name":"Fast","description":"Lower latency"}],
+      "defaultServiceTier":"fast"}
+for line in sys.stdin:
+    request=json.loads(line)
+    if request.get("method")=="initialize":
+        print(json.dumps({"id":request["id"],"result":{}}), flush=True)
+    elif request.get("method")=="model/list":
+        cursor=request["params"].get("cursor")
+        result={"data":[model("one"),model("hidden",True)],"nextCursor":"page-2"} if cursor is None else {"data":[model("two")],"nextCursor":None}
+        print(json.dumps({"id":request["id"],"result":result}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+    integration = CodexIntegration("codex", CodexConfig(str(cli), ()))
+    for key, value in integration.session_context().items():
+        monkeypatch.setenv(key, value)
+
+    found = await yext.codex.models()
+
+    assert [model.id for model in found] == ["one", "two"]
+    assert found[0].is_default is True
+    assert found[0].supported_reasoning_efforts[0].effort == "medium"
+    assert found[0].input_modalities == ("text", "image")
+    assert found[0].service_tiers[0].id == "fast"
+
+
+@pytest.mark.asyncio
+async def test_yext_opencode_facade_filters_control_sequences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import yext.opencode
 
     bin_dir = tmp_path / "bin"
@@ -225,14 +304,21 @@ def test_coding_cli_prompt_docs_arrive_through_integration_docs(tmp_path: Path) 
     integration = CodexIntegration("codex", CodexConfig())
     prompt = developer_prompt("", tmp_path, [integration], has_python=True)
 
-    assert "yext.codex:\nThin wrapper over the official codex CLI." in prompt
-    assert "await cli.help()" in prompt
-    assert 'await cli.cli("debug", "config")' in prompt
-    assert "credential files" in prompt
+    assert "yext.codex:\nWork with Codex through execute_python." in prompt
+    assert "await codex.models()" in prompt
+    assert "codex.open_session" in prompt
+    assert "codex.resume_session" in prompt
+    assert "complete task, relevant paths and context" in prompt
+    assert "without asking follow-up questions" in prompt
+    assert "await cli.help()" not in prompt
+    assert "await cli.cli(" not in prompt
+    assert "await cli.run(" not in prompt
     assert "# Coding CLIs" not in prompt
 
 
-def test_developer_prompt_without_coding_cli_integration_omits_prompt_doc(tmp_path: Path) -> None:
+def test_developer_prompt_without_coding_cli_integration_omits_prompt_doc(
+    tmp_path: Path,
+) -> None:
     prompt = developer_prompt("", tmp_path, [], has_python=True)
 
     assert "yext.codex:" not in prompt
