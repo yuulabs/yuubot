@@ -18,6 +18,34 @@ from yuubot.integrations.coding_cli import (
 from yuubot.integrations.registry import default_registry
 
 
+def test_yext_codex_sessions_apply_profile_to_start_and_resume() -> None:
+    import yext.codex
+
+    started = yext.codex.open_session(profile="minimal-skills")
+    resumed = yext.codex.resume_session("thread-1", profile="minimal-skills")
+
+    assert started.profile == "minimal-skills"
+    assert started._command("codex", "start") == (
+        "codex",
+        "exec",
+        "--json",
+        "-c",
+        'approval_policy="never"',
+        "-s",
+        "read-only",
+        "--profile",
+        "minimal-skills",
+        "start",
+    )
+    assert resumed._command("codex", "continue")[-5:] == (
+        "--profile",
+        "minimal-skills",
+        "resume",
+        "thread-1",
+        "continue",
+    )
+
+
 @pytest.mark.asyncio
 async def test_coding_cli_missing_binary_returns_recovery_action() -> None:
     state = await probe_coding_cli(
@@ -385,6 +413,7 @@ def test_coding_cli_prompt_docs_arrive_through_integration_docs(tmp_path: Path) 
     assert "await codex.models()" in prompt
     assert "codex.open_session" in prompt
     assert "codex.resume_session" in prompt
+    assert 'profile="lean"' in prompt
     assert "async for event in session.ask" in prompt
     assert "item.completed" in prompt
     assert "turn.failed" in prompt

@@ -115,6 +115,7 @@ async def _list_models(
 def open_session(
     model: str | None = None,
     reasoning: str | None = None,
+    profile: str | None = None,
     cwd: str | Path | None = None,
     sandbox: str = "read-only",
     skip_git_repo_check: bool = False,
@@ -124,6 +125,7 @@ def open_session(
         None,
         model,
         reasoning,
+        profile,
         str(cwd) if cwd is not None else None,
         sandbox,
         skip_git_repo_check,
@@ -135,6 +137,7 @@ def resume_session(
     session_id: str,
     model: str | None = None,
     reasoning: str | None = None,
+    profile: str | None = None,
     cwd: str | Path | None = None,
     sandbox: str = "read-only",
     skip_git_repo_check: bool = False,
@@ -146,6 +149,7 @@ def resume_session(
         session_id,
         model,
         reasoning,
+        profile,
         str(cwd) if cwd is not None else None,
         sandbox,
         skip_git_repo_check,
@@ -158,6 +162,7 @@ class Session:
     _id: str | None
     model: str | None
     reasoning: str | None
+    profile: str | None
     cwd: str | None
     sandbox: str
     skip_git_repo_check: bool
@@ -270,6 +275,8 @@ class Session:
             args.extend(("-m", self.model))
         if self.reasoning is not None:
             args.extend(("-c", f"model_reasoning_effort={json.dumps(self.reasoning)}"))
+        if self.profile is not None:
+            args.extend(("--profile", self.profile))
         if self.skip_git_repo_check:
             args.append("--skip-git-repo-check")
         if self._id is not None:
