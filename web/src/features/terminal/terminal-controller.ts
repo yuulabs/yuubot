@@ -5,6 +5,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 
+import { terminalOptions } from "./terminal-options";
 import { terminalShortcut, type TerminalShortcut } from "./terminal-shortcuts";
 
 export type TerminalStatus = "idle" | "connecting" | "open" | "closing" | "closed" | "error";
@@ -34,13 +35,7 @@ export class TerminalController {
 
   constructor(container: HTMLElement, events: ControllerEvents) {
     this.events = events;
-    this.terminal = new Terminal({
-      cursorBlink: true,
-      scrollback: 10_000,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      fontSize: savedFontSize(),
-      theme: { background: "#111827", foreground: "#e5e7eb", cursor: "#ffffff" },
-    });
+    this.terminal = new Terminal(terminalOptions(savedFontSize()));
     this.terminal.loadAddon(this.fitAddon);
     this.terminal.loadAddon(this.searchAddon);
     this.terminal.loadAddon(new Unicode11Addon());
