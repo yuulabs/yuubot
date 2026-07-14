@@ -674,7 +674,22 @@ function mergeLiveAssistantTurn({
 
 function reconcileLiveBlocks(existing: RenderBlock[], live: RenderBlock[]): RenderBlock[] {
   const next = [...existing];
-  let cursor = 0;
+  const liveRepeatsExistingTool = live.some((block) => (
+    (block.type === "tool_group" || block.type === "tool_call" || block.type === "tool_result")
+    && existing.some((candidate) => (
+      (candidate.type === "tool_group" || candidate.type === "tool_call" || candidate.type === "tool_result")
+      && sameToolCall(candidate, block)
+    ))
+  ));
+  let lastCompletedToolIndex = -1;
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    const block = next[index];
+    if (block?.type === "tool_group" && block.toolStatus === "completed") {
+      lastCompletedToolIndex = index;
+      break;
+    }
+  }
+  let cursor = liveRepeatsExistingTool ? 0 : lastCompletedToolIndex + 1;
   for (const block of live) {
     if (block.type === "tool_group" || block.type === "tool_call" || block.type === "tool_result") {
       const matchIndex = next.findIndex((candidate, index) => (

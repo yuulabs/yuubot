@@ -56,6 +56,39 @@ test("parseWorkspaceRefs keeps nested image refs as markdown text", () => {
   );
 });
 
+test("parseWorkspaceRefs ignores refs inside inline code", () => {
+  assert.deepEqual(
+    parseWorkspaceRefs("TOML `plugins = [[one], [two]]` and [[ notes.md ]]"),
+    [
+      { type: "text", value: "TOML `plugins = [[one], [two]]` and " },
+      { type: "ref", path: "notes.md" },
+    ],
+  );
+  assert.deepEqual(
+    parseWorkspaceRefs("``value = `[[not-a-ref]]` `` [[ yes.md ]]"),
+    [
+      { type: "text", value: "``value = `[[not-a-ref]]` `` " },
+      { type: "ref", path: "yes.md" },
+    ],
+  );
+});
+
+test("parseWorkspaceRefs ignores refs inside fenced code blocks", () => {
+  const content = "before [[ yes.md ]]\n```toml\nplugins = [[one], [two]]\nvalue = [[not-a-ref]]\n```\nafter";
+  assert.deepEqual(parseWorkspaceRefs(content), [
+    { type: "text", value: "before " },
+    { type: "ref", path: "yes.md" },
+    { type: "text", value: "\n```toml\nplugins = [[one], [two]]\nvalue = [[not-a-ref]]\n```\nafter" },
+  ]);
+});
+
+test("normalizeNestedMarkdownImageRefs does not rewrite code", () => {
+  assert.equal(
+    normalizeNestedMarkdownImageRefs("`![image]([[ code.png ]])`\n```md\n![image]([[ fenced.png ]])\n```"),
+    "`![image]([[ code.png ]])`\n```md\n![image]([[ fenced.png ]])\n```",
+  );
+});
+
 test("resolveMarkdownImageSrc leaves absolute and data URLs alone", () => {
   const toUrl = (actorId: string, path: string) => `/api/actors/${actorId}/files/${path}`;
   assert.equal(

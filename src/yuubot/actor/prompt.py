@@ -15,6 +15,11 @@ SessionMode = Literal["conversation", "actor"]
 REAL_TIME_CONTEXT_MARKER = "[yuubot-real-time-context]"
 _REAL_TIME_CONTEXT_SEPARATOR = "\n---\n"
 
+_SKILL_RULES = """
+`.agents/skills/<slug>` represents a skill. Each skill has a SKILL.md file with a concise description and instructions. The skill may also include other files, such as scripts, data, or documentation. 
+SKILLs are automatically loaded in your system prompt. You can disable a specific skill by adding `loaded: false` to its SKILL.md frontmatter (yuubot-only). This folder might be shared across multiple AI tools. 
+
+"""
 
 def developer_prompt(
     persona: str,
@@ -36,7 +41,7 @@ def developer_prompt(
     integration_docs = _integration_docs(integrations, extra_packages)
     if integration_docs:
         sections.append("# Integration SDKs\n" + integration_docs)
-    sections.append("# Skills\n" + _skills(workspace))
+    sections.append("# Skills\n" + _SKILL_RULES + _skills(workspace))
     sections.append("# AGENTS.md\n" + _agents_context(workspace))
     sections.append("# Real-Time Data\n" + _real_time_data(actor_id, daemon_url))
     sections.append("# Non-Negotiable Safety Policy\n" + _safety_policy())

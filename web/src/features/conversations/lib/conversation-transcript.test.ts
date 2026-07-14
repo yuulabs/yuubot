@@ -1023,6 +1023,66 @@ test("transcript reducer replaces living chunks with committed history", () => {
   assert.equal(durableItems[1]?.blocks[0]?.content, "persisted");
 });
 
+test("transcript reducer streams new thinking after a committed tool result", () => {
+  let state = createTranscriptState();
+  state = transcriptReducer(state, {
+    type: "snapshot",
+    prefix: [{
+      seq: 0,
+      kind: "input",
+      payload: { role: "user", name: "user", content: [{ kind: "text", text: "check files" }] },
+      created_at: null,
+    }],
+    livingChunks: [],
+    version: 0,
+  });
+  state = transcriptReducer(state, {
+    type: "commit",
+    append: [
+      {
+        seq: 1,
+        kind: "gen_reasoning",
+        payload: { text: "I should inspect the workspace." },
+        created_at: null,
+      },
+      {
+        seq: 2,
+        kind: "gen_tool_call",
+        payload: { id: "call-1", name: "bash", arguments: JSON.stringify({ command: "ls" }) },
+        created_at: null,
+      },
+      {
+        seq: 3,
+        kind: "tool_result",
+        payload: { tool_call_id: "call-1", content: [{ kind: "text", text: "README.md\n" }] },
+        created_at: null,
+      },
+    ],
+    continues: true,
+    version: 1,
+  });
+  state = transcriptReducer(state, {
+    type: "delta",
+    chunk: {
+      group_id: "reasoning-1",
+      kind: "reasoning_delta",
+      payload: { text: "README.md is present." },
+    },
+    version: 2,
+  });
+
+  const items = transcriptDisplayItems(state);
+  assert.deepEqual(
+    items[1]?.blocks.map((block) => [block.type, block.content]),
+    [
+      ["thinking", "I should inspect the workspace."],
+      ["tool_group", "bash"],
+      ["thinking", "README.md is present."],
+    ],
+  );
+  assert.equal(items[1]?.streaming, true);
+});
+
 test("pending user message appears until durable user input arrives", () => {
   let state = createTranscriptState();
   state = transcriptReducer(state, {
