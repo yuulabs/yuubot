@@ -5,6 +5,7 @@ import { cn } from "@/shared/lib/utils";
 export interface ResourceListColumn<T> {
   key: string;
   label: ReactNode;
+  mobileLabel?: string;
   render: (row: T) => ReactNode;
   className?: string;
   headerClassName?: string;
@@ -43,7 +44,11 @@ export function ResourceList<T>({
           {rows.map((row) => (
             <tr key={getRowId(row)}>
               {columns.map((column) => (
-                <td key={column.key} className={column.className}>
+                <td
+                  key={column.key}
+                  className={column.className}
+                  data-mobile-label={column.mobileLabel ?? (typeof column.label === "string" ? column.label : undefined)}
+                >
                   {column.render(row)}
                 </td>
               ))}

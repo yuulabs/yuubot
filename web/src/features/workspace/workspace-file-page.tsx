@@ -82,9 +82,9 @@ export function WorkspaceFilePage({ actorId, path }: { actorId: string; path: st
   if (!query.data) return <ErrorState error={new Error("File content is unavailable")} />;
 
   return (
-    <main className="min-h-screen bg-background px-5 py-8 text-foreground sm:px-8 sm:py-12">
+    <main className="min-h-[100dvh] bg-background px-5 py-8 text-foreground sm:px-8 sm:py-12">
       <div className="sticky top-4 z-10 mx-auto mb-6 flex max-w-4xl justify-end">
-        <div className="flex rounded-md border bg-background/95 p-1 shadow-sm backdrop-blur">
+        <div className="workspace-file-toolbar flex flex-wrap justify-end rounded-md border bg-background/95 p-1 shadow-sm backdrop-blur">
           {isMarkdown && <Button variant={view === "rendered" ? "secondary" : "ghost"} size="sm" onClick={() => setView("rendered")}>Rendered</Button>}
           <Button variant={view === "raw" ? "secondary" : "ghost"} size="sm" onClick={() => setView("raw")}>
             Raw
@@ -109,7 +109,7 @@ export function WorkspaceFilePage({ actorId, path }: { actorId: string; path: st
               spellCheck={false}
               autoFocus
             />
-            <div className="sticky bottom-4 flex items-center justify-end gap-2 rounded-md border bg-background/95 p-2 shadow-sm backdrop-blur">
+            <div className="workspace-file-actions sticky bottom-4 flex flex-wrap items-center justify-end gap-2 rounded-md border bg-background/95 p-2 shadow-sm backdrop-blur">
               {save.error && <p className="mr-auto text-sm text-destructive">{save.error instanceof Error ? save.error.message : String(save.error)}</p>}
               <Button variant="outline" disabled={save.isPending} onClick={() => { setDraft(query.data.content); setView(isMarkdown ? "rendered" : "raw"); }}><X size={14} /> Cancel</Button>
               <Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}><Save size={14} /> {save.isPending ? "Saving…" : "Save"}</Button>

@@ -56,6 +56,10 @@ export function useSidebar() {
     setMobileOpen(false);
   }, []);
 
+  const setMobile = useCallback((open: boolean) => {
+    setMobileOpen(open);
+  }, []);
+
   return {
     collapsed,
     mobileOpen,
@@ -63,5 +67,6 @@ export function useSidebar() {
     toggleDesktop,
     toggleMobile,
     closeMobile,
+    setMobile,
   };
 }

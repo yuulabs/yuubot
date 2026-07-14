@@ -992,37 +992,6 @@
 
 /* ---------- Responsive ---------- */
 @media (max-width: 860px) {
-  .app { grid-template-columns: 1fr; }
-  .sidebar {
-    position: fixed;
-    left: calc(var(--sidebar-width) * -1);
-    top: 0;
-    width: var(--sidebar-width);
-    transition: left 0.22s ease;
-    z-index: 50;
-  }
-  .app--sidebar-open .sidebar { left: 0; }
-  .sidebar-backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 40;
-    border: 0;
-    padding: 0;
-    background: rgba(6, 20, 54, 0.42);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.22s ease;
-    cursor: pointer;
-  }
-  .app--sidebar-open .sidebar-backdrop {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .sidebar__toggle { display: none; }
-  .topbar__menu { display: inline-flex; }
-  .view { padding: var(--sp-4); }
-  .topbar { margin: calc(var(--sp-4) * -1) calc(var(--sp-4) * -1) var(--sp-4); padding: var(--sp-3) var(--sp-4); }
   .toolbar { grid-template-columns: 1fr; }
   .chat { grid-template-columns: 1fr; }
   .chat__rail { display: none; }

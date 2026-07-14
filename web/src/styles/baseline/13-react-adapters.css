@@ -29,11 +29,6 @@
   margin-right: 0;
 }
 
-.view > .topbar {
-  margin-left: calc(var(--sp-8) * -1);
-  margin-right: calc(var(--sp-8) * -1);
-}
-
 .crud-main,
 .ingress-list {
   display: flex;

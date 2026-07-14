@@ -123,6 +123,7 @@ export function McpServersPage() {
                 {
                   key: "actions",
                   label: "",
+                  mobileLabel: "Actions",
                   className: "is-actions",
                   render: (server) => (
                     <McpServerActions

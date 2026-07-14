@@ -145,7 +145,7 @@ export function SkillsPage() {
             { key: "skill", label: "Skill", render: (skill) => <ResourceListPrimary title={skill.name} subtitle={skill.description || "No description provided."} /> },
             { key: "id", label: "ID", className: "skills-table__id", render: (skill) => <code>{skill.id}</code> },
             { key: "source", label: "Source", className: "skills-table__source", render: (skill) => <SourceLabel source={skill.source} error={skill.error} /> },
-            { key: "actions", label: <span className="sr-only">Actions</span>, className: "is-actions", render: (skill) => (
+            { key: "actions", label: <span className="sr-only">Actions</span>, mobileLabel: "Actions", className: "is-actions", render: (skill) => (
               <div className="skills-row-actions">
                 <Button size="sm" variant="outline" disabled={!skill.can_copy} onClick={() => setCopyId(skill.id)}><Copy size={13} />Copy to</Button>
                 {skill.can_edit && <Button size="sm" variant="outline" onClick={async () => {

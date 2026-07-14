@@ -74,6 +74,7 @@ export function ConversationDetailPage({
   useEffect(() => {
     setSegments([]);
     setDraftText(isDraft ? draftPrompt : "");
+    setHistoryOpen(false);
   }, [conversationId, draftPrompt, isDraft, selectedActor]);
 
   const usage = useQuery({
@@ -205,6 +206,7 @@ export function ConversationDetailPage({
         />
       }
       railOpen={historyOpen}
+      onRailOpenChange={setHistoryOpen}
       main={
         <ChatMain>
           {selectedActorSnapshot?.loaded_skills_warning && <p className="chat__error">当前加载 {selectedActorSnapshot.loaded_skill_count} 个 skills，建议不超过 {selectedActorSnapshot.max_loaded_skills_warning} 个。请前往 Actor 页面管理。</p>}

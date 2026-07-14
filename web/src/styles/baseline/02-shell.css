@@ -3,7 +3,7 @@
   --sidebar-width: 216px;
   --sidebar-width-collapsed: 72px;
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 100dvh;
   background: var(--page-bg);
   background-color: var(--bg);
@@ -25,7 +25,8 @@
   gap: var(--sp-3);
   position: sticky;
   top: 0;
-  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
 }
 .brand { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); min-width: 0; }
 .brand__mark {
@@ -140,13 +141,13 @@
   width: 10px;
   height: 10px;
 }
-.sidebar-backdrop {
-  display: none;
-}
+.sidebar-backdrop { display: none; }
+.sidebar-drawer__overlay,
+.sidebar-drawer { display: none; }
 .brand__title { font-family: var(--ff-display); font-weight: 700; font-size: 15px; letter-spacing: 0; color: var(--ink); }
 .brand__sub { font-size: 12px; color: var(--cyan-deep); font-weight: 600; }
 
-.nav { display: flex; flex-direction: column; gap: 1px; flex: 1; }
+.nav { display: flex; flex-direction: column; gap: 1px; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .nav__group { display: flex; flex-direction: column; gap: 1px; }
 .nav__group-label {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
@@ -201,8 +202,6 @@
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: var(--sp-6);
-  margin-right: calc(var(--sp-8) * -1);
-  margin-left: calc(var(--sp-8) * -1);
   padding: var(--sp-3) var(--sp-8);
   position: sticky; top: 0; z-index: 20;
   background: rgba(251, 253, 255, 0.94);
@@ -245,7 +244,7 @@
 }
 .crumb-link { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 2px var(--sp-1); border-radius: var(--r-sm); }
 .crumb-link:hover { color: var(--text); background: var(--surface-3); }
-.topbar__actions { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; }
+.topbar__actions { display: flex; align-items: center; gap: var(--sp-2); flex-shrink: 0; min-width: 0; }
 
 /* ---------- Buttons ---------- */
 .btn {

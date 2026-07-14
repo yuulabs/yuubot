@@ -11,6 +11,7 @@ import { Empty } from "./baseline/Empty";
 interface Column<T> {
   key: string;
   label: string;
+  mobileLabel?: string;
   render: (row: T) => React.ReactNode;
   className?: string;
 }
@@ -45,7 +46,11 @@ export function DataTable<T extends { id: string }>({
           {rows.map((row) => (
             <TableRow key={row.id}>
               {columns.map((col) => (
-                <TableCell key={col.key} className={col.className}>
+                <TableCell
+                  key={col.key}
+                  className={col.className}
+                  data-mobile-label={col.mobileLabel ?? col.label}
+                >
                   {col.render(row)}
                 </TableCell>
               ))}

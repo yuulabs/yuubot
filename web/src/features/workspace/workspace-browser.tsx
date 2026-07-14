@@ -245,7 +245,7 @@ export function WorkspaceBrowser({ actorId, path, onPathChange }: { actorId: str
     <>
       <Panel>
         <div className="grid gap-4" onDragOver={(event) => event.preventDefault()} onDrop={dropUpload}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="workspace-toolbar flex flex-wrap items-center justify-between gap-2">
             <Breadcrumb path={path} onChange={changePath} />
             <div className="flex flex-wrap items-center gap-2">
               <label className="dense-checkbox">
@@ -294,8 +294,8 @@ export function WorkspaceBrowser({ actorId, path, onPathChange }: { actorId: str
           ) : !visibleEntries.length ? (
             <EmptyState>No visible files. Check Show hidden to reveal dot-prefixed entries.</EmptyState>
           ) : view === "list" ? (
-            <div className="data-table">
-              <div className={`grid ${selectionMode ? "grid-cols-[32px_minmax(180px,1fr)_100px_170px_152px]" : "grid-cols-[minmax(180px,1fr)_100px_170px_152px]"} gap-3 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground`}>
+            <div className="data-table workspace-list">
+              <div className={`workspace-list__head grid ${selectionMode ? "grid-cols-[32px_minmax(180px,1fr)_100px_170px_152px]" : "grid-cols-[minmax(180px,1fr)_100px_170px_152px]"} gap-3 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground`}>
                 {selectionMode && <span />}
                 <span>Name</span>
                 <span>Size</span>
@@ -305,7 +305,7 @@ export function WorkspaceBrowser({ actorId, path, onPathChange }: { actorId: str
               {visibleEntries.map((entry) => (
                 <div
                   key={entry.path}
-                  className={`grid ${selectionMode ? "grid-cols-[32px_minmax(180px,1fr)_100px_170px_152px]" : "grid-cols-[minmax(180px,1fr)_100px_170px_152px]"} items-center gap-3 border-t px-3 py-2`}
+                  className={`workspace-list__row grid ${selectionMode ? "grid-cols-[32px_minmax(180px,1fr)_100px_170px_152px]" : "grid-cols-[minmax(180px,1fr)_100px_170px_152px]"} items-center gap-3 border-t px-3 py-2`}
                   draggable
                   onDragStart={(event) => dragStart(event, entry)}
                   onDragOver={(event) => entry.kind === "directory" && event.preventDefault()}

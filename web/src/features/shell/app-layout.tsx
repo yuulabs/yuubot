@@ -21,7 +21,9 @@ import {
   Settings,
   Share2,
   SquareTerminal,
+  X,
 } from "lucide-react";
+import { Dialog as DialogPrimitive } from "radix-ui";
 
 import { Button } from "@/components/ui/button";
 import { logout } from "@/shared/lib/api";
@@ -79,7 +81,7 @@ function ShellLayout({ pathname }: { pathname: string }) {
   const conversations = useConversations();
   const refresh = useRefreshBootstrap();
   useNotificationListener();
-  const { collapsed, mobileOpen, isMobile, toggleDesktop, toggleMobile, closeMobile } = useSidebar();
+  const { collapsed, mobileOpen, isMobile, toggleDesktop, toggleMobile, closeMobile, setMobile } = useSidebar();
   const [topbarActions, setTopbarActions] = useState<ReactNode | null>(null);
   const topbarActionsValue = useMemo(() => ({ setActions: setTopbarActions }), []);
   const current = navItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`));
@@ -104,56 +106,35 @@ function ShellLayout({ pathname }: { pathname: string }) {
         .filter(Boolean)
         .join(" ")}
     >
-      <button
-        type="button"
-        className="sidebar-backdrop"
-        aria-label="Close navigation"
-        onClick={closeMobile}
-      />
-      <aside className={["sidebar", sidebarCollapsed ? "sidebar--collapsed" : ""].filter(Boolean).join(" ")}>
-        <div className="brand">
-          <div className="brand__mark">y</div>
-          <div className="brand__name">
-            <span className="brand__title">yuubot</span>
-            <span className="brand__sub">control plane</span>
-          </div>
-          <button
-            type="button"
-            className="sidebar__toggle"
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-expanded={!sidebarCollapsed}
-            onClick={toggleDesktop}
-          >
-            {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={16} />}
-          </button>
-        </div>
-        <nav className="nav">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.to}
-                to={item.to}
-                className="nav__item"
-                activeProps={{ className: "is-active" }}
-                title={sidebarCollapsed ? item.label : undefined}
-              >
-                <Icon size={sidebarCollapsed ? 20 : 16} className="nav__icon" />
-                <span className="nav__label">{item.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="sidebar__footer">
-          <div className="runner" title={sidebarCollapsed && data ? `schema ${data.schema_version}` : undefined}>
-            <div className="runner__dot" />
-            <div className="runner__text">
-              <span>server</span>
-              <small>{data ? `schema ${data.schema_version}` : "loading"}</small>
-            </div>
-          </div>
-        </div>
-      </aside>
+      {isMobile ? (
+        <DialogPrimitive.Root open={mobileOpen} onOpenChange={setMobile}>
+          <DialogPrimitive.Portal>
+            <DialogPrimitive.Overlay className="sidebar-drawer__overlay" />
+            <DialogPrimitive.Content className="sidebar sidebar-drawer" aria-describedby={undefined}>
+              <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
+              <SidebarContent
+                collapsed={false}
+                data={data}
+                onNavigate={closeMobile}
+                onToggleDesktop={toggleDesktop}
+                mobile
+              />
+              <DialogPrimitive.Close className="sidebar-drawer__close" aria-label="Close navigation">
+                <X size={18} />
+              </DialogPrimitive.Close>
+            </DialogPrimitive.Content>
+          </DialogPrimitive.Portal>
+        </DialogPrimitive.Root>
+      ) : (
+        <aside className={["sidebar", sidebarCollapsed ? "sidebar--collapsed" : ""].filter(Boolean).join(" ")}>
+          <SidebarContent
+            collapsed={sidebarCollapsed}
+            data={data}
+            onNavigate={closeMobile}
+            onToggleDesktop={toggleDesktop}
+          />
+        </aside>
+      )}
       <main className="main">
         <header className="topbar">
           <div className="topbar__crumbs">
@@ -195,6 +176,70 @@ function ShellLayout({ pathname }: { pathname: string }) {
       <Toaster richColors closeButton position="bottom-right" />
     </div>
     </TopbarActionsContext.Provider>
+  );
+}
+
+function SidebarContent({
+  collapsed,
+  data,
+  onNavigate,
+  onToggleDesktop,
+  mobile = false,
+}: {
+  collapsed: boolean;
+  data: ReturnType<typeof useBootstrap>["data"];
+  onNavigate: () => void;
+  onToggleDesktop: () => void;
+  mobile?: boolean;
+}) {
+  return (
+    <>
+      <div className="brand">
+        <div className="brand__mark">y</div>
+        <div className="brand__name">
+          <span className="brand__title">yuubot</span>
+          <span className="brand__sub">control plane</span>
+        </div>
+        {!mobile && (
+          <button
+            type="button"
+            className="sidebar__toggle"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
+            onClick={onToggleDesktop}
+          >
+            {collapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={16} />}
+          </button>
+        )}
+      </div>
+      <nav className="nav">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.to}
+              to={item.to}
+              className="nav__item"
+              activeProps={{ className: "is-active" }}
+              title={collapsed ? item.label : undefined}
+              onClick={onNavigate}
+            >
+              <Icon size={collapsed ? 20 : 16} className="nav__icon" />
+              <span className="nav__label">{item.label}</span>
+            </Link>
+          );
+        })}
+      </nav>
+      <div className="sidebar__footer">
+        <div className="runner" title={collapsed && data ? `schema ${data.schema_version}` : undefined}>
+          <div className="runner__dot" />
+          <div className="runner__text">
+            <span>server</span>
+            <small>{data ? `schema ${data.schema_version}` : "loading"}</small>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
