@@ -41,6 +41,25 @@ class BlockingProvider:
         return None
 
 
+class BrokenProvider:
+    async def stream(
+        self,
+        input: LLMInput,
+        model: str,
+        context: ConversationContext,
+        cache: CachePool,
+        stop_event: asyncio.Event,
+        metadata: dict[str, str] | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        del input, model, context, cache, stop_event, metadata
+        if False:
+            yield stream_stop_event("stop")
+        raise RuntimeError("provider failed")
+
+    async def close(self) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_terminal_turn_marks_closed_when_harness_close_fails(
     tmp_path: Path,
@@ -135,5 +154,35 @@ async def test_history_append_does_not_refresh_conversation_idle_ttl(tmp_path: P
         await app.runtime.conversations.sweep()
 
         assert not app.runtime.conversations.has(conversation_id)
+    finally:
+        await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_exception_does_not_leave_conversation_active(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    conversation_id = "conv-error-status"
+    try:
+        app.create_actor(
+            ActorConfig(
+                id="amy",
+                name="Amy",
+                workspace=str(tmp_path / "workspace"),
+                model="fake",
+            ),
+            BrokenProvider(),
+        )
+
+        with pytest.raises(RuntimeError, match="provider failed"):
+            await app.run_user_message(
+                "amy",
+                InputMessage("user", "amy", text_content("hi")),
+                conversation_id,
+            )
+
+        rows = await app.runtime.state.list_conversations()
+        record = next(item for item in rows if item.id == conversation_id)
+        assert record.status == "error"
+        assert app.runtime.conversations.running(conversation_id) is False
     finally:
         await app.shutdown()

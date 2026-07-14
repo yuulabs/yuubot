@@ -87,6 +87,23 @@ def test_bind_progress_emits_tool_progress_events() -> None:
     ]
 
 
+def test_tool_progress_renders_carriage_returns_as_terminal_snapshots() -> None:
+    emitted: list[RuntimeEventPayload] = []
+    progress = bind_progress(emitted.append, "c1", "call-1", "execute_python")
+
+    progress.write("download 10%\r")
+    progress.write("download 90%")
+
+    stream = [
+        payload.event
+        for payload in emitted
+        if isinstance(payload, ConversationStreamPayload)
+    ]
+    assert isinstance(stream[-1].payload, ToolResultDeltaPayload)
+    assert stream[-1].payload.text == "download 90%"
+    assert progress.snapshot() == "download 90%"
+
+
 @pytest.mark.asyncio
 async def test_ws_listener_does_not_forward_tool_progress_as_conversation_frame() -> None:
     sent: list[dict[str, object]] = []

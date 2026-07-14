@@ -65,6 +65,7 @@ class WsListener:
                     "conversation_id": conversation_id,
                     "history": prefix,
                     "living_chunks": [msgspec.to_builtins(chunk) for chunk in snapshot.living_chunks],
+                    "continues": snapshot.continues,
                     "version": snapshot.version,
                     "has_older": len(snapshot.prefix) > len(prefix),
                     "first_seq": prefix[0].get("seq") if prefix else None,

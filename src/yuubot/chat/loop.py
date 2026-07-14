@@ -19,7 +19,7 @@ import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import msgspec
 from attrs import define, field
@@ -96,6 +96,7 @@ class ConversationSnapshot:
     prefix: list[dict[str, object]]
     living_chunks: list[StreamEvent]
     version: int
+    continues: bool = False
 
 
 class ConversationSubscriber(Protocol):
@@ -130,7 +131,10 @@ class Conversation:
     living_chunks: list[StreamEvent] = field(factory=list, init=False)
     version: int = field(default=0, init=False)
     stop_event: asyncio.Event = field(factory=asyncio.Event)
-    _running: bool = field(default=False, init=False)
+    _run_state: Literal["idle", "running", "interrupting", "interrupted"] = field(
+        default="idle", init=False
+    )
+    _durable_status: str = field(default="", init=False)
     _answer_claimed: bool = field(default=False, init=False)
     _pending_task_deliveries: list[str] = field(factory=list, init=False)
     _task_delivery_suppressed_until: float | None = field(default=None, init=False)
@@ -141,7 +145,7 @@ class Conversation:
 
     @property
     def running(self) -> bool:
-        return self._running
+        return self._run_state != "idle"
 
     async def run_loop(
         self,
@@ -191,7 +195,13 @@ class Conversation:
             )
             return await self._run_loop(on_event, session_mode == "conversation")
         except asyncio.CancelledError:
+            self._mark_interrupted_state()
             await self._mark_status("interrupted")
+            raise
+        except ConversationBlocked:
+            raise
+        except Exception as exc:
+            await self._mark_status("error", reason=type(exc).__name__)
             raise
         finally:
             if turn_token:
@@ -207,6 +217,15 @@ class Conversation:
         try:
             await self._mark_status("active")
             return await self._run_loop(on_event, False)
+        except asyncio.CancelledError:
+            self._mark_interrupted_state()
+            await self._mark_status("interrupted")
+            raise
+        except ConversationBlocked:
+            raise
+        except Exception as exc:
+            await self._mark_status("error", reason=type(exc).__name__)
+            raise
         finally:
             await self._exit_run()
 
@@ -223,11 +242,20 @@ class Conversation:
                 [InputMessage("developer", name, text_content(text))], True
             )
             return await self._run_loop(on_event, False)
+        except asyncio.CancelledError:
+            self._mark_interrupted_state()
+            await self._mark_status("interrupted")
+            raise
+        except ConversationBlocked:
+            raise
+        except Exception as exc:
+            await self._mark_status("error", reason=type(exc).__name__)
+            raise
         finally:
             await self._exit_run()
 
     async def append_items(self, items: Sequence[HistoryItem]) -> None:
-        if self._running:
+        if self.running:
             raise ConversationBusy(self.id)
         await self._emit_commit(items, False)
 
@@ -250,7 +278,7 @@ class Conversation:
         answers: list[AskUserAnswer],
         skipped: bool,
     ) -> ToolResult:
-        if self._running or self._answer_claimed:
+        if self.running or self._answer_claimed:
             raise ConversationBusy(self.id)
         call = self.pending_question()
         if call is None or call.id != tool_call_id:
@@ -282,6 +310,15 @@ class Conversation:
             await self._mark_status("active")
             await self._emit_commit([result], True)
             return await self._run_loop(on_event, True)
+        except asyncio.CancelledError:
+            self._mark_interrupted_state()
+            await self._mark_status("interrupted")
+            raise
+        except ConversationBlocked:
+            raise
+        except Exception as exc:
+            await self._mark_status("error", reason=type(exc).__name__)
+            raise
         finally:
             self._answer_claimed = False
             await self._exit_run()
@@ -290,16 +327,34 @@ class Conversation:
         self._answer_claimed = False
 
     def interrupt(self) -> bool:
-        if not self._running:
+        if self._run_state in {"idle", "interrupted"}:
+            _log.debug(
+                "conversation interrupt ignored conversation_id=%s state=%s",
+                self.id,
+                self._run_state,
+            )
             return False
+        if self._run_state == "interrupting":
+            _log.info(
+                "conversation interrupt already requested conversation_id=%s state=interrupting",
+                self.id,
+            )
+            return True
+        old_state = self._run_state
+        self._run_state = "interrupting"
         self.runtime.suppress_task_deliveries(self.id)
         self.stop_event.set()
+        _log.info(
+            "conversation interrupt requested conversation_id=%s old_state=%s new_state=interrupting",
+            self.id,
+            old_state,
+        )
         return True
 
     async def snapshot(self) -> ConversationSnapshot:
         async with self._state_lock:
             return ConversationSnapshot(
-                list(self.prefix), list(self.living_chunks), self.version
+                list(self.prefix), list(self.living_chunks), self.version, self.running
             )
 
     async def subscribe(self, subscriber: ConversationSubscriber) -> None:
@@ -311,6 +366,7 @@ class Conversation:
                     list(self.prefix),
                     list(self.living_chunks),
                     self.version,
+                    self.running,
                 ),
             )
 
@@ -360,18 +416,28 @@ class Conversation:
         self.stop_event.set()
 
     def _enter_run(self) -> None:
-        if self._running:
+        if self.running:
             raise ConversationBusy(self.id)
-        self._running = True
+        self._run_state = "running"
         self.runtime.conversations.mark_running(self.id)
         self.stop_event.clear()
+        _log.info(
+            "conversation run gate acquired conversation_id=%s old_state=idle new_state=running",
+            self.id,
+        )
 
     async def _exit_run(self) -> None:
         try:
             await self.runtime.drain_pending_task_deliveries(self.id)
         finally:
-            self._running = False
+            old_state = self._run_state
+            self._run_state = "idle"
             self.runtime.conversations.mark_idle(self.id)
+            _log.info(
+                "conversation run gate released conversation_id=%s old_state=%s new_state=idle",
+                self.id,
+                old_state,
+            )
 
     async def _run_loop(
         self, on_event: StreamCallback | None, interactive: bool
@@ -420,6 +486,11 @@ class Conversation:
                     merge_chunks.append(stop_chunk)
                 outputs, stop = merge(merge_chunks)
                 self.last_stop = stop
+                if stop.reason == "interrupted":
+                    _log.info(
+                        "conversation stop observed conversation_id=%s phase=llm_stream",
+                        self.id,
+                    )
                 continues = stop.reason in {"tool_calls", "function_call"}
                 calls = extract_tool_calls(outputs) if continues else []
                 ask_calls = [call for call in calls if call.name == ASK_USER_NAME]
@@ -443,6 +514,8 @@ class Conversation:
                 await self._record_usage(stop)
                 if stop.reason in {"stop", "interrupted"}:
                     await close_harness()
+                    if stop.reason == "interrupted":
+                        self._mark_interrupted_state()
                     await self._mark_status(
                         "interrupted" if stop.reason == "interrupted" else "closed"
                     )
@@ -471,8 +544,13 @@ class Conversation:
                 await self._flush_pending_deltas()
                 await self._emit_commit(results, True)
                 if self.stop_event.is_set():
+                    _log.info(
+                        "conversation stop observed conversation_id=%s phase=tool_results",
+                        self.id,
+                    )
                     stop = StreamStop("interrupted")
                     await close_harness()
+                    self._mark_interrupted_state()
                     await self._mark_status("interrupted")
                     await self._emit_commit([], False)
                     stop_frame = stream_stop_from(stop)
@@ -496,6 +574,15 @@ class Conversation:
             if isinstance(item, GenToolCall) and item.name == "execute_python":
                 return True
         return False
+
+    def _mark_interrupted_state(self) -> None:
+        old_state = self._run_state
+        self._run_state = "interrupted"
+        _log.info(
+            "conversation interrupt completed conversation_id=%s old_state=%s new_state=interrupted",
+            self.id,
+            old_state,
+        )
 
     async def _extend(self, items: Sequence[HistoryItem]) -> list[dict[str, object]]:
         if not items:
@@ -524,6 +611,14 @@ class Conversation:
             self.version += 1
             for subscriber in list(self._subscribers):
                 await subscriber.on_commit(self.id, append, continues, self.version)
+        if not continues:
+            _log.info(
+                "conversation terminal commit conversation_id=%s version=%s append_count=%s state=%s",
+                self.id,
+                self.version,
+                len(append),
+                self._run_state,
+            )
 
     async def _emit_error(self, error: str) -> None:
         async with self._state_lock:
@@ -553,11 +648,21 @@ class Conversation:
         )
 
     async def _mark_status(self, status: str, **last_error: object) -> None:
+        old_status = self._durable_status or "unknown"
+        started = time.monotonic()
         await self.runtime.state.put_conversation(
             self.id,
             self.context.actor,
             status,
             last_error=dict(last_error) if last_error else None,
+        )
+        self._durable_status = status
+        _log.info(
+            "conversation status transition conversation_id=%s old_status=%s new_status=%s duration_ms=%s",
+            self.id,
+            old_status,
+            status,
+            int((time.monotonic() - started) * 1000),
         )
 
 

@@ -292,14 +292,18 @@ def _coding_cli_prompt_doc(command: str, package_path: str, login_command: str) 
 def _codex_prompt_doc(login_command: str) -> str:
     return "\n".join(
         [
-            "Work with Codex through execute_python. Each ask finishes one turn and returns only Codex's final text.",
+            "Work with Codex through execute_python. Each ask is a single-use async stream of raw Codex JSON events.",
             "",
-            "Import:   import yext.codex as codex",
+            "Import:   import json; import yext.codex as codex",
             "Models:   await codex.models()",
             'Start:    session = codex.open_session(model="gpt-5.6-sol", reasoning="high", cwd="/workspace", sandbox="read-only", skip_git_repo_check=True)',
-            'Ask:      text = await session.ask("complete task context")',
-            'Continue: text = await session.ask("continue with the remaining work")',
+            'Ask:      async for event in session.ask("complete task context"): print(json.dumps(event, ensure_ascii=False), flush=True)',
+            'Continue: async for event in session.ask("continue with the remaining work"): print(event)',
             'Resume:   session = codex.resume_session(session_id, cwd="/workspace", sandbox="read-only")',
+            "",
+            'Final text: on item.completed, if event["item"]["type"] == "agent_message", save event["item"]["text"].',
+            'Terminal events are turn.completed, turn.failed, and error. Failed events are yielded before ask raises RuntimeError.',
+            "Consume each ask stream once and to completion (or explicitly close it).",
             "",
             "In the first ask, provide the complete task, relevant paths and context, constraints, expected deliverables, and verification.",
             "Tell Codex to make reasonable decisions for non-critical ambiguity and complete the current turn without asking follow-up questions.",

@@ -23,6 +23,12 @@ import {
   type ConversationPhase,
   type StreamEventFrame,
 } from "../lib/conversation-transcript";
+import {
+  conversationCommandReducer,
+  createConversationCommandState,
+  type ConversationCommandEvent,
+  type PendingSendCommand,
+} from "../lib/conversation-command-state";
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -34,12 +40,6 @@ interface WsFrame {
   type?: string;
   payload?: Record<string, unknown>;
   error?: { code?: string; message?: string; detail?: Record<string, unknown> };
-}
-
-interface PendingSend {
-  actorId: string;
-  content: WsContentItem[];
-  conversationId: string;
 }
 
 export function useConversationSession({
@@ -54,7 +54,8 @@ export function useConversationSession({
   onTurnComplete: () => void;
 }) {
   const wsRef = useRef<WebSocket | null>(null);
-  const pendingRef = useRef<PendingSend | null>(null);
+  const pendingRef = useRef<PendingSendCommand | null>(null);
+  const commandStateRef = useRef(createConversationCommandState());
   const localVersionRef = useRef(0);
   const conversationIdRef = useRef(conversationId);
   const disposedRef = useRef(false);
@@ -62,6 +63,7 @@ export function useConversationSession({
   const onTurnCompleteRef = useRef(onTurnComplete);
 
   const [transcript, dispatch] = useReducer(transcriptReducer, undefined, createTranscriptState);
+  const [commandState, setCommandState] = useState(commandStateRef.current);
   const [wsReady, setWsReady] = useState(false);
   const [wsConnectionState, setWsConnectionState] = useState<WsConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +72,13 @@ export function useConversationSession({
 
   conversationIdRef.current = conversationId;
   onTurnCompleteRef.current = onTurnComplete;
+
+  const applyCommandEvent = useCallback((event: ConversationCommandEvent) => {
+    const next = conversationCommandReducer(commandStateRef.current, event);
+    commandStateRef.current = next;
+    setCommandState(next);
+    return next;
+  }, []);
 
   const requestSnapshot = useCallback((ws: WebSocket) => {
     if (resubscribingRef.current || ws.readyState !== WebSocket.OPEN) return;
@@ -83,12 +92,21 @@ export function useConversationSession({
     const pending = pendingRef.current;
     if (!pending) return;
     pendingRef.current = null;
-    sendConversation(ws, pending.actorId, pending.content, pending.conversationId);
+    sendConversation(
+      ws,
+      pending.actorId,
+      pending.content,
+      pending.conversationId,
+      pending.commandId,
+    );
   }, []);
 
   useEffect(() => {
     if (isDraft) return;
     disposedRef.current = false;
+    pendingRef.current = null;
+    commandStateRef.current = createConversationCommandState();
+    setCommandState(commandStateRef.current);
     localVersionRef.current = 0;
     resubscribingRef.current = false;
     let reconnectAttempt = 0;
@@ -100,11 +118,39 @@ export function useConversationSession({
       if (development) {
         setEvents((current) => [...current.slice(-99), summarizeFrame(frame, message.data.length)]);
       }
+      if (frame.type === "error") {
+        const message = describeWsError(frame.error);
+        const pending = commandStateRef.current.pending;
+        if (pending && frame.id === pending.commandId) {
+          applyCommandEvent({ type: "send_rejected", commandId: pending.commandId });
+          pendingRef.current = null;
+          dispatch({ type: "clear_pending" });
+        } else if (frame.id?.startsWith("open-")) {
+          dispatch({ type: "error" });
+        }
+        setError(message);
+        toast.error(message);
+        return;
+      }
       const payload = frame.payload;
       if (payload?.conversation_id !== conversationIdRef.current) {
-        if (frame.type === "error" && frame.id?.startsWith("open-")) {
-          setError(describeWsError(frame.error));
-          dispatch({ type: "error" });
+        return;
+      }
+
+      if (frame.type === "conversation.send.accepted") {
+        if (frame.id) {
+          applyCommandEvent({ type: "send_accepted", commandId: frame.id });
+        }
+        return;
+      }
+
+      if (frame.type === "conversation.interrupt.result") {
+        if (frame.id) {
+          applyCommandEvent({
+            type: "interrupt_result",
+            commandId: frame.id,
+            accepted: payload.interrupted === true,
+          });
         }
         return;
       }
@@ -112,6 +158,19 @@ export function useConversationSession({
       if (frame.type === "conversation.snapshot") {
         const prefix = parseHistoryItems(payload.history);
         const livingChunks = parseStreamChunks(payload.living_chunks);
+        const pending = commandStateRef.current.pending;
+        const inputCommitted = pending !== null && prefix.some(
+          (item) => item.seq > pending.baselineSeq && isUserInputItem(item),
+        );
+        if (inputCommitted) {
+          applyCommandEvent({ type: "user_input_committed" });
+        }
+        const serviceContinues = typeof payload.continues === "boolean"
+          ? payload.continues
+          : livingChunks.length > 0;
+        if (!serviceContinues) {
+          applyCommandEvent({ type: "terminal_commit" });
+        }
         const version = numericVersion(payload.version);
         localVersionRef.current = version;
         resubscribingRef.current = false;
@@ -120,6 +179,8 @@ export function useConversationSession({
           prefix,
           livingChunks,
           version,
+          continues: serviceContinues,
+          preservePending: pending !== null && !inputCommitted,
           hasOlder: payload.has_older === true,
           firstSeq: typeof payload.first_seq === "number" ? payload.first_seq : null,
         });
@@ -145,8 +206,15 @@ export function useConversationSession({
           return;
         }
         const continues = payload.continues === true;
-        dispatch({ type: "commit", append: parseHistoryItems(payload.append), continues, version });
-        if (!continues) onTurnCompleteRef.current();
+        const append = parseHistoryItems(payload.append);
+        if (append.some(isUserInputItem)) {
+          applyCommandEvent({ type: "user_input_committed" });
+        }
+        dispatch({ type: "commit", append, continues, version });
+        if (!continues) {
+          applyCommandEvent({ type: "terminal_commit" });
+          onTurnCompleteRef.current();
+        }
         return;
       }
 
@@ -156,13 +224,6 @@ export function useConversationSession({
         dispatch({ type: "error" });
         toast.error(message);
         return;
-      }
-
-      if (frame.type === "error") {
-        const message = describeWsError(frame.error);
-        setError(message);
-        dispatch({ type: "error" });
-        toast.error(message);
       }
     };
 
@@ -201,11 +262,30 @@ export function useConversationSession({
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [development, flushPending, isDraft, requestSnapshot, conversationId]);
+  }, [applyCommandEvent, development, flushPending, isDraft, requestSnapshot, conversationId]);
 
   const send = useCallback((actorId: string, content: WsContentItem[], durableId?: string) => {
     const targetId = durableId || conversationIdRef.current;
-    if (isDraft || !targetId || transcript.continues || transcript.pendingUser) return false;
+    if (
+      isDraft
+      || !targetId
+      || transcript.continues
+      || transcript.pendingUser
+      || commandStateRef.current.pending
+      || commandStateRef.current.interrupting
+    ) return false;
+    const commandId = `send-${Date.now()}-${nextCommandSequence()}`;
+    const baselineSeq = transcript.prefix.reduce(
+      (highest, item) => Math.max(highest, item.seq),
+      0,
+    );
+    const payload = { actorId, content, conversationId: targetId };
+    applyCommandEvent({
+      type: "send_local",
+      commandId,
+      baselineSeq,
+      payload,
+    });
     dispatch({
       type: "pending_user",
       clientKey: `pending-${Date.now()}`,
@@ -215,17 +295,25 @@ export function useConversationSession({
     setError(null);
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !wsReady) {
-      pendingRef.current = { actorId, content, conversationId: targetId };
+      pendingRef.current = {
+        ...payload,
+        commandId,
+        baselineSeq,
+        stage: "local_pending",
+      };
       return true;
     }
-    sendConversation(ws, actorId, content, targetId);
+    sendConversation(ws, actorId, content, targetId, commandId);
     return true;
-  }, [isDraft, transcript.continues, transcript.pendingUser, wsReady]);
+  }, [applyCommandEvent, isDraft, transcript.continues, transcript.pendingUser, transcript.prefix, wsReady]);
 
   const interrupt = useCallback((targetId: string) => {
     const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN && targetId) interruptConversation(ws, targetId);
-  }, []);
+    if (ws?.readyState === WebSocket.OPEN && targetId) {
+      const commandId = interruptConversation(ws, targetId);
+      applyCommandEvent({ type: "interrupt_requested", commandId });
+    }
+  }, [applyCommandEvent]);
 
   const answerQuestion = useCallback((toolCallId: string, answers: AskUserAnswerInput[], skipped = false) => {
     const ws = wsRef.current;
@@ -235,6 +323,10 @@ export function useConversationSession({
     answerConversation(ws, targetId, toolCallId, answers, skipped);
     return true;
   }, [wsReady]);
+
+  const clearRetrySend = useCallback(() => {
+    applyCommandEvent({ type: "retry_cleared" });
+  }, [applyCommandEvent]);
 
   const loadOlder = useCallback(async () => {
     const targetId = conversationIdRef.current;
@@ -257,7 +349,9 @@ export function useConversationSession({
   const awaitingInput = displayItems.some((item) => item.blocks.some(
     (block) => block.toolName === "ask_user" && block.toolStatus !== "completed",
   ));
-  const phase: ConversationPhase = transcript.pendingUser
+  const phase: ConversationPhase = commandState.interrupting
+    ? "interrupting"
+    : transcript.pendingUser || commandState.pending
     ? "sending"
     : transcript.continues
       ? "streaming"
@@ -281,6 +375,8 @@ export function useConversationSession({
     send,
     interrupt,
     answerQuestion,
+    retrySend: commandState.retry,
+    clearRetrySend,
   };
 }
 
@@ -340,6 +436,17 @@ function parseStreamChunk(value: unknown): StreamEventFrame | null {
 
 function numericVersion(value: unknown): number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+function isUserInputItem(item: HistoryItem): boolean {
+  return item.kind === "input" && String(item.payload.role ?? "user") === "user";
+}
+
+let commandSequence = 0;
+
+function nextCommandSequence(): number {
+  commandSequence += 1;
+  return commandSequence;
 }
 
 export type { ConversationPhase };

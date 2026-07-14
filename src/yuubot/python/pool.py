@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -11,6 +12,8 @@ from attrs import define, field
 
 from .config import PythonKernelsConfig
 from .worker import KernelWorker, KernelWorkerError
+
+_log = logging.getLogger(__name__)
 
 
 class KernelPoolBusy(RuntimeError):
@@ -149,7 +152,23 @@ class KernelPool:
                 current = self._leases.get(lease_key)
                 if current is worker:
                     self._leases.pop(lease_key, None)
-                await self._drop_worker_unlocked(worker)
+                removed = worker in self._workers
+                if removed:
+                    self._workers.remove(worker)
+                self._leases = {
+                    key: value
+                    for key, value in self._leases.items()
+                    if value is not worker
+                }
+            await worker.shutdown()
+            if removed:
+                self.limiter.release()
+            _log.info(
+                "kernel leased worker dropped lease_key=%s removed=%s alive=%s",
+                lease_key,
+                removed,
+                worker.alive,
+            )
 
     def _find_idle_worker(self) -> KernelWorker | None:
         for worker in self._workers:

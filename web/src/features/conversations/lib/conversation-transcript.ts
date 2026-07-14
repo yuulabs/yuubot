@@ -71,7 +71,7 @@ export interface StreamEventFrame {
   payload: Record<string, unknown>;
 }
 
-export type ConversationPhase = "idle" | "sending" | "streaming" | "error";
+export type ConversationPhase = "idle" | "sending" | "streaming" | "interrupting" | "error";
 
 const PREFIX_KINDS = new Set(["tool_specs", "system_prompt"]);
 
@@ -551,9 +551,14 @@ function parseTimestamp(createdAt: string | null): number {
 
 export function historyItemsFromHistory(history: HistoryItem[]): DisplayItem[] {
   const items: DisplayItem[] = [];
+  const seenSequences = new Set<number>();
   let currentUserSeq: number | null = null;
 
   for (const item of history) {
+    if (seenSequences.has(item.seq)) {
+      continue;
+    }
+    seenSequences.add(item.seq);
     if (PREFIX_KINDS.has(item.kind)) {
       continue;
     }
@@ -640,7 +645,7 @@ function mergeLiveAssistantTurn({
   phase: ConversationPhase;
   previewStartedAt: number;
 }): DisplayItem[] {
-  const active = phase === "sending" || phase === "streaming";
+  const active = phase === "sending" || phase === "streaming" || phase === "interrupting";
   if (!active || liveBlocks.length === 0) {
     return items;
   }
@@ -651,7 +656,7 @@ function mergeLiveAssistantTurn({
   const existingIndex = items.findIndex((item) => item.key === liveKey);
   if (existingIndex >= 0) {
     return items.map((item, index) => index === existingIndex
-      ? { ...item, blocks: appendRenderBlocks(item.blocks, liveBlocks), streaming }
+      ? { ...item, blocks: reconcileLiveBlocks(item.blocks, liveBlocks), streaming }
       : item);
   }
   return [
@@ -665,6 +670,43 @@ function mergeLiveAssistantTurn({
       streaming,
     },
   ];
+}
+
+function reconcileLiveBlocks(existing: RenderBlock[], live: RenderBlock[]): RenderBlock[] {
+  const next = [...existing];
+  let cursor = 0;
+  for (const block of live) {
+    if (block.type === "tool_group" || block.type === "tool_call" || block.type === "tool_result") {
+      const matchIndex = next.findIndex((candidate, index) => (
+        index >= cursor
+        && (candidate.type === "tool_group" || candidate.type === "tool_call" || candidate.type === "tool_result")
+        && sameToolCall(candidate, block)
+      ));
+      if (matchIndex >= 0) {
+        const merged = groupToolBlocks([next[matchIndex], block]);
+        next[matchIndex] = merged[0] ?? block;
+        cursor = matchIndex + 1;
+        continue;
+      }
+    } else {
+      const matchIndex = next.findIndex((candidate, index) => (
+        index >= cursor
+        && candidate.type === block.type
+        && (candidate.content.startsWith(block.content) || block.content.startsWith(candidate.content))
+      ));
+      if (matchIndex >= 0) {
+        const candidate = next[matchIndex];
+        next[matchIndex] = block.content.length > candidate.content.length
+          ? { ...candidate, ...block, key: candidate.key }
+          : candidate;
+        cursor = matchIndex + 1;
+        continue;
+      }
+    }
+    next.splice(cursor, 0, block);
+    cursor += 1;
+  }
+  return groupToolBlocks(next);
 }
 
 export interface PendingUserMessage {
@@ -687,12 +729,13 @@ export interface TranscriptState {
 }
 
 export type TranscriptAction =
-  | { type: "snapshot"; prefix: HistoryItem[]; livingChunks: StreamEventFrame[]; version: number; hasOlder?: boolean; firstSeq?: number | null }
+  | { type: "snapshot"; prefix: HistoryItem[]; livingChunks: StreamEventFrame[]; version: number; continues?: boolean; preservePending?: boolean; hasOlder?: boolean; firstSeq?: number | null }
   | { type: "delta"; chunk: StreamEventFrame; version: number }
   | { type: "commit"; append: HistoryItem[]; continues: boolean; version: number }
   | { type: "prepend"; items: HistoryItem[]; hasOlder: boolean; firstSeq: number | null }
   | { type: "gap" }
   | { type: "pending_user"; clientKey: string; text: string; now: number }
+  | { type: "clear_pending" }
   | { type: "error" };
 
 export function createTranscriptState(): TranscriptState {
@@ -732,9 +775,9 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
       firstSeq: action.firstSeq ?? action.prefix[0]?.seq ?? null,
       version: action.version,
       phase: "synced",
-      continues: liveBlocks.length > 0,
+      continues: action.continues ?? (liveBlocks.length > 0),
       previewStartedAt: state.previewStartedAt,
-      pendingUser: null,
+      pendingUser: action.preservePending ? state.pendingUser : null,
     };
   }
   if (action.type === "pending_user") {
@@ -746,6 +789,9 @@ export function transcriptReducer(state: TranscriptState, action: TranscriptActi
         timestamp: action.now,
       },
     };
+  }
+  if (action.type === "clear_pending") {
+    return { ...state, pendingUser: null };
   }
   if (action.type === "delta") {
     let nextLiveBlockIndex = state.nextLiveBlockIndex;

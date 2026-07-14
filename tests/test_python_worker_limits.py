@@ -24,6 +24,9 @@ class FakeKernelClient:
             raise asyncio.TimeoutError
         return self._messages.pop(0)
 
+    def stop_channels(self) -> None:
+        return None
+
 
 def _worker(client: FakeKernelClient, max_output_bytes: int = 8, execution_timeout_s: float = 5.0) -> KernelWorker:
     return KernelWorker(
@@ -152,7 +155,7 @@ async def test_execute_filters_terminal_control_sequences(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_execute_streams_carriage_return_overwrites_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_execute_streams_raw_carriage_return_output(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeKernelClient(
         [
             {
@@ -179,12 +182,12 @@ async def test_execute_streams_carriage_return_overwrites_callback(monkeypatch: 
 
     output = await worker.run_code("for i in range(2): print(i)", on_output=streamed.append)
 
-    assert streamed == ["10%", "80%\n"]
+    assert streamed == ["\r10%", "\r80%\n"]
     assert output == "80%\n"
 
 
 @pytest.mark.asyncio
-async def test_execute_streams_filtered_output_to_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_execute_streams_raw_output_to_terminal_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeKernelClient(
         [
             {
@@ -211,5 +214,103 @@ async def test_execute_streams_filtered_output_to_callback(monkeypatch: pytest.M
 
     output = await worker.run_code("print('hello')", on_output=streamed.append)
 
-    assert streamed == ["hello\n", "hello\n42"]
+    assert streamed == ["\x1b[31mhello\x1b[0m\n", "42"]
     assert output == "hello\n42"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_execute_interrupts_kernel_and_collects_termination_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InterruptClient(FakeKernelClient):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    {
+                        "parent_header": {"msg_id": "m1"},
+                        "header": {"msg_type": "error"},
+                        "content": {"traceback": ["KeyboardInterrupt"]},
+                    },
+                    {
+                        "parent_header": {"msg_id": "m1"},
+                        "header": {"msg_type": "status"},
+                        "content": {"execution_state": "idle"},
+                    },
+                ]
+            )
+            self.started = asyncio.Event()
+            self.blocking = True
+
+        async def get_iopub_msg(self, timeout: float) -> dict[str, object]:
+            del timeout
+            if self.blocking:
+                self.blocking = False
+                self.started.set()
+                await asyncio.Event().wait()
+            return await super().get_iopub_msg(0)
+
+    class InterruptManager:
+        def __init__(self) -> None:
+            self.interrupted = False
+            self.shutdown = False
+
+        async def interrupt_kernel(self) -> None:
+            self.interrupted = True
+
+        async def shutdown_kernel(self, now: bool) -> None:
+            assert now is True
+            self.shutdown = True
+
+    client = InterruptClient()
+    manager = InterruptManager()
+    worker = _worker(client, 128)
+    worker.manager = cast(Any, manager)
+    worker._started = True
+    monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
+    streamed: list[str] = []
+    task = asyncio.create_task(worker.run_code("while True: pass", streamed.append))
+    await client.started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=2)
+
+    assert manager.interrupted is True
+    assert manager.shutdown is True
+    assert streamed == ["KeyboardInterrupt"]
+
+
+@pytest.mark.asyncio
+async def test_unresponsive_kernel_control_is_force_killed_within_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Provisioner:
+        def __init__(self) -> None:
+            self.killed = False
+
+        async def kill(self, restart: bool) -> None:
+            assert restart is False
+            self.killed = True
+
+    class UnresponsiveManager:
+        def __init__(self) -> None:
+            self.provisioner = Provisioner()
+
+        async def interrupt_kernel(self) -> None:
+            await asyncio.Event().wait()
+
+        async def shutdown_kernel(self, now: bool) -> None:
+            assert now is True
+            await asyncio.Event().wait()
+
+    manager = UnresponsiveManager()
+    worker = _worker(FakeKernelClient([]), 128)
+    worker.manager = cast(Any, manager)
+    worker._started = True
+    monkeypatch.setattr(KernelWorker, "alive", property(lambda self: True))
+
+    started = asyncio.get_running_loop().time()
+    await worker.interrupt_and_shutdown(grace_s=0)
+
+    assert asyncio.get_running_loop().time() - started < 2
+    assert manager.provisioner.killed is True

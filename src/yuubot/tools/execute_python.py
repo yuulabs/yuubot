@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from pathlib import Path
 from typing import ClassVar, cast
 
@@ -18,6 +20,8 @@ from ..runtime.core import Runtime
 from ..runtime.tasks import make_owner
 from .base import ToolConfig, ToolSpec
 from .progress import current_progress
+
+_log = logging.getLogger(__name__)
 
 DESCRIPTION = """Run Python code in a persistent IPython session for the current user turn.
 
@@ -52,7 +56,9 @@ class ExecutePythonTool:
     _leased: bool = field(default=False, init=False)
 
     async def prepare(self) -> None:
-        self._set_partial_result("execute_python is preparing the workspace environment.")
+        progress = current_progress()
+        if progress is not None:
+            progress.set_task("Preparing Python workspace")
         root = self.workspace.resolve()
         prepare_kernel_workspace(root)
         await ensure_workspace_venv(root)
@@ -60,34 +66,61 @@ class ExecutePythonTool:
     async def execute(self, payload: msgspec.Struct) -> str:
         data = cast(ExecutePythonPayload, payload)
         worker, newly_acquired = await self._worker_or_acquire()
-        turn_token = self.env.get("YUUBOT_TURN_TOKEN", "")
-        await worker.run_code(
-            "import yb._turn_guard as _yuubot_turn_guard; "
-            f"_yuubot_turn_guard.configure({turn_token!r})"
-        )
-        progress = current_progress()
-        if newly_acquired:
-            self._set_partial_result("execute_python acquired a Python kernel worker and is executing the submitted code.")
-        else:
-            self._set_partial_result("execute_python is executing in the existing Python kernel session.")
         try:
-            return await worker.run_code(data.code, on_output=progress.write if progress is not None else None)
-        except KernelWorkerError as first_exc:
-            if self._worker is not None:
-                await self.pool.drop_leased_worker(self.lease_key, self._worker)
-                self._worker = None
-                self._leased = False
-            self._set_partial_result("execute_python is retrying after the Python kernel worker failed.")
-            worker, _ = await self._worker_or_acquire()
+            turn_token = self.env.get("YUUBOT_TURN_TOKEN", "")
+            await worker.run_code(
+                "import yb._turn_guard as _yuubot_turn_guard; "
+                f"_yuubot_turn_guard.configure({turn_token!r})"
+            )
             progress = current_progress()
+            if progress is not None:
+                progress.set_task(
+                    "Running Python in a new kernel"
+                    if newly_acquired
+                    else "Running Python"
+                )
             try:
-                self._set_partial_result("execute_python acquired a replacement Python kernel worker and is executing the submitted code.")
                 return await worker.run_code(data.code, on_output=progress.write if progress is not None else None)
-            except KernelWorkerError as retry_exc:
-                raise KernelWorkerError(
-                    "kernel worker retry failed after initial error: "
-                    f"{first_exc}; retry error: {retry_exc}"
-                ) from retry_exc
+            except KernelWorkerError as first_exc:
+                if self._worker is not None:
+                    await self.pool.drop_leased_worker(self.lease_key, self._worker)
+                    self._worker = None
+                    self._leased = False
+                if progress is not None:
+                    progress.set_task("Retrying with a replacement Python kernel")
+                worker, _ = await self._worker_or_acquire()
+                try:
+                    return await worker.run_code(
+                        data.code,
+                        on_output=progress.write if progress is not None else None,
+                    )
+                except KernelWorkerError as retry_exc:
+                    raise KernelWorkerError(
+                        "kernel worker retry failed after initial error: "
+                        f"{first_exc}; retry error: {retry_exc}"
+                    ) from retry_exc
+        except asyncio.CancelledError:
+            started = time.monotonic()
+            progress = current_progress()
+            leased = self._worker
+            self._worker = None
+            self._leased = False
+            _log.info(
+                "execute_python kernel cancellation started conversation_id=%s tool_call_id=%s tool_name=execute_python",
+                self.lease_key,
+                progress.tool_call_id if progress is not None else "",
+            )
+            try:
+                if leased is not None:
+                    await self.pool.drop_leased_worker(self.lease_key, leased)
+            finally:
+                _log.info(
+                    "execute_python kernel cancellation completed conversation_id=%s tool_call_id=%s tool_name=execute_python duration_ms=%s",
+                    self.lease_key,
+                    progress.tool_call_id if progress is not None else "",
+                    int((time.monotonic() - started) * 1000),
+                )
+            raise
 
     async def close(self) -> None:
         if not self._leased:
@@ -103,7 +136,9 @@ class ExecutePythonTool:
             self._leased = False
         if self._worker is not None and self._worker.alive:
             return self._worker, False
-        self._set_partial_result("execute_python is acquiring a Python kernel worker.")
+        progress = current_progress()
+        if progress is not None:
+            progress.set_task("Acquiring a Python kernel")
         try:
             self._worker = await self.pool.acquire(self.workspace, lease_key=self.lease_key, env=self.env)
         except KernelPoolBusy as exc:
@@ -112,15 +147,6 @@ class ExecutePythonTool:
             ) from exc
         self._leased = True
         return self._worker, True
-
-    def _set_partial_result(self, text: str) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            setattr(task, "partial_result", text)
-        progress = current_progress()
-        if progress is not None:
-            progress.write(f"[system] {text}\n")
-
 
 def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime) -> ExecutePythonTool:
     del config

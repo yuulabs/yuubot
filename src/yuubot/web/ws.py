@@ -157,6 +157,11 @@ async def _start_conversation_send(
         )
         return None
     if conversation.running:
+        _log.info(
+            "conversation send rejected busy conversation_id=%s command_id=%s state=running",
+            conversation.id,
+            command_id,
+        )
         await send_error(
             send, command_id, "conversation_busy", "conversation is already running"
         )
@@ -267,6 +272,11 @@ async def _conversation_answer(
             send, command_id, "question_not_pending", "question is not pending"
         )
     except ConversationBusy:
+        _log.info(
+            "conversation answer rejected busy conversation_id=%s command_id=%s state=raced",
+            conversation.id,
+            command_id,
+        )
         await _send_error_if_connected(
             send, command_id, "conversation_busy", "conversation is already running"
         )
@@ -292,6 +302,11 @@ async def _conversation_send(
     try:
         await app.run_user_message(actor_id, message, conversation_id)
     except ConversationBusy:
+        _log.info(
+            "conversation send rejected busy conversation_id=%s command_id=%s state=raced",
+            conversation_id,
+            command_id,
+        )
         await _send_error_if_connected(
             send, command_id, "conversation_busy", "conversation is already running"
         )

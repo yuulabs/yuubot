@@ -793,23 +793,58 @@ async def test_ws_interrupts_running_conversation(test_context: SharedTestContex
             frame = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))
             frames.append(frame)
             if frame["type"] == "conversation.send.accepted":
-                await ws.send(
-                    json.dumps(
-                        {
-                            "id": "m2",
-                            "type": "conversation.interrupt",
-                            "payload": {"conversation_id": conversation_id},
-                        }
+                for interrupt_id in ("m2", "m2-repeat"):
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "id": interrupt_id,
+                                "type": "conversation.interrupt",
+                                "payload": {"conversation_id": conversation_id},
+                            }
+                        )
                     )
-                )
             if frame["type"] == "conversation.commit" and cast(JsonObject, frame["payload"])["continues"] is False:
+                break
+
+        await ws.send(
+            json.dumps(
+                {
+                    "id": "m3",
+                    "type": "conversation.send",
+                    "payload": {
+                        "actor_id": actor_id,
+                        "conversation_id": conversation_id,
+                        "content": [{"kind": "text", "text": "after interrupt"}],
+                    },
+                }
+            )
+        )
+        while True:
+            frame = cast(JsonObject, json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))
+            frames.append(frame)
+            if (
+                frame["type"] == "conversation.commit"
+                and cast(JsonObject, frame["payload"])["continues"] is False
+            ):
                 break
 
     assert any(
         frame["type"] == "conversation.interrupt.result" and cast(JsonObject, frame["payload"])["interrupted"] is True
         for frame in frames
     )
+    assert {
+        frame.get("id")
+        for frame in frames
+        if frame.get("type") == "conversation.interrupt.result"
+        and cast(JsonObject, frame["payload"])["interrupted"] is True
+    } >= {"m2", "m2-repeat"}
     assert cast(JsonObject, frames[-1]["payload"])["continues"] is False
+    assert any(
+        frame.get("id") == "m3" and frame.get("type") == "conversation.send.accepted"
+        for frame in frames
+    )
+    history = await conversation_history(test_context.server, conversation_id)
+    assert sum(item["kind"] == "input" for item in history) == 2
 
 
 async def test_ws_subscribes_runtime_events(test_context: SharedTestContext) -> None:

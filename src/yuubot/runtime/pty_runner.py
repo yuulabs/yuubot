@@ -29,6 +29,7 @@ async def run_pty_process(
     stdin_task = asyncio.create_task(_stdin_loop(process, stdin_stream), name="pty_stdin")
     try:
         exit_status = await asyncio.to_thread(process.wait)
+        await read_task
         return int(exit_status) if exit_status is not None else 0
     except asyncio.CancelledError:
         await terminate_pty(process)
@@ -55,7 +56,7 @@ async def terminate_pty(process: PtyProcessUnicode) -> None:
 
 async def _read_loop(process: PtyProcessUnicode, stdout: TextStream) -> None:
     try:
-        while process.isalive():
+        while True:
             data = await asyncio.to_thread(process.read, 4096)
             if not data:
                 break

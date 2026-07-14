@@ -124,7 +124,7 @@ class BashTool:
         progress = current_progress()
         if progress is None:
             return
-        await forward_pty_snapshots(task.stdout, progress.write)
+        await forward_pty_snapshots(task.stdout, progress.replace)
 
 
 def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime) -> BashTool:

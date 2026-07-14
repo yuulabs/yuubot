@@ -6,6 +6,8 @@ handed back to the model; nothing propagates to the conversation.
 """
 
 import asyncio
+import logging
+import time
 from contextvars import Token
 from typing import TYPE_CHECKING, cast
 
@@ -23,6 +25,10 @@ if TYPE_CHECKING:
     from ..runtime.core import Runtime
 
 TOOL_TIMEOUT_S = 240
+TOOL_CANCEL_TIMEOUT_S = 3.0
+TOOL_CLOSE_TIMEOUT_S = 3.0
+
+_log = logging.getLogger(__name__)
 
 
 class HarnessConfig(msgspec.Struct, frozen=True):
@@ -35,6 +41,7 @@ class Harness:
     emit: EmitFn
     conversation_id: str
     prepare_tasks: dict[str, asyncio.Task[None]] = field(factory=dict)
+    progress: dict[str, ToolProgress] = field(factory=dict, init=False)
 
     @classmethod
     def from_config(cls, config: HarnessConfig, context: ConversationContext, runtime: Runtime) -> "Harness":
@@ -67,14 +74,38 @@ class Harness:
                     results[tasks[task].id] = task.result()
                 if stop_task in done:
                     interrupted = set(pending)
+                    started = time.monotonic()
+                    _log.info(
+                        "conversation tool cancellation started conversation_id=%s count=%s",
+                        self.conversation_id,
+                        len(interrupted),
+                    )
                     for task in interrupted:
                         task.cancel()
                     await asyncio.gather(*interrupted, return_exceptions=True)
                     for task in interrupted:
                         call = tasks[task]
-                        result = _result(call.id, _with_partial("[system] tool call interrupted.", task))
+                        progress = self.progress.get(call.id)
+                        snapshot = progress.snapshot() if progress is not None else ""
+                        result = _result(
+                            call.id,
+                            snapshot or "[system] tool call interrupted.",
+                        )
                         results[call.id] = result
                         self._emit_tool_result_end(call, result)
+                        _log.info(
+                            "interrupted tool result committed conversation_id=%s tool_call_id=%s tool_name=%s visible=%s",
+                            self.conversation_id,
+                            call.id,
+                            call.name,
+                            bool(snapshot),
+                        )
+                    _log.info(
+                        "conversation tool cancellation completed conversation_id=%s count=%s duration_ms=%s",
+                        self.conversation_id,
+                        len(interrupted),
+                        int((time.monotonic() - started) * 1000),
+                    )
                     break
         finally:
             stop_task.cancel()
@@ -89,8 +120,24 @@ class Harness:
         completed_prepare = [task for task in self.prepare_tasks.values() if task.done()]
         if completed_prepare:
             await asyncio.gather(*completed_prepare, return_exceptions=True)
-        for tool in self.tools.values():
-            await tool.close()
+        await asyncio.gather(
+            *(self._close_tool(name, tool) for name, tool in self.tools.items())
+        )
+
+    async def _close_tool(self, name: str, tool: Tool) -> None:
+        task = asyncio.create_task(tool.close())
+        done, _ = await asyncio.wait({task}, timeout=TOOL_CLOSE_TIMEOUT_S)
+        if task in done:
+            await asyncio.gather(task, return_exceptions=True)
+            return
+        task.cancel()
+        task.add_done_callback(_consume_task_result)
+        _log.warning(
+            "tool close exceeded bound conversation_id=%s tool_name=%s timeout_s=%s",
+            self.conversation_id,
+            name,
+            TOOL_CLOSE_TIMEOUT_S,
+        )
 
     async def _run_one(self, call: ToolCall, timeout: float) -> ToolResult:
         tool = self.tools.get(call.name)
@@ -115,22 +162,27 @@ class Harness:
             result = _result(call.id, f"{call.name} prepare failed: {_exception_detail(exc)}")
             self._emit_tool_result_end(call, result)
             return result
-        progress_token = _bind_tool_progress(
+        progress, progress_token = _bind_tool_progress(
             self.emit,
             self.conversation_id,
             call.id,
             call.name,
         )
+        self.progress[call.id] = progress
         task = asyncio.create_task(tool.execute(payload))
         try:
-            value = await asyncio.wait_for(task, timeout=timeout)
-            result = _tool_result(call.id, value)
-        except TimeoutError:
-            result = _result(call.id, _with_partial(f"[system] {call.name}工具调用已超过{int(timeout)}s, 被强制中断.", task))
+            done, _ = await asyncio.wait({task}, timeout=timeout)
+            if task in done:
+                result = _tool_result(call.id, task.result())
+            else:
+                await self._cancel_tool_task(task, call)
+                result = _result(
+                    call.id,
+                    progress.snapshot()
+                    or f"[system] {call.name}工具调用已超过{int(timeout)}s, 被强制中断.",
+                )
         except asyncio.CancelledError:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            _copy_partial(task, asyncio.current_task())
+            await self._cancel_tool_task(task, call)
             raise
         except Exception as exc:
             result = _result(call.id, f"{call.name} failed: {_exception_detail(exc)}")
@@ -138,6 +190,23 @@ class Harness:
             _reset_tool_progress(progress_token)
         self._emit_tool_result_end(call, result)
         return result
+
+    async def _cancel_tool_task(
+        self, task: asyncio.Task[object], call: ToolCall
+    ) -> None:
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=TOOL_CANCEL_TIMEOUT_S)
+        if task in done:
+            await asyncio.gather(task, return_exceptions=True)
+            return
+        task.add_done_callback(_consume_task_result)
+        _log.warning(
+            "tool cancellation exceeded bound conversation_id=%s tool_call_id=%s tool_name=%s timeout_s=%s",
+            self.conversation_id,
+            call.id,
+            call.name,
+            TOOL_CANCEL_TIMEOUT_S,
+        )
 
     async def _wait_prepared(self, name: str) -> None:
         task = self.prepare_tasks.get(name)
@@ -167,17 +236,16 @@ def _bind_tool_progress(
     conversation_id: str,
     tool_call_id: str,
     tool_name: str,
-) -> Token[ToolProgress | None]:
+) -> tuple[ToolProgress, Token[ToolProgress | None]]:
     from ..tools import progress as progress_module
 
-    return progress_module._current_progress.set(
-        bind_progress(
-            emit,
-            conversation_id,
-            tool_call_id,
-            tool_name,
-        )
+    progress = bind_progress(
+        emit,
+        conversation_id,
+        tool_call_id,
+        tool_name,
     )
+    return progress, progress_module._current_progress.set(progress)
 
 
 def _reset_tool_progress(token: Token[ToolProgress | None]) -> None:
@@ -218,20 +286,6 @@ def _tool_result(tool_call_id: str, value: object) -> ToolResult:
     return ToolResult(tool_call_id=tool_call_id, content=[ContentItem("text", text)])
 
 
-def _with_partial(text: str, task: asyncio.Task[object]) -> str:
-    """Tools may attach ``partial_result`` to their task before cancellation lands."""
-    partial = getattr(task, "partial_result", "")
-    if not isinstance(partial, str) or not partial:
-        return text
-    return f"{text}\n该工具产生的临时result为：{redact_value(partial)}"
-
-
-def _copy_partial(source: asyncio.Task[object], target: asyncio.Task[object] | None) -> None:
-    partial = getattr(source, "partial_result", "")
-    if target is not None and isinstance(partial, str) and partial:
-        setattr(target, "partial_result", partial)
-
-
 def _exception_detail(exc: BaseException) -> str:
     parts = [_single_exception_detail(exc)]
     cause = exc.__cause__ or exc.__context__
@@ -248,3 +302,10 @@ def _single_exception_detail(exc: BaseException) -> str:
     detail = f"{type(exc).__name__}: {message}"
     redacted = redact_value(detail)
     return redacted if isinstance(redacted, str) else detail
+
+
+def _consume_task_result(task: asyncio.Task[object]) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass

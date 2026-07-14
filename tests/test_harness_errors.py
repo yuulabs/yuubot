@@ -51,6 +51,36 @@ class ProgressTool:
         return None
 
 
+class InterruptibleProgressTool:
+    payload_type: ClassVar[type[msgspec.Struct]] = EmptyPayload
+
+    def __init__(self, visible: bool = True) -> None:
+        self.visible = visible
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def prepare(self) -> None:
+        return None
+
+    async def execute(self, payload: msgspec.Struct) -> str:
+        del payload
+        progress = current_progress()
+        assert progress is not None
+        if self.visible:
+            progress.write("step one\nprogress 10%\r")
+            progress.write("progress 90%")
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if self.visible:
+                progress.write("\nKeyboardInterrupt")
+            raise
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def _noop_emit(_payload: RuntimeEventPayload) -> None:
     return None
 
@@ -106,6 +136,39 @@ async def test_harness_binds_progress_before_starting_tool_task() -> None:
         if isinstance(payload, ConversationStreamPayload):
             stream_events.append(payload.event)
     assert [event.kind for event in stream_events] == ["tool_result_delta", "tool_result_end"]
+
+
+async def test_harness_interrupt_persists_terminal_snapshot() -> None:
+    tool = InterruptibleProgressTool()
+    harness = Harness({"execute_python": tool}, _noop_emit, "c1")
+    stop = asyncio.Event()
+    gathering = asyncio.create_task(
+        harness.gather(
+            [ToolCall("call-1", "execute_python", "{}")],
+            stop,
+        )
+    )
+    await tool.started.wait()
+
+    stop.set()
+    results = await asyncio.wait_for(gathering, timeout=1)
+
+    assert results[0].content[0].text == "step one\nprogress 90%\nKeyboardInterrupt"
+
+
+async def test_harness_interrupt_without_output_uses_fallback() -> None:
+    tool = InterruptibleProgressTool(visible=False)
+    harness = Harness({"silent": tool}, _noop_emit, "c1")
+    stop = asyncio.Event()
+    gathering = asyncio.create_task(
+        harness.gather([ToolCall("call-1", "silent", "{}")], stop)
+    )
+    await tool.started.wait()
+
+    stop.set()
+    results = await asyncio.wait_for(gathering, timeout=1)
+
+    assert results[0].content[0].text == "[system] tool call interrupted."
 
 
 async def test_harness_tool_errors_include_exception_type_and_cause() -> None:

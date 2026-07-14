@@ -18,7 +18,16 @@ async def test_http_read_tool_reads_requested_slice(test_context: SharedTestCont
                 (messages_contain_tool_result("read"), reply_text("done")),
                 (
                     all_of(
-                        has_tool_specs("read", "edit", "write", "bash", "execute_python", "restart_kernel", "delegate"),
+                        has_tool_specs(
+                            "read",
+                            "edit",
+                            "write",
+                            "bash",
+                            "execute_python",
+                            "restart_kernel",
+                            "delegate",
+                            "ask_user",
+                        ),
                         has_tool_spec("read"),
                         user_message_contains("read slice"),
                     ),

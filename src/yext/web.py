@@ -6,8 +6,8 @@ max_bytes=0)`` to save an HTTP response. With no ``filename``, it saves under
 the workspace ``downloads/`` directory. A supplied ``filename`` is a path
 relative to the workspace, so ``artifacts/report.png`` is allowed; paths that
 would escape the workspace are rejected. Search returns ``SearchResult(title,
-url, content)``; download returns ``DownloadResult(path, url, content_type,
-bytes, sha256)``. A user turn
+url, content)``; download returns
+``DownloadResult(path, url, content_type, bytes, sha256)``. A user turn
 provides three successful search calls, and ``max_results`` must be 1–20.
 Combine related questions into focused queries. ``read`` returns at most
 12,000 characters by default (or the explicit ``max_chars`` value); request a

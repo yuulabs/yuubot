@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
 
 import pytest
 
@@ -168,7 +169,7 @@ async def test_enable_records_probe_auth_health(
 
 
 @pytest.mark.asyncio
-async def test_yext_codex_session_returns_only_final_message(
+async def test_yext_codex_session_streams_raw_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import yext.codex
@@ -195,13 +196,89 @@ print("startup warning", file=sys.stderr)
         monkeypatch.setenv(key, value)
 
     session = yext.codex.open_session(cwd=tmp_path, skip_git_repo_check=True)
-    result = await session.ask("coding-ok")
+    events = [event async for event in session.ask("coding-ok")]
 
-    assert result == "final answer"
+    assert [event["type"] for event in events] == [
+        "thread.started",
+        "item.completed",
+        "item.completed",
+        "item.completed",
+        "turn.completed",
+    ]
+    assert events[-1] == {"type": "turn.completed", "usage": {"input_tokens": 10}}
     assert session.id == "thread-1"
     assert not hasattr(yext.codex, "run")
     assert not hasattr(yext.codex, "cli")
     assert not hasattr(yext.codex, "help")
+
+
+@pytest.mark.asyncio
+async def test_yext_codex_session_yields_before_process_exits_and_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yext.codex
+
+    cli = tmp_path / "fake-codex"
+    cli.write_text(
+        """#!/usr/bin/env python3
+import json, sys, time
+args = sys.argv
+thread_id = args[args.index("resume") + 1] if "resume" in args else "live-thread"
+print(json.dumps({"type":"thread.started","thread_id":thread_id,"raw":{"kept":True}}), flush=True)
+time.sleep(.3)
+print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"done"}}), flush=True)
+print(json.dumps({"type":"turn.completed"}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+    integration = CodexIntegration("codex", CodexConfig(str(cli), ()))
+    for key, value in integration.session_context().items():
+        monkeypatch.setenv(key, value)
+
+    session = yext.codex.open_session(cwd=tmp_path, skip_git_repo_check=True)
+    stream = session.ask("first")
+    first = await asyncio.wait_for(anext(stream), 0.2)
+    assert first == {
+        "type": "thread.started",
+        "thread_id": "live-thread",
+        "raw": {"kept": True},
+    }
+    assert session.id == "live-thread"
+    assert [event["type"] async for event in stream] == [
+        "item.completed",
+        "turn.completed",
+    ]
+    assert [event["type"] async for event in session.ask("second")] == [
+        "thread.started",
+        "item.completed",
+        "turn.completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_yext_codex_failed_event_is_visible_before_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yext.codex
+
+    cli = tmp_path / "fake-codex"
+    cli.write_text(
+        """#!/usr/bin/env python3
+import json
+print(json.dumps({"type":"turn.failed","error":{"message":"bad token secret"}}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+    integration = CodexIntegration("codex", CodexConfig(str(cli), ()))
+    for key, value in integration.session_context().items():
+        monkeypatch.setenv(key, value)
+
+    stream = yext.codex.open_session().ask("fail")
+    assert (await anext(stream))["type"] == "turn.failed"
+    with pytest.raises(RuntimeError, match="codex turn failed"):
+        await anext(stream)
 
 
 @pytest.mark.asyncio
@@ -308,6 +385,9 @@ def test_coding_cli_prompt_docs_arrive_through_integration_docs(tmp_path: Path) 
     assert "await codex.models()" in prompt
     assert "codex.open_session" in prompt
     assert "codex.resume_session" in prompt
+    assert "async for event in session.ask" in prompt
+    assert "item.completed" in prompt
+    assert "turn.failed" in prompt
     assert "complete task, relevant paths and context" in prompt
     assert "without asking follow-up questions" in prompt
     assert "await cli.help()" not in prompt

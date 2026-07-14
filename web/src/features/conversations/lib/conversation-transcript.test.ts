@@ -1055,6 +1055,39 @@ test("pending user message appears until durable user input arrives", () => {
   assert.equal(state.pendingUser, null);
 });
 
+test("snapshot restores active phase even before a living chunk exists", () => {
+  let state = createTranscriptState();
+  state = transcriptReducer(state, {
+    type: "snapshot",
+    prefix: [],
+    livingChunks: [],
+    continues: true,
+    version: 1,
+  });
+
+  assert.equal(state.continues, true);
+});
+
+test("reconnect snapshot preserves local pending input until it is durable", () => {
+  let state = createTranscriptState();
+  state = transcriptReducer(state, {
+    type: "pending_user",
+    clientKey: "pending-1",
+    text: "keep me",
+    now: 1,
+  });
+  state = transcriptReducer(state, {
+    type: "snapshot",
+    prefix: [],
+    livingChunks: [],
+    continues: false,
+    preservePending: true,
+    version: 1,
+  });
+
+  assert.equal(state.pendingUser?.text, "keep me");
+});
+
 test("contentItemsToText formats text and attachments", () => {
   assert.equal(
     contentItemsToText([

@@ -98,6 +98,28 @@ export function ConversationDetailPage({
     onTurnComplete: handleTurnComplete,
   });
 
+  useEffect(() => {
+    const retry = session.retrySend;
+    if (!retry) return;
+    const restored = retry.content.reduce<ComposerSegment[]>((items, item) => {
+      if (item.kind === "text" && item.text) {
+        items.push({ kind: "text", value: item.text });
+      }
+      if (item.kind === "file" && item.path) {
+        items.push({
+          kind: "file",
+          path: item.path,
+          mime: item.mime,
+          meta: item.meta,
+        });
+      }
+      return items;
+    }, []);
+    setSegments(restored);
+    setDraftText("");
+    session.clearRetrySend();
+  }, [session.retrySend, session.clearRetrySend]);
+
   const persistedError = describeConversationError(durableSummary?.last_error);
   const showPersistedError = Boolean(persistedError) && !session.error;
 

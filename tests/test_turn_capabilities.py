@@ -27,7 +27,7 @@ async def _active_turn(app: Yuubot, tmp_path: Path, gateway: GatewayClient) -> t
         gateway,
     )
     conversation = await actor.spawn_conversation("c1")
-    conversation._running = True  # noqa: SLF001 - test establishes the live-turn boundary directly
+    conversation._run_state = "running"  # noqa: SLF001 - test establishes the live-turn boundary directly
     app.runtime.conversations._items[conversation.id] = conversation  # noqa: SLF001
     token = app.runtime.turn_limits.open(TurnIdentity("amy", "c1", "turn-1", "trace-1"))
     return token, conversation

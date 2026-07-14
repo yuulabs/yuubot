@@ -57,7 +57,7 @@ export function ChatComposer({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const isActive = phase === "sending" || phase === "streaming";
+  const isActive = phase === "sending" || phase === "streaming" || phase === "interrupting";
   const canSend = !disabled && hasContent && wsReady && !isActive;
   const connectionLabel = wsConnectionState === "connected"
     ? "Connected"
@@ -141,7 +141,7 @@ export function ChatComposer({
             <button
               type="button"
               className="composer__send composer__send--text composer__send--stop"
-              disabled={!canInterrupt}
+              disabled={!canInterrupt || phase === "interrupting"}
               aria-label="Stop generation"
               onClick={onInterrupt}
             >

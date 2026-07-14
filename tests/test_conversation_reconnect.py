@@ -100,6 +100,7 @@ async def test_conversation_open_snapshots_active_in_memory_stream(test_context:
             snapshot = await _recv_until(ws, lambda frame: frame.get("type") == "conversation.snapshot")
             snapshot_payload = cast(JsonObject, snapshot["payload"])
             assert snapshot_payload["version"] == 2
+            assert snapshot_payload["continues"] is True
             living = cast(list[JsonObject], snapshot_payload["living_chunks"])
             assert cast(JsonObject, living[0]["payload"])["text"] == provider.first
 

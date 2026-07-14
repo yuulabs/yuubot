@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from yuubot.python.facade_imports import (
 )
 from yuubot.python.worker import KernelWorker
 from yuubot.python.workspace import ensure_workspace_venv, prepare_kernel_workspace
+from yuubot.runtime.pty_display import filter_tool_output
 
 
 def test_facade_package_and_bootstrap_generation_are_consistent(tmp_path: Path) -> None:
@@ -57,4 +60,45 @@ async def test_kernel_bootstrap_exposes_yext_opencode_without_manual_import(tmp_
         after_reset = await worker.run_code("yext.opencode.__name__")
         assert "yext.opencode" in after_reset
     finally:
+        await worker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_kernel_execution_is_interrupted_and_dropped(tmp_path: Path) -> None:
+    worker = await KernelWorker.start(
+        tmp_path,
+        {},
+        2**30,
+        262144,
+        30.0,
+    )
+    output_started = asyncio.Event()
+    raw_output: list[str] = []
+
+    def capture(raw: str) -> None:
+        raw_output.append(raw)
+        if "tick" in raw:
+            output_started.set()
+
+    task = asyncio.create_task(
+        worker.run_code(
+            "import time\nprint('tick', flush=True)\nwhile True:\n print('working\\r', end='', flush=True)\n time.sleep(0.05)",
+            capture,
+        )
+    )
+    try:
+        await asyncio.wait_for(output_started.wait(), timeout=10)
+        started = time.monotonic()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=3)
+
+        visible = filter_tool_output("".join(raw_output))
+        assert time.monotonic() - started < 3
+        assert "tick" in visible
+        assert "KeyboardInterrupt" in visible
+        assert worker.alive is False
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await worker.shutdown()

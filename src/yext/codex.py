@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -166,13 +168,19 @@ class Session:
     def id(self) -> str | None:
         return self._id
 
-    async def ask(self, prompt: str, timeout_s: float | None = None) -> str:
+    async def ask(
+        self, prompt: str, timeout_s: float | None = None
+    ) -> AsyncIterator[dict[str, object]]:
+        """Stream one Codex turn as its original JSON events."""
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
         async with self._lock:
-            return await self._ask(prompt, timeout_s)
+            async for event in self._ask(prompt, timeout_s):
+                yield event
 
-    async def _ask(self, prompt: str, timeout_s: float | None) -> str:
+    async def _ask(
+        self, prompt: str, timeout_s: float | None
+    ) -> AsyncIterator[dict[str, object]]:
         settings = _config()
         process = await asyncio.create_subprocess_exec(
             *self._command(_binary(settings), prompt),
@@ -183,12 +191,68 @@ class Session:
         timeout = timeout_s if timeout_s is not None else self.timeout_s
         if timeout is None:
             timeout = settings.timeout_s
+        stderr_tail: deque[bytes] = deque()
+        stderr_task = asyncio.create_task(_drain_stderr(process, stderr_tail))
+        deadline = asyncio.get_running_loop().time() + timeout
         try:
-            return await asyncio.wait_for(self._read_turn(process), timeout)
+            if process.stdout is None:
+                raise RuntimeError("codex output is unavailable")
+            final_message = False
+            completed = False
+            failure: str | None = None
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError
+                raw_line = await asyncio.wait_for(process.stdout.readline(), remaining)
+                if not raw_line:
+                    break
+                try:
+                    event = json.loads(raw_line)
+                except json.JSONDecodeError, UnicodeDecodeError:
+                    raise RuntimeError("codex returned invalid event data") from None
+                if not isinstance(event, dict):
+                    raise RuntimeError("codex returned invalid event data")
+                event = cast(dict[str, object], event)
+                event_type = event.get("type")
+                if event_type == "thread.started" and isinstance(
+                    event.get("thread_id"), str
+                ):
+                    self._id = cast(str, event["thread_id"])
+                elif event_type == "item.completed":
+                    item = event.get("item")
+                    final_message = final_message or (
+                        isinstance(item, dict)
+                        and item.get("type") == "agent_message"
+                        and isinstance(item.get("text"), str)
+                    )
+                elif event_type == "turn.failed":
+                    failure = _error_message(event.get("error"))
+                elif event_type == "error":
+                    failure = _error_message(event.get("message", event.get("error")))
+                elif event_type == "turn.completed":
+                    completed = True
+                yield event
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError
+            return_code = await asyncio.wait_for(process.wait(), remaining)
+            await stderr_task
+            if failure is not None:
+                raise RuntimeError(f"codex turn failed: {failure}")
+            if return_code != 0:
+                raise RuntimeError(_process_error(return_code, stderr_tail))
+            if not completed:
+                raise RuntimeError("codex ended without completing the turn")
+            if not final_message:
+                raise RuntimeError("codex completed without a final message")
         except TimeoutError:
             raise RuntimeError(f"codex timed out after {timeout:g}s") from None
         finally:
             await _stop(process)
+            if not stderr_task.done():
+                stderr_task.cancel()
+            await asyncio.gather(stderr_task, return_exceptions=True)
 
     def _command(self, binary: str, prompt: str) -> tuple[str, ...]:
         args = [
@@ -212,48 +276,6 @@ class Session:
             args.extend(("resume", self._id))
         args.append(prompt)
         return tuple(args)
-
-    async def _read_turn(self, process: asyncio.subprocess.Process) -> str:
-        if process.stdout is None:
-            raise RuntimeError("codex output is unavailable")
-        final_message: str | None = None
-        completed = False
-        failure: str | None = None
-        async for raw_line in process.stdout:
-            try:
-                event = json.loads(raw_line)
-            except json.JSONDecodeError, UnicodeDecodeError:
-                raise RuntimeError("codex returned invalid event data") from None
-            if not isinstance(event, dict):
-                continue
-            event_type = event.get("type")
-            if event_type == "thread.started" and isinstance(
-                event.get("thread_id"), str
-            ):
-                self._id = event["thread_id"]
-            elif event_type == "item.completed":
-                item = event.get("item")
-                if (
-                    isinstance(item, dict)
-                    and item.get("type") == "agent_message"
-                    and isinstance(item.get("text"), str)
-                ):
-                    final_message = item["text"]
-            elif event_type == "turn.failed":
-                failure = _error_message(event.get("error"))
-            elif event_type == "turn.completed":
-                completed = True
-        return_code = await process.wait()
-        if failure is not None:
-            raise RuntimeError(f"codex turn failed: {failure}")
-        if return_code != 0:
-            raise RuntimeError(await _process_error(process, return_code))
-        if not completed:
-            raise RuntimeError("codex ended without completing the turn")
-        if final_message is None:
-            raise RuntimeError("codex completed without a final message")
-        return final_message
-
 
 def _binary(settings: Settings) -> str:
     binary = resolve_command(settings)
@@ -291,7 +313,8 @@ async def _response(
         if not isinstance(result, dict):
             raise RuntimeError(f"codex returned an invalid {operation} response")
         return result
-    raise RuntimeError(await _process_error(process, process.returncode))
+    stderr = await process.stderr.read() if process.stderr is not None else b""
+    raise RuntimeError(_process_error(process.returncode, deque((stderr,))))
 
 
 def _model_info(item: dict[str, Any]) -> ModelInfo:
@@ -329,12 +352,21 @@ def _error_message(error: object) -> str:
     return "unknown error"
 
 
-async def _process_error(
-    process: asyncio.subprocess.Process, return_code: int | None
-) -> str:
-    stderr = await process.stderr.read() if process.stderr is not None else b""
-    detail = _redact(stderr.decode(errors="replace")).strip()[-1000:]
+def _process_error(return_code: int | None, stderr_tail: deque[bytes]) -> str:
+    detail = _redact(b"".join(stderr_tail).decode(errors="replace")).strip()[-1000:]
     return f"codex exited with code {return_code}" + (f": {detail}" if detail else "")
+
+
+async def _drain_stderr(
+    process: asyncio.subprocess.Process, tail: deque[bytes], limit: int = 4096
+) -> None:
+    if process.stderr is None:
+        return
+    while chunk := await process.stderr.read(4096):
+        tail.append(chunk)
+        size = sum(map(len, tail))
+        while tail and size - len(tail[0]) >= limit:
+            size -= len(tail.popleft())
 
 
 async def _stop(process: asyncio.subprocess.Process) -> None:
