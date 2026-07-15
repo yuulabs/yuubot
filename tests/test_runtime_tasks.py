@@ -11,6 +11,7 @@ from yuubot.domain import ConversationContext, LLMInput, StreamEvent, StreamStop
 from yuubot.llm import scripted_reply
 from yuubot.runtime.cache import CachePool
 from yuubot.runtime.tasks import (
+    CURRENT_RUNTIME_TASK_ID,
     PENDING_DELIVERY_TASK_RETENTION_S,
     RuntimeTaskRecord,
     TaskNotRunningError,
@@ -122,6 +123,140 @@ async def test_shell_task_runs_in_pty_and_streams_stdout(tmp_path: Path) -> None
     assert record.id not in app.runtime.scheduler._asyncio_tasks
     assert record.id not in app.runtime.tasks._records
     assert record.id in app.runtime.tasks.terminal_records
+
+
+@pytest.mark.asyncio
+async def test_parent_waits_for_child_tree_and_exposes_relationships(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    child_release = asyncio.Event()
+    child_started = asyncio.Event()
+    records: list[RuntimeTaskRecord] = []
+
+    async def child_run(_stdin, _stdout) -> str:
+        child_started.set()
+        await child_release.wait()
+        return "child result"
+
+    async def parent_run(_stdin, _stdout) -> str:
+        parent_id = CURRENT_RUNTIME_TASK_ID.get()
+        assert parent_id is not None
+        child = RuntimeTaskRecord(
+            "t-child",
+            "actor:amy:conv:subagent:t-parent",
+            "agent-work",
+            "child",
+            parent_task_id=parent_id,
+        )
+        records.append(child)
+        app.runtime.tasks.put(child)
+        app.runtime.scheduler.schedule(child, child_run)
+        return "parent result"
+
+    parent = RuntimeTaskRecord(
+        "t-parent",
+        "actor:amy:conv:c1",
+        "agent",
+        "parent",
+    )
+    app.runtime.tasks.put(parent)
+    app.runtime.scheduler.schedule(parent, parent_run)
+    try:
+        await child_started.wait()
+        for _ in range(100):
+            if parent.status == "waiting_children":
+                break
+            await asyncio.sleep(0.01)
+        child = records[0]
+        assert parent.status == "waiting_children"
+        assert not parent.is_terminal()
+        assert child.parent_task_id == parent.id
+        assert child.root_task_id == parent.id
+        assert app.runtime.tasks.list(parent_task_id=parent.id) == [child]
+        assert {item.id for item in app.runtime.tasks.list(root_task_id=parent.id)} == {parent.id, child.id}
+
+        child_release.set()
+        await parent.wait_terminal()
+        assert child.status == "done"
+        assert child.delivery_state == "delivered"
+        assert parent.status == "done"
+        assert "child result" in "\n".join(parent.pop_child_notices())
+    finally:
+        child_release.set()
+        await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_parent_cancel_cascades_to_child_tree(tmp_path: Path) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    child_started = asyncio.Event()
+    records: list[RuntimeTaskRecord] = []
+
+    async def child_run(_stdin, _stdout) -> None:
+        child_started.set()
+        await asyncio.Event().wait()
+
+    async def parent_run(_stdin, _stdout) -> None:
+        parent_id = CURRENT_RUNTIME_TASK_ID.get()
+        assert parent_id is not None
+        child = RuntimeTaskRecord(
+            "t-cancel-child",
+            "actor:amy:conv:subagent:t-cancel-parent",
+            "shell",
+            "child",
+            parent_task_id=parent_id,
+        )
+        records.append(child)
+        app.runtime.tasks.put(child)
+        app.runtime.scheduler.schedule(child, child_run)
+
+    parent = RuntimeTaskRecord(
+        "t-cancel-parent",
+        "actor:amy:conv:c1",
+        "agent",
+        "parent",
+    )
+    app.runtime.tasks.put(parent)
+    app.runtime.scheduler.schedule(parent, parent_run)
+    try:
+        await child_started.wait()
+        app.runtime.scheduler.cancel(parent)
+        await parent.wait_terminal()
+        child = records[0]
+        await child.wait_terminal()
+        assert parent.status == "cancelled"
+        assert child.status == "cancelled"
+        assert child.delivery_state == "skipped"
+    finally:
+        await app.shutdown()
+
+
+def test_task_registry_rejects_invalid_parent_relationships() -> None:
+    from yuubot.runtime.tasks import TaskRegistry
+
+    registry = TaskRegistry()
+    parent = RuntimeTaskRecord("t-parent", "actor:amy:conv:c1", "agent")
+    registry.put(parent)
+
+    with pytest.raises(ValueError, match="different actor"):
+        registry.put(
+            RuntimeTaskRecord(
+                "t-cross-actor",
+                "actor:bob:conv:c2",
+                "shell",
+                parent_task_id=parent.id,
+            )
+        )
+
+    parent.status = "done"
+    with pytest.raises(ValueError, match="not active"):
+        registry.put(
+            RuntimeTaskRecord(
+                "t-after-terminal",
+                "actor:amy:conv:c1",
+                "shell",
+                parent_task_id=parent.id,
+            )
+        )
 
 
 _READLINE_SHELL = (

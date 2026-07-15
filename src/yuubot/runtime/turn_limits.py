@@ -42,6 +42,30 @@ class _TurnState:
 
 
 @define
+class TurnLimitReservation:
+    """A capability slot that may outlive the turn token that created it."""
+
+    state: _TurnState
+    capability: str
+    _finished: bool = field(default=False, init=False)
+
+    async def commit(self) -> None:
+        async with self.state.lock:
+            if self._finished:
+                return
+            _release(self.state.in_flight, self.capability)
+            self.state.successes[self.capability] = self.state.successes.get(self.capability, 0) + 1
+            self._finished = True
+
+    async def release(self) -> None:
+        async with self.state.lock:
+            if self._finished:
+                return
+            _release(self.state.in_flight, self.capability)
+            self._finished = True
+
+
+@define
 class TurnLimitRegistry:
     _states: dict[str, _TurnState] = field(factory=dict)
 
@@ -59,7 +83,7 @@ class TurnLimitRegistry:
     def close(self, token: str) -> None:
         self._states.pop(token, None)
 
-    async def run(self, token: str, capability: str, operation: Callable[[], Awaitable[T]]) -> T:
+    async def reserve(self, token: str, capability: str) -> TurnLimitReservation:
         state = self._states.get(token)
         if state is None:
             raise TurnLimitError("turn_context_invalid", "turn context is missing or has expired")
@@ -70,15 +94,16 @@ class TurnLimitRegistry:
             if used + pending >= limit:
                 raise TurnLimitError(*_limit_error(capability, limit))
             state.in_flight[capability] = pending + 1
+        return TurnLimitReservation(state, capability)
+
+    async def run(self, token: str, capability: str, operation: Callable[[], Awaitable[T]]) -> T:
+        reservation = await self.reserve(token, capability)
         try:
             result = await operation()
         except BaseException:
-            async with state.lock:
-                _release(state.in_flight, capability)
+            await reservation.release()
             raise
-        async with state.lock:
-            _release(state.in_flight, capability)
-            state.successes[capability] = state.successes.get(capability, 0) + 1
+        await reservation.commit()
         return result
 
 

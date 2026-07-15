@@ -399,6 +399,8 @@ export interface TaskRecord {
   started_at?: string | null;
   finished_at?: string | null;
   metadata?: Record<string, unknown>;
+  parent_task_id?: string | null;
+  root_task_id?: string;
 }
 
 export interface CronScheduleRecord {

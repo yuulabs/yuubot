@@ -109,7 +109,7 @@ export function MonitorPage() {
                     label={task.kind}
                     title={<button className="font-medium text-left underline-offset-4 hover:underline" type="button" onClick={() => setSelectedTaskId(task.id)}>{task.name}</button>}
                     subtitle={task.intro || task.owner}
-                    status={<Status enabled={task.status === "running" || task.status === "done"} label={task.status} />}
+                    status={<Status enabled={task.status === "running" || task.status === "waiting_children" || task.status === "done"} label={task.status} />}
                     selected={selectedTaskId === task.id}
                     actions={canCancelTask(task) ? <Button variant="outline" size="sm" disabled={cancel.isPending} onClick={() => cancel.mutate(task.id)}>Cancel</Button> : undefined}
                   >
@@ -119,6 +119,8 @@ export function MonitorPage() {
                         { label: "Delivery", value: task.delivery_state ?? "unknown", tone: task.delivery_state === "delivered" ? "ok" : "muted" },
                         { label: "Exit", value: task.exit_code ?? "pending", tone: task.exit_code === 0 ? "ok" : task.exit_code == null ? "muted" : "danger" },
                         { label: "Task id", value: task.id },
+                        { label: "Parent", value: task.parent_task_id ?? "root" },
+                        { label: "Root", value: task.root_task_id ?? task.id },
                       ]}
                     />
                     {task.error && <pre className="resource-preview">{task.error}</pre>}
@@ -130,7 +132,7 @@ export function MonitorPage() {
                     variant="task"
                     title="Task output"
                     subtitle={taskDetail.data.id}
-                    status={<Status enabled={displayStatus(taskDetail.data, liveStatus) === "running" || displayStatus(taskDetail.data, liveStatus) === "done"} label={displayStatus(taskDetail.data, liveStatus)} />}
+                    status={<Status enabled={["running", "waiting_children", "done"].includes(displayStatus(taskDetail.data, liveStatus))} label={displayStatus(taskDetail.data, liveStatus)} />}
                     actions={canCancelTask(taskDetail.data, liveStatus) ? <Button variant="outline" size="sm" disabled={cancel.isPending} onClick={() => cancel.mutate(taskDetail.data.id)}>Cancel</Button> : undefined}
                   >
                     <ResourceMeta
@@ -142,6 +144,8 @@ export function MonitorPage() {
                         { label: "Created", value: taskDetail.data.created_at ?? "unknown" },
                         { label: "Started", value: taskDetail.data.started_at ?? "pending" },
                         { label: "Finished", value: taskDetail.data.finished_at ?? "pending" },
+                        { label: "Parent", value: taskDetail.data.parent_task_id ?? "root" },
+                        { label: "Root", value: taskDetail.data.root_task_id ?? taskDetail.data.id },
                       ]}
                     />
                     {taskDetail.data.error && <pre className="resource-preview">{taskDetail.data.error}</pre>}
@@ -195,7 +199,7 @@ export function MonitorPage() {
 
 function canCancelTask(task: TaskRecord, liveStatus?: string): boolean {
   const status = liveStatus ?? task.status;
-  return status === "pending" || status === "running";
+  return status === "pending" || status === "running" || status === "waiting_children";
 }
 
 function canSendStdin(task: TaskRecord, liveStatus?: string): boolean {

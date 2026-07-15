@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from yuubot.python.worker import KernelWorkerError
 from yuubot.tools.execute_python import ExecutePythonPayload, ExecutePythonTool
 
 
@@ -69,6 +70,40 @@ class CancellationPool:
         self.drop_calls += 1
 
 
+class FailingWorker:
+    alive = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run_code(self, code: str, on_output: object = None) -> str:
+        del code, on_output
+        self.calls += 1
+        if self.calls == 1:
+            return "configured"
+        raise KernelWorkerError("kernel execution exceeded 120s")
+
+
+class FailingPool:
+    def __init__(self, worker: FailingWorker) -> None:
+        self.worker = worker
+        self.acquire_calls = 0
+        self.drop_calls = 0
+
+    async def acquire(self, workspace: Path, lease_key: str, env: dict[str, str]) -> FailingWorker:
+        del workspace, lease_key, env
+        self.acquire_calls += 1
+        return self.worker
+
+    async def release(self, lease_key: str) -> None:
+        del lease_key
+
+    async def drop_leased_worker(self, lease_key: str, worker: FailingWorker) -> None:
+        del lease_key
+        assert worker is self.worker
+        self.drop_calls += 1
+
+
 @pytest.mark.asyncio
 async def test_execute_python_reuses_worker_within_tool_instance(
     tmp_path: Path,
@@ -101,3 +136,17 @@ async def test_execute_python_cancellation_drops_worker_without_release(
 
     assert pool.drop_calls == 1
     assert pool.release_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_python_does_not_replay_code_after_worker_error(tmp_path: Path) -> None:
+    worker = FailingWorker()
+    pool = FailingPool(worker)
+    tool = ExecutePythonTool(pool=pool, workspace=tmp_path, lease_key="c1", env={})
+
+    with pytest.raises(KernelWorkerError, match="exceeded"):
+        await tool.execute(ExecutePythonPayload("charge_provider()"))
+
+    assert worker.calls == 2  # turn-guard configuration plus the user code
+    assert pool.acquire_calls == 1
+    assert pool.drop_calls == 1

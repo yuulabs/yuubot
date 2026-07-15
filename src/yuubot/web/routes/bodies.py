@@ -41,6 +41,7 @@ class SubmitTaskBody(msgspec.Struct, frozen=True):
     delivery: TaskDelivery
     wait_s: float = 20
     ttl_s: float | None = None
+    parent_task_id: str | None = None
 
 
 class TaskStdinBody(msgspec.Struct, frozen=True):

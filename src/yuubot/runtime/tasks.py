@@ -10,6 +10,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from contextvars import ContextVar, Token
 from datetime import UTC, datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -30,8 +31,8 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
-DeliveryState = Literal["pending", "queued", "delivered", "skipped"]
+TaskStatus = Literal["pending", "running", "waiting_children", "done", "failed", "cancelled"]
+DeliveryState = Literal["held", "pending", "queued", "delivered", "skipped"]
 TaskDelivery = Literal["manual", "conversation", "actor"]
 MAX_MANUAL_TASK_TTL_S = 3600.0
 DEFAULT_MANUAL_TASK_TTL_S = MAX_MANUAL_TASK_TTL_S
@@ -39,6 +40,7 @@ DELIVERED_TASK_MIN_RETENTION_S = 60.0
 PENDING_DELIVERY_TASK_RETENTION_S = 3600.0
 DEFAULT_TASK_DELIVERY_SUPPRESSION_TTL_S = 3600.0
 TASK_OUTPUT_MAX_BYTES = 1024 * 1024
+CURRENT_RUNTIME_TASK_ID: ContextVar[str | None] = ContextVar("yuubot_runtime_task_id", default=None)
 
 
 def make_owner(actor_id: str, conversation_id: str) -> str:
@@ -80,6 +82,8 @@ class TaskSnapshot(msgspec.Struct, frozen=True):
     started_at: str | None = None
     finished_at: str | None = None
     metadata: dict[str, object] = msgspec.field(default_factory=dict)
+    parent_task_id: str | None = None
+    root_task_id: str = ""
 
 
 @define
@@ -104,7 +108,15 @@ class RuntimeTaskRecord:
     started_at: str | None = None
     finished_at: str | None = None
     metadata: dict[str, object] = field(factory=dict)
+    parent_task_id: str | None = None
+    root_task_id: str = ""
     _terminal: asyncio.Event = field(factory=asyncio.Event, init=False)
+    _delivery_released: asyncio.Event = field(factory=asyncio.Event, init=False)
+    _tree_changed: asyncio.Event = field(factory=asyncio.Event, init=False)
+    _child_notices: list[str] = field(factory=list, init=False)
+    _accepting_children: bool = field(default=True, init=False)
+    _own_finished: bool = field(default=False, init=False)
+    _cancel_requested: bool = field(default=False, init=False)
 
     def is_terminal(self) -> bool:
         return self.status in {"done", "failed", "cancelled"}
@@ -116,6 +128,25 @@ class RuntimeTaskRecord:
 
     def mark_terminal(self) -> None:
         self._terminal.set()
+
+    def release_held_delivery(self, deliver: bool) -> None:
+        if self.delivery_state != "held":
+            return
+        self.delivery_state = "pending" if deliver else "skipped"
+        self._delivery_released.set()
+
+    async def wait_delivery_released(self) -> None:
+        if self.delivery_state == "held":
+            await self._delivery_released.wait()
+
+    def queue_child_notice(self, notice: str) -> None:
+        self._child_notices.append(notice)
+        self._tree_changed.set()
+
+    def pop_child_notices(self) -> list[str]:
+        notices = self._child_notices
+        self._child_notices = []
+        return notices
 
 
 def normalize_task_ttl(
@@ -169,6 +200,8 @@ def task_record_size_bytes(record: RuntimeTaskRecord) -> int:
             record.created_at,
             record.started_at or "",
             record.finished_at or "",
+            record.parent_task_id or "",
+            record.root_task_id,
             repr(sorted(record.metadata.items())),
         ]
     )
@@ -178,6 +211,7 @@ def task_record_size_bytes(record: RuntimeTaskRecord) -> int:
         + _text_stream_size(record.stdout)
         + _object_size(record.error)
         + _object_size(record.result)
+        + _object_size(record._child_notices)
     )
 
 
@@ -186,7 +220,7 @@ def _terminal_retention(record: RuntimeTaskRecord, now: float) -> tuple[float, f
         ttl_s = record.ttl_s if record.ttl_s is not None else DEFAULT_MANUAL_TASK_TTL_S
         expires_at = now + ttl_s
         return expires_at, expires_at
-    if record.delivery_state in {"pending", "queued"}:
+    if record.delivery_state in {"held", "pending", "queued"}:
         expires_at = now + PENDING_DELIVERY_TASK_RETENTION_S
         return expires_at, expires_at
     return now + DELIVERED_TASK_MIN_RETENTION_S, None
@@ -198,8 +232,24 @@ class TaskRegistry:
         factory=lambda: ExpiringIndex(DEFAULT_MAX_SIZE_BYTES, task_record_size_bytes)
     )
     _records: dict[str, RuntimeTaskRecord] = field(factory=dict)
+    _children: dict[str, set[str]] = field(factory=dict)
 
     def put(self, record: RuntimeTaskRecord) -> None:
+        if not record.root_task_id:
+            record.root_task_id = record.id
+        if record.parent_task_id is not None:
+            parent = self._records.get(record.parent_task_id)
+            if parent is None or parent.is_terminal():
+                raise ValueError(f"parent task is not active: {record.parent_task_id}")
+            if not parent._accepting_children:
+                raise ValueError(f"parent task is not accepting children: {record.parent_task_id}")
+            parent_actor, _ = parse_owner(parent.owner)
+            child_actor, _ = parse_owner(record.owner)
+            if parent_actor != child_actor:
+                raise ValueError("parent task belongs to a different actor")
+            record.root_task_id = parent.root_task_id or parent.id
+            self._children.setdefault(parent.id, set()).add(record.id)
+            parent._tree_changed.set()
         self._records[record.id] = record
 
     def get(self, task_id: str) -> RuntimeTaskRecord:
@@ -233,13 +283,39 @@ class TaskRegistry:
         self,
         owner: str | None = None,
         name_glob: str = "",
+        parent_task_id: str | None = None,
+        root_task_id: str | None = None,
     ) -> builtins.list[RuntimeTaskRecord]:
         items = [*self._records.values(), *self.terminal_records.values()]
         if owner is not None:
             items = [record for record in items if record.owner == owner]
         if name_glob:
             items = [record for record in items if fnmatch(record.name, name_glob)]
+        if parent_task_id is not None:
+            items = [record for record in items if record.parent_task_id == parent_task_id]
+        if root_task_id is not None:
+            items = [record for record in items if record.root_task_id == root_task_id]
         return sorted(items, key=lambda record: record.id)
+
+    def active_children(self, task_id: str) -> builtins.list[RuntimeTaskRecord]:
+        result: builtins.list[RuntimeTaskRecord] = []
+        for child_id in self._children.get(task_id, set()):
+            if child_id not in self:
+                continue
+            child = self.get(child_id)
+            if not child.is_terminal():
+                result.append(child)
+        return result
+
+    def descendants(self, task_id: str) -> builtins.list[RuntimeTaskRecord]:
+        result: builtins.list[RuntimeTaskRecord] = []
+        pending = list(self._children.get(task_id, set()))
+        while pending:
+            child_id = pending.pop()
+            if child_id in self:
+                result.append(self.get(child_id))
+            pending.extend(self._children.get(child_id, set()))
+        return result
 
 
 @define
@@ -277,8 +353,15 @@ class TaskScheduler:
         asyncio_task.add_done_callback(lambda task: self._on_task_done(record, task))
 
     def cancel(self, record: RuntimeTaskRecord, skip_delivery: bool = False) -> None:
-        if skip_delivery and record.delivery_state in {"pending", "queued"}:
-            record.delivery_state = "skipped"
+        record._accepting_children = False
+        record._cancel_requested = True
+        if skip_delivery and record.delivery_state in {"held", "pending", "queued"}:
+            if record.delivery_state == "held":
+                record.release_held_delivery(False)
+            else:
+                record.delivery_state = "skipped"
+        for child in self.registry.active_children(record.id):
+            self.cancel(child, skip_delivery=True)
         asyncio_task = self._asyncio_tasks.get(record.id)
         if asyncio_task is not None and not asyncio_task.done():
             _log.info(
@@ -289,14 +372,21 @@ class TaskScheduler:
                 record.name,
                 skip_delivery,
             )
-            asyncio_task.cancel()
+            if record._own_finished:
+                record._tree_changed.set()
+            else:
+                asyncio_task.cancel()
 
     async def shutdown(self) -> None:
-        running = [record for record in self.registry.list() if record.status in {"pending", "running"}]
+        running = [
+            record
+            for record in self.registry.list()
+            if record.status in {"pending", "running", "waiting_children"}
+        ]
         if running:
             _log.info("task scheduler shutdown cancelling count=%s", len(running))
         for record in self.registry.list():
-            if record.status in {"pending", "running"}:
+            if record.status in {"pending", "running", "waiting_children"}:
                 self.cancel(record, skip_delivery=True)
         if self._asyncio_tasks:
             await asyncio.gather(*self._asyncio_tasks.values(), return_exceptions=True)
@@ -310,23 +400,25 @@ class TaskScheduler:
         for record in self.registry.list():
             if not record.owner.startswith(owner_prefix):
                 continue
-            if record.status in {"pending", "running"}:
+            if record.status in {"pending", "running", "waiting_children"}:
                 self.cancel(record, skip_delivery=skip_delivery)
 
     async def _run(self, record: RuntimeTaskRecord, coro_factory: TaskCoroFactory) -> object:
+        token: Token[str | None] = CURRENT_RUNTIME_TASK_ID.set(record.id)
+        result: object | None = None
+        final_status: TaskStatus = "done"
         try:
-            record.result = await coro_factory(record.stdin, record.stdout)
+            result = await coro_factory(record.stdin, record.stdout)
+            record.result = result
             if record.kind == "shell" and record.exit_code is None:
-                record.exit_code = int(record.result) if isinstance(record.result, int) else 0
-            record.status = "done"
-            return record.result
+                record.exit_code = int(result) if isinstance(result, int) else 0
         except asyncio.CancelledError:
-            if record.status != "failed":
-                record.status = "cancelled"
-            raise
+            final_status = "cancelled"
+            record._accepting_children = False
         except Exception as exc:
             record.error = str(exc)
-            record.status = "failed"
+            final_status = "failed"
+            record._accepting_children = False
             _log.exception(
                 "task failed task_id=%s owner=%s kind=%s name=%s",
                 record.id,
@@ -334,18 +426,54 @@ class TaskScheduler:
                 record.kind,
                 record.name,
             )
-            return None
+        finally:
+            CURRENT_RUNTIME_TASK_ID.reset(token)
+            record._own_finished = True
+        if final_status in {"failed", "cancelled"}:
+            for child in self.registry.active_children(record.id):
+                self.cancel(child, skip_delivery=True)
+        await self._wait_for_children(record)
+        if record._cancel_requested:
+            final_status = "cancelled"
+        self._finish(record, final_status)
+        return result
+
+    async def _wait_for_children(self, record: RuntimeTaskRecord) -> None:
+        while self.registry.active_children(record.id):
+            record.status = "waiting_children"
+            record._tree_changed.clear()
+            if not self.registry.active_children(record.id):
+                break
+            await record._tree_changed.wait()
+
+    def _finish(self, record: RuntimeTaskRecord, status: TaskStatus) -> None:
+        record.status = status
+        record.finished_at = _iso_now()
+        if record.parent_task_id is not None and record.parent_task_id in self.registry:
+            parent = self.registry.get(record.parent_task_id)
+            if parent._accepting_children and not parent.is_terminal():
+                parent.queue_child_notice(format_task_delivery(record))
+                record.delivery_state = "delivered"
+            elif record.delivery_state in {"held", "pending", "queued"}:
+                record.delivery_state = "skipped"
+        self._asyncio_tasks.pop(record.id, None)
+        record.mark_terminal()
+        self.registry.mark_terminal(record)
+        self._emit_finished(record)
 
     def _on_task_done(self, record: RuntimeTaskRecord, asyncio_task: asyncio.Task[object]) -> None:
         self._asyncio_tasks.pop(record.id, None)
-        if asyncio_task.cancelled() and record.status not in {"failed", "done"}:
-            record.status = "cancelled"
-        elif asyncio_task.exception() is not None and record.status != "cancelled":
+        if asyncio_task.cancelled() and not record.is_terminal():
+            self._finish(record, "cancelled")
+        elif asyncio_task.exception() is not None and not record.is_terminal():
             record.error = str(asyncio_task.exception())
             record.status = "failed"
-        record.finished_at = _iso_now()
-        record.mark_terminal()
-        self.registry.mark_terminal(record)
+            record.finished_at = _iso_now()
+            record.mark_terminal()
+            self.registry.mark_terminal(record)
+            self._emit_finished(record)
+
+    def _emit_finished(self, record: RuntimeTaskRecord) -> None:
         _log.info(
             "task finished task_id=%s owner=%s kind=%s name=%s status=%s exit_code=%s delivery=%s delivery_state=%s error=%s",
             record.id,
@@ -402,6 +530,7 @@ def register_shell_task(
     workspace: Path,
     delivery: TaskDelivery = "manual",
     ttl_s: float | None = None,
+    parent_task_id: str | None = None,
 ) -> RuntimeTaskRecord:
     ttl_s = normalize_task_ttl(delivery, ttl_s, False)
     _log.info(
@@ -412,6 +541,7 @@ def register_shell_task(
         delivery,
         ttl_s,
     )
+    parent_task_id = parent_task_id or CURRENT_RUNTIME_TASK_ID.get()
     record = RuntimeTaskRecord(
         new_task_id(),
         owner,
@@ -422,6 +552,7 @@ def register_shell_task(
         interactive=True,
         delivery=delivery,
         ttl_s=ttl_s,
+        parent_task_id=parent_task_id,
     )
     runtime.tasks.put(record)
     runtime.scheduler.schedule(
@@ -477,6 +608,15 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
         elif record.error:
             lines.append(f"error: {record.error}")
         return "\n".join(lines)
+    if record.kind == "fixer":
+        facade = str(record.metadata.get("facade", "unknown"))
+        lines = [f"Fixer task {record.id} finished with status {record.status}.", f"facade: {facade}"]
+        if record.error:
+            lines.append(f"Error: {record.error}")
+        output = filter_tool_output(record.stdout.tail_with_notice(TASK_OUTPUT_MAX_BYTES))
+        if output:
+            lines.extend(["Result:", output])
+        return "\n".join(lines)
     lines = [f"Task '{record.name}' finished with status {record.status}."]
     if record.intro:
         lines.append(record.intro)
@@ -486,6 +626,9 @@ def format_task_delivery(record: RuntimeTaskRecord) -> str:
     if output:
         lines.append("Output:")
         lines.append(output)
+    elif isinstance(record.result, str) and record.result:
+        lines.append("Result:")
+        lines.append(_truncate_agent_notice(record.result))
     if record.exit_code is not None:
         lines.append(f"Exit code: {record.exit_code}")
     return "\n".join(lines)
@@ -536,6 +679,8 @@ async def deliver_task_result(runtime: Runtime, record: RuntimeTaskRecord) -> No
 
 
 async def schedule_task_delivery(runtime: Runtime, record: RuntimeTaskRecord) -> None:
+    if record.delivery_state == "held":
+        await record.wait_delivery_released()
     if record.delivery_state != "pending":
         return
     if record.delivery == "manual":
@@ -633,8 +778,11 @@ def skip_conversation_task_deliveries(
     for task_id in task_ids:
         if task_id in runtime.tasks:
             record = runtime.tasks.get(task_id)
-            if record.kind != "agent" and record.delivery_state in {"pending", "queued"}:
-                record.delivery_state = "skipped"
+            if record.kind != "agent" and record.delivery_state in {"held", "pending", "queued"}:
+                if record.delivery_state == "held":
+                    record.release_held_delivery(False)
+                else:
+                    record.delivery_state = "skipped"
                 runtime.tasks.refresh_terminal_retention(record)
                 _log.info(
                     "conversation task delivery skipped task_id=%s conversation_id=%s",
@@ -643,8 +791,11 @@ def skip_conversation_task_deliveries(
                 )
     owner = f":conv:{conversation_id}"
     for record in runtime.tasks.list():
-        if record.kind != "agent" and record.delivery == "conversation" and owner in record.owner and record.delivery_state in {"pending", "queued"}:
-            record.delivery_state = "skipped"
+        if record.kind != "agent" and record.delivery == "conversation" and owner in record.owner and record.delivery_state in {"held", "pending", "queued"}:
+            if record.delivery_state == "held":
+                record.release_held_delivery(False)
+            else:
+                record.delivery_state = "skipped"
             runtime.tasks.refresh_terminal_retention(record)
 
 
@@ -667,4 +818,6 @@ def task_record_snapshot(record: RuntimeTaskRecord, include_stdout: bool = False
         record.started_at,
         record.finished_at,
         dict(record.metadata),
+        record.parent_task_id,
+        record.root_task_id or record.id,
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import cast
 
 import httpx
 
@@ -23,6 +24,10 @@ def task_owner() -> str:
     return owner
 
 
+def parent_task_id() -> str | None:
+    return os.getenv("YUUBOT_PARENT_TASK_ID") or None
+
+
 async def request_json(
     method: str,
     url: str,
@@ -33,7 +38,7 @@ async def request_json(
     body = await request_json_value(method, url, params, json, timeout_s)
     if not isinstance(body, dict):
         raise RuntimeError("unexpected daemon API response")
-    return body
+    return cast(dict[str, object], body)
 
 
 async def request_json_value(

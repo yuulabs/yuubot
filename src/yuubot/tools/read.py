@@ -8,7 +8,7 @@ from ..domain.messages import ContentItem
 from .base import workspace_tool
 from .paths import workspace_path
 
-MAX_READ_LINES: Final[int] = 2_000
+MAX_READ_LINES: Final[int] = 600
 MAX_READ_BYTES: Final[int] = 1024 * 1024
 VISION_MIME_TYPES: Final[frozenset[str]] = frozenset(
     {"image/png", "image/jpeg", "image/webp", "image/gif"}
@@ -18,7 +18,7 @@ DESCRIPTION = """Read a file inside the actor workspace.
 
 Paths are relative to the workspace root and cannot escape the workspace boundary.
 
-Text files are decoded as UTF-8 with replacement characters for invalid bytes. Use `start_lo` (0-based line index) and `end_lo` (exclusive line index, or -1 for end of file) to page through large files. Full-file reads return at most 2,000 complete lines and 1 MiB; when output is truncated or paged, the result includes the final line position. The byte limit is applied on a complete-line boundary whenever possible, so the tool does not normally cut a line in half.
+Text files are decoded as UTF-8 with replacement characters for invalid bytes. Use `start_lo` (0-based line index) and `end_lo` (exclusive line index, or -1 for end of file) to page through large files. Full-file reads return at most 600 complete lines and 1 MiB; when output is truncated or paged, the result includes the final line position. The byte limit is applied on a complete-line boundary whenever possible, so the tool does not normally cut a line in half.
 
 PNG, JPEG, WEBP, and non-animated GIF files are handled differently: when the current model supports vision, the result contains image content for multimodal inspection. SVG files are read as text/XML. Other image formats return a clear conversion message instead of image bytes.
 

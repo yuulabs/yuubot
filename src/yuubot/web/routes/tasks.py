@@ -22,8 +22,13 @@ def register_task_routes(
     client_is_loopback: Callable[[Request], bool],
 ) -> None:
     @api.get("/api/tasks")
-    async def api_tasks(owner: str | None = None, name_glob: str = "") -> Response:
-        records = app.runtime.tasks.list(owner, name_glob)
+    async def api_tasks(
+        owner: str | None = None,
+        name_glob: str = "",
+        parent_task_id: str | None = None,
+        root_task_id: str | None = None,
+    ) -> Response:
+        records = app.runtime.tasks.list(owner, name_glob, parent_task_id, root_task_id)
         return json_response({"items": [task_record_snapshot(record) for record in records]})
 
     @api.get("/api/tasks/{task_id}")
@@ -45,19 +50,30 @@ def register_task_routes(
         except ValueError as exc:
             return bad_request(exc)
         actor_id = body.owner.split(":conv:", 1)[0].removeprefix("actor:")
+        if body.parent_task_id is not None:
+            if body.parent_task_id not in app.runtime.tasks:
+                return error_response(404, "not_found", "parent task not found")
+            parent = app.runtime.tasks.get(body.parent_task_id)
+            parent_actor = parent.owner.split(":conv:", 1)[0].removeprefix("actor:")
+            if parent.is_terminal() or parent_actor != actor_id:
+                return error_response(409, "conflict", "parent task is not active for this actor")
         workspace = actor_workspace(app, actor_id)
         if workspace is None:
             return error_response(404, "not_found", "actor not found")
-        snapshot = await app.submit_shell_task(
-            name=body.name,
-            shell=body.shell,
-            intro=body.intro,
-            owner=body.owner,
-            workspace=workspace,
-            wait_s=body.wait_s,
-            delivery=body.delivery,
-            ttl_s=ttl_s,
-        )
+        try:
+            snapshot = await app.submit_shell_task(
+                name=body.name,
+                shell=body.shell,
+                intro=body.intro,
+                owner=body.owner,
+                workspace=workspace,
+                wait_s=body.wait_s,
+                delivery=body.delivery,
+                ttl_s=ttl_s,
+                parent_task_id=body.parent_task_id,
+            )
+        except ValueError as exc:
+            return error_response(409, "conflict", str(exc))
         return json_response(snapshot)
 
     @api.post("/api/tasks/{task_id}/cancel")

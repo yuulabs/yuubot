@@ -16,6 +16,8 @@ from yuubot.domain import (
     TextDeltaPayload,
     Usage,
 )
+from yuubot.domain.stream import ToolArgumentsDeltaPayload, ToolNamePayload
+from yuubot.llm.scripted import ScriptedStream
 from yuubot.runtime.cache import CachePool
 from yuubot.runtime.subagents import SUBAGENTS
 from yuubot.runtime.turn_limits import TurnIdentity
@@ -75,7 +77,7 @@ def test_delegate_tool_spec_is_complete_and_schema_is_closed() -> None:
     spec = next(item["function"] for item in all_tool_specs() if item["function"]["name"] == "delegate")
     description = str(spec["description"])
     for phrase in (
-        "return its Runtime Task id immediately",
+        "return its root Runtime Task id immediately",
         "Up to four",
         "explore:",
         "web-scout:",
@@ -157,6 +159,64 @@ async def test_delegate_runtime_depth_guard_rejects_recursive_context(tmp_path: 
         tool = DelegateTool(_context(tmp_path, token, depth=1), app.runtime)
         with pytest.raises(RuntimeError, match="recursive_delegation_forbidden"):
             await tool.execute(DelegatePayload("reviewer", "same", "Review this."))
+    finally:
+        app.runtime.turn_limits.close(token)
+        await app.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_delegate_resumes_after_detached_child_before_finishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stream = ScriptedStream(
+        [
+            [
+                StreamEvent("bash-1", "tool_name", ToolNamePayload("bash", "bash-1")),
+                StreamEvent(
+                    "bash-1",
+                    "tool_arguments_delta",
+                    ToolArgumentsDeltaPayload('{"command":"sleep 0.15","idle_timeout_s":0.01}'),
+                ),
+                StreamEvent("bash-1", "tool_arguments_end"),
+                StreamEvent("stop", "stream_stop", StreamStopPayload("tool_calls")),
+            ],
+            [
+                StreamEvent("text", "text_delta", TextDeltaPayload("premature result")),
+                StreamEvent("stop", "stream_stop", StreamStopPayload("stop")),
+            ],
+            [
+                StreamEvent("text", "text_delta", TextDeltaPayload("final result")),
+                StreamEvent("stop", "stream_stop", StreamStopPayload("stop")),
+            ],
+        ]
+    )
+    app = await Yuubot.create(tmp_path / "data")
+    app.runtime.gateway_client = stream
+    token = app.runtime.turn_limits.open(TurnIdentity("amy", "parent-c1", "turn-1", "trace-1"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    context = _context(workspace, token)
+    registry = __import__("yuubot.tools.registry", fromlist=["ToolConfig"])
+    monkeypatch.setattr(
+        "yuubot.tools.registry.all_tool_configs",
+        lambda: {
+            "delegate": registry.ToolConfig("delegate"),
+            "bash": registry.ToolConfig("bash"),
+        },
+    )
+    tool = DelegateTool(context, app.runtime)
+    try:
+        wire = json.loads(await tool.execute(DelegatePayload("explore", "same", "Run the command.")))
+        record = app.runtime.tasks.get(wire["task_id"])
+        await record.wait_terminal()
+        assert record.status == "done"
+        assert record.result == "final result"
+        children = app.runtime.tasks.list(parent_task_id=record.id)
+        assert len(children) == 1
+        assert children[0].status == "done"
+        assert children[0].root_task_id == record.id
+        assert stream._index == 3
     finally:
         app.runtime.turn_limits.close(token)
         await app.shutdown()

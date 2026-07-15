@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 from ._coding_cli import Settings, Status, env, resolve_command, settings as _settings
 from ._coding_cli import status as _status
@@ -54,40 +55,36 @@ async def models(
 ) -> tuple[ModelInfo, ...]:
     """Return models available to the currently authenticated Codex account."""
     settings = _config()
-    process = await asyncio.create_subprocess_exec(
-        _binary(settings),
-        "app-server",
-        stdout=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env(settings),
-    )
-    timeout = settings.timeout_s if timeout_s is None else timeout_s
-    stderr_tail: deque[bytes] = deque()
-    stderr_task = asyncio.create_task(_drain_stderr(process, stderr_tail))
-    discovery_task = asyncio.create_task(
-        _list_models(process, include_hidden, stderr_tail)
-    )
-    try:
-        return await asyncio.wait_for(asyncio.shield(discovery_task), timeout)
-    except TimeoutError:
-        raise RuntimeError(
-            f"codex model discovery timed out after {timeout:g}s"
-        ) from None
-    finally:
-        await _stop(process)
-        if not discovery_task.done():
-            discovery_task.cancel()
-        await asyncio.gather(discovery_task, return_exceptions=True)
-        if not stderr_task.done():
-            stderr_task.cancel()
-        await asyncio.gather(stderr_task, return_exceptions=True)
+    with tempfile.TemporaryFile() as stderr:
+        process = await asyncio.create_subprocess_exec(
+            _binary(settings),
+            "app-server",
+            stdout=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE,
+            stderr=stderr,
+            env=env(settings),
+        )
+        timeout = settings.timeout_s if timeout_s is None else timeout_s
+        discovery_task = asyncio.create_task(
+            _list_models(process, include_hidden, stderr)
+        )
+        try:
+            return await asyncio.wait_for(asyncio.shield(discovery_task), timeout)
+        except TimeoutError:
+            raise RuntimeError(
+                f"codex model discovery timed out after {timeout:g}s"
+            ) from None
+        finally:
+            await _stop(process)
+            if not discovery_task.done():
+                discovery_task.cancel()
+            await asyncio.gather(discovery_task, return_exceptions=True)
 
 
 async def _list_models(
     process: asyncio.subprocess.Process,
     include_hidden: bool,
-    stderr_tail: deque[bytes],
+    stderr: BinaryIO,
 ) -> tuple[ModelInfo, ...]:
     await _send(
         process,
@@ -96,9 +93,10 @@ async def _list_models(
             "method": "initialize",
             "params": {"clientInfo": {"name": "yuubot", "version": "1"}},
         },
+        stderr,
     )
-    await _response(process, 1, "initialize", stderr_tail)
-    await _send(process, {"method": "initialized"})
+    await _response(process, 1, "initialize", stderr)
+    await _send(process, {"method": "initialized"}, stderr)
     found: list[ModelInfo] = []
     cursor: str | None = None
     request_id = 2
@@ -107,9 +105,11 @@ async def _list_models(
         if cursor is not None:
             params["cursor"] = cursor
         await _send(
-            process, {"id": request_id, "method": "model/list", "params": params}
+            process,
+            {"id": request_id, "method": "model/list", "params": params},
+            stderr,
         )
-        result = await _response(process, request_id, "model/list", stderr_tail)
+        result = await _response(process, request_id, "model/list", stderr)
         data = result.get("data")
         if not isinstance(data, list):
             raise RuntimeError("codex returned an invalid model list")
@@ -130,7 +130,7 @@ def open_session(
     reasoning: str | None = None,
     profile: str | None = None,
     cwd: str | Path | None = None,
-    sandbox: str = "workspace-write",
+    sandbox: str = "danger-full-access",
     skip_git_repo_check: bool = False,
     timeout_s: float | None = None,
 ) -> Session:
@@ -157,7 +157,7 @@ def resume_session(
     reasoning: str | None = None,
     profile: str | None = None,
     cwd: str | Path | None = None,
-    sandbox: str = "workspace-write",
+    sandbox: str = "danger-full-access",
     skip_git_repo_check: bool = False,
     timeout_s: float | None = None,
 ) -> Session:
@@ -310,19 +310,28 @@ def _binary(settings: Settings) -> str:
 
 
 async def _send(
-    process: asyncio.subprocess.Process, message: dict[str, object]
+    process: asyncio.subprocess.Process,
+    message: dict[str, object],
+    stderr: BinaryIO,
 ) -> None:
     if process.stdin is None:
         raise RuntimeError("codex input is unavailable")
-    process.stdin.write(json.dumps(message, separators=(",", ":")).encode() + b"\n")
-    await process.stdin.drain()
+    try:
+        process.stdin.write(
+            json.dumps(message, separators=(",", ":")).encode() + b"\n"
+        )
+        await process.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        if process.returncode is None:
+            await process.wait()
+        raise RuntimeError(_file_process_error(process.returncode, stderr)) from None
 
 
 async def _response(
     process: asyncio.subprocess.Process,
     request_id: int,
     operation: str,
-    stderr_tail: deque[bytes],
+    stderr: BinaryIO,
 ) -> dict[str, Any]:
     if process.stdout is None:
         raise RuntimeError("codex output is unavailable")
@@ -331,12 +340,12 @@ async def _response(
             line = await asyncio.wait_for(process.stdout.readline(), 0.1)
         except TimeoutError:
             if process.returncode is not None:
-                raise RuntimeError(_process_error(process.returncode, stderr_tail))
+                raise RuntimeError(_file_process_error(process.returncode, stderr))
             continue
         if not line:
             if process.returncode is None:
                 await process.wait()
-            raise RuntimeError(_process_error(process.returncode, stderr_tail))
+            raise RuntimeError(_file_process_error(process.returncode, stderr))
         try:
             message = json.loads(line)
         except json.JSONDecodeError, UnicodeDecodeError:
@@ -391,6 +400,13 @@ def _error_message(error: object) -> str:
 def _process_error(return_code: int | None, stderr_tail: deque[bytes]) -> str:
     detail = _redact(b"".join(stderr_tail).decode(errors="replace")).strip()[-1000:]
     return f"codex exited with code {return_code}" + (f": {detail}" if detail else "")
+
+
+def _file_process_error(return_code: int | None, stderr: BinaryIO) -> str:
+    stderr.seek(0, 2)
+    size = stderr.tell()
+    stderr.seek(max(0, size - 4096))
+    return _process_error(return_code, deque((stderr.read(),)))
 
 
 async def _drain_stderr(

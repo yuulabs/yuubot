@@ -200,6 +200,26 @@ def _agent_coro_factory(
                     )
                 )
                 if stop.reason == "stop":
+                    notices = record.pop_child_notices()
+                    if not notices and runtime.tasks.active_children(record.id):
+                        record.status = "waiting_children"
+                        record._tree_changed.clear()
+                        notices = record.pop_child_notices()
+                        if not notices and runtime.tasks.active_children(record.id):
+                            await record._tree_changed.wait()
+                            notices = record.pop_child_notices()
+                        record.status = "running"
+                    if notices:
+                        history.extend(
+                            [
+                                InputMessage(
+                                    "developer",
+                                    "yuubot",
+                                    text_content("\n\n".join(notices)),
+                                )
+                            ]
+                        )
+                        continue
                     result = "".join(item.text for item in outputs if isinstance(item, GenText)).strip()
                     stdout.write(result)
                     return result

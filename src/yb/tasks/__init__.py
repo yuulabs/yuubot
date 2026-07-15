@@ -13,6 +13,10 @@ Delivery modes:
 
 Task output is an expiring offload buffer, not durable storage. For long jobs,
 write resumable workspace scripts that persist their own state and artifacts.
+Tasks created while another Runtime Task is active become structured children.
+The parent remains ``waiting_children`` until its descendants finish. Child
+completion wakes the direct parent; only a root task delivers to a Conversation
+or Actor. Cancelling a parent recursively cancels its active descendants.
 ``task.output(max_bytes=...)`` returns at most 1 MiB from the retained stdout
 tail and includes a byte-range truncation notice when output was omitted;
 ``max_bytes`` may request less, but cannot recover output beyond the retained
@@ -39,11 +43,11 @@ from typing import Literal, cast
 
 import msgspec
 
-from yb._daemon import daemon_url, request_json, task_owner
+from yb._daemon import daemon_url, parent_task_id, request_json, task_owner
 
-TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
+TaskStatus = Literal["pending", "running", "waiting_children", "done", "failed", "cancelled"]
 TaskDelivery = Literal["manual", "conversation", "actor"]
-_TASK_STATUSES: set[str] = {"pending", "running", "done", "failed", "cancelled"}
+_TASK_STATUSES: set[str] = {"pending", "running", "waiting_children", "done", "failed", "cancelled"}
 
 
 class _TaskWire(msgspec.Struct, frozen=True):
@@ -55,6 +59,8 @@ class _TaskWire(msgspec.Struct, frozen=True):
     stdout_total_bytes: int = 0
     error: str | None = None
     exit_code: int | None = None
+    parent_task_id: str | None = None
+    root_task_id: str = ""
 
 
 class _TaskListResponse(msgspec.Struct, frozen=True):
@@ -65,6 +71,8 @@ class Task:
     id: str
     name: str
     intro: str
+    parent_task_id: str | None
+    root_task_id: str
 
     def __init__(
         self,
@@ -73,10 +81,14 @@ class Task:
         status: TaskStatus,
         intro: str,
         _base_url: str,
+        parent_task_id: str | None = None,
+        root_task_id: str = "",
     ) -> None:
         self.id = id
         self.name = name
         self.intro = intro
+        self.parent_task_id = parent_task_id
+        self.root_task_id = root_task_id or id
         self._base_url = _base_url.rstrip("/")
         self._status = status
 
@@ -143,6 +155,9 @@ async def submit(
         "wait_s": 0,
         "delivery": delivery,
     }
+    parent_id = parent_task_id()
+    if parent_id is not None:
+        body["parent_task_id"] = parent_id
     if ttl_s is not None:
         body["ttl_s"] = ttl_s
     payload = await request_json(
@@ -159,11 +174,20 @@ async def find(task_id: str) -> Task:
     return _task_from_payload(payload, base_url)
 
 
-async def list_tasks(name_glob: str = "") -> list[Task]:
+async def list_tasks(
+    name_glob: str = "",
+    parent_task_id: str | None = None,
+    root_task_id: str | None = None,
+) -> list[Task]:
+    """List this owner's tasks, optionally restricted to a parent or root tree."""
     base_url = daemon_url()
     params: dict[str, str] = {"owner": task_owner()}
     if name_glob:
         params["name_glob"] = name_glob
+    if parent_task_id is not None:
+        params["parent_task_id"] = parent_task_id
+    if root_task_id is not None:
+        params["root_task_id"] = root_task_id
     payload = await request_json("GET", f"{base_url}/api/tasks", params=params)
     return [_task_from_wire(item, base_url) for item in msgspec.convert(payload, _TaskListResponse).items]
 
@@ -175,6 +199,8 @@ def _task_from_wire(wire: _TaskWire, base_url: str) -> Task:
         _task_status(wire.status),
         wire.intro,
         base_url,
+        wire.parent_task_id,
+        wire.root_task_id,
     )
 
 

@@ -32,7 +32,7 @@ def test_yext_codex_sessions_apply_profile_to_start_and_resume() -> None:
         "-c",
         'approval_policy="never"',
         "-s",
-        "workspace-write",
+        "danger-full-access",
         "--profile",
         "minimal-skills",
         "start",
@@ -438,14 +438,27 @@ def test_coding_cli_prompt_docs_arrive_through_integration_docs(tmp_path: Path) 
     assert "session.id is None" in prompt
     assert "configured Codex profile name" in prompt
     assert 'profile="lean"' in prompt
-    assert "async for event in session.ask" in prompt
-    assert 'sandbox="workspace-write"' in prompt
+    assert "default 120s kernel timeout" in prompt
+    assert 'delivery="conversation"' in prompt
+    assert "Completion naturally wakes this chat." in prompt
+    assert "do not poll, sleep" in prompt
+    assert "yb.tasks.submit" in prompt
+    assert "Use session.ask() directly only for short diagnostic turns." in prompt
+    assert "item type is agent_message" in prompt
+    assert "Do not print raw events." in prompt
+    assert "command_execution" in prompt
+    assert "item.started" in prompt
+    assert "item.updated" in prompt
+    assert 'sandbox="danger-full-access"' in prompt
     assert "Sandbox options:" in prompt
     assert "`read-only` permits reads only" in prompt
     assert "`workspace-write` permits edits" in prompt
     assert "`danger-full-access` removes the sandbox" in prompt
+    assert "The default is `danger-full-access`" in prompt
     assert "item.completed" in prompt
     assert "turn.failed" in prompt
+    assert "print(json.dumps(event" not in prompt
+    assert "print(event)" not in prompt
     assert "complete task, relevant paths and context" in prompt
     assert "without asking follow-up questions" in prompt
     assert "await cli.help()" not in prompt

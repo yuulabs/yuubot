@@ -50,6 +50,16 @@ async def test_concurrent_reservations_cannot_exceed_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reservation_can_commit_after_turn_token_closes() -> None:
+    registry, token = _registry()
+    reservation = await registry.reserve(token, "fixer_gemini")
+
+    registry.close(token)
+    await reservation.commit()
+    await reservation.commit()
+
+
+@pytest.mark.asyncio
 async def test_web_search_allows_three_successes_and_new_turn_resets() -> None:
     registry, token = _registry()
     for index in range(3):

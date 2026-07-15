@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import httpx
@@ -19,6 +20,7 @@ from yuubot.llm.gateway import (
 from yuubot.domain.stream import Usage
 from yuubot.domain.models import AliasModelSelector
 from yuubot.runtime.turn_limits import TurnIdentity
+from yuubot.web.routes import turn_capabilities
 
 
 async def _active_turn(app: Yuubot, tmp_path: Path, gateway: GatewayClient) -> tuple[str, object]:
@@ -93,7 +95,82 @@ async def test_loopback_fixer_guard_keeps_facades_independent_and_records_usage(
         assert calls == ["ask-gemini", "ask-grok"]
         assert len(usage_rows) == 2
         assert {row.account["facade"] for row in usage_rows} == {"gemini", "grok"}
+        fixer_tasks = [record for record in app.runtime.tasks.list() if record.kind == "fixer"]
+        assert len(fixer_tasks) == 2
+        assert {record.delivery_state for record in fixer_tasks} == {"skipped"}
     finally:
+        app.runtime.turn_limits.close(token)
+
+
+@pytest.mark.asyncio
+async def test_slow_fixer_detaches_and_completes_after_turn_token_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = await Yuubot.create(tmp_path / "data")
+    gateway = GatewayClient(
+        aliases={
+            name: AliasRecord(name, ["text"], [AliasTarget("test", name)])
+            for name in ("main", "ask-gemini")
+        },
+    )
+    app.gateway_client = gateway
+    app.runtime.gateway_client = gateway
+    token, conversation = await _active_turn(app, tmp_path, gateway)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(turn_capabilities, "FIXER_SYNC_WAIT_S", 0.01)
+
+    async def hosted_search(*_args: object, **_kwargs: object) -> HostedSearchResult:
+        started.set()
+        await release.wait()
+        return HostedSearchResult(
+            "deferred answer",
+            [HostedSearchCitation("https://example.com/deferred", "Deferred Source")],
+            Usage(12, 2, 0, 5),
+            {"model": "ask-gemini", "gateway_latency_ms": 50_000.0},
+        )
+
+    monkeypatch.setattr(GatewayClient, "hosted_search", hosted_search)
+    headers = {"X-Yuubot-Turn-Token": token}
+    try:
+        async with running_server(app) as server:
+            async with httpx.AsyncClient(base_url=base_url(server)) as client:
+                response = await client.post(
+                    "/api/fixer/gemini",
+                    headers=headers,
+                    json={"prompt": "slow question"},
+                )
+                await started.wait()
+                duplicate = await client.post(
+                    "/api/fixer/gemini",
+                    headers=headers,
+                    json={"prompt": "duplicate"},
+                )
+
+                assert response.status_code == 200
+                assert response.json()["status"] == "pending"
+                task_id = response.json()["task_id"]
+                assert duplicate.status_code == 429
+
+                app.runtime.turn_limits.close(token)
+                release.set()
+                record = app.runtime.tasks.get(task_id)
+                await record.wait_terminal()
+                for _ in range(100):
+                    if record.delivery_state == "queued":
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert record.status == "done"
+                assert record.delivery_state == "queued"
+                assert "deferred answer" in record.stdout.tail(1024)
+                assert "https://example.com/deferred" in record.stdout.tail(1024)
+                assert task_id in conversation.pending_task_delivery_ids()
+                usage_rows = await app.runtime.state.load_usage("c1")
+                assert len(usage_rows) == 1
+    finally:
+        release.set()
         app.runtime.turn_limits.close(token)
 
 

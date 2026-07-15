@@ -1588,6 +1588,7 @@ class Yuubot:
         wait_s: float = 20,
         delivery: TaskDelivery = "manual",
         ttl_s: float | None = None,
+        parent_task_id: str | None = None,
     ) -> TaskSnapshot:
         record = register_shell_task(
             self.runtime,
@@ -1598,6 +1599,7 @@ class Yuubot:
             workspace,
             delivery,
             ttl_s,
+            parent_task_id,
         )
         if wait_s > 0:
             await wait_until_terminal_or_timeout(self.runtime.tasks, record.id, wait_s)

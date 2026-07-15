@@ -129,6 +129,12 @@ Task 是进程内任务记录，不是 durable job queue；它保存 owner、状
 Task 状态通过 HTTP、WebSocket 或 `yb.tasks` 查询。PTY task 可接受 stdin，也可取消。stdout 是
 有上限、会过期的 offload buffer，不是长期存储；长任务应把 checkpoint 和产物写入 workspace。
 
+Runtime Task 组成显式树。task 创建时记录 `parent_task_id` 和 `root_task_id`；自身逻辑已经返回但
+仍有活跃后代时进入 `waiting_children`，只有自身与整棵子树都结束后才进入 terminal。child 结束
+前先登记内部 delivery，delivery 唤醒直接父 task 后才释放，因此 child 完成与父恢复之间不会出现
+整棵树短暂静默的竞态。child 的失败或取消作为结果交给父逻辑处理；取消父 task 会级联取消全部
+后代。只有 root task 向 Conversation 或 Actor 投递最终通知，内部节点只唤醒父 task。
+
 以 conversation delivery 为例：
 
 ```text
@@ -175,6 +181,10 @@ LLM 发出 execute_python(code)
  回复引用文件。
 - Python 调用可以在一次代码块内用 `asyncio.gather` 并发编排；多个 `execute_python` tool call
   本身按 Harness 工具执行规则处理。
+- 任意 Python continuation 不支持 auto-detach，因为 namespace、控制流和已发生副作用无法安全迁移。
+  `yb.fixer.ask_gemini/ask_grok` 由 Runtime 特化承接：先同步等待 30 秒，未完成则返回
+  `PendingAnswer(task_id)`、释放 kernel worker，并在后台完成后通过 conversation delivery 续聊。
+- kernel worker 错误不会自动重放整段 Python 代码；是否重试由模型根据副作用风险显式决定。
 
 一个完整的数据源场景如下：
 

@@ -51,6 +51,8 @@ def test_developer_prompt_documents_turn_limited_research_facades(tmp_path: Path
     assert "not guaranteed success" in prompt
     assert "yext.web.search` provides up to three successful searches per user turn" in prompt
     assert "include all related subquestions in one prompt" in prompt
+    assert "PendingAnswer(task_id)" in prompt
+    assert "Do not retry it" in prompt
 
 
 def test_workspace_prompt_routes_one_time_delivery_to_artifacts(tmp_path: Path) -> None:

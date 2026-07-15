@@ -17,7 +17,7 @@ from .base import ToolConfig, ToolSpec
 if TYPE_CHECKING:
     from ..runtime.core import Runtime
 
-DESCRIPTION = """Delegate a self-contained task to one asynchronous subagent and return its Runtime Task id immediately. Up to four delegate tasks can be created from one parent user turn, and multiple calls in the same assistant response run concurrently. Delegation is one level: each subagent receives the parent's workspace, integrations, and enabled tools with delegate removed.
+DESCRIPTION = """Use this for independent code exploration, external research, parallel evidence collection, or a separate review. Delegate a self-contained task to one asynchronous subagent and return its root Runtime Task id immediately. Up to four delegate tasks can be created from one parent user turn, and multiple calls in the same assistant response run concurrently. Delegation is one level: each subagent receives the parent's workspace, integrations, and enabled tools with delegate removed. A subagent remains active while any task in its task tree is active; child completion resumes the subagent, and only the root result is delivered to the parent conversation.
 
 Subagents:
 - explore: inspect code, files, and current implementation; locate behavior, collect evidence, and map impact.

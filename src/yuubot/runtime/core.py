@@ -373,6 +373,8 @@ class Runtime:
         suppress_conversation_task_deliveries(self, conversation_id)
 
     def _schedule_task_delivery(self, record: RuntimeTaskRecord) -> None:
+        if record.parent_task_id is not None:
+            return
         _log.info(
             "terminal task delivery scheduled task_id=%s owner=%s status=%s delivery=%s",
             record.id,

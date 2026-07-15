@@ -17,7 +17,7 @@ from ..python.pool import KernelPool, KernelPoolBusy
 from ..python.worker import KernelWorker, KernelWorkerError
 from ..python.workspace import ensure_workspace_venv, prepare_kernel_workspace
 from ..runtime.core import Runtime
-from ..runtime.tasks import make_owner
+from ..runtime.tasks import CURRENT_RUNTIME_TASK_ID, make_owner
 from .base import ToolConfig, ToolSpec
 from .progress import current_progress
 
@@ -29,7 +29,7 @@ The working directory is the actor workspace. Standard output and standard error
 
 Output is capped at 1 MiB per call. When this limit is reached, the returned text ends with an explicit truncation notice; write large results to workspace files and inspect them with `read` in pages instead of printing them all.
 
-Enabled integrations inject credentials into the process environment for `yext` facades, for example `await yext.web.search(query)` and `repo = yext.github.repo(); await repo.issues.list_recent()`. For Codex, use `import yext.codex as codex`, call `await codex.models()` to discover configured models, then consume `async for event in codex.open_session(...).ask(prompt)` to completion. `open_session()` is lazy and its `session.id` remains `None` until the first `thread.started` event; use only profile names configured in Codex.
+Enabled integrations inject credentials into the process environment for `yext` facades, for example `await yext.web.search(query)` and `repo = yext.github.repo(); await repo.issues.list_recent()`. The kernel execution timeout defaults to 120s (inside the Harness 240s ceiling). Codex event streams often exceed it: submit normal Codex work with `await yb.tasks.submit(..., delivery="conversation")`, then let task completion naturally resume the chat. Use `import yext.codex as codex` and direct `session.ask(prompt)` only for short diagnostics. Consume that stream to completion but print only `item.completed` events whose item type is `agent_message`; raw lifecycle, command, file-change, reasoning, and tool-progress events are context noise. `open_session()` is lazy and its `session.id` remains `None` until the first `thread.started` event; use only profile names configured in Codex.
 
 The session resets after each user turn. Variables, imports, and in-memory side effects do not survive; a developer notice appears when a prior session is gone.
 
@@ -37,7 +37,7 @@ The runtime is headless: `plt.show()` does not reach the user. Save generated fi
 
 After `uv add` or `uv remove`, call `restart_kernel` before expecting new imports.
 
-Runtime facades (`yb.fixer`, `yb.conversations`, `yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions. `yb.fixer.ask_gemini` and `ask_grok` each allow one provider-completed request per user turn and return any citations supplied by the provider; include related subquestions in one prompt. `yb.conversations.list_recents()` reads your own recent user-visible conversation history for preference/context recall. `yext.web.search` provides three successful searches per turn, while `read` and `download` remain available for inspecting sources."""
+Runtime facades (`yb.fixer`, `yb.conversations`, `yb.tasks`, `yb.mcps`, cron) and admin-page patterns are documented in the system prompt Integration SDKs and Tool Suggestions. `yb.fixer.ask_gemini` and `ask_grok` each allow one provider-completed request per user turn and return any citations supplied by the provider; include related subquestions in one prompt. A fixer call still running after 30s returns `PendingAnswer(task_id)` and continues under Runtime: do not retry or poll, because completion automatically resumes the chat. `yb.conversations.list_recents()` reads your own recent user-visible conversation history for preference/context recall. `yext.web.search` provides three successful searches per turn, while `read` and `download` remain available for inspecting sources."""
 
 
 class ExecutePythonPayload(msgspec.Struct, frozen=True):
@@ -67,9 +67,21 @@ class ExecutePythonTool:
         data = cast(ExecutePythonPayload, payload)
         worker, newly_acquired = await self._worker_or_acquire()
         try:
+            runtime_env = {
+                key: value
+                for key, value in self.env.items()
+                if key.startswith("YUUBOT_")
+            }
             turn_token = self.env.get("YUUBOT_TURN_TOKEN", "")
             await worker.run_code(
-                "import yb._turn_guard as _yuubot_turn_guard; "
+                "import os as _yuubot_os; "
+                "_yuubot_os.environ.update(" + repr(runtime_env) + "); "
+                + (
+                    "_yuubot_os.environ.pop('YUUBOT_PARENT_TASK_ID', None); "
+                    if "YUUBOT_PARENT_TASK_ID" not in runtime_env
+                    else ""
+                )
+                + "import yb._turn_guard as _yuubot_turn_guard; "
                 f"_yuubot_turn_guard.configure({turn_token!r})"
             )
             progress = current_progress()
@@ -81,24 +93,12 @@ class ExecutePythonTool:
                 )
             try:
                 return await worker.run_code(data.code, on_output=progress.write if progress is not None else None)
-            except KernelWorkerError as first_exc:
+            except KernelWorkerError:
                 if self._worker is not None:
                     await self.pool.drop_leased_worker(self.lease_key, self._worker)
                     self._worker = None
                     self._leased = False
-                if progress is not None:
-                    progress.set_task("Retrying with a replacement Python kernel")
-                worker, _ = await self._worker_or_acquire()
-                try:
-                    return await worker.run_code(
-                        data.code,
-                        on_output=progress.write if progress is not None else None,
-                    )
-                except KernelWorkerError as retry_exc:
-                    raise KernelWorkerError(
-                        "kernel worker retry failed after initial error: "
-                        f"{first_exc}; retry error: {retry_exc}"
-                    ) from retry_exc
+                raise
         except asyncio.CancelledError:
             started = time.monotonic()
             progress = current_progress()
@@ -156,6 +156,9 @@ def _factory(config: ToolConfig, context: ConversationContext, runtime: Runtime)
         env["YUUBOT_DAEMON_URL"] = daemon_url
     env["YUUBOT_TASK_OWNER"] = make_owner(context.actor, context.conversation_id)
     env["YUUBOT_ACTOR_ID"] = context.actor
+    parent_task_id = CURRENT_RUNTIME_TASK_ID.get()
+    if parent_task_id is not None:
+        env["YUUBOT_PARENT_TASK_ID"] = parent_task_id
     turn_token = context.rpc.get("turn_token")
     if isinstance(turn_token, str) and turn_token:
         env["YUUBOT_TURN_TOKEN"] = turn_token

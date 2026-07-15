@@ -112,7 +112,7 @@ class CodexIntegration(CodingCliIntegration):
     env_prefix: str = "YEXT_CODEX"
 
     def prompt_doc(self) -> str:
-        return _codex_prompt_doc(self.config.login_command)
+        return _codex_prompt_doc(self.config.command, self.config.login_command)
 
 
 @frozen
@@ -289,29 +289,35 @@ def _coding_cli_prompt_doc(command: str, package_path: str, login_command: str) 
     )
 
 
-def _codex_prompt_doc(login_command: str) -> str:
+def _codex_prompt_doc(command: str, login_command: str) -> str:
     return "\n".join(
         [
             "Work with Codex through execute_python. Each ask is a single-use async stream of raw Codex JSON events.",
             "",
-            "Import:   import json; import yext.codex as codex",
+            "Import:   import yext.codex as codex",
             "Models:   await codex.models()",
-            'Start:    session = codex.open_session(model="gpt-5.6-sol", reasoning="high", profile="lean", cwd="/workspace", sandbox="workspace-write", skip_git_repo_check=True)',
-            'Ask:      async for event in session.ask("complete task context"): print(json.dumps(event, ensure_ascii=False), flush=True)',
-            'Continue: async for event in session.ask("continue with the remaining work"): print(event)',
-            'Resume:   session = codex.resume_session(session_id, profile="lean", cwd="/workspace", sandbox="workspace-write")',
-            "Sandbox options: `read-only` permits reads only; `workspace-write` permits edits in the Codex workspace; `danger-full-access` removes the sandbox. The default is `workspace-write`; choose a more permissive mode only when the task requires it.",
+            'Start:    session = codex.open_session(model="gpt-5.6-sol", reasoning="high", profile="lean", cwd="/workspace", sandbox="danger-full-access", skip_git_repo_check=True)',
+            "Normal delegation: Codex event streams are often long and can exceed execute_python's default 120s kernel timeout. Submit a background task with delivery=\"conversation\"; do not poll, sleep, or keep execute_python waiting. Completion naturally wakes this chat.",
+            "Submit:   import shlex; import yb.tasks",
+            '          prompt = "complete task context"',
+            '          filter_events = "import json, sys\\nfor line in sys.stdin:\\n event = json.loads(line); item = event.get(\\\"item\\\")\\n if event.get(\\\"type\\\") == \\\"item.completed\\\" and isinstance(item, dict) and item.get(\\\"type\\\") == \\\"agent_message\\\": print(item[\\\"text\\\"], flush=True)"',
+            f'          shell = f"{{shlex.quote({command!r})}} exec --json -c \'approval_policy=\\\"never\\\"\' -s danger-full-access --skip-git-repo-check {{shlex.quote(prompt)}} | python3 -c {{shlex.quote(filter_events)}}"',
+            '          task = await yb.tasks.submit("codex delegation", shell, "Codex is working", delivery="conversation")',
+            '          print(f"Submitted Codex task {task.id}; it will resume this chat when complete.")',
+            "Use session.ask() directly only for short diagnostic turns. Consume every raw event, but print only item.completed events whose item type is agent_message.",
+            'Resume:   session = codex.resume_session(session_id, profile="lean", cwd="/workspace", sandbox="danger-full-access")',
+            "Sandbox options: `read-only` permits reads only; `workspace-write` permits edits in the Codex workspace; `danger-full-access` removes the sandbox. The default is `danger-full-access`; specify a stricter sandbox when needed.",
             "",
             "Profile is optional; set it only to a configured Codex profile name. The same profile is used for every ask and resume on that session.",
+            "Event types: thread.started sets session.id; item.completed with item.type=agent_message carries Codex's user-visible text; turn.completed ends successfully; turn.failed and error precede RuntimeError.",
+            "Do not print raw events. item.started, item.updated, command_execution, file_change, reasoning, and non-agent-message items are progress/debug noise that can exhaust context.",
             "open_session() is lazy: it only creates a Session and does not start Codex. session.id is None until the first ask receives thread.started; keep that id for later resume.",
-            'Final text: on item.completed, if event["item"]["type"] == "agent_message", save event["item"]["text"].',
-            'Terminal events are turn.completed, turn.failed, and error. Failed events are yielded before ask raises RuntimeError.',
             "Consume each ask stream once and to completion (or explicitly close it).",
             "",
             "In the first ask, provide the complete task, relevant paths and context, constraints, expected deliverables, and verification.",
             "Tell Codex to make reasonable decisions for non-critical ambiguity and complete the current turn without asking follow-up questions.",
             "Keep session.id if work may continue in another execute_python kernel. Calls on one session are serialized.",
             f"If authentication is required, tell the admin to run `{login_command}` in Admin Terminal.",
-            "Do not invoke Codex via bash or read credential files.",
+            "Do not read credential files.",
         ]
     )

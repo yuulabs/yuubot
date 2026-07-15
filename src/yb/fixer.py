@@ -1,13 +1,16 @@
 """Hosted research facades for questions beyond the current model.
 
 Call ``await ask_gemini(prompt, enable_web_search=False, pass_through_options=None)``
-or ``await ask_grok(...)``. Both return ``Answer(text, citations)``; each
-provider allows one successful request per user turn, so combine related
-questions into one prompt. ``enable_web_search`` is the supported boolean
-switch. ``pass_through_options`` is an optional provider-specific dictionary;
-use it only when its fields and values are explicitly documented by the
-Persona or AGENTS.md. Do not put citations or vendor parameters in the prompt
-unless the task requires them.
+or ``await ask_grok(...)``. Fast requests return ``Answer(text, citations)``.
+After 30 seconds a slow request returns ``PendingAnswer(task_id)`` and continues
+under Runtime; do not retry, poll, sleep, or keep ``execute_python`` waiting.
+Completion automatically resumes the owner conversation with the answer and
+citations. Each provider allows one successful request per user turn, so combine
+related questions into one prompt. ``enable_web_search`` is the supported
+boolean switch. ``pass_through_options`` is an optional provider-specific
+dictionary; use it only when its fields and values are explicitly documented by
+the Persona or AGENTS.md. Do not put citations or vendor parameters in the
+prompt unless the task requires them.
 
 For ordinary current facts prefer ``yext.web.search`` and ``read``. Use Gemini
 without web search for uncertain stable knowledge, Grok with web search for
@@ -40,11 +43,16 @@ class Answer(msgspec.Struct, frozen=True):
     citations: list[Citation]
 
 
+class PendingAnswer(msgspec.Struct, frozen=True):
+    task_id: str
+    message: str = "Fixer request continues under Runtime; do not retry or poll. Completion will resume this chat."
+
+
 async def ask_gemini(
     prompt: str,
     enable_web_search: bool = False,
     pass_through_options: dict[str, object] | None = None,
-) -> Answer:
+) -> Answer | PendingAnswer:
     return await _ask("gemini", prompt, enable_web_search, pass_through_options)
 
 
@@ -52,7 +60,7 @@ async def ask_grok(
     prompt: str,
     enable_web_search: bool = False,
     pass_through_options: dict[str, object] | None = None,
-) -> Answer:
+) -> Answer | PendingAnswer:
     return await _ask("grok", prompt, enable_web_search, pass_through_options)
 
 
@@ -61,14 +69,14 @@ async def _ask(
     prompt: str,
     enable_web_search: bool,
     pass_through_options: dict[str, object] | None,
-) -> Answer:
+) -> Answer | PendingAnswer:
     value = prompt.strip()
     if not value:
         raise ValueError("prompt must not be empty")
     if len(value) > 20_000:
         raise ValueError("prompt must be at most 20000 characters")
 
-    async def request() -> Answer:
+    async def request() -> Answer | PendingAnswer:
         payload = await request_json(
             "POST",
             f"{daemon_url()}/api/fixer/{facade}",
@@ -77,8 +85,13 @@ async def _ask(
                 "enable_web_search": enable_web_search,
                 "pass_through_options": pass_through_options,
             },
-            timeout_s=120,
+            timeout_s=40,
         )
-        return msgspec.convert(payload, Answer)
+        if payload.get("status") == "pending":
+            return PendingAnswer(str(payload["task_id"]))
+        return Answer(
+            str(payload.get("text", "")),
+            msgspec.convert(payload.get("citations", []), list[Citation]),
+        )
 
     return await run(f"fixer_{facade}", request)
